@@ -322,7 +322,6 @@ pub async fn print_table(
 // Print rows of a table, without column header.
 pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) -> Result<()> {
     tracing::debug!("print_rows {table_name}");
-    println!("{cli:?}");
     let rltbl = Relatable::default().await?;
     let select = rltbl.from(table_name).limit(limit).offset(offset);
 
