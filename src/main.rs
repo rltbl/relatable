@@ -41,17 +41,22 @@ impl std::fmt::Display for RelatableError {
 
 impl std::error::Error for RelatableError {}
 
+pub enum DbConnection {
+    Sqlx(sqlx::AnyPool),
+}
+
 pub struct Relatable {
-    pub pool: sqlx::AnyPool,
+    pub connection: DbConnection,
     pub default_limit: usize,
 }
 
 impl Relatable {
     pub async fn default() -> Result<Self> {
         sqlx::any::install_default_drivers();
-        let pool = sqlx::AnyPool::connect("sqlite://.relatable/relatable.db").await?;
+        let connection =
+            DbConnection::Sqlx(sqlx::AnyPool::connect("sqlite://.relatable/relatable.db").await?);
         Ok(Self {
-            pool,
+            connection,
             default_limit: 100,
         })
     }
@@ -201,25 +206,29 @@ impl Select {
         Ok(sql.join("\n"))
     }
 
-    pub async fn fetch_all(&self, pool: &sqlx::AnyPool) -> Result<Vec<JsonRow>> {
-        sqlx::query(self.to_sql()?.as_str())
-            .map(|row| JsonRow::from(row))
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.into())
+    pub async fn fetch_all(&self, connection: &DbConnection) -> Result<Vec<JsonRow>> {
+        match connection {
+            DbConnection::Sqlx(pool) => sqlx::query(self.to_sql()?.as_str())
+                .map(|row| JsonRow::from(row))
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.into()),
+        }
     }
 
-    pub async fn fetch_columns(&self, pool: &sqlx::AnyPool) -> Result<Vec<DbColumn>> {
+    pub async fn fetch_columns(&self, connection: &DbConnection) -> Result<Vec<DbColumn>> {
         // WARN: SQLite only!
         let sql = format!(r#"PRAGMA table_info("{}");"#, self.table_name);
-        sqlx::query(sql.as_str())
-            .map(|row: sqlx::any::AnyRow| DbColumn {
-                name: row.try_get("name").unwrap_or_default(),
-                // sqltype: row.try_get("type").unwrap_or_default(),
-            })
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.into())
+        match connection {
+            DbConnection::Sqlx(pool) => sqlx::query(sql.as_str())
+                .map(|row: sqlx::any::AnyRow| DbColumn {
+                    name: row.try_get("name").unwrap_or_default(),
+                    // sqltype: row.try_get("type").unwrap_or_default(),
+                })
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.into()),
+        }
     }
 }
 
@@ -327,12 +336,12 @@ pub async fn print_table(
     let rltbl = Relatable::default().await?;
     let select = rltbl.from(table_name).limit(limit).offset(offset);
 
-    let columns = select.fetch_columns(&rltbl.pool).await?;
+    let columns = select.fetch_columns(&rltbl.connection).await?;
     let header = columns
         .iter()
         .map(|c| c.name.clone())
         .collect::<Vec<String>>();
-    let mut rows = select.fetch_all(&rltbl.pool).await?.vec_into();
+    let mut rows = select.fetch_all(&rltbl.connection).await?.vec_into();
     rows.insert(0, header);
     print_text(rows)?;
     Ok(())
@@ -344,7 +353,7 @@ pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &us
     let rltbl = Relatable::default().await?;
     let select = rltbl.from(table_name).limit(limit).offset(offset);
 
-    let rows = select.fetch_all(&rltbl.pool).await?.vec_into();
+    let rows = select.fetch_all(&rltbl.connection).await?.vec_into();
     print_text(rows)?;
     Ok(())
 }
