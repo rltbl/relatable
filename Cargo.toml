@@ -9,6 +9,7 @@ async-std = { version = "1.13.0", features = ["attributes"] }
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 clap-verbosity-flag = { version = "3.0.2", features = ["tracing"] }
 indexmap = { version = "2.7.0", features = ["serde"] }
+rusqlite = { version = "0.32.1", features = ["serde_json"] }
 serde = "1.0.216"
 serde_json = { version = "1.0.133", features = ["preserve_order"] }
 sqlx = { version = "0.8", features = ["runtime-async-std", "sqlite"] }

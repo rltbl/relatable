@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use indexmap::IndexMap;
+use rusqlite;
 use serde_json::{json, Value as JsonValue};
 use sqlx::{Column as _, Row as _};
 use sqlx_core::any::AnyTypeInfoKind;
@@ -43,6 +44,7 @@ impl std::error::Error for RelatableError {}
 
 pub enum DbConnection {
     Sqlx(sqlx::AnyPool),
+    Rusqlite(rusqlite::Connection),
 }
 
 pub struct Relatable {
@@ -52,9 +54,11 @@ pub struct Relatable {
 
 impl Relatable {
     pub async fn default() -> Result<Self> {
-        sqlx::any::install_default_drivers();
-        let connection =
-            DbConnection::Sqlx(sqlx::AnyPool::connect("sqlite://.relatable/relatable.db").await?);
+        let path = ".relatable/relatable.db";
+        // let url = format!("sqlite://{path}");
+        // sqlx::any::install_default_drivers();
+        // let connection = DbConnection::Sqlx(sqlx::AnyPool::connect(path).await?);
+        let connection = DbConnection::Rusqlite(rusqlite::Connection::open(path)?);
         Ok(Self {
             connection,
             default_limit: 100,
@@ -92,7 +96,7 @@ pub struct JsonRow {
 
 impl From<sqlx::any::AnyRow> for JsonRow {
     fn from(row: sqlx::any::AnyRow) -> Self {
-        let mut result = IndexMap::new();
+        let mut content = IndexMap::new();
         for column in row.columns() {
             let value = match column.type_info().kind() {
                 AnyTypeInfoKind::SmallInt | AnyTypeInfoKind::Integer | AnyTypeInfoKind::BigInt => {
@@ -114,13 +118,18 @@ impl From<sqlx::any::AnyRow> for JsonRow {
                 AnyTypeInfoKind::Null => JsonValue::Null,
                 AnyTypeInfoKind::Blob => unimplemented!("SQL blob types are not implemented"),
             };
-            result.insert(column.name().into(), value);
+            content.insert(column.name().into(), value);
         }
-        Self { content: result }
+        Self { content }
     }
 }
 
 impl JsonRow {
+    pub fn new() -> Self {
+        Self {
+            content: IndexMap::new(),
+        }
+    }
     /// Given a database row, the name of a column, and it's SQL type, return the value of that column
     /// from the given row as a String.
     pub fn get_string(&self, column_name: &str) -> String {
@@ -150,6 +159,15 @@ impl JsonRow {
             result.insert(column_name.clone(), self.get_string(column_name));
         }
         result
+    }
+    fn from_rusqlite(column_names: Vec<&str>, row: &rusqlite::Row) -> Self {
+        let mut content = IndexMap::new();
+        for column_name in column_names {
+            let text: String = row.get(column_name).unwrap_or_default();
+            let value: JsonValue = row.get(column_name).unwrap_or(JsonValue::String(text));
+            content.insert(column_name.into(), value);
+        }
+        Self { content }
     }
 }
 
@@ -213,6 +231,17 @@ impl Select {
                 .fetch_all(pool)
                 .await
                 .map_err(|e| e.into()),
+            DbConnection::Rusqlite(conn) => {
+                let stmt = conn.prepare(self.to_sql()?.as_str())?;
+                let column_names = stmt.column_names();
+                let mut stmt = conn.prepare(self.to_sql()?.as_str())?;
+                let mut rows = stmt.query([])?;
+                let mut result = Vec::new();
+                while let Some(row) = rows.next()? {
+                    result.push(JsonRow::from_rusqlite(column_names.clone(), row));
+                }
+                Ok(result)
+            }
         }
     }
 
@@ -228,6 +257,17 @@ impl Select {
                 .fetch_all(pool)
                 .await
                 .map_err(|e| e.into()),
+            DbConnection::Rusqlite(conn) => {
+                let stmt = conn.prepare(self.to_sql()?.as_str())?;
+                let column_names = stmt
+                    .column_names()
+                    .iter()
+                    .map(|name| DbColumn {
+                        name: name.to_string(),
+                    })
+                    .collect();
+                Ok(column_names)
+            }
         }
     }
 }
