@@ -5,10 +5,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use indexmap::IndexMap;
 use serde_json::{json, Value as JsonValue};
-use sqlx::{
-    any::{install_default_drivers, AnyRow},
-    query, AnyPool, Column as _, Row as _,
-};
+use sqlx::{Column as _, Row as _};
 use sqlx_core::any::AnyTypeInfoKind;
 use tabwriter::TabWriter;
 
@@ -45,14 +42,14 @@ impl std::fmt::Display for RelatableError {
 impl std::error::Error for RelatableError {}
 
 pub struct Relatable {
-    pub pool: AnyPool,
+    pub pool: sqlx::AnyPool,
     pub default_limit: usize,
 }
 
 impl Relatable {
     pub async fn default() -> Result<Self> {
-        install_default_drivers();
-        let pool = AnyPool::connect("sqlite://.relatable/relatable.db").await?;
+        sqlx::any::install_default_drivers();
+        let pool = sqlx::AnyPool::connect("sqlite://.relatable/relatable.db").await?;
         Ok(Self {
             pool,
             default_limit: 100,
@@ -88,8 +85,8 @@ pub struct JsonRow {
     content: IndexMap<String, JsonValue>,
 }
 
-impl From<AnyRow> for JsonRow {
-    fn from(row: AnyRow) -> Self {
+impl From<sqlx::any::AnyRow> for JsonRow {
+    fn from(row: sqlx::any::AnyRow) -> Self {
         let mut result = IndexMap::new();
         for column in row.columns() {
             let value = match column.type_info().kind() {
@@ -204,19 +201,19 @@ impl Select {
         Ok(sql.join("\n"))
     }
 
-    pub async fn fetch_all(&self, pool: &AnyPool) -> Result<Vec<JsonRow>> {
-        query(self.to_sql()?.as_str())
+    pub async fn fetch_all(&self, pool: &sqlx::AnyPool) -> Result<Vec<JsonRow>> {
+        sqlx::query(self.to_sql()?.as_str())
             .map(|row| JsonRow::from(row))
             .fetch_all(pool)
             .await
             .map_err(|e| e.into())
     }
 
-    pub async fn fetch_columns(&self, pool: &AnyPool) -> Result<Vec<DbColumn>> {
+    pub async fn fetch_columns(&self, pool: &sqlx::AnyPool) -> Result<Vec<DbColumn>> {
         // WARN: SQLite only!
         let sql = format!(r#"PRAGMA table_info("{}");"#, self.table_name);
-        query(sql.as_str())
-            .map(|row: AnyRow| DbColumn {
+        sqlx::query(sql.as_str())
+            .map(|row: sqlx::any::AnyRow| DbColumn {
                 name: row.try_get("name").unwrap_or_default(),
                 // sqltype: row.try_get("type").unwrap_or_default(),
             })
