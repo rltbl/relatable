@@ -1,12 +1,13 @@
-use std::collections::HashMap;
 use std::io::Write;
 
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
+use indexmap::IndexMap;
+use serde_json::{json, Value as JsonValue};
 use sqlx::{
     any::{install_default_drivers, AnyRow},
-    query, AnyPool, Column, Row,
+    query, AnyPool, Column as _, Row as _,
 };
 use sqlx_core::any::AnyTypeInfoKind;
 use tabwriter::TabWriter;
@@ -83,66 +84,87 @@ where
     }
 }
 
-pub struct DbRow(AnyRow);
+pub struct JsonRow {
+    content: IndexMap<String, JsonValue>,
+}
 
-impl DbRow {
+impl From<AnyRow> for JsonRow {
+    fn from(row: AnyRow) -> Self {
+        let mut result = IndexMap::new();
+        for column in row.columns() {
+            let value = match column.type_info().kind() {
+                AnyTypeInfoKind::SmallInt | AnyTypeInfoKind::Integer | AnyTypeInfoKind::BigInt => {
+                    let value: i32 = row.try_get(column.ordinal()).unwrap_or_default();
+                    json!(value)
+                }
+                AnyTypeInfoKind::Real | AnyTypeInfoKind::Double => {
+                    let value: f64 = row.try_get(column.ordinal()).unwrap_or_default();
+                    json!(value)
+                }
+                AnyTypeInfoKind::Text => {
+                    let value: String = row.try_get(column.ordinal()).unwrap_or_default();
+                    JsonValue::String(value)
+                }
+                AnyTypeInfoKind::Bool => {
+                    let value: bool = row.try_get(column.ordinal()).unwrap_or_default();
+                    json!(value)
+                }
+                AnyTypeInfoKind::Null => JsonValue::Null,
+                AnyTypeInfoKind::Blob => unimplemented!("SQL blob types are not implemented"),
+            };
+            result.insert(column.name().into(), value);
+        }
+        Self { content: result }
+    }
+}
+
+impl JsonRow {
     /// Given a database row, the name of a column, and it's SQL type, return the value of that column
     /// from the given row as a String.
     pub fn get_string(&self, column_name: &str) -> String {
-        let column = self.0.try_column(column_name);
-        let kind = match column {
-            Ok(column) => column.type_info().kind(),
-            Err(_) => AnyTypeInfoKind::Null,
-        };
-        match kind {
-            AnyTypeInfoKind::SmallInt | AnyTypeInfoKind::Integer | AnyTypeInfoKind::BigInt => {
-                let value: i32 = self.0.try_get(column_name).unwrap_or_default();
-                value.to_string()
-            }
-            AnyTypeInfoKind::Real | AnyTypeInfoKind::Double => {
-                let value: f64 = self.0.try_get(column_name).unwrap_or_default();
-                value.to_string()
-            }
-            AnyTypeInfoKind::Text => self.0.try_get(column_name).unwrap_or_default(),
-            // AnyTypeInfoKind::Null,
-            // AnyTypeInfoKind::Bool,
-            // AnyTypeInfoKind::Blob,
-            _ => "".to_string(),
+        let value = self.content.get(column_name);
+        match value {
+            Some(value) => match value {
+                JsonValue::Null => "".to_string(),
+                JsonValue::Bool(value) => value.to_string(),
+                JsonValue::Number(value) => value.to_string(),
+                JsonValue::String(value) => value.to_string(),
+                JsonValue::Array(_) => unimplemented!(),
+                JsonValue::Object(_) => unimplemented!(),
+            },
+            None => unimplemented!(),
         }
     }
-
     fn to_strings(&self) -> Vec<String> {
-        let columns = self.0.columns();
         let mut result = vec![];
-        for column in columns {
-            result.push(self.get_string(column.name()));
+        for column_name in self.content.keys() {
+            result.push(self.get_string(column_name));
         }
         result
     }
-    fn to_map(&self) -> HashMap<String, String> {
-        let columns = self.0.columns();
-        let mut result = HashMap::new();
-        for column in columns {
-            result.insert(column.name().into(), self.get_string(column.name()));
+    fn to_map(&self) -> IndexMap<String, String> {
+        let mut result = IndexMap::new();
+        for column_name in self.content.keys() {
+            result.insert(column_name.clone(), self.get_string(column_name));
         }
         result
     }
 }
 
-impl std::fmt::Display for DbRow {
+impl std::fmt::Display for JsonRow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.to_strings().join("\t"))
     }
 }
 
-impl std::fmt::Debug for DbRow {
+impl std::fmt::Debug for JsonRow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.to_map())
     }
 }
 
-impl From<DbRow> for Vec<String> {
-    fn from(row: DbRow) -> Self {
+impl From<JsonRow> for Vec<String> {
+    fn from(row: JsonRow) -> Self {
         row.to_strings()
     }
 }
@@ -182,9 +204,9 @@ impl Select {
         Ok(sql.join("\n"))
     }
 
-    pub async fn fetch_all(&self, pool: &AnyPool) -> Result<Vec<DbRow>> {
+    pub async fn fetch_all(&self, pool: &AnyPool) -> Result<Vec<JsonRow>> {
         query(self.to_sql()?.as_str())
-            .map(|row| DbRow(row))
+            .map(|row| JsonRow::from(row))
             .fetch_all(pool)
             .await
             .map_err(|e| e.into())
