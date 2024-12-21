@@ -1,9 +1,13 @@
-use std::io::Write;
+use std::{io::Write, path::Path};
 
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use indexmap::IndexMap;
+use rand::rngs::StdRng;
+use rand::seq::IteratorRandom as _;
+use rand::Rng as _;
+use rand::SeedableRng as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string_pretty, Value as JsonValue};
 use tabwriter::TabWriter;
@@ -478,6 +482,13 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: GetSubcommand,
     },
+
+    /// Generate a demonstration database
+    Demo {
+        /// Output format: text, JSON, TSV
+        #[arg(long, action = ArgAction::SetTrue)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -588,6 +599,72 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) -> Re
     unimplemented!("print_value");
 }
 
+pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
+    tracing::debug!("build_demo({cli:?}");
+    let path = ".relatable/relatable.db";
+    let dir = Path::new(path).parent().expect("parent should be defined");
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)?;
+        tracing::info!("Created '{dir:?}' directory");
+    }
+    let file = Path::new(path);
+    if file.exists() {
+        if *force {
+            std::fs::remove_file(&file)?;
+            tracing::info!("Removed '{file:?}' file");
+        } else {
+            print!("File {file:?} already exists. Use --force to overwrite");
+            return Err(
+                RelatableError::ConfigError(format!("Database file already exists")).into(),
+            );
+        }
+    }
+    let rltbl = Relatable::default().await?;
+    let sql = "CREATE TABLE 'table' (
+    _id INTEGER UNIQUE,
+    _order INTEGER UNIQUE,
+    'table' TEXT PRIMARY KEY
+)";
+    query(&rltbl.connection, sql).await?;
+    let sql = "INSERT INTO 'table' VALUES (1, 1000, 'table'), (2, 2000, 'penguin')";
+    query(&rltbl.connection, sql).await?;
+    let sql = "CREATE TABLE penguin (
+    _id INTEGER UNIQUE,
+    _order INTEGER UNIQUE,
+    study_name TEXT,
+    sample_number INTEGER,
+    species TEXT,
+    island TEXT,
+    individual_id TEXT,
+    culmen_length REAL,
+    body_mass INTEGER
+)";
+    query(&rltbl.connection, sql).await?;
+
+    let islands = vec!["Biscoe", "Dream", "Torgersen"];
+    let mut rng = StdRng::seed_from_u64(0);
+
+    let count = 1000;
+    for i in 1..=count {
+        let id = i;
+        let order = i * 1000;
+        let island = islands.iter().choose(&mut rng).unwrap();
+        let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
+        let body_mass = rng.gen_range(1000..5000);
+        let sql = format!(
+            "INSERT INTO 'penguin' VALUES (
+            {id}, {order},
+            'FAKE123', {id},
+            'Pygoscelis adeliae', '{island}', 'N{id}',
+            {culmen_length}, {body_mass}
+        )"
+        );
+        query(&rltbl.connection, &sql).await?;
+    }
+
+    Ok(())
+}
+
 #[async_std::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -618,5 +695,6 @@ async fn main() -> Result<()> {
                 print_value(&cli, table, *row, column).await
             }
         },
+        Command::Demo { force } => build_demo(&cli, force).await,
     }
 }
