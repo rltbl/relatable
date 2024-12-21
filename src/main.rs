@@ -4,7 +4,8 @@ use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use indexmap::IndexMap;
-use serde_json::Value as JsonValue;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, to_string_pretty, Value as JsonValue};
 use tabwriter::TabWriter;
 
 #[cfg(feature = "rusqlite")]
@@ -84,11 +85,6 @@ impl Relatable {
         }
     }
 
-    pub async fn fetch_json_rows(&self, select: Select) -> Result<Vec<JsonRow>> {
-        let statement = select.to_sql()?;
-        query(&self.connection, &statement).await
-    }
-
     pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
         // WARN: SQLite only!
         let statement = format!(r#"SELECT * FROM pragma_table_info("{table_name}");"#);
@@ -98,14 +94,176 @@ impl Relatable {
             .map(|row| Column {
                 name: row.get_string("name"),
             })
+            .filter(|c| !c.name.starts_with("_"))
             .collect())
+    }
+
+    pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
+        let columns = self.fetch_columns(&select.table_name).await?;
+        // let column_names: Vec<String> = columns
+        //     .iter()
+        //     .map(|c| c.name.clone())
+        //     .collect();
+
+        // let statement = select.to_sql()?;
+        let statement = format!(
+            // r#"SELECT * FROM "{}" LIMIT {}"#,
+            r#"SELECT *, COUNT(1) OVER() AS _total FROM "{}" LIMIT {} OFFSET {}"#,
+            select.table_name, select.limit, select.offset
+        );
+        tracing::debug!("SQL {statement}\n");
+        let json_rows = query(&self.connection, &statement).await?;
+
+        let count = json_rows.len();
+        let total = match json_rows.get(0) {
+            Some(row) => row
+                .content
+                .get("_total")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0) as usize,
+            None => 0,
+        };
+
+        let rows: Vec<Row> = json_rows.vec_into();
+        Ok(ResultSet {
+            range: Range {
+                count,
+                total,
+                start: select.offset + 1,
+                end: select.offset + count,
+            },
+            select: select.clone(),
+            table: Table {
+                name: select.table_name.clone(),
+                editable: false,
+            },
+            columns,
+            rows,
+        })
+    }
+
+    pub async fn fetch_json_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
+        let statement = select.to_sql()?;
+        query(&self.connection, &statement).await
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Cell {
+    value: JsonValue,
+    text: String,
+}
+
+impl From<&JsonValue> for Cell {
+    fn from(value: &JsonValue) -> Self {
+        Self {
+            value: value.clone(),
+            text: match value {
+                JsonValue::String(value) => value.to_string(),
+                value => format!("{value}"),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Row {
+    id: usize,
+    order: usize,
+    cells: IndexMap<String, Cell>,
+}
+
+// Ignore columns that start with "_"
+impl From<JsonRow> for Row {
+    fn from(row: JsonRow) -> Self {
+        Self {
+            id: row
+                .content
+                .get("_id")
+                .and_then(|i| i.as_u64())
+                .unwrap_or_default() as usize,
+            order: row
+                .content
+                .get("_order")
+                .and_then(|i| i.as_u64())
+                .unwrap_or_default() as usize,
+            cells: row
+                .content
+                .iter()
+                .filter(|(k, _)| !k.starts_with("_"))
+                .map(|(k, v)| (k.clone(), v.into()))
+                .collect(),
+        }
+    }
+}
+
+impl From<Row> for Vec<String> {
+    fn from(row: Row) -> Self {
+        row.to_strings()
+    }
+}
+
+impl Row {
+    fn to_strings(&self) -> Vec<String> {
+        self.cells.values().map(|cell| cell.text.clone()).collect()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Column {
     name: String,
     // sqltype: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Table {
+    name: String,
+    editable: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Range {
+    count: usize,
+    total: usize,
+    start: usize,
+    end: usize,
+}
+
+impl std::fmt::Display for Range {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Rows {}-{} of {}", self.start, self.end, self.total)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResultSet {
+    select: Select,
+    range: Range,
+    table: Table,
+    columns: Vec<Column>,
+    rows: Vec<Row>,
+}
+
+impl std::fmt::Display for ResultSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut tw = TabWriter::new(vec![]);
+        tw.write(format!("{}\n", self.range).as_bytes())
+            .unwrap_or_default();
+        let header = &self
+            .columns
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<String>>();
+        tw.write(format!("{}\n", header.join("\t")).as_bytes())
+            .unwrap_or_default();
+        for row in &self.rows {
+            tw.write(format!("{}\n", row.to_strings().join("\t")).as_bytes())
+                .unwrap_or_default();
+        }
+        tw.flush().expect("TabWriter to flush");
+        let written = String::from_utf8(tw.into_inner().unwrap()).unwrap();
+        write!(f, "{written}")
+    }
 }
 
 // ## SQL module
@@ -262,7 +420,7 @@ pub async fn query(connection: &DbConnection, statement: &str) -> Result<Vec<Jso
 }
 
 // Use Select
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Select {
     table_name: String,
     limit: usize,
@@ -329,6 +487,10 @@ pub enum GetSubcommand {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
 
+        /// Output format: text, JSON, TSV
+        #[arg(long, default_value="", action = ArgAction::Set)]
+        format: String,
+
         /// Limit to this many rows
         #[arg(long, default_value="100", action = ArgAction::Set)]
         limit: usize,
@@ -367,7 +529,7 @@ pub enum GetSubcommand {
 
 /// Given a vector of vectors of strings,
 /// print text with "elastic tabstops".
-pub fn print_text(rows: Vec<Vec<String>>) -> Result<()> {
+pub fn print_text(rows: &Vec<Vec<String>>) -> Result<()> {
     let mut tw = TabWriter::new(vec![]);
     for row in rows {
         tw.write(format!("{}\n", row.join("\t")).as_bytes())?;
@@ -389,6 +551,7 @@ pub fn print_tsv(rows: Vec<Vec<String>>) -> Result<()> {
 pub async fn print_table(
     _cli: &Cli,
     table_name: &str,
+    format: &str,
     limit: &usize,
     offset: &usize,
 ) -> Result<()> {
@@ -396,14 +559,17 @@ pub async fn print_table(
     let rltbl = Relatable::default().await?;
     let select = rltbl.from(table_name).limit(limit).offset(offset);
 
-    let columns = rltbl.fetch_columns(table_name).await?;
-    let header = columns
-        .iter()
-        .map(|c| c.name.clone())
-        .collect::<Vec<String>>();
-    let mut rows = rltbl.fetch_json_rows(select).await?.vec_into();
-    rows.insert(0, header);
-    print_text(rows)?;
+    match format.to_lowercase().as_str() {
+        "json" => {
+            let json = json!(rltbl.fetch(&select).await?);
+            print!("{}", to_string_pretty(&json)?);
+        }
+        "text" | "" => {
+            print!("{}", rltbl.fetch(&select).await?.to_string());
+        }
+        _ => unimplemented!("output format {format}"),
+    }
+
     Ok(())
 }
 
@@ -412,8 +578,8 @@ pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &us
     tracing::debug!("print_rows {table_name}");
     let rltbl = Relatable::default().await?;
     let select = rltbl.from(table_name).limit(limit).offset(offset);
-    let rows = rltbl.fetch_json_rows(select).await?.vec_into();
-    print_text(rows)?;
+    let rows = rltbl.fetch_json_rows(&select).await?.vec_into();
+    print_text(&rows)?;
     Ok(())
 }
 
@@ -439,9 +605,10 @@ async fn main() -> Result<()> {
         Command::Get { subcommand } => match subcommand {
             GetSubcommand::Table {
                 table,
+                format,
                 limit,
                 offset,
-            } => print_table(&cli, table, limit, offset).await,
+            } => print_table(&cli, table, format, limit, offset).await,
             GetSubcommand::Rows {
                 table,
                 limit,
