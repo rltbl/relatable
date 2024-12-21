@@ -83,6 +83,29 @@ impl Relatable {
             offset: 0,
         }
     }
+
+    pub async fn fetch_json_rows(&self, select: Select) -> Result<Vec<JsonRow>> {
+        let statement = select.to_sql()?;
+        query(&self.connection, &statement).await
+    }
+
+    pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
+        // WARN: SQLite only!
+        let statement = format!(r#"SELECT * FROM pragma_table_info("{table_name}");"#);
+        Ok(query(&self.connection, &statement)
+            .await?
+            .iter()
+            .map(|row| Column {
+                name: row.get_string("name"),
+            })
+            .collect())
+    }
+}
+
+#[derive(Debug)]
+pub struct Column {
+    name: String,
+    // sqltype: String,
 }
 
 // ## SQL module
@@ -211,12 +234,34 @@ impl From<JsonRow> for Vec<String> {
     }
 }
 
-#[derive(Debug)]
-pub struct DbColumn {
-    name: String,
-    // sqltype: String,
+// Given a connection and a SQL string, return a vector of JsonRows.
+// This is intended as a low-level function that abstracts over the SQL engine,
+// and whatever result types it returns.
+// Since it uses a vector, statements should be limited to a sane number of rows.
+pub async fn query(connection: &DbConnection, statement: &str) -> Result<Vec<JsonRow>> {
+    match connection {
+        #[cfg(feature = "sqlx")]
+        DbConnection::Sqlx(pool) => sqlx::query(statement)
+            .map(|row| JsonRow::from(row))
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.into()),
+        #[cfg(feature = "rusqlite")]
+        DbConnection::Rusqlite(conn) => {
+            let stmt = conn.prepare(statement)?;
+            let column_names = stmt.column_names();
+            let mut stmt = conn.prepare(statement)?;
+            let mut rows = stmt.query([])?;
+            let mut result = Vec::new();
+            while let Some(row) = rows.next()? {
+                result.push(JsonRow::from_rusqlite(&column_names, row));
+            }
+            Ok(result)
+        }
+    }
 }
 
+// Use Select
 #[derive(Debug)]
 pub struct Select {
     table_name: String,
@@ -244,47 +289,6 @@ impl Select {
             sql.push(format!("OFFSET {}", self.offset));
         }
         Ok(sql.join("\n"))
-    }
-
-    pub async fn query(&self, statement: &str, connection: &DbConnection) -> Result<Vec<JsonRow>> {
-        match connection {
-            #[cfg(feature = "sqlx")]
-            DbConnection::Sqlx(pool) => sqlx::query(statement)
-                .map(|row| JsonRow::from(row))
-                .fetch_all(pool)
-                .await
-                .map_err(|e| e.into()),
-            #[cfg(feature = "rusqlite")]
-            DbConnection::Rusqlite(conn) => {
-                let stmt = conn.prepare(statement)?;
-                let column_names = stmt.column_names();
-                let mut stmt = conn.prepare(statement)?;
-                let mut rows = stmt.query([])?;
-                let mut result = Vec::new();
-                while let Some(row) = rows.next()? {
-                    result.push(JsonRow::from_rusqlite(&column_names, row));
-                }
-                Ok(result)
-            }
-        }
-    }
-
-    pub async fn fetch_all(&self, connection: &DbConnection) -> Result<Vec<JsonRow>> {
-        let statement = self.to_sql()?;
-        self.query(statement.as_str(), connection).await
-    }
-
-    pub async fn fetch_columns(&self, connection: &DbConnection) -> Result<Vec<DbColumn>> {
-        // WARN: SQLite only!
-        let statement = format!(r#"SELECT * FROM pragma_table_info("{}");"#, self.table_name);
-        Ok(self
-            .query(statement.as_str(), connection)
-            .await?
-            .iter()
-            .map(|row| DbColumn {
-                name: row.get_string("name"),
-            })
-            .collect())
     }
 }
 
@@ -392,12 +396,12 @@ pub async fn print_table(
     let rltbl = Relatable::default().await?;
     let select = rltbl.from(table_name).limit(limit).offset(offset);
 
-    let columns = select.fetch_columns(&rltbl.connection).await?;
+    let columns = rltbl.fetch_columns(table_name).await?;
     let header = columns
         .iter()
         .map(|c| c.name.clone())
         .collect::<Vec<String>>();
-    let mut rows = select.fetch_all(&rltbl.connection).await?.vec_into();
+    let mut rows = rltbl.fetch_json_rows(select).await?.vec_into();
     rows.insert(0, header);
     print_text(rows)?;
     Ok(())
@@ -408,8 +412,7 @@ pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &us
     tracing::debug!("print_rows {table_name}");
     let rltbl = Relatable::default().await?;
     let select = rltbl.from(table_name).limit(limit).offset(offset);
-
-    let rows = select.fetch_all(&rltbl.connection).await?.vec_into();
+    let rows = rltbl.fetch_json_rows(select).await?.vec_into();
     print_text(rows)?;
     Ok(())
 }
