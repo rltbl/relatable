@@ -20,7 +20,7 @@ use sqlx_core::any::AnyTypeInfoKind;
 
 #[derive(Debug)]
 pub enum RelatableError {
-    /// An error in the Valve configuration:
+    /// An error in the Relatable configuration:
     ConfigError(String),
     /// An error that occurred while reading or writing to a CSV/TSV:
     // CsvError(csv::Error),
@@ -113,22 +113,22 @@ impl From<sqlx::any::AnyRow> for JsonRow {
             let value = match column.type_info().kind() {
                 AnyTypeInfoKind::SmallInt | AnyTypeInfoKind::Integer | AnyTypeInfoKind::BigInt => {
                     let value: i32 = row.try_get(column.ordinal()).unwrap_or_default();
-                    json!(value)
+                    JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Real | AnyTypeInfoKind::Double => {
                     let value: f64 = row.try_get(column.ordinal()).unwrap_or_default();
-                    json!(value)
+                    JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Text => {
                     let value: String = row.try_get(column.ordinal()).unwrap_or_default();
-                    JsonValue::String(value)
+                    JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Bool => {
                     let value: bool = row.try_get(column.ordinal()).unwrap_or_default();
-                    json!(value)
+                    JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Null => JsonValue::Null,
-                AnyTypeInfoKind::Blob => unimplemented!("SQL blob types are not implemented"),
+                AnyTypeInfoKind::Blob => unimplemented!("SQL blob"),
             };
             content.insert(column.name().into(), value);
         }
@@ -150,10 +150,10 @@ impl JsonRow {
                 JsonValue::Bool(value) => value.to_string(),
                 JsonValue::Number(value) => value.to_string(),
                 JsonValue::String(value) => value.to_string(),
-                JsonValue::Array(_) => unimplemented!(),
-                JsonValue::Object(_) => unimplemented!(),
+                JsonValue::Array(value) => format!("{value:?}"),
+                JsonValue::Object(value) => format!("{value:?}"),
             },
-            None => unimplemented!(),
+            None => unimplemented!("missing value"),
         }
     }
     fn to_strings(&self) -> Vec<String> {
@@ -174,8 +174,19 @@ impl JsonRow {
     fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
         let mut content = IndexMap::new();
         for column_name in column_names {
-            let text: String = row.get(*column_name).unwrap_or_default();
-            let value: JsonValue = row.get(*column_name).unwrap_or(JsonValue::String(text));
+            let value = match row.get_ref(*column_name) {
+                Ok(value) => match value {
+                    rusqlite::types::ValueRef::Null => JsonValue::Null,
+                    rusqlite::types::ValueRef::Integer(value) => JsonValue::from(value),
+                    rusqlite::types::ValueRef::Real(value) => JsonValue::from(value),
+                    rusqlite::types::ValueRef::Text(value)
+                    | rusqlite::types::ValueRef::Blob(value) => {
+                        let value = std::str::from_utf8(value).unwrap_or_default();
+                        JsonValue::from(value)
+                    }
+                },
+                Err(_) => JsonValue::Null,
+            };
             content.insert(column_name.to_string(), value);
         }
         Self { content }
@@ -405,7 +416,7 @@ pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &us
 
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) -> Result<()> {
     tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
-    unimplemented!();
+    unimplemented!("print_value");
 }
 
 #[async_std::main]
