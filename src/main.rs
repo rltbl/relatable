@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::{io::Write, path::Path};
 
 use anyhow::Result;
@@ -8,8 +9,9 @@ use rand::rngs::StdRng;
 use rand::seq::IteratorRandom as _;
 use rand::Rng as _;
 use rand::SeedableRng as _;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, to_string_pretty, Value as JsonValue};
+use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
 use tabwriter::TabWriter;
 
 #[cfg(feature = "rusqlite")]
@@ -85,7 +87,7 @@ impl Relatable {
         Select {
             table_name: table_name.to_string(),
             limit: self.default_limit,
-            offset: 0,
+            ..Default::default()
         }
     }
 
@@ -104,18 +106,8 @@ impl Relatable {
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
         let columns = self.fetch_columns(&select.table_name).await?;
-        // let column_names: Vec<String> = columns
-        //     .iter()
-        //     .map(|c| c.name.clone())
-        //     .collect();
-
-        // let statement = select.to_sql()?;
-        let statement = format!(
-            // r#"SELECT * FROM "{}" LIMIT {}"#,
-            r#"SELECT *, COUNT(1) OVER() AS _total FROM "{}" LIMIT {} OFFSET {}"#,
-            select.table_name, select.limit, select.offset
-        );
-        tracing::debug!("SQL {statement}\n");
+        let statement = select.to_sql()?;
+        tracing::debug!("SQL {statement}");
         let json_rows = query(&self.connection, &statement).await?;
 
         let count = json_rows.len();
@@ -423,12 +415,37 @@ pub async fn query(connection: &DbConnection, statement: &str) -> Result<Vec<Jso
     }
 }
 
-// Use Select
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Filter {
+    Equals { column: String, value: JsonValue },
+}
+
+impl Display for Filter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let result = match self {
+            Filter::Equals { column, value } => {
+                // TODO: This should be factored out.
+                let value = match &value {
+                    JsonValue::Null => "NULL".to_string(),
+                    JsonValue::Bool(value) => value.to_string(),
+                    JsonValue::Number(value) => value.to_string(),
+                    JsonValue::String(value) => format!("'{value}'"),
+                    JsonValue::Array(value) => format!("'{value:?}'"),
+                    JsonValue::Object(value) => format!("'{value:?}'"),
+                };
+                format!(r#""{column}" = {value}"#)
+            }
+        };
+        write!(f, "{result}")
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Select {
     table_name: String,
     limit: usize,
     offset: usize,
+    filters: Vec<Filter>,
 }
 
 impl Select {
@@ -440,17 +457,48 @@ impl Select {
         self.offset = *offset;
         self
     }
+    pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
+        let eq = Regex::new(r"^(\w+)=(\w+)$").unwrap();
+        for filter in filters {
+            if eq.is_match(&filter) {
+                let captures = eq.captures(&filter).unwrap();
+                self = self.eq(
+                    &captures.get(1).unwrap().as_str(),
+                    &captures.get(2).unwrap().as_str(),
+                )?;
+            } else {
+                return Err(RelatableError::ConfigError(format!("invalid filter {filter}")).into());
+            }
+        }
+        Ok(self)
+    }
+    pub fn eq<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::Equals {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
     pub fn to_sql(&self) -> Result<String> {
-        let mut sql = vec![];
-        sql.push("SELECT *".to_string());
-        sql.push(format!(r#"FROM "{}""#, self.table_name));
+        let mut lines = Vec::new();
+        lines.push("SELECT *,".to_string());
+        // WARN: The _total count should probably be optional.
+        lines.push("  COUNT(1) OVER() AS _total".to_string());
+        lines.push(format!(r#"FROM "{}""#, self.table_name));
+        for (i, filter) in self.filters.iter().enumerate() {
+            let keyword = if i == 0 { "WHERE" } else { "  AND" };
+            lines.push(format!("{keyword} {filter}"));
+        }
         if self.limit > 0 {
-            sql.push(format!("LIMIT {}", self.limit));
+            lines.push(format!("LIMIT {}", self.limit));
         }
         if self.offset > 0 {
-            sql.push(format!("OFFSET {}", self.offset));
+            lines.push(format!("OFFSET {}", self.offset));
         }
-        Ok(sql.join("\n"))
+        Ok(lines.join("\n"))
     }
 }
 
@@ -497,6 +545,10 @@ pub enum GetSubcommand {
     Table {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
+
+        /// Zero or more filters
+        #[arg(value_name = "FILTERS", action = ArgAction::Set)]
+        filters: Vec<String>,
 
         /// Output format: text, JSON, TSV
         #[arg(long, default_value="", action = ArgAction::Set)]
@@ -562,14 +614,18 @@ pub fn print_tsv(rows: Vec<Vec<String>>) -> Result<()> {
 pub async fn print_table(
     _cli: &Cli,
     table_name: &str,
+    filters: &Vec<String>,
     format: &str,
     limit: &usize,
     offset: &usize,
 ) -> Result<()> {
     tracing::debug!("print_table {table_name}");
     let rltbl = Relatable::default().await?;
-    let select = rltbl.from(table_name).limit(limit).offset(offset);
-
+    let select = rltbl
+        .from(table_name)
+        .filters(filters)?
+        .limit(limit)
+        .offset(offset);
     match format.to_lowercase().as_str() {
         "json" => {
             let json = json!(rltbl.fetch(&select).await?);
@@ -682,10 +738,11 @@ async fn main() -> Result<()> {
         Command::Get { subcommand } => match subcommand {
             GetSubcommand::Table {
                 table,
+                filters,
                 format,
                 limit,
                 offset,
-            } => print_table(&cli, table, format, limit, offset).await,
+            } => print_table(&cli, table, filters, format, limit, offset).await,
             GetSubcommand::Rows {
                 table,
                 limit,

@@ -10,6 +10,7 @@ clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 clap-verbosity-flag = { version = "3.0.2", features = ["tracing"] }
 indexmap = { version = "2.7.0", features = ["serde"] }
 rand = "0.8.5"
+regex = "1.11.1"
 rusqlite = { version = "0.32.1", features = ["bundled", "serde_json"], optional = true }
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = { version = "1.0.133", features = ["preserve_order"] }
