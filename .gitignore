@@ -37,3 +37,11 @@ Cargo.lock
 
 # Added by cargo
 /target
+
+# Ignore generated Javascript
+/src/resources/main.js
+/src/resources/main.css
+
+# Ignore JavaScript stuff
+/rltbl-frontend/build/
+/rltbl-frontend/node_modules/

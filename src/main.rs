@@ -15,7 +15,7 @@ use axum::{
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use indexmap::IndexMap;
-use minijinja::Environment;
+use minijinja::{context, Environment};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom as _;
 use rand::Rng as _;
@@ -835,9 +835,21 @@ async fn get_root() -> impl IntoResponse {
     Redirect::permanent("/table/table")
 }
 
+async fn main_js() -> impl IntoResponse {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, "text/javascript".parse().unwrap());
+    (headers, include_str!("resources/main.js"))
+}
+
+async fn main_css() -> impl IntoResponse {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, "text/css".parse().unwrap());
+    (headers, include_str!("resources/main.css"))
+}
+
 fn render_html(rltbl: &Relatable, result: &ResultSet) -> Result<String> {
     let tmpl = rltbl.minijinja.get_template("table.html")?;
-    tmpl.render(json!(result)).map_err(|e| e.into())
+    tmpl.render(context! {rltbl=>result}).map_err(|e| e.into())
 }
 
 fn render_response(rltbl: &Relatable, result: &ResultSet) -> Response<Body> {
@@ -886,6 +898,8 @@ async fn get_table(
 pub fn build_app(shared_state: Arc<Relatable>) -> Router {
     Router::new()
         .route("/", get(get_root))
+        .route("/static/main.js", get(main_js))
+        .route("/static/main.css", get(main_css))
         .route("/table/*path", get(get_table))
         .with_state(shared_state)
 }

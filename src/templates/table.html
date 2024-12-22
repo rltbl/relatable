@@ -1,14 +1,23 @@
+{% set select = rltbl.select %}
+{% set range = rltbl.range %}
+{% set table = rltbl.table %}
+{% set columns = rltbl.columns %}
+{% set rows = rltbl.rows %}
+
 <html>
 
 <head>
   <title>{{table.name}}</title>
+  <link href="/static/main.css" rel="stylesheet">
 </head>
 
 <body>
   <h1>{{table.name}}</h1>
 
-  <p>Rows {{ range.start }}-{{ range.end }} of {{ range.total }}</p>
-  <table>
+  <div id="portal" style="width: 100%; min-width: 400px; left: auto; right: auto"></div>
+
+  <p class="range">Rows {{ range.start }}-{{ range.end }} of {{ range.total }}</p>
+  <table class="table">
     <thead>
       <tr>
         {% for column in columns %}
@@ -26,6 +35,12 @@
       {% endfor %}
     </tbody>
   </table>
+
+  {# <pre>{{ debug() }}</pre> #}
+  <script>
+    window.rltbl = {{rltbl | tojson}};
+  </script>
+  <script defer="defer" src="/static/main.js"></script>
 </body>
 
 </html>
