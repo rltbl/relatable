@@ -15,6 +15,7 @@ use axum::{
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use indexmap::IndexMap;
+use minijinja::Environment;
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom as _;
 use rand::Rng as _;
@@ -80,11 +81,14 @@ pub enum DbConnection {
 #[derive(Debug)]
 pub struct Relatable {
     pub connection: DbConnection,
+    pub minijinja: Environment<'static>,
     pub default_limit: usize,
+    pub max_limit: usize,
 }
 
 impl Relatable {
     pub async fn default() -> Result<Self> {
+        // Set up database connection.
         let path = ".relatable/relatable.db";
         // let url = format!("sqlite://{path}");
         // sqlx::any::install_default_drivers();
@@ -92,9 +96,16 @@ impl Relatable {
         #[cfg(feature = "rusqlite")]
         let connection = DbConnection::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
 
+        // Set up template environment.
+        let mut env = Environment::new();
+        let table_html = include_str!("templates/table.html");
+        env.add_template("table.html", table_html)?;
+
         Ok(Self {
             connection,
+            minijinja: env,
             default_limit: 100,
+            max_limit: 1000,
         })
     }
 
@@ -493,19 +504,20 @@ impl TryFrom<&String> for Format {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Select {
-    table_name: String,
-    limit: usize,
-    offset: usize,
-    filters: Vec<Filter>,
+    pub table_name: String,
+    pub limit: usize,
+    pub offset: usize,
+    pub filters: Vec<Filter>,
 }
 
 impl Select {
-    pub fn from_path_and_query(path: &str, query_params: &QueryParams) -> Self {
+    pub fn from_path_and_query(rltbl: &Relatable, path: &str, query_params: &QueryParams) -> Self {
         let table_name = path.split(".").next().unwrap_or_default().to_string();
         let limit: usize = query_params
             .get("limit")
             .and_then(|x| x.parse::<usize>().ok())
-            .unwrap_or_default();
+            .unwrap_or(rltbl.default_limit)
+            .min(rltbl.max_limit);
         let offset: usize = query_params
             .get("offset")
             .and_then(|x| x.parse::<usize>().ok())
@@ -820,7 +832,22 @@ fn get_500(error: &anyhow::Error) -> Response<Body> {
 
 async fn get_root() -> impl IntoResponse {
     tracing::info!("request root");
-    Redirect::permanent("table")
+    Redirect::permanent("/table/table")
+}
+
+fn render_html(rltbl: &Relatable, result: &ResultSet) -> Result<String> {
+    let tmpl = rltbl.minijinja.get_template("table.html")?;
+    tmpl.render(json!(result)).map_err(|e| e.into())
+}
+
+fn render_response(rltbl: &Relatable, result: &ResultSet) -> Response<Body> {
+    match render_html(rltbl, result) {
+        Ok(html) => Html(html).into_response(),
+        Err(error) => {
+            tracing::error!("{error:?}");
+            return get_500(&error);
+        }
+    }
 }
 
 async fn respond(rltbl: &Relatable, select: &Select, format: &Format) -> Response<Body> {
@@ -831,9 +858,7 @@ async fn respond(rltbl: &Relatable, select: &Select, format: &Format) -> Respons
 
     // format!("get_table:\nPath: {path}, {table_name}, {extension:?}, {format}\nQuery Parameters: {query_params:?}\nResult Set: {pretty}")
     let response = match format {
-        Format::Html | Format::Default => {
-            Html(format!("<h1>{}</h1><pre>{result}</pre>", result.table.name)).into_response()
-        }
+        Format::Html | Format::Default => render_response(&rltbl, &result),
         Format::PrettyJson => {
             let mut headers = HeaderMap::new();
             headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
@@ -854,7 +879,7 @@ async fn get_table(
         Ok(format) => format,
         Err(error) => return get_404(&error),
     };
-    let select = Select::from_path_and_query(&path, &query_params);
+    let select = Select::from_path_and_query(&rltbl, &path, &query_params);
     respond(&rltbl, &select, &format).await
 }
 

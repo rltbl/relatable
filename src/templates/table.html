@@ -1,0 +1,31 @@
+<html>
+
+<head>
+  <title>{{table.name}}</title>
+</head>
+
+<body>
+  <h1>{{table.name}}</h1>
+
+  <p>Rows {{ range.start }}-{{ range.end }} of {{ range.total }}</p>
+  <table>
+    <thead>
+      <tr>
+        {% for column in columns %}
+        <th>{{ column.name }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        {% for column, cell in row.cells|items %}
+        <td>{{ cell.text }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+
+</html>
