@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.94"
 async-std = { version = "1.13.0", features = ["attributes"] }
+axum = "0.7.9"
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 clap-verbosity-flag = { version = "3.0.2", features = ["tracing"] }
 indexmap = { version = "2.7.0", features = ["serde"] }
@@ -17,6 +18,7 @@ serde_json = { version = "1.0.133", features = ["preserve_order"] }
 sqlx = { version = "0.8", features = ["runtime-async-std", "sqlite"], optional = true }
 sqlx-core = { version = "0.8.2", optional = true }
 tabwriter = "1.4.0"
+tokio = { version = "1.42.0", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 

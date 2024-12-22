@@ -2,6 +2,8 @@ use std::fmt::Display;
 use std::{io::Write, path::Path};
 
 use anyhow::Result;
+use async_std::sync::{Arc, Mutex};
+use axum::{response::IntoResponse, routing::get, Router};
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use indexmap::IndexMap;
@@ -13,6 +15,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
 use tabwriter::TabWriter;
+use tokio::net::TcpListener;
 
 #[cfg(feature = "rusqlite")]
 use rusqlite;
@@ -60,7 +63,7 @@ pub enum DbConnection {
     Sqlx(sqlx::AnyPool),
 
     #[cfg(feature = "rusqlite")]
-    Rusqlite(rusqlite::Connection),
+    Rusqlite(Mutex<rusqlite::Connection>),
 }
 
 pub struct Relatable {
@@ -75,7 +78,7 @@ impl Relatable {
         // sqlx::any::install_default_drivers();
         // let connection = DbConnection::Sqlx(sqlx::AnyPool::connect(path).await?);
         #[cfg(feature = "rusqlite")]
-        let connection = DbConnection::Rusqlite(rusqlite::Connection::open(path)?);
+        let connection = DbConnection::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
 
         Ok(Self {
             connection,
@@ -402,6 +405,11 @@ pub async fn query(connection: &DbConnection, statement: &str) -> Result<Vec<Jso
             .map_err(|e| e.into()),
         #[cfg(feature = "rusqlite")]
         DbConnection::Rusqlite(conn) => {
+            // The rusqlite::Connection is not thread-safe
+            // so we wrap it with a Mutex
+            // that we have to lock() within this scope.
+            // It might be better to just re-connect?
+            let conn = conn.lock().await;
             let stmt = conn.prepare(statement)?;
             let column_names = stmt.column_names();
             let mut stmt = conn.prepare(statement)?;
@@ -529,6 +537,17 @@ pub enum Command {
     Get {
         #[command(subcommand)]
         subcommand: GetSubcommand,
+    },
+
+    /// Run a Relatable server
+    Serve {
+        /// Server host address
+        #[arg(long, default_value="0.0.0.0", action = ArgAction::Set)]
+        host: String,
+
+        /// Server port
+        #[arg(long, default_value="0", action = ArgAction::Set)]
+        port: u16,
     },
 
     /// Generate a demonstration database
@@ -721,6 +740,70 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
     Ok(())
 }
 
+async fn root() -> impl IntoResponse {
+    format!("Hello World!")
+}
+
+pub fn build_app(shared_state: Arc<Relatable>) -> Router {
+    Router::new().route("/", get(root)).with_state(shared_state)
+}
+
+#[tokio::main]
+pub async fn app(rltbl: Relatable, host: &str, port: &u16) -> Result<String> {
+    let shared_state = Arc::new(rltbl);
+
+    let app = build_app(shared_state);
+
+    // Create a `TcpListener` using tokio.
+    let addr = format!("{host}:{port}");
+    let listener = TcpListener::bind(&addr).await.unwrap();
+    println!(
+        "Running Relatable server at http://{}",
+        listener.local_addr()?
+    );
+    println!("Press Control-C to quit.");
+
+    // Run the server with graceful shutdown
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap();
+
+    Ok("Stopping Relatable server...".into())
+}
+
+pub async fn serve(_cli: &Cli, host: &str, port: &u16) -> Result<()> {
+    tracing::debug!("serve({host}, {port})");
+    let rltbl = Relatable::default().await?;
+    app(rltbl, host, port)?;
+    Ok(())
+}
+
+// From https://github.com/tokio-rs/axum/blob/main/examples/graceful-shutdown/src/main.rs
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+}
+
 #[async_std::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -752,6 +835,7 @@ async fn main() -> Result<()> {
                 print_value(&cli, table, *row, column).await
             }
         },
+        Command::Serve { host, port } => serve(&cli, host, port).await,
         Command::Demo { force } => build_demo(&cli, force).await,
     }
 }
