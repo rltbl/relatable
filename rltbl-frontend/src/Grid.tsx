@@ -13,10 +13,22 @@ import chunk from "lodash/chunk.js";
 import "@glideapps/glide-data-grid/dist/index.css";
 import { useLayer } from "react-laag";
 
+// Reltable types.
+type Cell = {
+  value: any,
+  text: string,
+}
+type Row = {
+  id: number,
+  order: number,
+  cells: Cell[],
+};
+
 type RowCallback<T> = (range: Item) => Promise<readonly T[]>;
 type RowToCell<T> = (row: T, col: number) => GridCell;
 type RowEditedCallback<T> = (cell: Item, newVal: EditableGridCell, rowData: T) => T | undefined;
 function useAsyncData<TRowType>(
+  dataRef: React.MutableRefObject<TRowType[]>,
   pageSize: number,
   maxConcurrency: number,
   getRowData: RowCallback<TRowType>,
@@ -26,7 +38,6 @@ function useAsyncData<TRowType>(
 ): Pick<DataEditorProps, "getCellContent" | "onVisibleRegionChanged" | "onCellEdited" | "getCellsForSelection"> {
   pageSize = Math.max(pageSize, 1);
   const loadingRef = React.useRef(CompactSelection.empty());
-  const dataRef = React.useRef<TRowType[]>([]);
 
   const [visiblePages, setVisiblePages] = React.useState<Rectangle>({ x: 0, y: 0, width: 0, height: 0 });
   const visiblePagesRef = React.useRef(visiblePages);
@@ -51,7 +62,7 @@ function useAsyncData<TRowType>(
         allowOverlay: false,
       };
     },
-    [toCell]
+    [dataRef, toCell]
   );
 
   const loadPage = React.useCallback(
@@ -74,7 +85,7 @@ function useAsyncData<TRowType>(
       }
       gridRef.current?.updateCells(damageList);
     },
-    [getRowData, gridRef, pageSize]
+    [dataRef, getRowData, gridRef, pageSize]
   );
 
   const getCellsForSelection = React.useCallback(
@@ -127,7 +138,7 @@ function useAsyncData<TRowType>(
         dataRef.current[row] = result;
       }
     },
-    [onEdited]
+    [dataRef, onEdited]
   );
 
   return {
@@ -139,7 +150,7 @@ function useAsyncData<TRowType>(
 }
 
 
-export default function Grid(grid_args: {table: string, columns: any, rows: number}) {
+export default function Grid(grid_args: { table: string, columns: any, rows: number }) {
   const table = grid_args.table;
   const columns = grid_args.columns;
   const rows = grid_args.rows;
@@ -147,7 +158,8 @@ export default function Grid(grid_args: {table: string, columns: any, rows: numb
   // console.log("TABLE", table);
   // console.log("COLUMNS", columns);
 
-  const dataRef = React.useRef<DataEditorRef | null>(null);
+  const gridRef = React.useRef<DataEditorRef | null>(null);
+  const dataRef = React.useRef<Row[]>([]);
 
   const getRowData = React.useCallback(async (r: Item) => {
     // await new Promise(res => setTimeout(res, 300));
@@ -176,20 +188,12 @@ export default function Grid(grid_args: {table: string, columns: any, rows: numb
     return columns;
   }, [columns])
 
-  type Cell = {
-    value: any,
-    text: string,
-  }
-  type Row = {
-    id: number,
-    order: number,
-    cells: Cell[],
-  };
-
   const async_args = useAsyncData<Row>(
+    dataRef,
     50,
     5,
     getRowData,
+    // toCell
     React.useCallback(
       (rowData, col) => ({
         kind: GridCellKind.Text,
@@ -208,16 +212,22 @@ export default function Grid(grid_args: {table: string, columns: any, rows: numb
       rowData.cells[columns[col].id].text = newVal.data;
       return rowData;
     }, [columns]),
-    dataRef
+    gridRef
   );
 
   const onCellsEdited = React.useCallback((newValues: readonly { location: Item; value: EditableGridCell }[]) => {
     console.log("EDITED CELLS", newValues);
   }, []);
 
-  const onRowMoved = React.useCallback((startIndex: number, endIndex: number) => {
-    console.log("ROW MOVED", startIndex, endIndex);
-  }, []);
+  const onRowMoved = React.useCallback((from: number, to: number) => {
+    console.log("ROW MOVED", from, to);
+    // From https://github.com/glideapps/glide-data-grid/blob/main/packages/core/src/docs/examples/reorder-rows.stories.tsx
+    // WARN: Might not be a good idea for large tables.
+    const d = [...dataRef.current];
+    const removed = d.splice(from, 1);
+    d.splice(to, 0, ...removed);
+    dataRef.current = d;
+  }, [dataRef]);
 
   // const onCellClicked = React.useCallback((cell: Item, event: CellClickedEventArgs) => {
   //     if (!dataRef.current) { return; }
@@ -250,7 +260,7 @@ export default function Grid(grid_args: {table: string, columns: any, rows: numb
     if (!cellData) { return; }
     console.log("onCellContextMenu", cellData, event);
     event.preventDefault();
-  }, [dataRef]);
+  }, [columns, dataRef]);
 
   const { renderLayer, layerProps } = useLayer({
     isOpen: showMenu !== undefined,
@@ -272,35 +282,35 @@ export default function Grid(grid_args: {table: string, columns: any, rows: numb
     possiblePlacements: ["bottom-start", "bottom-end"],
   });
 
-  const drawCell: DrawCellCallback = React.useCallback((args, draw) => {
-    draw(); // draw up front to draw over the cell
+  // const drawCell: DrawCellCallback = React.useCallback((args, draw) => {
+  //   draw(); // draw up front to draw over the cell
 
-    if (!dataRef.current) { return; }
-    const { ctx, rect, col, row } = args;
+  //   if (!dataRef.current) { return; }
+  //   const { ctx, rect, col, row } = args;
 
-    const rowData = dataRef.current[row];
-    if (!rowData) { return; }
-    const cellData = rowData.cells[columns[col].id];
-    if (!cellData) { return; }
-    if (cellData.message_level !== "error") { return; }
+  //   const rowData = dataRef.current[row];
+  //   if (!rowData) { return; }
+  //   const cellData = rowData.cells[columns[col].id];
+  //   if (!cellData) { return; }
+  //   // if (cellData.message_level !== "error") { return; }
 
-    const size = 7;
+  //   const size = 7;
 
-    ctx.beginPath();
-    ctx.moveTo(rect.x + rect.width - size, rect.y + 1);
-    ctx.lineTo(rect.x + rect.width, rect.y + size + 1);
-    ctx.lineTo(rect.x + rect.width, rect.y + 1);
-    ctx.closePath();
+  //   ctx.beginPath();
+  //   ctx.moveTo(rect.x + rect.width - size, rect.y + 1);
+  //   ctx.lineTo(rect.x + rect.width, rect.y + size + 1);
+  //   ctx.lineTo(rect.x + rect.width, rect.y + 1);
+  //   ctx.closePath();
 
-    ctx.save();
-    ctx.fillStyle = "#ff0000";
-    ctx.fill();
-    ctx.restore();
-  }, [dataRef]);
+  //   ctx.save();
+  //   ctx.fillStyle = "#ff0000";
+  //   ctx.fill();
+  //   ctx.restore();
+  // }, [columns, dataRef]);
 
   return <>
     <DataEditor
-      ref={dataRef}
+      ref={gridRef}
       {...async_args}
       rowMarkers={"both"}
       onCellsEdited={onCellsEdited}
@@ -309,7 +319,7 @@ export default function Grid(grid_args: {table: string, columns: any, rows: numb
       onCellContextMenu={onCellContextMenu}
       onPaste={true}
       fillHandle={true}
-      drawCell={drawCell}
+      // drawCell={drawCell}
       width="100%"
       height={window.innerHeight - 300}
       columns={cols}
