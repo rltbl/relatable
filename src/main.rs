@@ -109,6 +109,20 @@ impl Relatable {
         })
     }
 
+    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
+        let statement =
+            format!(r#"SELECT max(change_id) FROM history WHERE "table" = '{table_name}'"#);
+        let change_id = match query_value(&self.connection, &statement).await? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(Table {
+            name: table_name.to_string(),
+            change_id,
+            ..Default::default()
+        })
+    }
+
     pub fn from(&self, table_name: &str) -> Select {
         Select {
             table_name: table_name.to_string(),
@@ -131,6 +145,7 @@ impl Relatable {
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
+        let table = self.get_table(&select.table_name).await?;
         let columns = self.fetch_columns(&select.table_name).await?;
         let statement = select.to_sql()?;
         tracing::debug!("SQL {statement}");
@@ -155,10 +170,7 @@ impl Relatable {
                 end: select.offset + count,
             },
             select: select.clone(),
-            table: Table {
-                name: select.table_name.clone(),
-                editable: false,
-            },
+            table,
             columns,
             rows,
         })
@@ -192,6 +204,7 @@ impl From<&JsonValue> for Cell {
 pub struct Row {
     id: usize,
     order: usize,
+    change_id: usize,
     cells: IndexMap<String, Cell>,
 }
 
@@ -207,6 +220,11 @@ impl From<JsonRow> for Row {
             order: row
                 .content
                 .get("_order")
+                .and_then(|i| i.as_u64())
+                .unwrap_or_default() as usize,
+            change_id: row
+                .content
+                .get("_change_id")
                 .and_then(|i| i.as_u64())
                 .unwrap_or_default() as usize,
             cells: row
@@ -240,6 +258,8 @@ pub struct Column {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Table {
     name: String,
+    // The history_id of the most recent update to this table.
+    change_id: usize,
     editable: bool,
 }
 
@@ -446,25 +466,44 @@ pub async fn query(connection: &DbConnection, statement: &str) -> Result<Vec<Jso
     }
 }
 
+pub async fn query_value(connection: &DbConnection, statement: &str) -> Result<Option<JsonValue>> {
+    let rows = query(&connection, &statement).await?;
+    match rows.iter().next() {
+        Some(row) => match row.content.values().next() {
+            Some(value) => Ok(Some(value.clone())),
+            None => Ok(None),
+        },
+        None => Ok(None),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Filter {
     Equals { column: String, value: JsonValue },
+    GreaterThan { column: String, value: JsonValue },
 }
 
 impl Display for Filter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // TODO: This should be factored out.
+        fn json_to_string(value: &JsonValue) -> String {
+            match value {
+                JsonValue::Null => "NULL".to_string(),
+                JsonValue::Bool(value) => value.to_string(),
+                JsonValue::Number(value) => value.to_string(),
+                JsonValue::String(value) => format!("'{value}'"),
+                JsonValue::Array(value) => format!("'{value:?}'"),
+                JsonValue::Object(value) => format!("'{value:?}'"),
+            }
+        }
         let result = match self {
             Filter::Equals { column, value } => {
-                // TODO: This should be factored out.
-                let value = match &value {
-                    JsonValue::Null => "NULL".to_string(),
-                    JsonValue::Bool(value) => value.to_string(),
-                    JsonValue::Number(value) => value.to_string(),
-                    JsonValue::String(value) => format!("'{value}'"),
-                    JsonValue::Array(value) => format!("'{value:?}'"),
-                    JsonValue::Object(value) => format!("'{value:?}'"),
-                };
+                let value = json_to_string(&value);
                 format!(r#""{column}" = {value}"#)
+            }
+            Filter::GreaterThan { column, value } => {
+                let value = json_to_string(&value);
+                format!(r#""{column}" > {value}"#)
             }
         };
         write!(f, "{result}")
@@ -513,6 +552,24 @@ pub struct Select {
 impl Select {
     pub fn from_path_and_query(rltbl: &Relatable, path: &str, query_params: &QueryParams) -> Self {
         let table_name = path.split(".").next().unwrap_or_default().to_string();
+        let mut filters = Vec::new();
+        for (column, pattern) in query_params {
+            if pattern.starts_with("eq.") {
+                let column = column.to_string();
+                let value = serde_json::from_str(&pattern.replace("eq.", ""));
+                match value {
+                    Ok(value) => filters.push(Filter::Equals { column, value }),
+                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                }
+            } else if pattern.starts_with("gt.") {
+                let column = column.to_string();
+                let value = serde_json::from_str(&pattern.replace("gt.", ""));
+                match value {
+                    Ok(value) => filters.push(Filter::GreaterThan { column, value }),
+                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                }
+            }
+        }
         let limit: usize = query_params
             .get("limit")
             .and_then(|x| x.parse::<usize>().ok())
@@ -526,6 +583,7 @@ impl Select {
             table_name,
             limit,
             offset,
+            filters,
             ..Default::default()
         }
     }
@@ -539,13 +597,20 @@ impl Select {
     }
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
         let eq = Regex::new(r"^(\w+)=(\w+)$").unwrap();
+        let gt = Regex::new(r"^(\w+)>(\w+)$").unwrap();
         for filter in filters {
             if eq.is_match(&filter) {
                 let captures = eq.captures(&filter).unwrap();
-                self = self.eq(
-                    &captures.get(1).unwrap().as_str(),
-                    &captures.get(2).unwrap().as_str(),
-                )?;
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = serde_json::from_str(&value)?;
+                self.filters.push(Filter::Equals { column, value });
+            } else if gt.is_match(&filter) {
+                let captures = gt.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = serde_json::from_str(&value)?;
+                self.filters.push(Filter::GreaterThan { column, value });
             } else {
                 return Err(RelatableError::ConfigError(format!("invalid filter {filter}")).into());
             }
@@ -562,11 +627,24 @@ impl Select {
         });
         Ok(self)
     }
+    pub fn gt<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::GreaterThan {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
     pub fn to_sql(&self) -> Result<String> {
+        tracing::debug!("to_sql: {self:?}");
+        let table = self.table_name.clone();
         let mut lines = Vec::new();
         lines.push("SELECT *,".to_string());
         // WARN: The _total count should probably be optional.
-        lines.push("  COUNT(1) OVER() AS _total".to_string());
+        lines.push("  COUNT(1) OVER() AS _total,".to_string());
+        lines.push(format!(r#"  (SELECT MAX(change_id) FROM history WHERE "table" = '{table}' AND "row" = _id) AS _change_id"#));
         lines.push(format!(r#"FROM "{}""#, self.table_name));
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
@@ -587,6 +665,7 @@ impl Select {
 static COLUMN_HELP: &str = "A column name or label";
 static ROW_HELP: &str = "A row number";
 static TABLE_HELP: &str = "A table name";
+static VALUE_HELP: &str = "A value for a cell";
 
 #[derive(Parser, Debug)]
 #[command(version,
@@ -609,6 +688,12 @@ pub enum Command {
     Get {
         #[command(subcommand)]
         subcommand: GetSubcommand,
+    },
+
+    /// Set data in the database
+    Set {
+        #[command(subcommand)]
+        subcommand: SetSubcommand,
     },
 
     /// Run a Relatable server
@@ -681,6 +766,24 @@ pub enum GetSubcommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum SetSubcommand {
+    /// Set the value of a given column of a given row from a given table.
+    Value {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: usize,
+
+        #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
+        column: String,
+
+        #[arg(value_name = "VALUE", action = ArgAction::Set, help = VALUE_HELP)]
+        value: String,
+    },
+}
+
 /// Given a vector of vectors of strings,
 /// print text with "elastic tabstops".
 pub fn print_text(rows: &Vec<Vec<String>>) -> Result<()> {
@@ -743,7 +846,49 @@ pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &us
 
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) -> Result<()> {
     tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
-    unimplemented!("print_value");
+    let rltbl = Relatable::default().await?;
+    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = {row}"#);
+    if let Some(value) = query_value(&rltbl.connection, &statement).await? {
+        let text = match value {
+            JsonValue::String(value) => value.to_string(),
+            value => format!("{value}"),
+        };
+        println!("{text}");
+    }
+    Ok(())
+}
+
+pub async fn set_value(
+    cli: &Cli,
+    table: &str,
+    row: usize,
+    column: &str,
+    value: &str,
+) -> Result<()> {
+    tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
+    let rltbl = Relatable::default().await?;
+    // WARN! This should all take place inside a transaction.
+    let statement = format!(
+        r#"INSERT INTO change('user', 'type', 'table', 'description', 'content')
+        VALUES ('anonymous', 'do', '{table}', 'Set one value', 'TODO')
+        RETURNING change_id"#
+    );
+    let change_id = query_value(&rltbl.connection, &statement).await?;
+    let change_id = change_id
+        .expect("a change_id")
+        .as_u64()
+        .expect("an integer");
+    let statement = format!(
+        r#"INSERT INTO history('change_id', 'table', 'row', 'before', 'after')
+        VALUES ('{change_id}', '{table}', {row}, 'TODO', 'TODO')
+        RETURNING history_id"#
+    );
+    query_value(&rltbl.connection, &statement).await?;
+
+    // WARN: This just sets text!
+    let statement = format!(r#"UPDATE "{table}" SET "{column}" = '{value}' WHERE _id = {row}"#);
+    query(&rltbl.connection, &statement).await?;
+    Ok(())
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
@@ -768,6 +913,8 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
             );
         }
     }
+
+    // Create and populate the table table
     let rltbl = Relatable::default().await?;
     let sql = "CREATE TABLE 'table' (
     _id INTEGER UNIQUE,
@@ -777,6 +924,32 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
     query(&rltbl.connection, sql).await?;
     let sql = "INSERT INTO 'table' VALUES (1, 1000, 'table'), (2, 2000, 'penguin')";
     query(&rltbl.connection, sql).await?;
+
+    // Create the change and history tables
+    let rltbl = Relatable::default().await?;
+    let sql = "CREATE TABLE 'change' (
+    change_id INTEGER PRIMARY KEY,
+    'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    'user' TEXT NOT NULL,
+    'type' TEXT NOT NULL,
+    'table' TEXT NOT NULL,
+    'description' TEXT,
+    'content' TEXT
+)";
+    query(&rltbl.connection, sql).await?;
+    let sql = r#"CREATE TABLE 'history' (
+    history_id INTEGER PRIMARY KEY,
+    change_id INTEGER NOT NULL,
+    'table' TEXT NOT NULL,
+    'row' INTEGER NOT NULL,
+    'before' TEXT,
+    'after' TEXT,
+    FOREIGN KEY (change_id) REFERENCES change(change_id),
+    FOREIGN KEY ("table") REFERENCES "table"("table")
+)"#;
+    query(&rltbl.connection, sql).await?;
+
+    // Create the penguin table.
     let sql = "CREATE TABLE penguin (
     _id INTEGER UNIQUE,
     _order INTEGER UNIQUE,
@@ -790,9 +963,9 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
 )";
     query(&rltbl.connection, sql).await?;
 
+    // Populate the penguin table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
     let mut rng = StdRng::seed_from_u64(0);
-
     let count = 1000;
     for i in 1..=count {
         let id = i;
@@ -990,6 +1163,14 @@ async fn main() -> Result<()> {
             GetSubcommand::Value { table, row, column } => {
                 print_value(&cli, table, *row, column).await
             }
+        },
+        Command::Set { subcommand } => match subcommand {
+            SetSubcommand::Value {
+                table,
+                row,
+                column,
+                value,
+            } => set_value(&cli, table, *row, column, value).await,
         },
         Command::Serve { host, port } => serve(&cli, host, port).await,
         Command::Demo { force } => build_demo(&cli, force).await,

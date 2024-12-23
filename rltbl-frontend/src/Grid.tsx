@@ -2,7 +2,7 @@ import React from "react";
 import {
   CellArray,
   CellClickedEventArgs,
-  CompactSelection, DataEditor, DataEditorProps, DataEditorRef, DrawCellCallback, EditableGridCell, GridCell, GridCellKind,
+  CompactSelection, DataEditor, DataEditorProps, DataEditorRef, EditableGridCell, GridCell, GridCellKind,
   GridColumn,
   Rectangle,
   type Item
@@ -12,6 +12,7 @@ import range from "lodash/range.js";
 import chunk from "lodash/chunk.js";
 import "@glideapps/glide-data-grid/dist/index.css";
 import { useLayer } from "react-laag";
+import { rectBottomRight } from "@glideapps/glide-data-grid/dist/dts/internal/data-grid/render/data-grid-lib";
 
 // Reltable types.
 type Cell = {
@@ -160,13 +161,9 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
 
   const gridRef = React.useRef<DataEditorRef | null>(null);
   const dataRef = React.useRef<Row[]>([]);
+  const change_id = React.useRef<number>(0);
 
   const getRowData = React.useCallback(async (r: Item) => {
-    // await new Promise(res => setTimeout(res, 300));
-    // return range(r[0], r[1]).map(rowIndex => [`1, ${rowIndex}`, `2, ${rowIndex}`]);
-    // var data = [{"table":"table","path":"src/schema/table.tsv","type":"table","description":"the tables in this project"},{"table":"column","path":"src/schema/column.tsv","type":"column","description":"the columns for all of the tables"},{"table":"datatype","path":"src/schema/datatype.tsv","type":"datatype","description":"the datatypes for all of the columns"},{"table":"penguin","path":"src/data/penguin.tsv","type":"","description":"penguin measurement data"},{"table":"species","path":"src/schema/species.tsv","type":"","description":"the species in the study"},{"table":"region","path":"src/schema/region.tsv","type":"","description":"the geographical regions in the study"},{"table":"island","path":"src/schema/island.tsv","type":"","description":"the islands in the study"},{"table":"stage","path":"src/schema/stage.tsv","type":"","description":"the developmental stages in the study"},{"table":"sex","path":"src/schema/sex.tsv","type":"","description":"the biological sexes in the study"}];
-    // const url = "https://example.org/products.json";
-    // console.log("range", r, r[0], r[1]);
     const first = r[0];
     const last = r[1];
     const limit = last - first;
@@ -178,11 +175,55 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
         throw new Error(`Response status: ${response.status}`);
       }
       const data = await response.json();
+      change_id.current = data["table"]["change_id"];
       return data["rows"];
     } catch (error) {
       console.error(error.message);
     }
-  }, [table]);
+  }, [change_id, table]);
+
+  // Fetch data updated since we started.
+  const pollData = React.useCallback(async () => {
+    if (!dataRef.current) { return; }
+    const url = `/table/${table}.json?_change_id=gt.${change_id.current}`;
+    console.log("Fetch: " + url);
+    var rows: Row[] = [];
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Response status: ${response.status}`);
+      }
+      const data = await response.json();
+      change_id.current = data["table"]["change_id"];
+      rows = data["rows"] as Row[];
+    } catch (error) {
+      console.error(error.message);
+    }
+
+    // Match rows to the grid by _id and re-render them.
+    // TODO: Why do I need to updateCells? It should be automatic.
+    const damageList: { cell: [number, number] }[] = [];
+    for (const row of rows) {
+      var r = 0;
+      for (r = 0; r < grid_args.rows; r++) {
+        const data = dataRef.current[r];
+        if (!data) { continue; }
+        if (data.id == row.id) { break; }
+      }
+      dataRef.current[r] = row;
+      for (var c = 0; c < columns.length; c++) {
+        damageList.push({
+          cell: [c, r],
+        });
+      }
+    }
+    gridRef.current?.updateCells(damageList);
+  }, [columns, dataRef, gridRef]);
+
+  // Poll for new data.
+  React.useEffect(() => {
+    window.setInterval(pollData, 5000);
+  }, [dataRef]);
 
   const cols = React.useMemo<readonly GridColumn[]>(() => {
     return columns;
@@ -190,7 +231,7 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
 
   const async_args = useAsyncData<Row>(
     dataRef,
-    50,
+    100,
     5,
     getRowData,
     // toCell
@@ -205,7 +246,7 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
     ),
     // onCellEdited
     React.useCallback((cell, newVal, rowData) => {
-      console.log("EDITED CELL", cell, newVal, rowData);
+      // console.log("EDITED CELL", cell, newVal, rowData);
       const [col] = cell;
       if (newVal.kind !== GridCellKind.Text) return undefined;
       rowData.cells[columns[col].id].value = newVal.data;
