@@ -1,3 +1,10 @@
+MAKEFLAGS += --warn-undefined-variables
+SHELL := bash
+.SHELLFLAGS := -eu -o pipefail -c
+.DEFAULT_GOAL := debug
+.DELETE_ON_ERROR:
+.SUFFIXES:
+
 .PHONY: usage
 usage:
 	@echo "make [TASK]"
