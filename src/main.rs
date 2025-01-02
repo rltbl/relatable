@@ -110,7 +110,7 @@ impl Relatable {
     }
 
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
-        let statement = format!(r#"SELECT max(change_id) FROM history WHERE "table" = ?1"#);
+        let statement = format!(r#"SELECT max(change_id) FROM history WHERE "table" = ?"#);
         let change_id =
             match query_value(&self.connection, &statement, &vec![json!(table_name)]).await? {
                 Some(value) => value.as_u64().unwrap_or_default() as usize,
@@ -687,7 +687,7 @@ impl Select {
         lines.push("  COUNT(1) OVER() AS _total,".to_string());
         lines.push(format!(
             r#"  (SELECT MAX(change_id) FROM history
-                   WHERE "table" = ?1
+                   WHERE "table" = ?
                      AND "row" = _id
                  ) AS _change_id"#
         ));
@@ -894,7 +894,7 @@ pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &us
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) -> Result<()> {
     tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::default().await?;
-    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?1"#);
+    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
     if let Some(value) = query_value(&rltbl.connection, &statement, &vec![json!(row)]).await? {
         let text = match value {
             JsonValue::String(value) => value.to_string(),
@@ -917,7 +917,7 @@ pub async fn set_value(
     // WARN! This should all take place inside a transaction.
     let statement = format!(
         r#"INSERT INTO change("user", "type", "table", "description", "content")
-        VALUES ('anonymous', 'do', ?1, 'Set one value', 'TODO')
+        VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
         RETURNING change_id"#
     );
     let change_id = query_value(&rltbl.connection, &statement, &vec![json!(table)]).await?;
@@ -927,14 +927,14 @@ pub async fn set_value(
         .expect("an integer");
     let statement = format!(
         r#"INSERT INTO history("change_id", "table", "row", "before", "after")
-        VALUES (?1, ?2, ?3, 'TODO', 'TODO')
+        VALUES (?, ?, ?, 'TODO', 'TODO')
         RETURNING history_id"#
     );
     let params = vec![json!(change_id), json!(table), json!(row)];
     query_value(&rltbl.connection, &statement, &params).await?;
 
     // WARN: This just sets text!
-    let statement = format!(r#"UPDATE "{table}" SET "{column}" = ?1 WHERE _id = ?2"#);
+    let statement = format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#);
     let params = vec![json!(value), json!(row)];
     query(&rltbl.connection, &statement, &params).await?;
     Ok(())
@@ -1024,7 +1024,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
         let body_mass = rng.gen_range(1000..5000);
         let sql = format!(
             "INSERT INTO 'penguin'
-             VALUES (?1, ?2, 'FAKE123', ?3, 'Pygoscelis adeliae', ?4, ?5, ?6, ?7)"
+             VALUES (?, ?, 'FAKE123', ?, 'Pygoscelis adeliae', ?, ?, ?, ?)"
         );
         let params = vec![
             json!(id),
