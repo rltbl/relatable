@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
 use tabwriter::TabWriter;
 use tokio::net::TcpListener;
+use tower_service::Service;
 
 #[cfg(feature = "rusqlite")]
 use rusqlite;
@@ -1068,7 +1069,7 @@ async fn get_table(
     respond(&rltbl, &select, &format).await
 }
 
-pub fn build_app(shared_state: Arc<Relatable>) -> Router {
+pub fn build_router(shared_state: Arc<Relatable>) -> Router {
     Router::new()
         .route("/", get(get_root))
         .route("/static/main.js", get(main_js))
@@ -1081,7 +1082,7 @@ pub fn build_app(shared_state: Arc<Relatable>) -> Router {
 pub async fn app(rltbl: Relatable, host: &str, port: &u16) -> Result<String> {
     let shared_state = Arc::new(rltbl);
 
-    let app = build_app(shared_state);
+    let app = build_router(shared_state);
 
     // Create a `TcpListener` using tokio.
     let addr = format!("{host}:{port}");
@@ -1133,8 +1134,97 @@ async fn shutdown_signal() {
     }
 }
 
+// Read CGI variables from the environment,
+// and read STDIN in the case of POST,
+// then handle the request,
+// and send the HTTP response to STDOUT.
+pub async fn serve_cgi() -> Result<()> {
+    let request_method = std::env::var("REQUEST_METHOD").unwrap_or("GET".to_string());
+    let path_info = std::env::var("PATH_INFO").unwrap_or("/".to_string());
+    let query_string = std::env::var("QUERY_STRING").unwrap_or_default();
+    let query_string = query_string.trim();
+    let uri = if query_string == "" {
+        path_info
+    } else {
+        format!("{path_info}?{query_string}")
+    };
+    let body = if request_method == "POST" {
+        std::io::stdin()
+            .lines()
+            .map(|l| l.unwrap())
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        String::new()
+    };
+
+    let request = axum::http::Request::builder()
+        .method(request_method.as_str())
+        .uri(uri)
+        .body(body)
+        .unwrap();
+    tracing::debug!("REQUEST {request:?}");
+
+    let rltbl = Relatable::default().await?;
+    let shared_state = Arc::new(rltbl);
+    let mut router = build_router(shared_state);
+    let response = router.call(request).await;
+    tracing::debug!("RESPONSE {response:?}");
+
+    let result = serialize_response(response.unwrap()).await;
+    std::io::stdout()
+        .write_all(&result)
+        .expect("Write to STDOUT");
+    Ok(())
+}
+
+// From https://github.com/amandasaurus/rust-cgi/blob/main/src/lib.rs
+// Turn a Response into an HTTP response as bytes.
+async fn serialize_response(response: Response<Body>) -> Vec<u8> {
+    let mut output = String::new();
+    output.push_str("Status: ");
+    output.push_str(response.status().as_str());
+    if let Some(reason) = response.status().canonical_reason() {
+        output.push_str(" ");
+        output.push_str(reason);
+    }
+    output.push_str("\n");
+
+    {
+        let headers = response.headers();
+        let mut keys: Vec<&http::header::HeaderName> = headers.keys().collect();
+        keys.sort_by_key(|h| h.as_str());
+        for key in keys {
+            output.push_str(key.as_str());
+            output.push_str(": ");
+            output.push_str(headers.get(key).unwrap().to_str().unwrap());
+            output.push_str("\n");
+        }
+    }
+
+    output.push_str("\n");
+
+    let mut output = output.into_bytes();
+
+    let (_, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .expect("Read from response body");
+    output.append(&mut bytes.to_vec());
+
+    output
+}
+
 #[async_std::main]
 async fn main() -> Result<()> {
+    // Handle a CGI request, instead of normal CLI input.
+    match std::env::var_os("GATEWAY_INTERFACE").and_then(|p| Some(p.into_string())) {
+        Some(Ok(s)) if s == "CGI/1.1" => {
+            return serve_cgi().await;
+        }
+        _ => (),
+    };
+
     let cli = Cli::parse();
 
     // Initialize tracing using --verbose flags
