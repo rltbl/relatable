@@ -4,10 +4,13 @@ usage:
 	@echo "  debug      build debug binary"
 
 .PHONY: debug
-debug: target/debug/nanobot
+debug: target/debug/rltbl
 
-target/debug/nanobot: Cargo.* src/** src/resources/main.js src/resources/main.css
+target/debug/rltbl: Cargo.* src/** src/resources/main.js src/resources/main.css
 	cargo build
+
+debug-serve: target/debug/rltbl
+	$< serve --port 3000
 
 src/resources/:
 	mkdir -p $@
