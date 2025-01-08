@@ -195,12 +195,12 @@ impl Relatable {
         let color = random_color::RandomColor::new().to_hex();
         let statement =
             format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES ('{user}', '{color}')"#);
-        query_value(&self.connection, &statement).await?;
+        query(&self.connection, &statement).await?;
 
         // Update the user's cursor position.
         let cursor = changeset.to_cursor()?;
         let statement = format!(
-            r#"UPDATE user SET "cursor" = '{cursor}' WHERE "name" = '{user}'"#,
+            r#"UPDATE user SET "cursor" = '{cursor}', "datetime" = CURRENT_TIMESTAMP WHERE "name" = '{user}'"#,
             cursor = to_value(cursor).unwrap_or_default()
         );
         query_value(&self.connection, &statement).await?;
@@ -242,9 +242,18 @@ impl Relatable {
     }
 
     pub async fn get_user(&self, username: &str) -> Account {
+        let statement = format!(r#"SELECT * FROM user WHERE name = '{username}' LIMIT 1"#);
+        let user = query_one(&self.connection, &statement).await;
+        if let Ok(user) = user {
+            if let Some(user) = user {
+                return Account {
+                    name: username.to_string(),
+                    color: user.get_string("color"),
+                };
+            }
+        }
         Account {
-            name: username.to_string(),
-            color: "COLOR".to_string(),
+            ..Default::default()
         }
     }
 
@@ -442,7 +451,7 @@ pub struct Site {
     tables: IndexMap<String, Table>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Account {
     name: String,
     color: String,
@@ -498,6 +507,7 @@ where
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct JsonRow {
     content: IndexMap<String, JsonValue>,
 }
@@ -645,9 +655,17 @@ pub async fn query(connection: &DbConnection, statement: &str) -> Result<Vec<Jso
     }
 }
 
-pub async fn query_value(connection: &DbConnection, statement: &str) -> Result<Option<JsonValue>> {
+pub async fn query_one(connection: &DbConnection, statement: &str) -> Result<Option<JsonRow>> {
     let rows = query(&connection, &statement).await?;
     match rows.iter().next() {
+        Some(row) => Ok(Some(row.clone())),
+        None => Ok(None),
+    }
+}
+
+pub async fn query_value(connection: &DbConnection, statement: &str) -> Result<Option<JsonValue>> {
+    let row = query_one(&connection, &statement).await?;
+    match row {
         Some(row) => match row.content.values().next() {
             Some(value) => Ok(Some(value.clone())),
             None => Ok(None),
@@ -1117,7 +1135,8 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
     let sql = "CREATE TABLE 'user' (
     'name' TEXT PRIMARY KEY,
     'color' TEXT,
-    'cursor' TEXT
+    'cursor' TEXT,
+    'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )";
     query(&rltbl.connection, sql).await?;
     // Create the change and history tables
@@ -1273,6 +1292,7 @@ async fn get_table(
     tracing::info!("SESSIONS {}", session.count().await);
 
     let username: String = session.get("username").unwrap_or_default();
+    tracing::info!("USERNAME {username}");
     let select = Select::from_path_and_query(&rltbl, &path, &query_params);
     let format = match Format::try_from(&path) {
         Ok(format) => format,
@@ -1290,6 +1310,7 @@ async fn get_login(session: Session<SessionNullPool>) -> Response<Body> {
 }
 
 async fn post_login(
+    State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
     Form(form): Form<IndexMap<String, String>>,
 ) -> Response<Body> {
@@ -1297,6 +1318,14 @@ async fn post_login(
     let username = String::new();
     let username = form.get("username").unwrap_or(&username);
     session.set("username", username);
+
+    let color = random_color::RandomColor::new().to_hex();
+    let statement =
+        format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES ('{username}', '{color}')"#);
+    query(&rltbl.connection, &statement)
+        .await
+        .expect("Update user");
+
     Html(format!(
         r#"<p>Logged in as {username}</p>
         <form method="post"><input name="username" value="{username}"/><input type="submit"/></form>"#
