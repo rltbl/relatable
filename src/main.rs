@@ -181,6 +181,87 @@ impl Relatable {
         let statement = select.to_sql()?;
         query(&self.connection, &statement).await
     }
+
+    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
+        let action = changeset.action.to_string();
+        let user = changeset.user.clone();
+        let table = changeset.table.clone();
+        let description = changeset.description.clone();
+
+        // WARN! This should all take place inside a transaction.
+        let statement = format!(
+            r#"INSERT INTO change('user', 'action', 'table', 'description', 'content')
+            VALUES ('{user}', '{action}', '{table}', '{description}', '{content}')
+            RETURNING change_id"#,
+            content = to_value(&changeset.changes).unwrap_or_default(),
+        );
+        let change_id = query_value(&self.connection, &statement).await?;
+        let change_id = change_id
+            .expect("a change_id")
+            .as_u64()
+            .expect("an integer");
+
+        for change in &changeset.changes {
+            tracing::debug!("CHANGE {change:?}");
+            match change {
+                Change::Update { row, column, value } => {
+                    let statement = format!(
+                        r#"INSERT INTO history('change_id', 'table', 'row', 'before', 'after')
+        VALUES ('{change_id}', '{table}', {row}, 'TODO', 'TODO')
+        RETURNING history_id"#
+                    );
+                    query_value(&self.connection, &statement).await?;
+
+                    // WARN: This just sets text!
+                    let statement = format!(
+                        r#"UPDATE "{table}" SET "{column}" = '{value}' WHERE _id = {row}"#,
+                        // TODO: Render JSON to SQL properly.
+                        value = json_to_string(value)
+                    );
+                    query(&self.connection, &statement).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChangeSet {
+    action: ChangeAction,
+    table: String,
+    user: String,
+    description: String,
+    changes: Vec<Change>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ChangeAction {
+    Do,
+    Undo,
+    Redo,
+}
+
+impl Display for ChangeAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChangeAction::Do => write!(f, "do"),
+            ChangeAction::Undo => write!(f, "undo"),
+            ChangeAction::Redo => write!(f, "redo"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Change {
+    Update {
+        row: usize,
+        column: String,
+        value: JsonValue,
+    },
+    // Add
+    // Delete
+    // Move
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -360,6 +441,18 @@ impl From<sqlx::any::AnyRow> for JsonRow {
     }
 }
 
+// WARN: This needs to be thought through.
+pub fn json_to_string(value: &JsonValue) -> String {
+    match value {
+        JsonValue::Null => "".to_string(),
+        JsonValue::Bool(value) => value.to_string(),
+        JsonValue::Number(value) => value.to_string(),
+        JsonValue::String(value) => value.to_string(),
+        JsonValue::Array(value) => format!("{value:?}"),
+        JsonValue::Object(value) => format!("{value:?}"),
+    }
+}
+
 impl JsonRow {
     pub fn new() -> Self {
         Self {
@@ -369,14 +462,7 @@ impl JsonRow {
     pub fn get_string(&self, column_name: &str) -> String {
         let value = self.content.get(column_name);
         match value {
-            Some(value) => match value {
-                JsonValue::Null => "".to_string(),
-                JsonValue::Bool(value) => value.to_string(),
-                JsonValue::Number(value) => value.to_string(),
-                JsonValue::String(value) => value.to_string(),
-                JsonValue::Array(value) => format!("{value:?}"),
-                JsonValue::Object(value) => format!("{value:?}"),
-            },
+            Some(value) => json_to_string(&value),
             None => unimplemented!("missing value"),
         }
     }
@@ -868,27 +954,19 @@ pub async fn set_value(
 ) -> Result<()> {
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::default().await?;
-    // WARN! This should all take place inside a transaction.
-    let statement = format!(
-        r#"INSERT INTO change('user', 'type', 'table', 'description', 'content')
-        VALUES ('anonymous', 'do', '{table}', 'Set one value', 'TODO')
-        RETURNING change_id"#
-    );
-    let change_id = query_value(&rltbl.connection, &statement).await?;
-    let change_id = change_id
-        .expect("a change_id")
-        .as_u64()
-        .expect("an integer");
-    let statement = format!(
-        r#"INSERT INTO history('change_id', 'table', 'row', 'before', 'after')
-        VALUES ('{change_id}', '{table}', {row}, 'TODO', 'TODO')
-        RETURNING history_id"#
-    );
-    query_value(&rltbl.connection, &statement).await?;
-
-    // WARN: This just sets text!
-    let statement = format!(r#"UPDATE "{table}" SET "{column}" = '{value}' WHERE _id = {row}"#);
-    query(&rltbl.connection, &statement).await?;
+    rltbl
+        .set_values(&ChangeSet {
+            user: "FOO".into(),
+            action: ChangeAction::Do,
+            table: table.to_string(),
+            description: "Set one value".to_string(),
+            changes: vec![Change::Update {
+                row,
+                column: column.to_string(),
+                value: to_value(value).unwrap_or_default(),
+            }],
+        })
+        .await?;
     Ok(())
 }
 
@@ -932,7 +1010,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
     change_id INTEGER PRIMARY KEY,
     'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     'user' TEXT NOT NULL,
-    'type' TEXT NOT NULL,
+    'action' TEXT NOT NULL,
     'table' TEXT NOT NULL,
     'description' TEXT,
     'content' TEXT
