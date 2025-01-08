@@ -23,7 +23,7 @@ use rand::Rng as _;
 use rand::SeedableRng as _;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
+use serde_json::{from_str, json, to_string_pretty, to_value, Value as JsonValue};
 use tabwriter::TabWriter;
 use tokio::net::TcpListener;
 
@@ -257,8 +257,25 @@ impl Relatable {
         }
     }
 
-    pub async fn get_users(&self) -> IndexMap<String, UserCursor> {
-        IndexMap::new()
+    pub async fn get_users(&self) -> Result<IndexMap<String, UserCursor>> {
+        let mut users = IndexMap::new();
+        let statement = format!(
+            r#"SELECT * FROM user WHERE cursor IS NOT NULL AND "datetime" >= DATETIME('now', '-10 minutes')"#
+        );
+        let rows = query(&self.connection, &statement).await?;
+        for row in rows {
+            let name = row.get_string("name");
+            users.insert(
+                name.clone(),
+                UserCursor {
+                    name: name.clone(),
+                    color: row.get_string("color"),
+                    cursor: from_str(&row.get_string("cursor"))?,
+                    datetime: row.get_string("datetime"),
+                },
+            );
+        }
+        Ok(users)
     }
 
     pub async fn get_tables(&self) -> IndexMap<String, Table> {
@@ -266,11 +283,13 @@ impl Relatable {
     }
 
     pub async fn get_site(&self, username: &str) -> Site {
+        let mut users = self.get_users().await.unwrap_or_default();
+        users.shift_remove(username);
         Site {
             title: "RLTBL".to_string(),
             root: "".to_string(),
             user: self.get_user(username).await,
-            users: self.get_users().await,
+            users,
             tables: self.get_tables().await,
         }
     }
@@ -469,6 +488,7 @@ pub struct UserCursor {
     name: String,
     color: String,
     cursor: Cursor,
+    datetime: String,
 }
 
 impl ChangeSet {
