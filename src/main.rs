@@ -278,8 +278,31 @@ impl Relatable {
         Ok(users)
     }
 
-    pub async fn get_tables(&self) -> IndexMap<String, Table> {
-        IndexMap::new()
+    pub async fn get_tables(&self) -> Result<IndexMap<String, Table>> {
+        let mut tables = IndexMap::new();
+        let statement = format!(
+            r#"SELECT *,
+                 (SELECT max(change_id) FROM history WHERE history."table" = "table"."table") AS _change_id
+                 FROM 'table'"#
+        );
+
+        let rows = query(&self.connection, &statement).await?;
+        for row in rows {
+            let name = row.get_string("table");
+            tables.insert(
+                name.clone(),
+                Table {
+                    name: name.clone(),
+                    change_id: row
+                        .content
+                        .get("_change_id")
+                        .and_then(|i| i.as_u64())
+                        .unwrap_or_default() as usize,
+                    ..Default::default()
+                },
+            );
+        }
+        Ok(tables)
     }
 
     pub async fn get_site(&self, username: &str) -> Site {
@@ -290,7 +313,7 @@ impl Relatable {
             root: "".to_string(),
             user: self.get_user(username).await,
             users,
-            tables: self.get_tables().await,
+            tables: self.get_tables().await.unwrap_or_default(),
         }
     }
 }
