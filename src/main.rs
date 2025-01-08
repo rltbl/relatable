@@ -759,6 +759,9 @@ static VALUE_HELP: &str = "A value for a cell";
           about = "Relatable (rltbl): Connect your data!",
           long_about = None)]
 pub struct Cli {
+    #[arg(long, default_value="", action = ArgAction::Set)]
+    user: String,
+
     #[command(flatten)]
     verbose: Verbosity,
 
@@ -945,6 +948,19 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) -> Re
     Ok(())
 }
 
+// Get the user from the CLI, RLTBL_USER environment variable,
+// or the general environment.
+pub fn get_cli_user(cli: &Cli) -> String {
+    let mut username = cli.user.clone();
+    if username == "" {
+        username = std::env::var("RLTBL_USER").unwrap_or_default();
+    }
+    if username == "" {
+        username = whoami::username();
+    }
+    username
+}
+
 pub async fn set_value(
     cli: &Cli,
     table: &str,
@@ -956,7 +972,7 @@ pub async fn set_value(
     let rltbl = Relatable::default().await?;
     rltbl
         .set_values(&ChangeSet {
-            user: "FOO".into(),
+            user: get_cli_user(&cli),
             action: ChangeAction::Do,
             table: table.to_string(),
             description: "Set one value".to_string(),
