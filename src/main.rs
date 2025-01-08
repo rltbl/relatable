@@ -10,7 +10,7 @@ use axum::{
     http::{HeaderMap, Response, StatusCode},
     response::{Html, IntoResponse, Json, Redirect},
     routing::get,
-    Router,
+    Form, Router,
 };
 use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, SessionStore};
 use clap::{ArgAction, Parser, Subcommand};
@@ -40,6 +40,8 @@ use sqlx_core::any::AnyTypeInfoKind;
 
 #[derive(Debug)]
 pub enum RelatableError {
+    /// An error in the configuration of a ChangeSet:
+    ChangeError(String),
     /// An error in the Relatable configuration:
     ConfigError(String),
     /// An error that occurred while reading or writing to a CSV/TSV:
@@ -189,6 +191,20 @@ impl Relatable {
         let description = changeset.description.clone();
 
         // WARN! This should all take place inside a transaction.
+        // Make sure the user is present.
+        let color = random_color::RandomColor::new().to_hex();
+        let statement =
+            format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES ('{user}', '{color}')"#);
+        query_value(&self.connection, &statement).await?;
+
+        // Update the user's cursor position.
+        let cursor = changeset.to_cursor()?;
+        let statement = format!(
+            r#"UPDATE user SET "cursor" = '{cursor}' WHERE "name" = '{user}'"#,
+            cursor = to_value(cursor).unwrap_or_default()
+        );
+        query_value(&self.connection, &statement).await?;
+
         let statement = format!(
             r#"INSERT INTO change('user', 'action', 'table', 'description', 'content')
             VALUES ('{user}', '{action}', '{table}', '{description}', '{content}')
@@ -223,6 +239,31 @@ impl Relatable {
             }
         }
         Ok(())
+    }
+
+    pub async fn get_user(&self, username: &str) -> Account {
+        Account {
+            name: username.to_string(),
+            color: "COLOR".to_string(),
+        }
+    }
+
+    pub async fn get_users(&self) -> IndexMap<String, UserCursor> {
+        IndexMap::new()
+    }
+
+    pub async fn get_tables(&self) -> IndexMap<String, Table> {
+        IndexMap::new()
+    }
+
+    pub async fn get_site(&self, username: &str) -> Site {
+        Site {
+            title: "RLTBL".to_string(),
+            root: "".to_string(),
+            user: self.get_user(username).await,
+            users: self.get_users().await,
+            tables: self.get_tables().await,
+        }
     }
 }
 
@@ -387,6 +428,57 @@ impl std::fmt::Display for ResultSet {
         tw.flush().expect("TabWriter to flush");
         let written = String::from_utf8(tw.into_inner().unwrap()).unwrap();
         write!(f, "{written}")
+    }
+}
+
+// Web Site Stuff
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Site {
+    title: String,
+    root: String,
+    user: Account,
+    users: IndexMap<String, UserCursor>,
+    tables: IndexMap<String, Table>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Account {
+    name: String,
+    color: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Cursor {
+    table: String,
+    row: usize,
+    column: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserCursor {
+    name: String,
+    color: String,
+    cursor: Cursor,
+}
+
+impl ChangeSet {
+    fn to_cursor(&self) -> Result<Cursor> {
+        let table = self.table.clone();
+        match self.changes.first() {
+            Some(change) => match change {
+                Change::Update {
+                    row,
+                    column,
+                    value: _,
+                } => Ok(Cursor {
+                    table,
+                    row: *row,
+                    column: column.to_string(),
+                }),
+            },
+            None => Err(RelatableError::ChangeError("No changes in set".into()).into()),
+        }
     }
 }
 
@@ -1022,15 +1114,24 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
 
     // Create the change and history tables
     let rltbl = Relatable::default().await?;
-    let sql = "CREATE TABLE 'change' (
+    let sql = "CREATE TABLE 'user' (
+    'name' TEXT PRIMARY KEY,
+    'color' TEXT,
+    'cursor' TEXT
+)";
+    query(&rltbl.connection, sql).await?;
+    // Create the change and history tables
+    let rltbl = Relatable::default().await?;
+    let sql = r#"CREATE TABLE 'change' (
     change_id INTEGER PRIMARY KEY,
     'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     'user' TEXT NOT NULL,
     'action' TEXT NOT NULL,
     'table' TEXT NOT NULL,
     'description' TEXT,
-    'content' TEXT
-)";
+    'content' TEXT,
+    FOREIGN KEY ("user") REFERENCES user("name")
+)"#;
     query(&rltbl.connection, sql).await?;
     let sql = r#"CREATE TABLE 'history' (
     history_id INTEGER PRIMARY KEY,
@@ -1039,7 +1140,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
     'row' INTEGER NOT NULL,
     'before' TEXT,
     'after' TEXT,
-    FOREIGN KEY (change_id) REFERENCES change(change_id),
+    FOREIGN KEY ("change_id") REFERENCES change("change_id"),
     FOREIGN KEY ("table") REFERENCES "table"("table")
 )"#;
     query(&rltbl.connection, sql).await?;
@@ -1115,13 +1216,14 @@ async fn main_css() -> impl IntoResponse {
     (headers, include_str!("resources/main.css"))
 }
 
-fn render_html(rltbl: &Relatable, result: &ResultSet) -> Result<String> {
+async fn render_html(rltbl: &Relatable, username: &str, result: &ResultSet) -> Result<String> {
     let tmpl = rltbl.minijinja.get_template("table.html")?;
-    tmpl.render(context! {rltbl=>result}).map_err(|e| e.into())
+    let site = rltbl.get_site(username).await;
+    tmpl.render(context! {site, result}).map_err(|e| e.into())
 }
 
-fn render_response(rltbl: &Relatable, result: &ResultSet) -> Response<Body> {
-    match render_html(rltbl, result) {
+async fn render_response(rltbl: &Relatable, username: &str, result: &ResultSet) -> Response<Body> {
+    match render_html(rltbl, username, result).await {
         Ok(html) => Html(html).into_response(),
         Err(error) => {
             tracing::error!("{error:?}");
@@ -1130,7 +1232,12 @@ fn render_response(rltbl: &Relatable, result: &ResultSet) -> Response<Body> {
     }
 }
 
-async fn respond(rltbl: &Relatable, select: &Select, format: &Format) -> Response<Body> {
+async fn respond(
+    rltbl: &Relatable,
+    username: &str,
+    select: &Select,
+    format: &Format,
+) -> Response<Body> {
     let result = match rltbl.fetch(&select).await {
         Ok(result) => result,
         Err(error) => return get_500(&error),
@@ -1138,11 +1245,16 @@ async fn respond(rltbl: &Relatable, select: &Select, format: &Format) -> Respons
 
     // format!("get_table:\nPath: {path}, {table_name}, {extension:?}, {format}\nQuery Parameters: {query_params:?}\nResult Set: {pretty}")
     let response = match format {
-        Format::Html | Format::Default => render_response(&rltbl, &result),
+        Format::Html | Format::Default => render_response(&rltbl, &username, &result).await,
         Format::PrettyJson => {
+            let site = rltbl.get_site(username).await;
             let mut headers = HeaderMap::new();
             headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
-            (headers, to_string_pretty(&result).unwrap_or_default()).into_response()
+            (
+                headers,
+                to_string_pretty(&json!({"site": site, "result": result})).unwrap_or_default(),
+            )
+                .into_response()
         }
         Format::Json => Json(&result).into_response(),
     };
@@ -1160,12 +1272,36 @@ async fn get_table(
     tracing::info!("SESSION {:?}", session.get_session_id().inner());
     tracing::info!("SESSIONS {}", session.count().await);
 
+    let username: String = session.get("username").unwrap_or_default();
+    let select = Select::from_path_and_query(&rltbl, &path, &query_params);
     let format = match Format::try_from(&path) {
         Ok(format) => format,
         Err(error) => return get_404(&error),
     };
-    let select = Select::from_path_and_query(&rltbl, &path, &query_params);
-    respond(&rltbl, &select, &format).await
+    respond(&rltbl, &username, &select, &format).await
+}
+
+async fn get_login(session: Session<SessionNullPool>) -> Response<Body> {
+    let username: String = session.get("username").unwrap_or_default();
+    Html(format!(
+        r#"<form method="post"><input name="username" value="{username}"/><input type="submit"/></form>"#
+    ))
+    .into_response()
+}
+
+async fn post_login(
+    session: Session<SessionNullPool>,
+    Form(form): Form<IndexMap<String, String>>,
+) -> Response<Body> {
+    tracing::debug!("post_login({form:?})");
+    let username = String::new();
+    let username = form.get("username").unwrap_or(&username);
+    session.set("username", username);
+    Html(format!(
+        r#"<p>Logged in as {username}</p>
+        <form method="post"><input name="username" value="{username}"/><input type="submit"/></form>"#
+    ))
+    .into_response()
 }
 
 pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
@@ -1177,6 +1313,7 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
         .route("/", get(get_root))
         .route("/static/main.js", get(main_js))
         .route("/static/main.css", get(main_css))
+        .route("/login", get(get_login).post(post_login))
         .route("/table/{*path}", get(get_table))
         .layer(SessionLayer::new(session_store))
         .with_state(shared_state)

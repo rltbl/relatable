@@ -1,18 +1,18 @@
-{% set select = rltbl.select %}
-{% set range = rltbl.range %}
-{% set table = rltbl.table %}
-{% set columns = rltbl.columns %}
-{% set rows = rltbl.rows %}
+{% set select = result.select %}
+{% set range = result.range %}
+{% set table = result.table %}
+{% set columns = result.columns %}
+{% set rows = result.rows %}
 
 <html>
 
 <head>
-  <title>{{table.name}}</title>
+  <title>{{ site.title }}</title>
   <link href="/static/main.css" rel="stylesheet">
 </head>
 
 <body>
-  <h1>{{table.name}}</h1>
+  <h1>{{ site.title }}: {{ table.name }}</h1>
 
   <div id="portal" style="width: 100%; min-width: 400px; left: auto; right: auto"></div>
 
@@ -38,7 +38,7 @@
 
   {# <pre>{{ debug() }}</pre> #}
   <script>
-    window.rltbl = {{rltbl | tojson}};
+    window.rltbl = {{result | tojson}};
   </script>
   <script defer="defer" src="/static/main.js"></script>
 </body>
