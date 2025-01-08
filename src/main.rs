@@ -12,6 +12,7 @@ use axum::{
     routing::get,
     Router,
 };
+use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, SessionStore};
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use indexmap::IndexMap;
@@ -1058,8 +1059,13 @@ async fn get_table(
     State(rltbl): State<Arc<Relatable>>,
     Path(path): Path<String>,
     Query(query_params): Query<QueryParams>,
+    session: Session<SessionNullPool>,
 ) -> Response<Body> {
-    tracing::info!("get_table({rltbl:?}, {path}, {query_params:?})");
+    // tracing::info!("get_table({rltbl:?}, {path}, {query_params:?})");
+    tracing::info!("get_table([rltbl], {path}, {query_params:?})");
+    tracing::info!("SESSION {:?}", session.get_session_id().inner());
+    tracing::info!("SESSIONS {}", session.count().await);
+
     let format = match Format::try_from(&path) {
         Ok(format) => format,
         Err(error) => return get_404(&error),
@@ -1068,12 +1074,17 @@ async fn get_table(
     respond(&rltbl, &select, &format).await
 }
 
-pub fn build_app(shared_state: Arc<Relatable>) -> Router {
+pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
+    let session_config = SessionConfig::default();
+    let session_store = SessionStore::<SessionNullPool>::new(None, session_config)
+        .await
+        .unwrap();
     Router::new()
         .route("/", get(get_root))
         .route("/static/main.js", get(main_js))
         .route("/static/main.css", get(main_css))
-        .route("/table/*path", get(get_table))
+        .route("/table/{*path}", get(get_table))
+        .layer(SessionLayer::new(session_store))
         .with_state(shared_state)
 }
 
@@ -1081,7 +1092,7 @@ pub fn build_app(shared_state: Arc<Relatable>) -> Router {
 pub async fn app(rltbl: Relatable, host: &str, port: &u16) -> Result<String> {
     let shared_state = Arc::new(rltbl);
 
-    let app = build_app(shared_state);
+    let app = build_app(shared_state).await;
 
     // Create a `TcpListener` using tokio.
     let addr = format!("{host}:{port}");

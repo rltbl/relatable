@@ -6,7 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.94"
 async-std = { version = "1.13.0", features = ["attributes"] }
-axum = "0.7.9"
+axum = "0.8.1"
+axum_session = "0.15.0"
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 clap-verbosity-flag = { version = "3.0.2", features = ["tracing"] }
 indexmap = { version = "2.7.0", features = ["serde"] }
