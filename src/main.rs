@@ -1319,7 +1319,10 @@ async fn respond(
             )
                 .into_response()
         }
-        Format::Json => Json(&result).into_response(),
+        Format::Json => {
+            let site = rltbl.get_site(username).await;
+            Json(&json!({"site": site, "result": result})).into_response()
+        }
     };
     response
 }

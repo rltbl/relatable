@@ -27,6 +27,11 @@ type Row = {
   order: number,
   cells: Cell[],
 };
+type Column = {
+  title: string,
+  id: string,
+  grow: number,
+};
 type Cursor = {
   table: string,
   row: number,
@@ -165,12 +170,12 @@ function useAsyncData<TRowType>(
 }
 
 
-export default function Grid(grid_args: { table: string, columns: any, rows: number, height: number, site: any }) {
+export default function Grid(grid_args: { table: string, columns: Column[], rows: number, height: number, site: any }) {
   const table = grid_args.table;
   const columns = grid_args.columns;
   const rows = grid_args.rows;
   const height = grid_args.height;
-  const site = grid_args.site;
+  // const site = grid_args.site;
 
   // console.log("TABLE", table);
   // console.log("COLUMNS", columns);
@@ -178,7 +183,26 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
 
   const gridRef = React.useRef<DataEditorRef | null>(null);
   const dataRef = React.useRef<Row[]>([]);
+  const cursorRef = React.useRef<Map<string, string>>(new Map());
   const change_id = React.useRef<number>(0);
+
+  const getCursors = React.useCallback((users: Map<string, UserCursor>) => {
+    var cursors = new Map<string, string>();
+    for (const user of Object.values(users)) {
+      const cursor: Cursor = user.cursor;
+      if (cursor.table !== table) { continue; };
+      const row = cursor.row - 1;
+      var col = 0;
+      for (const [i, column] of columns.entries()) {
+        if (cursor.column === column.id) {
+          col = i;
+          break;
+        }
+      }
+      cursors[col + "," + row] = user.color;
+    }
+    return cursors;
+  }, [table, columns]);
 
   const getRowData = React.useCallback(async (r: Item) => {
     const first = r[0];
@@ -192,12 +216,13 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
         throw new Error(`Response status: ${response.status}`);
       }
       const data = await response.json();
-      change_id.current = data["table"]["change_id"];
-      return data["rows"];
+      change_id.current = data["result"]["table"]["change_id"];
+      cursorRef.current = getCursors(data["site"]["users"]);
+      return data["result"]["rows"];
     } catch (error) {
       console.error(error.message);
     }
-  }, [change_id, table]);
+  }, [change_id, table, cursorRef, getCursors]);
 
   // Fetch data updated since we started.
   const pollData = React.useCallback(async () => {
@@ -205,17 +230,21 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
     const url = `/table/${table}.json?_change_id=gt.${change_id.current}`;
     console.log("Fetch: " + url);
     var rows: Row[] = [];
+    const oldCursors = cursorRef.current;
+    var newCursors: Map<string, string> = new Map();
     try {
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`Response status: ${response.status}`);
       }
       const data = await response.json();
-      change_id.current = data["table"]["change_id"];
-      rows = data["rows"] as Row[];
+      change_id.current = data["result"]["table"]["change_id"];
+      newCursors = getCursors(data["site"]["users"]);
+      rows = data["result"]["rows"] as Row[];
     } catch (error) {
       console.error(error.message);
     }
+    cursorRef.current = newCursors;
 
     // Match rows to the grid by _id and re-render them.
     // TODO: Why do I need to updateCells? It should be automatic.
@@ -234,8 +263,20 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
         });
       }
     }
+    for (const key of Object.keys(oldCursors)) {
+      const [c, r] = key.split(",", 2);
+      damageList.push({
+        cell: [parseInt(c), parseInt(r)],
+      });
+    }
+    for (const key of Object.keys(newCursors)) {
+      const [c, r] = key.split(",", 2);
+      damageList.push({
+        cell: [parseInt(c), parseInt(r)],
+      });
+    }
     gridRef.current?.updateCells(damageList);
-  }, [table, columns, grid_args.rows, dataRef, gridRef]);
+  }, [table, columns, grid_args.rows, cursorRef, getCursors, dataRef, gridRef]);
 
   // Poll for new data.
   React.useEffect(() => {
@@ -374,16 +415,7 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
     draw(); // draw up front to draw over the cell
     if (!dataRef.current) { return; }
     const { ctx, rect, col, row } = args;
-    var color = "";
-    const users = site.users as Map<string, UserCursor>;
-    for (const user of Object.values(users)) {
-      const cursor: Cursor = user.cursor;
-      if (cursor.table !== table) { continue; };
-      if (cursor.row - 1 !== row) { continue; }
-      if (cursor.column !== columns[col].id) { continue; }
-      color = user.color;
-      break;
-    }
+    const color = cursorRef.current[col + "," + row];
     if (!color) { return; };
     ctx.beginPath();
     ctx.rect(rect.x + 1, rect.y + 1, rect.width - 1, rect.height - 1);
@@ -391,7 +423,7 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
     ctx.strokeStyle = color;
     ctx.stroke();
     ctx.restore();
-  }, [table, columns, site, dataRef]);
+  }, [cursorRef, dataRef]);
 
   // Draw a red triangle in upper-right, like Excel.
   // const drawCell: DrawCellCallback = React.useCallback((args, draw) => {
