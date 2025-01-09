@@ -7,12 +7,14 @@ const columns = Object.values(window.rltbl.columns).map(x => {
   return {title: x.label||x.name, id: x.name, grow: 1};
 });
 const rows = window.rltbl.range.total;
+const site = window.site;
 
 var portal = document.getElementById('portal');
+const height = window.innerHeight - portal.getBoundingClientRect().top - 5;
 const root = ReactDOM.createRoot(portal);
 root.render(
   <React.StrictMode>
-    <Grid table={table_name} columns={columns} rows={rows} />
+    <Grid table={table_name} columns={columns} rows={rows} height={height} site={site}/>
   </React.StrictMode>
 );
 

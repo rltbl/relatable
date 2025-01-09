@@ -6,10 +6,10 @@ use async_std::sync::{Arc, Mutex};
 use axum::http::header;
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Json as ExtractJson, Path, Query, State},
     http::{HeaderMap, Response, StatusCode},
     response::{Html, IntoResponse, Json, Redirect},
-    routing::get,
+    routing::{get, post},
     Form, Router,
 };
 use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, SessionStore};
@@ -259,9 +259,10 @@ impl Relatable {
 
     pub async fn get_users(&self) -> Result<IndexMap<String, UserCursor>> {
         let mut users = IndexMap::new();
-        let statement = format!(
-            r#"SELECT * FROM user WHERE cursor IS NOT NULL AND "datetime" >= DATETIME('now', '-10 minutes')"#
-        );
+        // let statement = format!(
+        //     r#"SELECT * FROM user WHERE cursor IS NOT NULL AND "datetime" >= DATETIME('now', '-10 minutes')"#
+        // );
+        let statement = format!(r#"SELECT * FROM user WHERE cursor IS NOT NULL"#);
         let rows = query(&self.connection, &statement).await?;
         for row in rows {
             let name = row.get_string("name");
@@ -1331,8 +1332,8 @@ async fn get_table(
 ) -> Response<Body> {
     // tracing::info!("get_table({rltbl:?}, {path}, {query_params:?})");
     tracing::info!("get_table([rltbl], {path}, {query_params:?})");
-    tracing::info!("SESSION {:?}", session.get_session_id().inner());
-    tracing::info!("SESSIONS {}", session.count().await);
+    // tracing::info!("SESSION {:?}", session.get_session_id().inner());
+    // tracing::info!("SESSIONS {}", session.count().await);
 
     let username: String = session.get("username").unwrap_or_default();
     tracing::info!("USERNAME {username}");
@@ -1344,15 +1345,34 @@ async fn get_table(
     respond(&rltbl, &username, &select, &format).await
 }
 
-async fn get_login(session: Session<SessionNullPool>) -> Response<Body> {
-    let username: String = session.get("username").unwrap_or_default();
-    Html(format!(
-        r#"<form method="post"><input name="username" value="{username}"/><input type="submit"/></form>"#
-    ))
-    .into_response()
+async fn post_sign_in(
+    State(rltbl): State<Arc<Relatable>>,
+    session: Session<SessionNullPool>,
+    Form(form): Form<IndexMap<String, String>>,
+) -> Response<Body> {
+    tracing::info!("post_login({form:?})");
+    let username = String::new();
+    let username = form.get("username").unwrap_or(&username);
+    session.set("username", username);
+
+    let color = random_color::RandomColor::new().to_hex();
+    let statement =
+        format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES ('{username}', '{color}')"#);
+    query(&rltbl.connection, &statement)
+        .await
+        .expect("Update user");
+
+    match form.get("redirect") {
+        Some(url) => Redirect::to(url).into_response(),
+        None =>  Html(format!(
+            r#"<p>Logged in as {username}</p>
+            <form method="post"><input name="username" value="{username}"/><input type="submit"/></form>"#
+        ))
+        .into_response(),
+    }
 }
 
-async fn post_login(
+async fn post_sign_out(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
     Form(form): Form<IndexMap<String, String>>,
@@ -1376,6 +1396,25 @@ async fn post_login(
     .into_response()
 }
 
+async fn post_cursor(
+    State(rltbl): State<Arc<Relatable>>,
+    session: Session<SessionNullPool>,
+    ExtractJson(cursor): ExtractJson<Cursor>,
+) -> Response<Body> {
+    // tracing::info!("post_cursor({cursor:?})");
+    let username: String = session.get("username").unwrap_or_default();
+    tracing::info!("post_cursor({cursor:?}, {username})");
+    // TODO: sanitize the cursor JSON.
+    let statement = format!(
+        r#"UPDATE user SET "cursor" = '{cursor}', "datetime" = CURRENT_TIMESTAMP WHERE "name" = '{username}'"#,
+        cursor = to_value(cursor).unwrap_or_default()
+    );
+    match query(&rltbl.connection, &statement).await {
+        Ok(_) => "Cursor updated".into_response(),
+        Err(_) => "Cursor update failed".into_response(),
+    }
+}
+
 pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
     let session_config = SessionConfig::default();
     let session_store = SessionStore::<SessionNullPool>::new(None, session_config)
@@ -1385,7 +1424,9 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
         .route("/", get(get_root))
         .route("/static/main.js", get(main_js))
         .route("/static/main.css", get(main_css))
-        .route("/login", get(get_login).post(post_login))
+        .route("/sign-in", post(post_sign_in))
+        .route("/sign-out", post(post_sign_out))
+        .route("/cursor", post(post_cursor))
         .route("/table/{*path}", get(get_table))
         .layer(SessionLayer::new(session_store))
         .with_state(shared_state)
