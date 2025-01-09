@@ -36,6 +36,7 @@ type UserCursor = {
   name: string,
   color: string,
   cursor: Cursor,
+  datetime: string,
 };
 
 type RowCallback<T> = (range: Item) => Promise<readonly T[]>;
@@ -375,7 +376,7 @@ export default function Grid(grid_args: { table: string, columns: any, rows: num
     const { ctx, rect, col, row } = args;
     var color = "";
     const users = site.users as Map<string, UserCursor>;
-    for (const user of users.values()) {
+    for (const user of Object.values(users)) {
       const cursor: Cursor = user.cursor;
       if (cursor.table !== table) { continue; };
       if (cursor.row - 1 !== row) { continue; }
