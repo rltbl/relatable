@@ -16,7 +16,7 @@ use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, Sessio
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use indexmap::IndexMap;
-use minijinja::{context, Environment};
+use minijinja::{context, path_loader, Environment};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom as _;
 use rand::Rng as _;
@@ -84,7 +84,7 @@ pub enum DbConnection {
 #[derive(Debug)]
 pub struct Relatable {
     pub connection: DbConnection,
-    pub minijinja: Environment<'static>,
+    // pub minijinja: Environment<'static>,
     pub default_limit: usize,
     pub max_limit: usize,
 }
@@ -99,17 +99,39 @@ impl Relatable {
         #[cfg(feature = "rusqlite")]
         let connection = DbConnection::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
 
-        // Set up template environment.
-        let mut env = Environment::new();
-        let table_html = include_str!("templates/table.html");
-        env.add_template("table.html", table_html)?;
-
         Ok(Self {
             connection,
-            minijinja: env,
+            // minijinja: env,
             default_limit: 100,
             max_limit: 1000,
         })
+    }
+
+    pub fn render<T: Serialize>(&self, template: &str, context: T) -> Result<String> {
+        // TODO: Optionally we should set up the environment once and store it,
+        // but during development it's very convenient to rebuild every time.
+        let mut env = Environment::new();
+
+        // Load default template strings at compile time.
+        let templates = IndexMap::from([("table.html", include_str!("templates/table.html"))]);
+
+        // Load templates dynamically if src/templates/ exists,
+        // otherwise use strings from compile time.
+        // TODO: This should be a configuration option.
+        let dir = "src/templates/";
+        if FilePath::new(dir).is_dir() {
+            env.set_loader(path_loader(dir));
+        };
+        for (name, content) in templates {
+            match env.get_template(name) {
+                Ok(_) => (),
+                Err(_) => env.add_template(name, content).unwrap(),
+            }
+        }
+
+        env.get_template(template)?
+            .render(context)
+            .map_err(|e| e.into())
     }
 
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
@@ -1280,9 +1302,8 @@ async fn main_css() -> impl IntoResponse {
 }
 
 async fn render_html(rltbl: &Relatable, username: &str, result: &ResultSet) -> Result<String> {
-    let tmpl = rltbl.minijinja.get_template("table.html")?;
     let site = rltbl.get_site(username).await;
-    tmpl.render(context! {site, result}).map_err(|e| e.into())
+    rltbl.render("table.html", context! {site, result})
 }
 
 async fn render_response(rltbl: &Relatable, username: &str, result: &ResultSet) -> Response<Body> {
