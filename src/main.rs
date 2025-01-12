@@ -121,11 +121,10 @@ impl Relatable {
 
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
         let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
-        let change_id =
-            match query_value(&self.connection, &statement, &vec![json!(table_name)]).await? {
-                Some(value) => value.as_u64().unwrap_or_default() as usize,
-                None => 0,
-            };
+        let change_id = match query_value(&self.connection, &statement, &vec![table_name]).await? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
         Ok(Table {
             name: table_name.to_string(),
             change_id,
@@ -144,7 +143,7 @@ impl Relatable {
     pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
         // WARN: SQLite only!
         let statement = format!(r#"SELECT * FROM pragma_table_info("{table_name}");"#);
-        Ok(query(&self.connection, &statement, &vec![])
+        Ok(query::<String>(&self.connection, &statement, &vec![])
             .await?
             .iter()
             .map(|row| Column {
@@ -458,16 +457,20 @@ impl From<JsonRow> for Vec<String> {
 // This is intended as a low-level function that abstracts over the SQL engine,
 // and whatever result types it returns.
 // Since it uses a vector, statements should be limited to a sane number of rows.
-pub async fn query(
+pub async fn query<T>(
     connection: &DbConnection,
     statement: &str,
-    params: &Vec<JsonValue>,
-) -> Result<Vec<JsonRow>> {
+    params: &Vec<T>,
+) -> Result<Vec<JsonRow>>
+where
+    T: Serialize,
+{
     match connection {
         #[cfg(feature = "sqlx")]
         DbConnection::Sqlx(pool) => {
             let mut query = sqlx::query(statement);
             for param in params {
+                let param = to_value(param)?;
                 match param {
                     JsonValue::Number(n) => match n.as_i64() {
                         Some(p) => query = query.bind(p),
@@ -497,9 +500,10 @@ pub async fn query(
             let column_names = stmt.column_names();
             let mut stmt = conn.prepare(statement)?;
             for (i, param) in params.iter().enumerate() {
+                let param = to_value(param)?;
                 let param = match param {
-                    JsonValue::String(s) => s.as_str(),
-                    _ => &param.to_string(),
+                    JsonValue::String(s) => s,
+                    _ => param.to_string(),
                 };
                 // Binding must begin with 1 rather than 0:
                 stmt.raw_bind_parameter(i + 1, param)?;
@@ -515,11 +519,14 @@ pub async fn query(
     }
 }
 
-pub async fn query_value(
+pub async fn query_value<T>(
     connection: &DbConnection,
     statement: &str,
-    params: &Vec<JsonValue>,
-) -> Result<Option<JsonValue>> {
+    params: &Vec<T>,
+) -> Result<Option<JsonValue>>
+where
+    T: Serialize,
+{
     let rows = query(connection, statement, params).await?;
     match rows.iter().next() {
         Some(row) => match row.content.values().next() {
@@ -913,7 +920,7 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) -> Re
     tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::default().await?;
     let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
-    if let Some(value) = query_value(&rltbl.connection, &statement, &vec![json!(row)]).await? {
+    if let Some(value) = query_value(&rltbl.connection, &statement, &vec![row]).await? {
         let text = match value {
             JsonValue::String(value) => value.to_string(),
             value => format!("{value}"),
@@ -936,7 +943,7 @@ pub async fn set_value(
     let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
                        VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
                        RETURNING change_id"#;
-    let change_id = query_value(&rltbl.connection, &statement, &vec![json!(table)]).await?;
+    let change_id = query_value(&rltbl.connection, &statement, &vec![table]).await?;
     let change_id = change_id
         .expect("a change_id")
         .as_u64()
@@ -984,9 +991,9 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
       _order INTEGER UNIQUE,
       'table' TEXT PRIMARY KEY
     )"#;
-    query(&rltbl.connection, sql, &vec![]).await?;
+    query::<String>(&rltbl.connection, sql, &vec![]).await?;
     let sql = "INSERT INTO 'table' VALUES (1, 1000, 'table'), (2, 2000, 'penguin')";
-    query(&rltbl.connection, sql, &vec![]).await?;
+    query::<String>(&rltbl.connection, sql, &vec![]).await?;
 
     // Create the change and history tables
     let rltbl = Relatable::default().await?;
@@ -999,7 +1006,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
       'description' TEXT,
       'content' TEXT
     )"#;
-    query(&rltbl.connection, sql, &vec![]).await?;
+    query::<String>(&rltbl.connection, sql, &vec![]).await?;
     let sql = r#"CREATE TABLE 'history' (
       history_id INTEGER PRIMARY KEY,
       change_id INTEGER NOT NULL,
@@ -1010,7 +1017,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
       FOREIGN KEY (change_id) REFERENCES change(change_id),
       FOREIGN KEY ("table") REFERENCES "table"("table")
     )"#;
-    query(&rltbl.connection, sql, &vec![]).await?;
+    query::<String>(&rltbl.connection, sql, &vec![]).await?;
 
     // Create the penguin table.
     let sql = r#"CREATE TABLE penguin (
@@ -1024,7 +1031,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
       culmen_length REAL,
       body_mass INTEGER
     )"#;
-    query(&rltbl.connection, sql, &vec![]).await?;
+    query::<String>(&rltbl.connection, sql, &vec![]).await?;
 
     // Populate the penguin table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
@@ -1047,7 +1054,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
             json!(culmen_length),
             json!(body_mass),
         ];
-        query(&rltbl.connection, &sql, &params).await?;
+        query::<JsonValue>(&rltbl.connection, &sql, &params).await?;
     }
 
     Ok(())
