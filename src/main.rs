@@ -22,7 +22,7 @@ use rand::Rng as _;
 use rand::SeedableRng as _;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
+use serde_json::{json, to_string_pretty, to_value, Map as JsonMap, Value as JsonValue};
 use tabwriter::TabWriter;
 use tokio::net::TcpListener;
 
@@ -90,11 +90,21 @@ impl Relatable {
     pub async fn default() -> Result<Self> {
         // Set up database connection.
         let path = ".relatable/relatable.db";
-        // let url = format!("sqlite://{path}");
-        // sqlx::any::install_default_drivers();
-        // let connection = DbConnection::Sqlx(sqlx::AnyPool::connect(path).await?);
+
+        // We suppress warnings for unused variables for this particular variable. The reason is
+        // that, because of the conditional sqlx/rusqlite compilation, the compiler gets confused
+        // about which variables have been used.
+        #[allow(unused_variables)]
         #[cfg(feature = "rusqlite")]
         let connection = DbConnection::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
+
+        #[cfg(feature = "sqlx")]
+        let connection = {
+            let url = format!("sqlite://{path}?mode=rwc");
+            sqlx::any::install_default_drivers();
+            let connection = DbConnection::Sqlx(sqlx::AnyPool::connect(&url).await?);
+            connection
+        };
 
         // Set up template environment.
         let mut env = Environment::new();
@@ -102,7 +112,7 @@ impl Relatable {
         env.add_template("table.html", table_html)?;
 
         Ok(Self {
-            connection,
+            connection: connection,
             minijinja: env,
             default_limit: 100,
             max_limit: 1000,
@@ -110,7 +120,7 @@ impl Relatable {
     }
 
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
-        let statement = format!(r#"SELECT max(change_id) FROM history WHERE "table" = ?"#);
+        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
         let change_id =
             match query_value(&self.connection, &statement, &vec![json!(table_name)]).await? {
                 Some(value) => value.as_u64().unwrap_or_default() as usize,
@@ -324,53 +334,51 @@ where
     }
 }
 
-// For consistency with Valve (and this will make it easier once we start adding Valve code to
-// relatable), I suggest representing the `content` field with a `serde_json::Map` instead.
-// Note that by default, a `serde_json::Map` is backed by a `BTreeMap`, but by enabling the
-// `preserve_order` feature of the `serde_json` crate it will be backed by an IndexMap instead.
 pub struct JsonRow {
-    content: IndexMap<String, JsonValue>,
+    content: JsonMap<String, JsonValue>,
 }
 
 #[cfg(feature = "sqlx")]
-impl From<sqlx::any::AnyRow> for JsonRow {
-    fn from(row: sqlx::any::AnyRow) -> Self {
-        let mut content = IndexMap::new();
+impl TryFrom<sqlx::any::AnyRow> for JsonRow {
+    fn try_from(row: sqlx::any::AnyRow) -> Result<Self> {
+        let mut content = JsonMap::new();
         for column in row.columns() {
             let value = match column.type_info().kind() {
                 AnyTypeInfoKind::SmallInt | AnyTypeInfoKind::Integer | AnyTypeInfoKind::BigInt => {
-                    // Shouldn't we fail with an error message instead of using _or_default()?
-                    let value: i32 = row.try_get(column.ordinal()).unwrap_or_default();
+                    let value: i32 = row.try_get(column.ordinal())?;
                     JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Real | AnyTypeInfoKind::Double => {
-                    // Shouldn't we fail with an error message instead of using _or_default()?
-                    let value: f64 = row.try_get(column.ordinal()).unwrap_or_default();
+                    let value: f64 = row.try_get(column.ordinal())?;
                     JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Text => {
-                    // Shouldn't we fail with an error message instead of using _or_default()?
-                    let value: String = row.try_get(column.ordinal()).unwrap_or_default();
+                    let value: String = row.try_get(column.ordinal())?;
                     JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Bool => {
-                    // Shouldn't we fail with an error message instead of using _or_default()?
-                    let value: bool = row.try_get(column.ordinal()).unwrap_or_default();
+                    let value: bool = row.try_get(column.ordinal())?;
                     JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Null => JsonValue::Null,
-                AnyTypeInfoKind::Blob => unimplemented!("SQL blob"),
+                AnyTypeInfoKind::Blob => {
+                    return Err(
+                        RelatableError::InputError("Unimplemented: SQL blob".to_string()).into(),
+                    );
+                }
             };
             content.insert(column.name().into(), value);
         }
-        Self { content }
+        Ok(Self { content })
     }
+
+    type Error = anyhow::Error;
 }
 
 impl JsonRow {
     pub fn new() -> Self {
         Self {
-            content: IndexMap::new(),
+            content: JsonMap::new(),
         }
     }
 
@@ -407,7 +415,7 @@ impl JsonRow {
 
     #[cfg(feature = "rusqlite")]
     fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
-        let mut content = IndexMap::new();
+        let mut content = JsonMap::new();
         for column_name in column_names {
             let value = match row.get_ref(*column_name) {
                 Ok(value) => match value {
@@ -460,13 +468,23 @@ pub async fn query(
         DbConnection::Sqlx(pool) => {
             let mut query = sqlx::query(statement);
             for param in params {
-                query = query.bind(param);
+                match param {
+                    JsonValue::Number(n) => match n.as_i64() {
+                        Some(p) => query = query.bind(p),
+                        None => match n.as_f64() {
+                            Some(p) => query = query.bind(p),
+                            None => panic!(),
+                        },
+                    },
+                    JsonValue::String(s) => query = query.bind(s),
+                    _ => panic!(),
+                };
             }
-            query
-                .map(|row| JsonRow::from(row))
-                .fetch_all(pool)
-                .await
-                .map_err(|e| e.into())
+            let mut rows = vec![];
+            for row in query.fetch_all(pool).await? {
+                rows.push(JsonRow::try_from(row)?);
+            }
+            Ok(rows)
         }
         #[cfg(feature = "rusqlite")]
         DbConnection::Rusqlite(conn) => {
@@ -915,21 +933,17 @@ pub async fn set_value(
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::default().await?;
     // WARN! This should all take place inside a transaction.
-    let statement = format!(
-        r#"INSERT INTO change("user", "type", "table", "description", "content")
-        VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
-        RETURNING change_id"#
-    );
+    let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
+                       VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
+                       RETURNING change_id"#;
     let change_id = query_value(&rltbl.connection, &statement, &vec![json!(table)]).await?;
     let change_id = change_id
         .expect("a change_id")
         .as_u64()
         .expect("an integer");
-    let statement = format!(
-        r#"INSERT INTO history("change_id", "table", "row", "before", "after")
-        VALUES (?, ?, ?, 'TODO', 'TODO')
-        RETURNING history_id"#
-    );
+    let statement = r#"INSERT INTO history("change_id", "table", "row", "before", "after")
+                       VALUES (?, ?, ?, 'TODO', 'TODO')
+                       RETURNING history_id"#;
     let params = vec![json!(change_id), json!(table), json!(row)];
     query_value(&rltbl.connection, &statement, &params).await?;
 
@@ -958,7 +972,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
         } else {
             print!("File {file:?} already exists. Use --force to overwrite");
             return Err(
-                RelatableError::ConfigError(format!("Database file already exists")).into(),
+                RelatableError::ConfigError("Database file already exists".to_string()).into(),
             );
         }
     }
@@ -1022,10 +1036,8 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
         let island = islands.iter().choose(&mut rng).unwrap();
         let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
-        let sql = format!(
-            "INSERT INTO 'penguin'
-             VALUES (?, ?, 'FAKE123', ?, 'Pygoscelis adeliae', ?, ?, ?, ?)"
-        );
+        let sql = r#"INSERT INTO 'penguin'
+                     VALUES (?, ?, 'FAKE123', ?, 'Pygoscelis adeliae', ?, ?, ?, ?)"#;
         let params = vec![
             json!(id),
             json!(order),

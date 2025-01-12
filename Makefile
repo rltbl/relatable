@@ -14,7 +14,7 @@ usage:
 debug: target/debug/nanobot
 
 target/debug/nanobot: Cargo.* src/** src/resources/main.js src/resources/main.css
-	cargo build
+	cargo build ${CARGOFLAGS}
 
 src/resources/:
 	mkdir -p $@
