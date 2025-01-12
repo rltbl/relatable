@@ -30,7 +30,7 @@ use tokio::net::TcpListener;
 use rusqlite;
 
 #[cfg(feature = "sqlx")]
-use sqlx::{Column as _, Row as _};
+use sqlx::{Acquire as _, Column as _, Row as _};
 
 #[cfg(feature = "sqlx")]
 use sqlx_core::any::AnyTypeInfoKind;
@@ -79,6 +79,33 @@ pub enum DbConnection {
 }
 
 #[derive(Debug)]
+pub enum DbTransaction<'a> {
+    #[cfg(feature = "sqlx")]
+    Sqlx(sqlx::Transaction<'a, sqlx::Any>),
+
+    #[cfg(feature = "rusqlite")]
+    Rusqlite(rusqlite::Transaction<'a>),
+}
+
+impl DbTransaction<'_> {
+    pub async fn commit(self) -> Result<()> {
+        match self {
+            #[cfg(feature = "sqlx")]
+            DbTransaction::Sqlx(tx) => {
+                tx.commit().await?;
+            }
+            #[cfg(feature = "rusqlite")]
+            DbTransaction::Rusqlite(_tx) => {
+                if 1 == 1 {
+                    todo!();
+                }
+            }
+        };
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct Relatable {
     pub connection: DbConnection,
     pub minijinja: Environment<'static>,
@@ -91,9 +118,9 @@ impl Relatable {
         // Set up database connection.
         let path = ".relatable/relatable.db";
 
-        // We suppress warnings for unused variables for this particular variable. The reason is
-        // that, because of the conditional sqlx/rusqlite compilation, the compiler gets confused
-        // about which variables have been used.
+        // We suppress warnings for unused variables for this particular variable because the
+        // compiler is becoming confused about which variables have been actually used as a result
+        // of the conditional sqlx/rusqlite compilation.
         #[allow(unused_variables)]
         #[cfg(feature = "rusqlite")]
         let connection = DbConnection::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
@@ -117,6 +144,20 @@ impl Relatable {
             default_limit: 100,
             max_limit: 1000,
         })
+    }
+
+    pub async fn begin(&self) -> Result<DbTransaction> {
+        match &self.connection {
+            #[cfg(feature = "sqlx")]
+            DbConnection::Sqlx(pool) => {
+                let tx = pool.begin().await?;
+                Ok(DbTransaction::Sqlx(tx))
+            }
+            #[cfg(feature = "rusqlite")]
+            DbConnection::Rusqlite(_conn) => {
+                todo!()
+            }
+        }
     }
 
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
@@ -465,6 +506,7 @@ pub async fn query<T>(
 where
     T: Serialize,
 {
+    // TODO: Refactor
     match connection {
         #[cfg(feature = "sqlx")]
         DbConnection::Sqlx(pool) => {
@@ -519,6 +561,75 @@ where
     }
 }
 
+// Given a connection and a SQL string, return a vector of JsonRows.
+// This is intended as a low-level function that abstracts over the SQL engine,
+// and whatever result types it returns.
+// Since it uses a vector, statements should be limited to a sane number of rows.
+pub async fn query_tx<T>(
+    transaction: &mut DbTransaction<'_>,
+    statement: &str,
+    params: &Vec<T>,
+) -> Result<Vec<JsonRow>>
+where
+    T: Serialize,
+{
+    match transaction {
+        #[cfg(feature = "sqlx")]
+        DbTransaction::Sqlx(tx) => {
+            let mut query = sqlx::query(statement);
+            for param in params {
+                let param = to_value(param)?;
+                match param {
+                    JsonValue::Number(n) => match n.as_i64() {
+                        Some(p) => query = query.bind(p),
+                        None => match n.as_f64() {
+                            Some(p) => query = query.bind(p),
+                            None => panic!(),
+                        },
+                    },
+                    JsonValue::String(s) => query = query.bind(s),
+                    _ => panic!(),
+                };
+            }
+            let mut rows = vec![];
+            for row in query.fetch_all(tx.acquire().await?).await? {
+                rows.push(JsonRow::try_from(row)?);
+            }
+            Ok(rows)
+        }
+        #[cfg(feature = "rusqlite")]
+        DbTransaction::Rusqlite(tx) => {
+            todo!()
+            /*
+            // The rusqlite::Connection is not thread-safe
+            // so we wrap it with a Mutex
+            // that we have to lock() within this scope.
+            // It might be better to just re-connect?
+            let conn = conn.lock().await;
+            let stmt = conn.prepare(statement)?;
+            let column_names = stmt.column_names();
+            let mut stmt = conn.prepare(statement)?;
+            for (i, param) in params.iter().enumerate() {
+                let param = to_value(param)?;
+                let param = match param {
+                    JsonValue::String(s) => s,
+                    _ => param.to_string(),
+                };
+                // Binding must begin with 1 rather than 0:
+                stmt.raw_bind_parameter(i + 1, param)?;
+            }
+            let mut rows = stmt.raw_query();
+
+            let mut result = Vec::new();
+            while let Some(row) = rows.next()? {
+                result.push(JsonRow::from_rusqlite(&column_names, row));
+            }
+            Ok(result)
+            */
+        }
+    }
+}
+
 pub async fn query_value<T>(
     connection: &DbConnection,
     statement: &str,
@@ -527,7 +638,26 @@ pub async fn query_value<T>(
 where
     T: Serialize,
 {
+    // TODO: Refactor
     let rows = query(connection, statement, params).await?;
+    match rows.iter().next() {
+        Some(row) => match row.content.values().next() {
+            Some(value) => Ok(Some(value.clone())),
+            None => Ok(None),
+        },
+        None => Ok(None),
+    }
+}
+
+pub async fn query_value_tx<T>(
+    transaction: &mut DbTransaction<'_>,
+    statement: &str,
+    params: &Vec<T>,
+) -> Result<Option<JsonValue>>
+where
+    T: Serialize,
+{
+    let rows = query_tx(transaction, statement, params).await?;
     match rows.iter().next() {
         Some(row) => match row.content.values().next() {
             Some(value) => Ok(Some(value.clone())),
@@ -939,11 +1069,14 @@ pub async fn set_value(
 ) -> Result<()> {
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::default().await?;
-    // WARN! This should all take place inside a transaction.
+
+    // Begin a new transaction:
+    let mut tx = rltbl.begin().await?;
+
     let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
                        VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
                        RETURNING change_id"#;
-    let change_id = query_value(&rltbl.connection, &statement, &vec![table]).await?;
+    let change_id = query_value_tx(&mut tx, &statement, &vec![table]).await?;
     let change_id = change_id
         .expect("a change_id")
         .as_u64()
@@ -952,12 +1085,16 @@ pub async fn set_value(
                        VALUES (?, ?, ?, 'TODO', 'TODO')
                        RETURNING history_id"#;
     let params = vec![json!(change_id), json!(table), json!(row)];
-    query_value(&rltbl.connection, &statement, &params).await?;
+    query_value_tx(&mut tx, &statement, &params).await?;
 
     // WARN: This just sets text!
     let statement = format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#);
     let params = vec![json!(value), json!(row)];
-    query(&rltbl.connection, &statement, &params).await?;
+    query_tx(&mut tx, &statement, &params).await?;
+
+    // Commit the transaction:
+    tx.commit().await?;
+
     Ok(())
 }
 
