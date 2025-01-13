@@ -840,18 +840,27 @@ impl Select {
     }
 
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
-        let eq = Regex::new(r"^(\w+)\s*=\s*(\w+)$").unwrap();
+        let eq = Regex::new(r#"^(\w+)\s*=\s*"?(\w+)"?$"#).unwrap();
         let gt = Regex::new(r"^(\w+)\s*>\s*(\w+)$").unwrap();
         let gte = Regex::new(r"^(\w+)\s*>=\s*(\w+)$").unwrap();
         let lt = Regex::new(r"^(\w+)\s*<\s*(\w+)$").unwrap();
         let lte = Regex::new(r"^(\w+)\s*<=\s*(\w+)$").unwrap();
-        let is = Regex::new(r"^(\w+) (IS|is) (\w+)$").unwrap();
+        let is = Regex::new(r#"^(\w+)\s+(IS|is)\s+"?(\w+)"?$"#).unwrap();
+        let maybe_quote_value = |value: &str| -> Result<JsonValue> {
+            if value.starts_with("\"") {
+                let value = serde_json::from_str(&value)?;
+                Ok(value)
+            } else {
+                let value = serde_json::from_str(&format!(r#""{value}""#))?;
+                Ok(value)
+            }
+        };
         for filter in filters {
             if eq.is_match(&filter) {
                 let captures = eq.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = serde_json::from_str(&value)?;
+                let value = maybe_quote_value(&value)?;
                 self.filters.push(Filter::Equal { column, value });
             } else if gt.is_match(&filter) {
                 let captures = gt.captures(&filter).unwrap();
@@ -884,7 +893,7 @@ impl Select {
                 let value = &captures.get(3).unwrap().as_str();
                 let value = match value.to_lowercase().as_str() {
                     "null" => JsonValue::Null,
-                    _ => serde_json::from_str(&value)?,
+                    _ => maybe_quote_value(&value)?,
                 };
                 self.filters.push(Filter::Is { column, value });
             } else {
