@@ -2,7 +2,7 @@ use std::fmt::Display;
 use std::{io::Write, path::Path as FilePath};
 
 use anyhow::Result;
-use async_std::sync::{Arc, Mutex};
+use async_std::sync::Arc;
 use axum::http::header;
 use axum::{
     body::Body,
@@ -75,7 +75,7 @@ pub enum DbConnection {
     Sqlx(sqlx::AnyPool),
 
     #[cfg(feature = "rusqlite")]
-    Rusqlite(Mutex<rusqlite::Connection>),
+    Rusqlite(String),
 }
 
 #[derive(Debug)]
@@ -95,11 +95,7 @@ impl DbTransaction<'_> {
                 tx.commit().await?;
             }
             #[cfg(feature = "rusqlite")]
-            DbTransaction::Rusqlite(_tx) => {
-                if 1 == 1 {
-                    todo!();
-                }
-            }
+            DbTransaction::Rusqlite(tx) => tx.commit()?,
         };
         Ok(())
     }
@@ -123,7 +119,7 @@ impl Relatable {
         // of the conditional sqlx/rusqlite compilation.
         #[allow(unused_variables)]
         #[cfg(feature = "rusqlite")]
-        let connection = DbConnection::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
+        let connection = DbConnection::Rusqlite(path.to_string());
 
         #[cfg(feature = "sqlx")]
         let connection = {
@@ -146,7 +142,10 @@ impl Relatable {
         })
     }
 
-    pub async fn begin(&self) -> Result<DbTransaction> {
+    pub async fn begin<'a>(
+        &self,
+        rusqlite_conn: Option<&'a mut rusqlite::Connection>,
+    ) -> Result<DbTransaction<'a>> {
         match &self.connection {
             #[cfg(feature = "sqlx")]
             DbConnection::Sqlx(pool) => {
@@ -154,9 +153,18 @@ impl Relatable {
                 Ok(DbTransaction::Sqlx(tx))
             }
             #[cfg(feature = "rusqlite")]
-            DbConnection::Rusqlite(_conn) => {
-                todo!()
-            }
+            DbConnection::Rusqlite(_path) => match rusqlite_conn {
+                None => {
+                    return Err(RelatableError::InputError(
+                        "Cannot use this function to begin a Rusqlite transaction.".to_string(),
+                    )
+                    .into())
+                }
+                Some(conn) => {
+                    let tx = conn.transaction()?;
+                    Ok(DbTransaction::Rusqlite(tx))
+                }
+            },
         }
     }
 
@@ -532,12 +540,8 @@ where
             Ok(rows)
         }
         #[cfg(feature = "rusqlite")]
-        DbConnection::Rusqlite(conn) => {
-            // The rusqlite::Connection is not thread-safe
-            // so we wrap it with a Mutex
-            // that we have to lock() within this scope.
-            // It might be better to just re-connect?
-            let conn = conn.lock().await;
+        DbConnection::Rusqlite(path) => {
+            let conn = rusqlite::Connection::open(path)?;
             let stmt = conn.prepare(statement)?;
             let column_names = stmt.column_names();
             let mut stmt = conn.prepare(statement)?;
@@ -599,16 +603,9 @@ where
         }
         #[cfg(feature = "rusqlite")]
         DbTransaction::Rusqlite(tx) => {
-            todo!()
-            /*
-            // The rusqlite::Connection is not thread-safe
-            // so we wrap it with a Mutex
-            // that we have to lock() within this scope.
-            // It might be better to just re-connect?
-            let conn = conn.lock().await;
-            let stmt = conn.prepare(statement)?;
+            let stmt = tx.prepare(statement)?;
             let column_names = stmt.column_names();
-            let mut stmt = conn.prepare(statement)?;
+            let mut stmt = tx.prepare(statement)?;
             for (i, param) in params.iter().enumerate() {
                 let param = to_value(param)?;
                 let param = match param {
@@ -625,7 +622,6 @@ where
                 result.push(JsonRow::from_rusqlite(&column_names, row));
             }
             Ok(result)
-            */
         }
     }
 }
@@ -1070,8 +1066,22 @@ pub async fn set_value(
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::default().await?;
 
+    #[cfg(feature = "rusqlite")]
+    let mut conn = match rltbl.connection {
+        DbConnection::Rusqlite(ref path) => rusqlite::Connection::open(path)?,
+        #[cfg(feature = "sqlx")]
+        _ => rusqlite::Connection::open("dummy")?,
+    };
+
     // Begin a new transaction:
-    let mut tx = rltbl.begin().await?;
+    let mut tx = rltbl
+        .begin(match rltbl.connection {
+            #[cfg(feature = "rusqlite")]
+            DbConnection::Rusqlite(_) => Some(&mut conn),
+            #[cfg(feature = "sqlx")]
+            DbConnection::Sqlx(_) => None,
+        })
+        .await?;
 
     let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
                        VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
