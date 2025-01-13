@@ -665,8 +665,11 @@ where
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Filter {
-    Equals { column: String, value: JsonValue },
+    Equal { column: String, value: JsonValue },
     GreaterThan { column: String, value: JsonValue },
+    GreaterThanOrEqual { column: String, value: JsonValue },
+    LessThan { column: String, value: JsonValue },
+    LessThanOrEqual { column: String, value: JsonValue },
 }
 
 impl Display for Filter {
@@ -683,13 +686,25 @@ impl Display for Filter {
             }
         }
         let result = match self {
-            Filter::Equals { column, value } => {
+            Filter::Equal { column, value } => {
                 let value = json_to_string(&value);
                 format!(r#""{column}" = {value}"#)
             }
             Filter::GreaterThan { column, value } => {
                 let value = json_to_string(&value);
                 format!(r#""{column}" > {value}"#)
+            }
+            Filter::GreaterThanOrEqual { column, value } => {
+                let value = json_to_string(&value);
+                format!(r#""{column}" >= {value}"#)
+            }
+            Filter::LessThan { column, value } => {
+                let value = json_to_string(&value);
+                format!(r#""{column}" < {value}"#)
+            }
+            Filter::LessThanOrEqual { column, value } => {
+                let value = json_to_string(&value);
+                format!(r#""{column}" <= {value}"#)
             }
         };
         write!(f, "{result}")
@@ -744,7 +759,7 @@ impl Select {
                 let column = column.to_string();
                 let value = serde_json::from_str(&pattern.replace("eq.", ""));
                 match value {
-                    Ok(value) => filters.push(Filter::Equals { column, value }),
+                    Ok(value) => filters.push(Filter::Equal { column, value }),
                     Err(_) => tracing::warn!("invalid filter value {pattern}"),
                 }
             } else if pattern.starts_with("gt.") {
@@ -752,6 +767,27 @@ impl Select {
                 let value = serde_json::from_str(&pattern.replace("gt.", ""));
                 match value {
                     Ok(value) => filters.push(Filter::GreaterThan { column, value }),
+                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                }
+            } else if pattern.starts_with("gte.") {
+                let column = column.to_string();
+                let value = serde_json::from_str(&pattern.replace("gte.", ""));
+                match value {
+                    Ok(value) => filters.push(Filter::GreaterThanOrEqual { column, value }),
+                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                }
+            } else if pattern.starts_with("lt.") {
+                let column = column.to_string();
+                let value = serde_json::from_str(&pattern.replace("lt.", ""));
+                match value {
+                    Ok(value) => filters.push(Filter::LessThan { column, value }),
+                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                }
+            } else if pattern.starts_with("lte.") {
+                let column = column.to_string();
+                let value = serde_json::from_str(&pattern.replace("lte.", ""));
+                match value {
+                    Ok(value) => filters.push(Filter::LessThanOrEqual { column, value }),
                     Err(_) => tracing::warn!("invalid filter value {pattern}"),
                 }
             }
@@ -787,19 +823,41 @@ impl Select {
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
         let eq = Regex::new(r"^(\w+)=(\w+)$").unwrap();
         let gt = Regex::new(r"^(\w+)>(\w+)$").unwrap();
+        let gte = Regex::new(r"^(\w+)>=(\w+)$").unwrap();
+        let lt = Regex::new(r"^(\w+)<(\w+)$").unwrap();
+        let lte = Regex::new(r"^(\w+)<=(\w+)$").unwrap();
         for filter in filters {
             if eq.is_match(&filter) {
                 let captures = eq.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = serde_json::from_str(&value)?;
-                self.filters.push(Filter::Equals { column, value });
+                self.filters.push(Filter::Equal { column, value });
             } else if gt.is_match(&filter) {
                 let captures = gt.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = serde_json::from_str(&value)?;
                 self.filters.push(Filter::GreaterThan { column, value });
+            } else if gte.is_match(&filter) {
+                let captures = gte.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = serde_json::from_str(&value)?;
+                self.filters
+                    .push(Filter::GreaterThanOrEqual { column, value });
+            } else if lt.is_match(&filter) {
+                let captures = lt.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = serde_json::from_str(&value)?;
+                self.filters.push(Filter::LessThan { column, value });
+            } else if lte.is_match(&filter) {
+                let captures = lte.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = serde_json::from_str(&value)?;
+                self.filters.push(Filter::LessThanOrEqual { column, value });
             } else {
                 return Err(RelatableError::ConfigError(format!("invalid filter {filter}")).into());
             }
@@ -811,7 +869,7 @@ impl Select {
     where
         T: Serialize,
     {
-        self.filters.push(Filter::Equals {
+        self.filters.push(Filter::Equal {
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -823,6 +881,39 @@ impl Select {
         T: Serialize,
     {
         self.filters.push(Filter::GreaterThan {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn gte<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::GreaterThanOrEqual {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn lt<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::LessThan {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn lte<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::LessThanOrEqual {
             column: column.to_string(),
             value: to_value(value)?,
         });
