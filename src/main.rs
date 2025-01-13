@@ -670,6 +670,7 @@ pub enum Filter {
     GreaterThanOrEqual { column: String, value: JsonValue },
     LessThan { column: String, value: JsonValue },
     LessThanOrEqual { column: String, value: JsonValue },
+    Is { column: String, value: JsonValue },
 }
 
 impl Display for Filter {
@@ -705,6 +706,11 @@ impl Display for Filter {
             Filter::LessThanOrEqual { column, value } => {
                 let value = json_to_string(&value);
                 format!(r#""{column}" <= {value}"#)
+            }
+            Filter::Is { column, value } => {
+                // Note that we are presupposing SQLite syntax which is not universal for IS:
+                let value = json_to_string(&value);
+                format!(r#""{column}" IS {value}"#)
             }
         };
         write!(f, "{result}")
@@ -790,6 +796,19 @@ impl Select {
                     Ok(value) => filters.push(Filter::LessThanOrEqual { column, value }),
                     Err(_) => tracing::warn!("invalid filter value {pattern}"),
                 }
+            } else if pattern.starts_with("is.") {
+                let column = column.to_string();
+                let value = pattern.replace("is.", "");
+                match value.to_lowercase().as_str() {
+                    "null" => filters.push(Filter::Is {
+                        column,
+                        value: JsonValue::Null,
+                    }),
+                    _ => match serde_json::from_str(&value) {
+                        Ok(value) => filters.push(Filter::Is { column, value }),
+                        Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    },
+                };
             }
         }
         let limit: usize = query_params
@@ -821,11 +840,12 @@ impl Select {
     }
 
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
-        let eq = Regex::new(r"^(\w+)=(\w+)$").unwrap();
-        let gt = Regex::new(r"^(\w+)>(\w+)$").unwrap();
-        let gte = Regex::new(r"^(\w+)>=(\w+)$").unwrap();
-        let lt = Regex::new(r"^(\w+)<(\w+)$").unwrap();
-        let lte = Regex::new(r"^(\w+)<=(\w+)$").unwrap();
+        let eq = Regex::new(r"^(\w+)\s*=\s*(\w+)$").unwrap();
+        let gt = Regex::new(r"^(\w+)\s*>\s*(\w+)$").unwrap();
+        let gte = Regex::new(r"^(\w+)\s*>=\s*(\w+)$").unwrap();
+        let lt = Regex::new(r"^(\w+)\s*<\s*(\w+)$").unwrap();
+        let lte = Regex::new(r"^(\w+)\s*<=\s*(\w+)$").unwrap();
+        let is = Regex::new(r"^(\w+) (IS|is) (\w+)$").unwrap();
         for filter in filters {
             if eq.is_match(&filter) {
                 let captures = eq.captures(&filter).unwrap();
@@ -858,6 +878,15 @@ impl Select {
                 let value = &captures.get(2).unwrap().as_str();
                 let value = serde_json::from_str(&value)?;
                 self.filters.push(Filter::LessThanOrEqual { column, value });
+            } else if is.is_match(&filter) {
+                let captures = is.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(3).unwrap().as_str();
+                let value = match value.to_lowercase().as_str() {
+                    "null" => JsonValue::Null,
+                    _ => serde_json::from_str(&value)?,
+                };
+                self.filters.push(Filter::Is { column, value });
             } else {
                 return Err(RelatableError::ConfigError(format!("invalid filter {filter}")).into());
             }
@@ -914,6 +943,17 @@ impl Select {
         T: Serialize,
     {
         self.filters.push(Filter::LessThanOrEqual {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn is<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::Is {
             column: column.to_string(),
             value: to_value(value)?,
         });
