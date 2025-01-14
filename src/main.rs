@@ -142,37 +142,6 @@ impl Relatable {
         })
     }
 
-    pub async fn begin<'a>(
-        &self,
-        rusqlite_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
-    ) -> Result<DbTransaction<'a>> {
-        let rusqlite_conn = match rusqlite_conn {
-            None => None,
-            Some(ref mut rusqlite_conn) => Some(rusqlite_conn),
-        };
-
-        match &self.connection {
-            #[cfg(feature = "sqlx")]
-            DbConnection::Sqlx(pool) => {
-                let tx = pool.begin().await?;
-                Ok(DbTransaction::Sqlx(tx))
-            }
-            #[cfg(feature = "rusqlite")]
-            DbConnection::Rusqlite(_conn) => match rusqlite_conn {
-                None => {
-                    return Err(RelatableError::InputError(
-                        "Insert a better error message here!".to_string(),
-                    )
-                    .into())
-                }
-                Some(conn) => {
-                    let tx = conn.transaction()?;
-                    Ok(DbTransaction::Rusqlite(tx))
-                }
-            },
-        }
-    }
-
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
         let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
         let change_id = match query_value(&self.connection, &statement, &vec![table_name]).await? {
@@ -1213,7 +1182,7 @@ pub async fn set_value(
 
     let conn = get_connection(&rltbl);
     let mut conn = unlock_connection(conn).await;
-    let mut tx = rltbl.begin(&mut conn).await?;
+    let mut tx = begin(&rltbl, &mut conn).await?;
 
     let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
                        VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
@@ -1478,6 +1447,32 @@ pub async fn unlock_connection<'a>(
     match conn {
         None => None,
         Some(conn) => Some(conn.lock().await),
+    }
+}
+
+pub async fn begin<'a>(
+    rltbl: &Relatable,
+    rusqlite_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
+) -> Result<DbTransaction<'a>> {
+    match &rltbl.connection {
+        #[cfg(feature = "sqlx")]
+        DbConnection::Sqlx(pool) => {
+            let tx = pool.begin().await?;
+            Ok(DbTransaction::Sqlx(tx))
+        }
+        #[cfg(feature = "rusqlite")]
+        DbConnection::Rusqlite(_conn) => match rusqlite_conn {
+            None => {
+                return Err(RelatableError::InputError(
+                    "Cannot begin Rusqlite transaction: No connection provided".to_string(),
+                )
+                .into())
+            }
+            Some(ref mut conn) => {
+                let tx = conn.transaction()?;
+                Ok(DbTransaction::Rusqlite(tx))
+            }
+        },
     }
 }
 
