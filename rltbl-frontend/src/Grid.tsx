@@ -170,7 +170,8 @@ function useAsyncData<TRowType>(
 }
 
 
-export default function Grid(grid_args: { table: string, columns: Column[], rows: number, height: number, site: any }) {
+export default function Grid(grid_args: { user: string, table: string, columns: Column[], rows: number, height: number, site: any }) {
+  const user = grid_args.user;
   const table = grid_args.table;
   const columns = grid_args.columns;
   const rows = grid_args.rows;
@@ -346,7 +347,36 @@ export default function Grid(grid_args: { table: string, columns: Column[], rows
 
   const onCellsEdited = React.useCallback((newValues: readonly { location: Item; value: EditableGridCell }[]) => {
     console.log("EDITED CELLS", newValues);
-  }, []);
+    var changes: any[] = [];
+    for (const entry of newValues) {
+      changes.push({
+        "type": "Update",
+        row: entry.location[1] + 1,
+        column: columns[entry.location[0]].id,
+        value: entry.value.data
+      })
+    }
+    const body = {
+      action: "Do",
+      table: table,
+      user: user,
+      description: "Set one value",
+      changes: changes
+    };
+    console.log("onCellsEdited body", body);
+    try {
+      fetch(`/table/${table}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body)
+      }).then(x => console.log("onCellsEdited Response", x));
+    } catch (error) {
+      console.error(error.message);
+    }
+
+  }, [user, table, columns]);
 
   // const onRowMoved = React.useCallback((from: number, to: number) => {
   //   console.log("ROW MOVED", from, to);

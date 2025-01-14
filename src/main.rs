@@ -368,6 +368,7 @@ impl Display for ChangeAction {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum Change {
     Update {
         row: usize,
@@ -1369,6 +1370,42 @@ async fn get_table(
     respond(&rltbl, &username, &select, &format).await
 }
 
+async fn post_table(
+    State(rltbl): State<Arc<Relatable>>,
+    Path(path): Path<String>,
+    _session: Session<SessionNullPool>,
+    ExtractJson(changeset): ExtractJson<ChangeSet>,
+) -> Response<Body> {
+    tracing::info!("post_table([rltbl], {path}, {changeset:?})");
+
+    let table = changeset.table.clone();
+    if path != table {
+        return get_500(
+            &RelatableError::InputError(format!(
+                "Changeset table '{table}' does not match URL path {path}"
+            ))
+            .into(),
+        );
+    }
+
+    // WARN: We need to check that the user matches!
+    // let user = changeset.user.clone();
+    // let username: String = session.get("username").unwrap_or_default();
+    // if username != user {
+    //     return get_500(
+    //         &RelatableError::InputError(format!(
+    //             "Changeset user '{user}' does not match session username {username}"
+    //         ))
+    //         .into(),
+    //     );
+    // }
+
+    match rltbl.set_values(&changeset).await {
+        Ok(_) => "POST successful".into_response(),
+        Err(error) => get_500(&error),
+    }
+}
+
 async fn post_sign_in(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
@@ -1451,7 +1488,7 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
         .route("/sign-in", post(post_sign_in))
         .route("/sign-out", post(post_sign_out))
         .route("/cursor", post(post_cursor))
-        .route("/table/{*path}", get(get_table))
+        .route("/table/{*path}", get(get_table).post(post_table))
         .layer(SessionLayer::new(session_store))
         .with_state(shared_state)
 }
