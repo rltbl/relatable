@@ -476,6 +476,67 @@ impl From<JsonRow> for Vec<String> {
     }
 }
 
+/// Given an SQL string that has been bound to the given parameter vector, construct a database
+/// query and return it.
+#[cfg(feature = "sqlx")]
+pub fn prepare_sqlx_query<'a, T>(
+    statement: &'a str,
+    params: &'a Vec<T>,
+) -> Result<sqlx::query::Query<'a, sqlx::Any, sqlx::any::AnyArguments<'a>>>
+where
+    T: Serialize,
+{
+    let mut query = sqlx::query::<sqlx::Any>(&statement);
+    for param in params {
+        let param = to_value(param)?;
+        match param {
+            JsonValue::Number(n) => match n.as_i64() {
+                Some(p) => query = query.bind(p),
+                None => match n.as_f64() {
+                    Some(p) => query = query.bind(p),
+                    None => panic!(),
+                },
+            },
+            JsonValue::String(s) => query = query.bind(s),
+            _ => panic!(),
+        };
+    }
+    Ok(query)
+}
+
+#[cfg(feature = "rusqlite")]
+pub fn submit_rusqlite_statement<T>(
+    stmt: &mut rusqlite::Statement<'_>,
+    params: &Vec<T>,
+) -> Result<Vec<JsonRow>>
+where
+    T: Serialize,
+{
+    let column_names = stmt
+        .column_names()
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>();
+    let column_names = column_names.iter().map(|c| c.as_str()).collect::<Vec<_>>();
+
+    for (i, param) in params.iter().enumerate() {
+        let param = to_value(param)?;
+        let param = match param {
+            JsonValue::String(s) => s,
+            _ => param.to_string(),
+        };
+        // Binding must begin with 1 rather than 0:
+        stmt.raw_bind_parameter(i + 1, param)?;
+    }
+    let mut rows = stmt.raw_query();
+
+    let mut result = Vec::new();
+    while let Some(row) = rows.next()? {
+        result.push(JsonRow::from_rusqlite(&column_names, row));
+    }
+    Ok(result)
+}
+
 // Given a connection and a SQL string, return a vector of JsonRows.
 // This is intended as a low-level function that abstracts over the SQL engine,
 // and whatever result types it returns.
@@ -488,25 +549,10 @@ pub async fn query<T>(
 where
     T: Serialize,
 {
-    // TODO: Refactor
     match connection {
         #[cfg(feature = "sqlx")]
         DbConnection::Sqlx(pool) => {
-            let mut query = sqlx::query(statement);
-            for param in params {
-                let param = to_value(param)?;
-                match param {
-                    JsonValue::Number(n) => match n.as_i64() {
-                        Some(p) => query = query.bind(p),
-                        None => match n.as_f64() {
-                            Some(p) => query = query.bind(p),
-                            None => panic!(),
-                        },
-                    },
-                    JsonValue::String(s) => query = query.bind(s),
-                    _ => panic!(),
-                };
-            }
+            let query = prepare_sqlx_query(statement, params)?;
             let mut rows = vec![];
             for row in query.fetch_all(pool).await? {
                 rows.push(JsonRow::try_from(row)?);
@@ -516,25 +562,8 @@ where
         #[cfg(feature = "rusqlite")]
         DbConnection::Rusqlite(conn) => {
             let conn = conn.lock().await;
-            let stmt = conn.prepare(statement)?;
-            let column_names = stmt.column_names();
             let mut stmt = conn.prepare(statement)?;
-            for (i, param) in params.iter().enumerate() {
-                let param = to_value(param)?;
-                let param = match param {
-                    JsonValue::String(s) => s,
-                    _ => param.to_string(),
-                };
-                // Binding must begin with 1 rather than 0:
-                stmt.raw_bind_parameter(i + 1, param)?;
-            }
-            let mut rows = stmt.raw_query();
-
-            let mut result = Vec::new();
-            while let Some(row) = rows.next()? {
-                result.push(JsonRow::from_rusqlite(&column_names, row));
-            }
-            Ok(result)
+            submit_rusqlite_statement(&mut stmt, params)
         }
     }
 }
@@ -554,21 +583,7 @@ where
     match transaction {
         #[cfg(feature = "sqlx")]
         DbTransaction::Sqlx(tx) => {
-            let mut query = sqlx::query(statement);
-            for param in params {
-                let param = to_value(param)?;
-                match param {
-                    JsonValue::Number(n) => match n.as_i64() {
-                        Some(p) => query = query.bind(p),
-                        None => match n.as_f64() {
-                            Some(p) => query = query.bind(p),
-                            None => panic!(),
-                        },
-                    },
-                    JsonValue::String(s) => query = query.bind(s),
-                    _ => panic!(),
-                };
-            }
+            let query = prepare_sqlx_query(statement, params)?;
             let mut rows = vec![];
             for row in query.fetch_all(tx.acquire().await?).await? {
                 rows.push(JsonRow::try_from(row)?);
@@ -577,26 +592,19 @@ where
         }
         #[cfg(feature = "rusqlite")]
         DbTransaction::Rusqlite(tx) => {
-            let stmt = tx.prepare(statement)?;
-            let column_names = stmt.column_names();
             let mut stmt = tx.prepare(statement)?;
-            for (i, param) in params.iter().enumerate() {
-                let param = to_value(param)?;
-                let param = match param {
-                    JsonValue::String(s) => s,
-                    _ => param.to_string(),
-                };
-                // Binding must begin with 1 rather than 0:
-                stmt.raw_bind_parameter(i + 1, param)?;
-            }
-            let mut rows = stmt.raw_query();
-
-            let mut result = Vec::new();
-            while let Some(row) = rows.next()? {
-                result.push(JsonRow::from_rusqlite(&column_names, row));
-            }
-            Ok(result)
+            submit_rusqlite_statement(&mut stmt, params)
         }
+    }
+}
+
+pub fn extract_row_content(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
+    match rows.iter().next() {
+        Some(row) => match row.content.values().next() {
+            Some(value) => Ok(Some(value.clone())),
+            None => Ok(None),
+        },
+        None => Ok(None),
     }
 }
 
@@ -608,15 +616,8 @@ pub async fn query_value<T>(
 where
     T: Serialize,
 {
-    // TODO: Refactor
     let rows = query(connection, statement, params).await?;
-    match rows.iter().next() {
-        Some(row) => match row.content.values().next() {
-            Some(value) => Ok(Some(value.clone())),
-            None => Ok(None),
-        },
-        None => Ok(None),
-    }
+    extract_row_content(&rows)
 }
 
 pub async fn query_value_tx<T>(
@@ -628,13 +629,7 @@ where
     T: Serialize,
 {
     let rows = query_tx(transaction, statement, params).await?;
-    match rows.iter().next() {
-        Some(row) => match row.content.values().next() {
-            Some(value) => Ok(Some(value.clone())),
-            None => Ok(None),
-        },
-        None => Ok(None),
-    }
+    extract_row_content(&rows)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1181,8 +1176,8 @@ pub async fn set_value(
     let rltbl = Relatable::default().await?;
 
     // Get the connection and begin a transaction:
-    let mut locked_conn = lock_connection(&rltbl).await;
-    let mut tx = begin(&rltbl, &mut locked_conn).await?;
+    let mut locked_conn = lock_connection(&rltbl.connection).await;
+    let mut tx = begin(&rltbl.connection, &mut locked_conn).await?;
 
     let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
                        VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
@@ -1433,9 +1428,9 @@ pub async fn serve(_cli: &Cli, host: &str, port: &u16) -> Result<()> {
 }
 
 pub async fn lock_connection<'a>(
-    rltbl: &'a Relatable,
+    connection: &'a DbConnection,
 ) -> Option<MutexGuard<'a, rusqlite::Connection>> {
-    let conn = match &rltbl.connection {
+    let conn = match connection {
         #[cfg(feature = "sqlx")]
         DbConnection::Sqlx(_) => None,
         #[cfg(feature = "rusqlite")]
@@ -1448,10 +1443,10 @@ pub async fn lock_connection<'a>(
 }
 
 pub async fn begin<'a>(
-    rltbl: &Relatable,
+    connection: &DbConnection,
     locked_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
 ) -> Result<DbTransaction<'a>> {
-    match &rltbl.connection {
+    match connection {
         #[cfg(feature = "sqlx")]
         DbConnection::Sqlx(pool) => {
             let tx = pool.begin().await?;
