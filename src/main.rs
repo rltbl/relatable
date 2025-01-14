@@ -144,8 +144,13 @@ impl Relatable {
 
     pub async fn begin<'a>(
         &self,
-        rusqlite_conn: Option<&'a mut MutexGuard<'_, rusqlite::Connection>>,
+        rusqlite_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
     ) -> Result<DbTransaction<'a>> {
+        let rusqlite_conn = match rusqlite_conn {
+            None => None,
+            Some(ref mut rusqlite_conn) => Some(rusqlite_conn),
+        };
+
         match &self.connection {
             #[cfg(feature = "sqlx")]
             DbConnection::Sqlx(pool) => {
@@ -1206,26 +1211,9 @@ pub async fn set_value(
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::default().await?;
 
-    #[allow(unused_variables)]
-    let dummy_conn = Mutex::new(rusqlite::Connection::open("dummy")?);
-
-    #[cfg(feature = "rusqlite")]
-    let mut conn = match rltbl.connection {
-        #[cfg(feature = "rusqlite")]
-        DbConnection::Rusqlite(ref conn) => conn.lock().await,
-        #[cfg(feature = "sqlx")]
-        DbConnection::Sqlx(ref _pool) => dummy_conn.lock().await,
-    };
-
-    let conn_opt = match rltbl.connection {
-        #[cfg(feature = "rusqlite")]
-        DbConnection::Rusqlite(_) => Some(&mut conn),
-        #[cfg(feature = "sqlx")]
-        DbConnection::Sqlx(_) => None,
-    };
-
-    // Begin a new transaction:
-    let mut tx = rltbl.begin(conn_opt).await?;
+    let conn = get_connection(&rltbl);
+    let mut conn = unlock_connection(conn).await;
+    let mut tx = rltbl.begin(&mut conn).await?;
 
     let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
                        VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
@@ -1473,6 +1461,24 @@ pub async fn serve(_cli: &Cli, host: &str, port: &u16) -> Result<()> {
     let rltbl = Relatable::default().await?;
     app(rltbl, host, port)?;
     Ok(())
+}
+
+pub fn get_connection<'a>(rltbl: &'a Relatable) -> Option<&'a Mutex<rusqlite::Connection>> {
+    match &rltbl.connection {
+        #[cfg(feature = "sqlx")]
+        DbConnection::Sqlx(_) => None,
+        #[cfg(feature = "rusqlite")]
+        DbConnection::Rusqlite(conn) => Some(conn),
+    }
+}
+
+pub async fn unlock_connection<'a>(
+    conn: Option<&'a Mutex<rusqlite::Connection>>,
+) -> Option<MutexGuard<'a, rusqlite::Connection>> {
+    match conn {
+        None => None,
+        Some(conn) => Some(conn.lock().await),
+    }
 }
 
 // From https://github.com/tokio-rs/axum/blob/main/examples/graceful-shutdown/src/main.rs
