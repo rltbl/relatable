@@ -1180,8 +1180,7 @@ pub async fn set_value(
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::default().await?;
 
-    let conn = get_connection(&rltbl);
-    let mut conn = unlock_connection(conn).await;
+    let mut conn = unlock_connection(&rltbl).await;
     let mut tx = begin(&rltbl, &mut conn).await?;
 
     let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
@@ -1432,18 +1431,15 @@ pub async fn serve(_cli: &Cli, host: &str, port: &u16) -> Result<()> {
     Ok(())
 }
 
-pub fn get_connection<'a>(rltbl: &'a Relatable) -> Option<&'a Mutex<rusqlite::Connection>> {
-    match &rltbl.connection {
+pub async fn unlock_connection<'a>(
+    rltbl: &'a Relatable,
+) -> Option<MutexGuard<'a, rusqlite::Connection>> {
+    let conn = match &rltbl.connection {
         #[cfg(feature = "sqlx")]
         DbConnection::Sqlx(_) => None,
         #[cfg(feature = "rusqlite")]
         DbConnection::Rusqlite(conn) => Some(conn),
-    }
-}
-
-pub async fn unlock_connection<'a>(
-    conn: Option<&'a Mutex<rusqlite::Connection>>,
-) -> Option<MutexGuard<'a, rusqlite::Connection>> {
+    };
     match conn {
         None => None,
         Some(conn) => Some(conn.lock().await),
