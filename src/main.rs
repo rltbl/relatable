@@ -1180,8 +1180,9 @@ pub async fn set_value(
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::default().await?;
 
-    let mut conn = get_connection(&rltbl).await;
-    let mut tx = begin(&rltbl, &mut conn).await?;
+    // Get the connection and begin a transaction:
+    let mut locked_conn = lock_connection(&rltbl).await;
+    let mut tx = begin(&rltbl, &mut locked_conn).await?;
 
     let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
                        VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
@@ -1431,7 +1432,7 @@ pub async fn serve(_cli: &Cli, host: &str, port: &u16) -> Result<()> {
     Ok(())
 }
 
-pub async fn get_connection<'a>(
+pub async fn lock_connection<'a>(
     rltbl: &'a Relatable,
 ) -> Option<MutexGuard<'a, rusqlite::Connection>> {
     let conn = match &rltbl.connection {
@@ -1448,7 +1449,7 @@ pub async fn get_connection<'a>(
 
 pub async fn begin<'a>(
     rltbl: &Relatable,
-    rusqlite_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
+    locked_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
 ) -> Result<DbTransaction<'a>> {
     match &rltbl.connection {
         #[cfg(feature = "sqlx")]
@@ -1457,10 +1458,10 @@ pub async fn begin<'a>(
             Ok(DbTransaction::Sqlx(tx))
         }
         #[cfg(feature = "rusqlite")]
-        DbConnection::Rusqlite(_conn) => match rusqlite_conn {
+        DbConnection::Rusqlite(_conn) => match locked_conn {
             None => {
                 return Err(RelatableError::InputError(
-                    "Cannot begin Rusqlite transaction: No connection provided".to_string(),
+                    "Can't begin Rusqlite transaction: No locked connection provided".to_string(),
                 )
                 .into())
             }
