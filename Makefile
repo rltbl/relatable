@@ -1,13 +1,39 @@
+MAKEFLAGS += --warn-undefined-variables
+SHELL := bash
+.SHELLFLAGS := -eu -o pipefail -c
+.DEFAULT_GOAL := debug
+.DELETE_ON_ERROR:
+.SUFFIXES:
+
 .PHONY: usage
 usage:
 	@echo "make [TASK]"
 	@echo "  debug      build debug binary"
 
-.PHONY: debug
-debug: target/debug/nanobot
+.PHONY: debug release sqlx sqlx_debug sqlx_release rusqlite rusqlite_debug rusqlite_release
 
-target/debug/nanobot: Cargo.* src/** src/resources/main.js src/resources/main.css
+debug: rusqlite_debug
+
+release: rusqlite_release
+
+sqlx: sqlx_debug
+
+sqlx_debug:
+	cargo build --features sqlx
+
+sqlx_release:
+	cargo build --release --features sqlx
+
+rusqlite: rusqlite_debug
+
+rusqlite_debug:
 	cargo build
+
+rusqlite_release:
+	cargo build --release
+
+debug-serve: target/debug/rltbl
+	$< serve --port 3000
 
 src/resources/:
 	mkdir -p $@
