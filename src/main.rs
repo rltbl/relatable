@@ -253,7 +253,6 @@ impl Relatable {
         let mut locked_conn = lock_connection(&self.connection).await;
         let mut tx = begin(&self.connection, &mut locked_conn).await?;
 
-        // WARN! This should all take place inside a transaction.
         // Make sure the user is present.
         let color = random_color::RandomColor::new().to_hex();
         let statement = r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#;
