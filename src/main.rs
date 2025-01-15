@@ -923,6 +923,61 @@ pub enum Filter {
     LessThan { column: String, value: JsonValue },
     LessThanOrEqual { column: String, value: JsonValue },
     Is { column: String, value: JsonValue },
+    In { column: String, value: JsonValue },
+}
+
+fn render_in_not_in<S: Into<String>>(
+    lhs: S,
+    options: &Vec<JsonValue>,
+    positive: bool,
+) -> Result<String> {
+    let negation;
+    if !positive {
+        negation = " NOT";
+    } else {
+        negation = "";
+    }
+
+    let mut values = vec![];
+    let mut is_string_list = false;
+    for (i, option) in options.iter().enumerate() {
+        match option {
+            JsonValue::String(s) => {
+                if i == 0 {
+                    is_string_list = true;
+                } else if !is_string_list {
+                    return Err(RelatableError::InputError(format!(
+                        "{:?} contains both text and numeric types.",
+                        options
+                    ))
+                    .into());
+                }
+                values.push(format!("{s}"))
+            }
+            JsonValue::Number(n) => {
+                if i == 0 {
+                    is_string_list = false;
+                } else if is_string_list {
+                    return Err(RelatableError::InputError(format!(
+                        "{:?} contains both text and numeric types.",
+                        options
+                    ))
+                    .into());
+                }
+                values.push(format!("{n}"))
+            }
+            _ => {
+                return Err(RelatableError::InputError(format!(
+                    "{:?} is not an array of strings or numbers.",
+                    options
+                ))
+                .into())
+            }
+        };
+    }
+    let value_list = format!("({})", values.join(", "));
+    let filter_sql = format!("{}{} IN {}", lhs.into(), negation, value_list);
+    Ok(filter_sql)
 }
 
 impl Display for Filter {
@@ -963,6 +1018,17 @@ impl Display for Filter {
                 // Note that we are presupposing SQLite syntax which is not universal for IS:
                 let value = json_to_string(&value);
                 format!(r#""{column}" IS {value}"#)
+            }
+            Filter::In { column, value } => {
+                if let JsonValue::Array(values) = value {
+                    let filter_str = match render_in_not_in(column, values, true) {
+                        Err(_) => return Err(std::fmt::Error),
+                        Ok(filter_str) => filter_str,
+                    };
+                    format!("{filter_str}")
+                } else {
+                    return Err(std::fmt::Error);
+                }
             }
         };
         write!(f, "{result}")
@@ -1061,6 +1127,11 @@ impl Select {
                         Err(_) => tracing::warn!("invalid filter value {pattern}"),
                     },
                 };
+            } else if pattern.starts_with("in.") {
+                let column = column.to_string();
+                let value = pattern.replace("in.", "");
+                println!("COLUMN: {column}, VALUE: {value}");
+                todo!()
             }
         }
         let limit: usize = query_params
@@ -1098,6 +1169,8 @@ impl Select {
         let lt = Regex::new(r"^(\w+)\s*<\s*(\w+)$").unwrap();
         let lte = Regex::new(r"^(\w+)\s*<=\s*(\w+)$").unwrap();
         let is = Regex::new(r#"^(\w+)\s+(IS|is)\s+"?(\w+)"?$"#).unwrap();
+        let is_in = Regex::new(r#"^(\w+)\s+(IN|in)\s+\((\w+(,\s*\w+)*)\)$"#).unwrap();
+        // Used for text types:
         let maybe_quote_value = |value: &str| -> Result<JsonValue> {
             if value.starts_with("\"") {
                 let value = serde_json::from_str(&value)?;
@@ -1148,6 +1221,19 @@ impl Select {
                     _ => maybe_quote_value(&value)?,
                 };
                 self.filters.push(Filter::Is { column, value });
+            } else if is_in.is_match(&filter) {
+                let captures = is_in.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let values = &captures.get(3).unwrap().as_str();
+                let separator = Regex::new(r"\s*,\s*").unwrap();
+                let values = separator
+                    .split(values)
+                    .map(|v| serde_json::from_str::<JsonValue>(v).unwrap_or(json!(v.to_string())))
+                    .collect::<Vec<_>>();
+                self.filters.push(Filter::In {
+                    column,
+                    value: json!(values),
+                });
             } else {
                 return Err(RelatableError::ConfigError(format!("invalid filter {filter}")).into());
             }
@@ -1215,6 +1301,17 @@ impl Select {
         T: Serialize,
     {
         self.filters.push(Filter::Is {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn is_in<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::In {
             column: column.to_string(),
             value: to_value(value)?,
         });
