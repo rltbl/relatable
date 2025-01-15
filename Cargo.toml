@@ -16,7 +16,7 @@ regex = "1.11.1"
 rusqlite = { version = "0.32.1", features = ["bundled", "serde_json"], optional = true }
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = { version = "1.0.133", features = ["preserve_order"] }
-sqlx = { version = "0.8", features = ["runtime-async-std", "sqlite"], optional = true }
+sqlx = { version = "0.8", features = ["runtime-async-std", "any", "sqlite"], optional = true }
 sqlx-core = { version = "0.8.2", optional = true }
 tabwriter = "1.4.0"
 tokio = { version = "1.42.0", features = ["full"] }
@@ -26,4 +26,4 @@ tracing-subscriber = "0.3.19"
 [features]
 default = ["rusqlite"]
 rusqlite = ["dep:rusqlite"]
-sqlx = ["dep:sqlx", "dep:sqlx-core"]
+sqlx = ["dep:sqlx", "dep:sqlx", "dep:sqlx-core"]

@@ -2,7 +2,7 @@ use std::fmt::Display;
 use std::{io::Write, path::Path as FilePath};
 
 use anyhow::Result;
-use async_std::sync::{Arc, Mutex};
+use async_std::sync::{Arc, Mutex, MutexGuard};
 use axum::http::header;
 use axum::{
     body::Body,
@@ -22,7 +22,7 @@ use rand::Rng as _;
 use rand::SeedableRng as _;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
+use serde_json::{json, to_string_pretty, to_value, Map as JsonMap, Value as JsonValue};
 use tabwriter::TabWriter;
 use tokio::net::TcpListener;
 
@@ -30,7 +30,7 @@ use tokio::net::TcpListener;
 use rusqlite;
 
 #[cfg(feature = "sqlx")]
-use sqlx::{Column as _, Row as _};
+use sqlx::{Acquire as _, Column as _, Row as _};
 
 #[cfg(feature = "sqlx")]
 use sqlx_core::any::AnyTypeInfoKind;
@@ -79,6 +79,29 @@ pub enum DbConnection {
 }
 
 #[derive(Debug)]
+pub enum DbTransaction<'a> {
+    #[cfg(feature = "sqlx")]
+    Sqlx(sqlx::Transaction<'a, sqlx::Any>),
+
+    #[cfg(feature = "rusqlite")]
+    Rusqlite(rusqlite::Transaction<'a>),
+}
+
+impl DbTransaction<'_> {
+    pub async fn commit(self) -> Result<()> {
+        match self {
+            #[cfg(feature = "sqlx")]
+            DbTransaction::Sqlx(tx) => {
+                tx.commit().await?;
+            }
+            #[cfg(feature = "rusqlite")]
+            DbTransaction::Rusqlite(tx) => tx.commit()?,
+        };
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct Relatable {
     pub connection: DbConnection,
     pub minijinja: Environment<'static>,
@@ -90,11 +113,21 @@ impl Relatable {
     pub async fn default() -> Result<Self> {
         // Set up database connection.
         let path = ".relatable/relatable.db";
-        // let url = format!("sqlite://{path}");
-        // sqlx::any::install_default_drivers();
-        // let connection = DbConnection::Sqlx(sqlx::AnyPool::connect(path).await?);
+
+        // We suppress warnings for unused variables for this particular variable because the
+        // compiler is becoming confused about which variables have been actually used as a result
+        // of the conditional sqlx/rusqlite compilation.
+        #[allow(unused_variables)]
         #[cfg(feature = "rusqlite")]
         let connection = DbConnection::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
+
+        #[cfg(feature = "sqlx")]
+        let connection = {
+            let url = format!("sqlite://{path}?mode=rwc");
+            sqlx::any::install_default_drivers();
+            let connection = DbConnection::Sqlx(sqlx::AnyPool::connect(&url).await?);
+            connection
+        };
 
         // Set up template environment.
         let mut env = Environment::new();
@@ -102,7 +135,7 @@ impl Relatable {
         env.add_template("table.html", table_html)?;
 
         Ok(Self {
-            connection,
+            connection: connection,
             minijinja: env,
             default_limit: 100,
             max_limit: 1000,
@@ -110,9 +143,9 @@ impl Relatable {
     }
 
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
-        let statement =
-            format!(r#"SELECT max(change_id) FROM history WHERE "table" = '{table_name}'"#);
-        let change_id = match query_value(&self.connection, &statement).await? {
+        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        let change_id = match query_value(&self.connection, &statement, Some(&params)).await? {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
@@ -134,7 +167,7 @@ impl Relatable {
     pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
         // WARN: SQLite only!
         let statement = format!(r#"SELECT * FROM pragma_table_info("{table_name}");"#);
-        Ok(query(&self.connection, &statement)
+        Ok(query(&self.connection, &statement, None)
             .await?
             .iter()
             .map(|row| Column {
@@ -147,9 +180,10 @@ impl Relatable {
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
         let table = self.get_table(&select.table_name).await?;
         let columns = self.fetch_columns(&select.table_name).await?;
-        let statement = select.to_sql()?;
+        let (statement, params) = select.to_sqlite()?;
         tracing::debug!("SQL {statement}");
-        let json_rows = query(&self.connection, &statement).await?;
+        let params = json!(params);
+        let json_rows = query(&self.connection, &statement, Some(&params)).await?;
 
         let count = json_rows.len();
         let total = match json_rows.get(0) {
@@ -177,8 +211,9 @@ impl Relatable {
     }
 
     pub async fn fetch_json_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
-        let statement = select.to_sql()?;
-        query(&self.connection, &statement).await
+        let (statement, params) = select.to_sqlite()?;
+        let params = json!(params);
+        query(&self.connection, &statement, Some(&params)).await
     }
 }
 
@@ -325,46 +360,53 @@ where
 }
 
 pub struct JsonRow {
-    content: IndexMap<String, JsonValue>,
+    content: JsonMap<String, JsonValue>,
 }
 
 #[cfg(feature = "sqlx")]
-impl From<sqlx::any::AnyRow> for JsonRow {
-    fn from(row: sqlx::any::AnyRow) -> Self {
-        let mut content = IndexMap::new();
+impl TryFrom<sqlx::any::AnyRow> for JsonRow {
+    fn try_from(row: sqlx::any::AnyRow) -> Result<Self> {
+        let mut content = JsonMap::new();
         for column in row.columns() {
             let value = match column.type_info().kind() {
                 AnyTypeInfoKind::SmallInt | AnyTypeInfoKind::Integer | AnyTypeInfoKind::BigInt => {
-                    let value: i32 = row.try_get(column.ordinal()).unwrap_or_default();
+                    let value: i32 = row.try_get(column.ordinal())?;
                     JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Real | AnyTypeInfoKind::Double => {
-                    let value: f64 = row.try_get(column.ordinal()).unwrap_or_default();
+                    let value: f64 = row.try_get(column.ordinal())?;
                     JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Text => {
-                    let value: String = row.try_get(column.ordinal()).unwrap_or_default();
+                    let value: String = row.try_get(column.ordinal())?;
                     JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Bool => {
-                    let value: bool = row.try_get(column.ordinal()).unwrap_or_default();
+                    let value: bool = row.try_get(column.ordinal())?;
                     JsonValue::from(value)
                 }
                 AnyTypeInfoKind::Null => JsonValue::Null,
-                AnyTypeInfoKind::Blob => unimplemented!("SQL blob"),
+                AnyTypeInfoKind::Blob => {
+                    return Err(
+                        RelatableError::InputError("Unimplemented: SQL blob".to_string()).into(),
+                    );
+                }
             };
             content.insert(column.name().into(), value);
         }
-        Self { content }
+        Ok(Self { content })
     }
+
+    type Error = anyhow::Error;
 }
 
 impl JsonRow {
     pub fn new() -> Self {
         Self {
-            content: IndexMap::new(),
+            content: JsonMap::new(),
         }
     }
+
     pub fn get_string(&self, column_name: &str) -> String {
         let value = self.content.get(column_name);
         match value {
@@ -379,6 +421,7 @@ impl JsonRow {
             None => unimplemented!("missing value"),
         }
     }
+
     fn to_strings(&self) -> Vec<String> {
         let mut result = vec![];
         for column_name in self.content.keys() {
@@ -386,6 +429,7 @@ impl JsonRow {
         }
         result
     }
+
     fn to_string_map(&self) -> IndexMap<String, String> {
         let mut result = IndexMap::new();
         for column_name in self.content.keys() {
@@ -393,9 +437,10 @@ impl JsonRow {
         }
         result
     }
+
     #[cfg(feature = "rusqlite")]
     fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
-        let mut content = IndexMap::new();
+        let mut content = JsonMap::new();
         for column_name in column_names {
             let value = match row.get_ref(*column_name) {
                 Ok(value) => match value {
@@ -434,40 +479,140 @@ impl From<JsonRow> for Vec<String> {
     }
 }
 
+/// Given an SQL string that has been bound to the given parameter vector, construct a database
+/// query and return it.
+#[cfg(feature = "sqlx")]
+pub fn prepare_sqlx_query<'a>(
+    statement: &'a str,
+    params: Option<&'a JsonValue>,
+) -> Result<sqlx::query::Query<'a, sqlx::Any, sqlx::any::AnyArguments<'a>>> {
+    let mut query = sqlx::query::<sqlx::Any>(&statement);
+    if let Some(params) = params {
+        for param in params.as_array().unwrap() {
+            match param {
+                JsonValue::Number(n) => match n.as_i64() {
+                    Some(p) => query = query.bind(p),
+                    None => match n.as_f64() {
+                        Some(p) => query = query.bind(p),
+                        None => panic!(),
+                    },
+                },
+                JsonValue::String(s) => query = query.bind(s),
+                _ => panic!(),
+            };
+        }
+    }
+    Ok(query)
+}
+
+#[cfg(feature = "rusqlite")]
+pub fn submit_rusqlite_statement(
+    stmt: &mut rusqlite::Statement<'_>,
+    params: Option<&JsonValue>,
+) -> Result<Vec<JsonRow>> {
+    let column_names = stmt
+        .column_names()
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>();
+    let column_names = column_names.iter().map(|c| c.as_str()).collect::<Vec<_>>();
+
+    if let Some(params) = params {
+        for (i, param) in params.as_array().unwrap().iter().enumerate() {
+            let param = match param {
+                JsonValue::String(s) => s,
+                _ => &param.to_string(),
+            };
+            // Binding must begin with 1 rather than 0:
+            stmt.raw_bind_parameter(i + 1, param)?;
+        }
+    }
+    let mut rows = stmt.raw_query();
+
+    let mut result = Vec::new();
+    while let Some(row) = rows.next()? {
+        result.push(JsonRow::from_rusqlite(&column_names, row));
+    }
+    Ok(result)
+}
+
+pub fn valid_params(params: Option<&JsonValue>) -> bool {
+    if let Some(params) = params {
+        match params {
+            JsonValue::Array(_) => true,
+            _ => false,
+        }
+    } else {
+        true
+    }
+}
+
 // Given a connection and a SQL string, return a vector of JsonRows.
 // This is intended as a low-level function that abstracts over the SQL engine,
 // and whatever result types it returns.
 // Since it uses a vector, statements should be limited to a sane number of rows.
-pub async fn query(connection: &DbConnection, statement: &str) -> Result<Vec<JsonRow>> {
+pub async fn query(
+    connection: &DbConnection,
+    statement: &str,
+    params: Option<&JsonValue>,
+) -> Result<Vec<JsonRow>> {
+    if !valid_params(params) {
+        tracing::warn!("invalid parameter argument");
+        return Ok(vec![]);
+    }
+
     match connection {
         #[cfg(feature = "sqlx")]
-        DbConnection::Sqlx(pool) => sqlx::query(statement)
-            .map(|row| JsonRow::from(row))
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.into()),
+        DbConnection::Sqlx(pool) => {
+            let query = prepare_sqlx_query(statement, params)?;
+            let mut rows = vec![];
+            for row in query.fetch_all(pool).await? {
+                rows.push(JsonRow::try_from(row)?);
+            }
+            Ok(rows)
+        }
         #[cfg(feature = "rusqlite")]
         DbConnection::Rusqlite(conn) => {
-            // The rusqlite::Connection is not thread-safe
-            // so we wrap it with a Mutex
-            // that we have to lock() within this scope.
-            // It might be better to just re-connect?
             let conn = conn.lock().await;
-            let stmt = conn.prepare(statement)?;
-            let column_names = stmt.column_names();
             let mut stmt = conn.prepare(statement)?;
-            let mut rows = stmt.query([])?;
-            let mut result = Vec::new();
-            while let Some(row) = rows.next()? {
-                result.push(JsonRow::from_rusqlite(&column_names, row));
-            }
-            Ok(result)
+            submit_rusqlite_statement(&mut stmt, params)
         }
     }
 }
 
-pub async fn query_value(connection: &DbConnection, statement: &str) -> Result<Option<JsonValue>> {
-    let rows = query(&connection, &statement).await?;
+// Given a connection and a SQL string, return a vector of JsonRows.
+// This is intended as a low-level function that abstracts over the SQL engine,
+// and whatever result types it returns.
+// Since it uses a vector, statements should be limited to a sane number of rows.
+pub async fn query_tx(
+    transaction: &mut DbTransaction<'_>,
+    statement: &str,
+    params: Option<&JsonValue>,
+) -> Result<Vec<JsonRow>> {
+    if !valid_params(params) {
+        tracing::warn!("invalid parameter argument");
+        return Ok(vec![]);
+    }
+
+    match transaction {
+        #[cfg(feature = "sqlx")]
+        DbTransaction::Sqlx(tx) => {
+            let query = prepare_sqlx_query(statement, params)?;
+            let mut rows = vec![];
+            for row in query.fetch_all(tx.acquire().await?).await? {
+                rows.push(JsonRow::try_from(row)?);
+            }
+            Ok(rows)
+        }
+        #[cfg(feature = "rusqlite")]
+        DbTransaction::Rusqlite(tx) => {
+            let mut stmt = tx.prepare(statement)?;
+            submit_rusqlite_statement(&mut stmt, params)
+        }
+    }
+}
+
+pub fn extract_row_content(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
     match rows.iter().next() {
         Some(row) => match row.content.values().next() {
             Some(value) => Ok(Some(value.clone())),
@@ -477,10 +622,32 @@ pub async fn query_value(connection: &DbConnection, statement: &str) -> Result<O
     }
 }
 
+pub async fn query_value(
+    connection: &DbConnection,
+    statement: &str,
+    params: Option<&JsonValue>,
+) -> Result<Option<JsonValue>> {
+    let rows = query(connection, statement, params).await?;
+    extract_row_content(&rows)
+}
+
+pub async fn query_value_tx(
+    transaction: &mut DbTransaction<'_>,
+    statement: &str,
+    params: Option<&JsonValue>,
+) -> Result<Option<JsonValue>> {
+    let rows = query_tx(transaction, statement, params).await?;
+    extract_row_content(&rows)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Filter {
-    Equals { column: String, value: JsonValue },
+    Equal { column: String, value: JsonValue },
     GreaterThan { column: String, value: JsonValue },
+    GreaterThanOrEqual { column: String, value: JsonValue },
+    LessThan { column: String, value: JsonValue },
+    LessThanOrEqual { column: String, value: JsonValue },
+    Is { column: String, value: JsonValue },
 }
 
 impl Display for Filter {
@@ -497,13 +664,30 @@ impl Display for Filter {
             }
         }
         let result = match self {
-            Filter::Equals { column, value } => {
+            Filter::Equal { column, value } => {
                 let value = json_to_string(&value);
                 format!(r#""{column}" = {value}"#)
             }
             Filter::GreaterThan { column, value } => {
                 let value = json_to_string(&value);
                 format!(r#""{column}" > {value}"#)
+            }
+            Filter::GreaterThanOrEqual { column, value } => {
+                let value = json_to_string(&value);
+                format!(r#""{column}" >= {value}"#)
+            }
+            Filter::LessThan { column, value } => {
+                let value = json_to_string(&value);
+                format!(r#""{column}" < {value}"#)
+            }
+            Filter::LessThanOrEqual { column, value } => {
+                let value = json_to_string(&value);
+                format!(r#""{column}" <= {value}"#)
+            }
+            Filter::Is { column, value } => {
+                // Note that we are presupposing SQLite syntax which is not universal for IS:
+                let value = json_to_string(&value);
+                format!(r#""{column}" IS {value}"#)
             }
         };
         write!(f, "{result}")
@@ -558,7 +742,7 @@ impl Select {
                 let column = column.to_string();
                 let value = serde_json::from_str(&pattern.replace("eq.", ""));
                 match value {
-                    Ok(value) => filters.push(Filter::Equals { column, value }),
+                    Ok(value) => filters.push(Filter::Equal { column, value }),
                     Err(_) => tracing::warn!("invalid filter value {pattern}"),
                 }
             } else if pattern.starts_with("gt.") {
@@ -568,6 +752,40 @@ impl Select {
                     Ok(value) => filters.push(Filter::GreaterThan { column, value }),
                     Err(_) => tracing::warn!("invalid filter value {pattern}"),
                 }
+            } else if pattern.starts_with("gte.") {
+                let column = column.to_string();
+                let value = serde_json::from_str(&pattern.replace("gte.", ""));
+                match value {
+                    Ok(value) => filters.push(Filter::GreaterThanOrEqual { column, value }),
+                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                }
+            } else if pattern.starts_with("lt.") {
+                let column = column.to_string();
+                let value = serde_json::from_str(&pattern.replace("lt.", ""));
+                match value {
+                    Ok(value) => filters.push(Filter::LessThan { column, value }),
+                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                }
+            } else if pattern.starts_with("lte.") {
+                let column = column.to_string();
+                let value = serde_json::from_str(&pattern.replace("lte.", ""));
+                match value {
+                    Ok(value) => filters.push(Filter::LessThanOrEqual { column, value }),
+                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                }
+            } else if pattern.starts_with("is.") {
+                let column = column.to_string();
+                let value = pattern.replace("is.", "");
+                match value.to_lowercase().as_str() {
+                    "null" => filters.push(Filter::Is {
+                        column,
+                        value: JsonValue::Null,
+                    }),
+                    _ => match serde_json::from_str(&value) {
+                        Ok(value) => filters.push(Filter::Is { column, value }),
+                        Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    },
+                };
             }
         }
         let limit: usize = query_params
@@ -587,46 +805,92 @@ impl Select {
             ..Default::default()
         }
     }
+
     pub fn limit(mut self, limit: &usize) -> Self {
         self.limit = *limit;
         self
     }
+
     pub fn offset(mut self, offset: &usize) -> Self {
         self.offset = *offset;
         self
     }
+
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
-        let eq = Regex::new(r"^(\w+)=(\w+)$").unwrap();
-        let gt = Regex::new(r"^(\w+)>(\w+)$").unwrap();
+        let eq = Regex::new(r#"^(\w+)\s*=\s*"?(\w+)"?$"#).unwrap();
+        let gt = Regex::new(r"^(\w+)\s*>\s*(\w+)$").unwrap();
+        let gte = Regex::new(r"^(\w+)\s*>=\s*(\w+)$").unwrap();
+        let lt = Regex::new(r"^(\w+)\s*<\s*(\w+)$").unwrap();
+        let lte = Regex::new(r"^(\w+)\s*<=\s*(\w+)$").unwrap();
+        let is = Regex::new(r#"^(\w+)\s+(IS|is)\s+"?(\w+)"?$"#).unwrap();
+        let maybe_quote_value = |value: &str| -> Result<JsonValue> {
+            if value.starts_with("\"") {
+                let value = serde_json::from_str(&value)?;
+                Ok(value)
+            } else {
+                let value = serde_json::from_str(&format!(r#""{value}""#))?;
+                Ok(value)
+            }
+        };
         for filter in filters {
             if eq.is_match(&filter) {
                 let captures = eq.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = serde_json::from_str(&value)?;
-                self.filters.push(Filter::Equals { column, value });
+                let value = maybe_quote_value(&value)?;
+                self.filters.push(Filter::Equal { column, value });
             } else if gt.is_match(&filter) {
                 let captures = gt.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = serde_json::from_str(&value)?;
                 self.filters.push(Filter::GreaterThan { column, value });
+            } else if gte.is_match(&filter) {
+                let captures = gte.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = serde_json::from_str(&value)?;
+                self.filters
+                    .push(Filter::GreaterThanOrEqual { column, value });
+            } else if lt.is_match(&filter) {
+                let captures = lt.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = serde_json::from_str(&value)?;
+                self.filters.push(Filter::LessThan { column, value });
+            } else if lte.is_match(&filter) {
+                let captures = lte.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = serde_json::from_str(&value)?;
+                self.filters.push(Filter::LessThanOrEqual { column, value });
+            } else if is.is_match(&filter) {
+                let captures = is.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(3).unwrap().as_str();
+                let value = match value.to_lowercase().as_str() {
+                    "null" => JsonValue::Null,
+                    _ => maybe_quote_value(&value)?,
+                };
+                self.filters.push(Filter::Is { column, value });
             } else {
                 return Err(RelatableError::ConfigError(format!("invalid filter {filter}")).into());
             }
         }
         Ok(self)
     }
+
     pub fn eq<T>(mut self, column: &str, value: &T) -> Result<Self>
     where
         T: Serialize,
     {
-        self.filters.push(Filter::Equals {
+        self.filters.push(Filter::Equal {
             column: column.to_string(),
             value: to_value(value)?,
         });
         Ok(self)
     }
+
     pub fn gt<T>(mut self, column: &str, value: &T) -> Result<Self>
     where
         T: Serialize,
@@ -637,14 +901,64 @@ impl Select {
         });
         Ok(self)
     }
-    pub fn to_sql(&self) -> Result<String> {
-        tracing::debug!("to_sql: {self:?}");
-        let table = self.table_name.clone();
+
+    pub fn gte<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::GreaterThanOrEqual {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn lt<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::LessThan {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn lte<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::LessThanOrEqual {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn is<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::Is {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn to_sqlite(&self) -> Result<(String, Vec<JsonValue>)> {
+        tracing::debug!("to_sqlite: {self:?}");
+        let table = &self.table_name;
         let mut lines = Vec::new();
         lines.push("SELECT *,".to_string());
         // WARN: The _total count should probably be optional.
         lines.push("  COUNT(1) OVER() AS _total,".to_string());
-        lines.push(format!(r#"  (SELECT MAX(change_id) FROM history WHERE "table" = '{table}' AND "row" = _id) AS _change_id"#));
+        lines.push(format!(
+            r#"  (SELECT MAX(change_id) FROM history
+                   WHERE "table" = ?
+                     AND "row" = _id
+                 ) AS _change_id"#
+        ));
         lines.push(format!(r#"FROM "{}""#, self.table_name));
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
@@ -656,7 +970,8 @@ impl Select {
         if self.offset > 0 {
             lines.push(format!("OFFSET {}", self.offset));
         }
-        Ok(lines.join("\n"))
+
+        Ok((lines.join("\n"), vec![json!(table)]))
     }
 }
 
@@ -847,8 +1162,9 @@ pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &us
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) -> Result<()> {
     tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::default().await?;
-    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = {row}"#);
-    if let Some(value) = query_value(&rltbl.connection, &statement).await? {
+    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
+    let params = json!([row]);
+    if let Some(value) = query_value(&rltbl.connection, &statement, Some(&params)).await? {
         let text = match value {
             JsonValue::String(value) => value.to_string(),
             value => format!("{value}"),
@@ -867,27 +1183,34 @@ pub async fn set_value(
 ) -> Result<()> {
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::default().await?;
-    // WARN! This should all take place inside a transaction.
-    let statement = format!(
-        r#"INSERT INTO change('user', 'type', 'table', 'description', 'content')
-        VALUES ('anonymous', 'do', '{table}', 'Set one value', 'TODO')
-        RETURNING change_id"#
-    );
-    let change_id = query_value(&rltbl.connection, &statement).await?;
+
+    // Get the connection and begin a transaction:
+    let mut locked_conn = lock_connection(&rltbl.connection).await;
+    let mut tx = begin(&rltbl.connection, &mut locked_conn).await?;
+
+    let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
+                       VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
+                       RETURNING change_id"#;
+    let params = json!([table]);
+    let change_id = query_value_tx(&mut tx, &statement, Some(&params)).await?;
     let change_id = change_id
         .expect("a change_id")
         .as_u64()
         .expect("an integer");
-    let statement = format!(
-        r#"INSERT INTO history('change_id', 'table', 'row', 'before', 'after')
-        VALUES ('{change_id}', '{table}', {row}, 'TODO', 'TODO')
-        RETURNING history_id"#
-    );
-    query_value(&rltbl.connection, &statement).await?;
+    let statement = r#"INSERT INTO history("change_id", "table", "row", "before", "after")
+                       VALUES (?, ?, ?, 'TODO', 'TODO')
+                       RETURNING history_id"#;
+    let params = json!([change_id, table, row]);
+    query_value_tx(&mut tx, &statement, Some(&params)).await?;
 
     // WARN: This just sets text!
-    let statement = format!(r#"UPDATE "{table}" SET "{column}" = '{value}' WHERE _id = {row}"#);
-    query(&rltbl.connection, &statement).await?;
+    let statement = format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#);
+    let params = json!([value, row]);
+    query_tx(&mut tx, &statement, Some(&params)).await?;
+
+    // Commit the transaction:
+    tx.commit().await?;
+
     Ok(())
 }
 
@@ -909,59 +1232,59 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
         } else {
             print!("File {file:?} already exists. Use --force to overwrite");
             return Err(
-                RelatableError::ConfigError(format!("Database file already exists")).into(),
+                RelatableError::ConfigError("Database file already exists".to_string()).into(),
             );
         }
     }
 
     // Create and populate the table table
     let rltbl = Relatable::default().await?;
-    let sql = "CREATE TABLE 'table' (
-    _id INTEGER UNIQUE,
-    _order INTEGER UNIQUE,
-    'table' TEXT PRIMARY KEY
-)";
-    query(&rltbl.connection, sql).await?;
+    let sql = r#"CREATE TABLE 'table' (
+      _id INTEGER UNIQUE,
+      _order INTEGER UNIQUE,
+      'table' TEXT PRIMARY KEY
+    )"#;
+    query(&rltbl.connection, sql, None).await?;
     let sql = "INSERT INTO 'table' VALUES (1, 1000, 'table'), (2, 2000, 'penguin')";
-    query(&rltbl.connection, sql).await?;
+    query(&rltbl.connection, sql, None).await?;
 
     // Create the change and history tables
     let rltbl = Relatable::default().await?;
-    let sql = "CREATE TABLE 'change' (
-    change_id INTEGER PRIMARY KEY,
-    'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    'user' TEXT NOT NULL,
-    'type' TEXT NOT NULL,
-    'table' TEXT NOT NULL,
-    'description' TEXT,
-    'content' TEXT
-)";
-    query(&rltbl.connection, sql).await?;
+    let sql = r#"CREATE TABLE 'change' (
+      change_id INTEGER PRIMARY KEY,
+      'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      'user' TEXT NOT NULL,
+      'type' TEXT NOT NULL,
+      'table' TEXT NOT NULL,
+      'description' TEXT,
+      'content' TEXT
+    )"#;
+    query(&rltbl.connection, sql, None).await?;
     let sql = r#"CREATE TABLE 'history' (
-    history_id INTEGER PRIMARY KEY,
-    change_id INTEGER NOT NULL,
-    'table' TEXT NOT NULL,
-    'row' INTEGER NOT NULL,
-    'before' TEXT,
-    'after' TEXT,
-    FOREIGN KEY (change_id) REFERENCES change(change_id),
-    FOREIGN KEY ("table") REFERENCES "table"("table")
-)"#;
-    query(&rltbl.connection, sql).await?;
+      history_id INTEGER PRIMARY KEY,
+      change_id INTEGER NOT NULL,
+      'table' TEXT NOT NULL,
+      'row' INTEGER NOT NULL,
+      'before' TEXT,
+      'after' TEXT,
+      FOREIGN KEY (change_id) REFERENCES change(change_id),
+      FOREIGN KEY ("table") REFERENCES "table"("table")
+    )"#;
+    query(&rltbl.connection, sql, None).await?;
 
     // Create the penguin table.
-    let sql = "CREATE TABLE penguin (
-    _id INTEGER UNIQUE,
-    _order INTEGER UNIQUE,
-    study_name TEXT,
-    sample_number INTEGER,
-    species TEXT,
-    island TEXT,
-    individual_id TEXT,
-    culmen_length REAL,
-    body_mass INTEGER
-)";
-    query(&rltbl.connection, sql).await?;
+    let sql = r#"CREATE TABLE penguin (
+      _id INTEGER UNIQUE,
+      _order INTEGER UNIQUE,
+      study_name TEXT,
+      sample_number INTEGER,
+      species TEXT,
+      island TEXT,
+      individual_id TEXT,
+      culmen_length REAL,
+      body_mass INTEGER
+    )"#;
+    query(&rltbl.connection, sql, None).await?;
 
     // Populate the penguin table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
@@ -973,15 +1296,18 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
         let island = islands.iter().choose(&mut rng).unwrap();
         let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
-        let sql = format!(
-            "INSERT INTO 'penguin' VALUES (
-            {id}, {order},
-            'FAKE123', {id},
-            'Pygoscelis adeliae', '{island}', 'N{id}',
-            {culmen_length}, {body_mass}
-        )"
-        );
-        query(&rltbl.connection, &sql).await?;
+        let sql = r#"INSERT INTO 'penguin'
+                     VALUES (?, ?, 'FAKE123', ?, 'Pygoscelis adeliae', ?, ?, ?, ?)"#;
+        let params = json!([
+            id,
+            order,
+            id,
+            island,
+            format!("N{id}"),
+            culmen_length,
+            body_mass,
+        ]);
+        query(&rltbl.connection, &sql, Some(&params)).await?;
     }
 
     Ok(())
@@ -1041,7 +1367,10 @@ async fn respond(rltbl: &Relatable, select: &Select, format: &Format) -> Respons
         Err(error) => return get_500(&error),
     };
 
-    // format!("get_table:\nPath: {path}, {table_name}, {extension:?}, {format}\nQuery Parameters: {query_params:?}\nResult Set: {pretty}")
+    // format!(
+    //     "get_table:\nPath: {path}, {table_name}, {extension:?}, {format}\nQuery Parameters: \
+    //      {query_params:?}\nResult Set: {pretty}"
+    // );
     let response = match format {
         Format::Html | Format::Default => render_response(&rltbl, &result),
         Format::PrettyJson => {
@@ -1106,6 +1435,47 @@ pub async fn serve(_cli: &Cli, host: &str, port: &u16) -> Result<()> {
     let rltbl = Relatable::default().await?;
     app(rltbl, host, port)?;
     Ok(())
+}
+
+pub async fn lock_connection<'a>(
+    connection: &'a DbConnection,
+) -> Option<MutexGuard<'a, rusqlite::Connection>> {
+    let conn = match connection {
+        #[cfg(feature = "sqlx")]
+        DbConnection::Sqlx(_) => None,
+        #[cfg(feature = "rusqlite")]
+        DbConnection::Rusqlite(conn) => Some(conn),
+    };
+    match conn {
+        None => None,
+        Some(conn) => Some(conn.lock().await),
+    }
+}
+
+pub async fn begin<'a>(
+    connection: &DbConnection,
+    locked_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
+) -> Result<DbTransaction<'a>> {
+    match connection {
+        #[cfg(feature = "sqlx")]
+        DbConnection::Sqlx(pool) => {
+            let tx = pool.begin().await?;
+            Ok(DbTransaction::Sqlx(tx))
+        }
+        #[cfg(feature = "rusqlite")]
+        DbConnection::Rusqlite(_conn) => match locked_conn {
+            None => {
+                return Err(RelatableError::InputError(
+                    "Can't begin Rusqlite transaction: No locked connection provided".to_string(),
+                )
+                .into())
+            }
+            Some(ref mut conn) => {
+                let tx = conn.transaction()?;
+                Ok(DbTransaction::Rusqlite(tx))
+            }
+        },
+    }
 }
 
 // From https://github.com/tokio-rs/axum/blob/main/examples/graceful-shutdown/src/main.rs
