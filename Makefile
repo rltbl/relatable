@@ -32,6 +32,9 @@ rusqlite_debug:
 rusqlite_release:
 	cargo build --release
 
+debug-serve: target/debug/rltbl
+	$< serve --port 3000
+
 src/resources/:
 	mkdir -p $@
 
