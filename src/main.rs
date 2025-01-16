@@ -1,9 +1,9 @@
 use rltbl::{
+    core::RelatableError,
     sql::{
         begin, connect, json_to_string, lock_connection, query, query_one, query_tx, query_value,
         query_value_tx, DbConnection, JsonRow, VecInto,
     },
-    RelatableError,
 };
 use std::fmt::Display;
 use std::{io::Write, path::Path as FilePath};

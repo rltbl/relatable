@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use crate::RelatableError;
+use crate::core::RelatableError;
 
 #[cfg(feature = "rusqlite")]
 use rusqlite;
