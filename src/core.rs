@@ -538,12 +538,15 @@ impl TryFrom<&String> for Format {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Filter {
     Equal { column: String, value: JsonValue },
+    NotEqual { column: String, value: JsonValue },
     GreaterThan { column: String, value: JsonValue },
     GreaterThanOrEqual { column: String, value: JsonValue },
     LessThan { column: String, value: JsonValue },
     LessThanOrEqual { column: String, value: JsonValue },
     Is { column: String, value: JsonValue },
+    IsNot { column: String, value: JsonValue },
     In { column: String, value: JsonValue },
+    NotIn { column: String, value: JsonValue },
 }
 
 fn render_in_not_in<S: Into<String>>(
@@ -619,6 +622,10 @@ impl Display for Filter {
                 let value = json_to_string(&value);
                 format!(r#""{column}" = {value}"#)
             }
+            Filter::NotEqual { column, value } => {
+                let value = json_to_string(&value);
+                format!(r#""{column}" <> {value}"#)
+            }
             Filter::GreaterThan { column, value } => {
                 let value = json_to_string(&value);
                 format!(r#""{column}" > {value}"#)
@@ -640,9 +647,28 @@ impl Display for Filter {
                 let value = json_to_string(&value);
                 format!(r#""{column}" IS {value}"#)
             }
+            Filter::IsNot { column, value } => {
+                // Note that we are presupposing SQLite syntax which is not universal for IS:
+                let value = json_to_string(&value);
+                format!(r#""{column}" IS NOT {value}"#)
+            }
             Filter::In { column, value } => {
                 if let JsonValue::Array(values) = value {
                     let filter_str = match render_in_not_in(column, values, true) {
+                        Err(e) => {
+                            tracing::error!("{e}");
+                            return Err(std::fmt::Error);
+                        }
+                        Ok(filter_str) => filter_str,
+                    };
+                    format!("{filter_str}")
+                } else {
+                    return Err(std::fmt::Error);
+                }
+            }
+            Filter::NotIn { column, value } => {
+                if let JsonValue::Array(values) = value {
+                    let filter_str = match render_in_not_in(column, values, false) {
                         Err(e) => {
                             tracing::error!("{e}");
                             return Err(std::fmt::Error);
@@ -677,6 +703,13 @@ impl Select {
                 let value = serde_json::from_str(&pattern.replace("eq.", ""));
                 match value {
                     Ok(value) => filters.push(Filter::Equal { column, value }),
+                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                }
+            } else if pattern.starts_with("not_eq.") {
+                let column = column.to_string();
+                let value = serde_json::from_str(&pattern.replace("not_eq.", ""));
+                match value {
+                    Ok(value) => filters.push(Filter::NotEqual { column, value }),
                     Err(_) => tracing::warn!("invalid filter value {pattern}"),
                 }
             } else if pattern.starts_with("gt.") {
@@ -720,6 +753,19 @@ impl Select {
                         Err(_) => tracing::warn!("invalid filter value {pattern}"),
                     },
                 };
+            } else if pattern.starts_with("is_not.") {
+                let column = column.to_string();
+                let value = pattern.replace("is_not.", "");
+                match value.to_lowercase().as_str() {
+                    "null" => filters.push(Filter::IsNot {
+                        column,
+                        value: JsonValue::Null,
+                    }),
+                    _ => match serde_json::from_str(&value) {
+                        Ok(value) => filters.push(Filter::IsNot { column, value }),
+                        Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    },
+                };
             } else if pattern.starts_with("in.") {
                 let column = column.to_string();
                 let separator = Regex::new(r"\s*,\s*").unwrap();
@@ -736,6 +782,25 @@ impl Select {
                     .map(|v| serde_json::from_str::<JsonValue>(v).unwrap_or(json!(v.to_string())))
                     .collect::<Vec<_>>();
                 filters.push(Filter::In {
+                    column,
+                    value: json!(values),
+                })
+            } else if pattern.starts_with("not_in.") {
+                let column = column.to_string();
+                let separator = Regex::new(r"\s*,\s*").unwrap();
+                let values = pattern.replace("not_in.", "");
+                let values = match values.strip_prefix("(").and_then(|s| s.strip_suffix(")")) {
+                    None => {
+                        tracing::warn!("invalid filter value {pattern}");
+                        ""
+                    }
+                    Some(s) => s,
+                };
+                let values = separator
+                    .split(values)
+                    .map(|v| serde_json::from_str::<JsonValue>(v).unwrap_or(json!(v.to_string())))
+                    .collect::<Vec<_>>();
+                filters.push(Filter::NotIn {
                     column,
                     value: json!(values),
                 })
@@ -771,12 +836,15 @@ impl Select {
 
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
         let eq = Regex::new(r#"^(\w+)\s*=\s*"?(\w+)"?$"#).unwrap();
+        let not_eq = Regex::new(r#"^(\w+)\s*!=\s*"?(\w+)"?$"#).unwrap();
         let gt = Regex::new(r"^(\w+)\s*>\s*(\w+)$").unwrap();
         let gte = Regex::new(r"^(\w+)\s*>=\s*(\w+)$").unwrap();
         let lt = Regex::new(r"^(\w+)\s*<\s*(\w+)$").unwrap();
         let lte = Regex::new(r"^(\w+)\s*<=\s*(\w+)$").unwrap();
         let is = Regex::new(r#"^(\w+)\s+(IS|is)\s+"?(\w+)"?$"#).unwrap();
+        let is_not = Regex::new(r#"^(\w+)\s+(IS NOT|is not)\s+"?(\w+)"?$"#).unwrap();
         let is_in = Regex::new(r#"^(\w+)\s+(IN|in)\s+\((\w+(,\s*\w+)*)\)$"#).unwrap();
+        let is_not_in = Regex::new(r#"^(\w+)\s+(NOT IN|not in)\s+\((\w+(,\s*\w+)*)\)$"#).unwrap();
         // Used for text types:
         let maybe_quote_value = |value: &str| -> Result<JsonValue> {
             if value.starts_with("\"") {
@@ -794,6 +862,12 @@ impl Select {
                 let value = &captures.get(2).unwrap().as_str();
                 let value = maybe_quote_value(&value)?;
                 self.filters.push(Filter::Equal { column, value });
+            } else if not_eq.is_match(&filter) {
+                let captures = not_eq.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = maybe_quote_value(&value)?;
+                self.filters.push(Filter::NotEqual { column, value });
             } else if gt.is_match(&filter) {
                 let captures = gt.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
@@ -828,6 +902,15 @@ impl Select {
                     _ => maybe_quote_value(&value)?,
                 };
                 self.filters.push(Filter::Is { column, value });
+            } else if is_not.is_match(&filter) {
+                let captures = is_not.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(3).unwrap().as_str();
+                let value = match value.to_lowercase().as_str() {
+                    "null" => JsonValue::Null,
+                    _ => maybe_quote_value(&value)?,
+                };
+                self.filters.push(Filter::IsNot { column, value });
             } else if is_in.is_match(&filter) {
                 let captures = is_in.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
@@ -838,6 +921,19 @@ impl Select {
                     .map(|v| serde_json::from_str::<JsonValue>(v).unwrap_or(json!(v.to_string())))
                     .collect::<Vec<_>>();
                 self.filters.push(Filter::In {
+                    column,
+                    value: json!(values),
+                });
+            } else if is_not_in.is_match(&filter) {
+                let captures = is_not_in.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let values = &captures.get(3).unwrap().as_str();
+                let separator = Regex::new(r"\s*,\s*").unwrap();
+                let values = separator
+                    .split(values)
+                    .map(|v| serde_json::from_str::<JsonValue>(v).unwrap_or(json!(v.to_string())))
+                    .collect::<Vec<_>>();
+                self.filters.push(Filter::NotIn {
                     column,
                     value: json!(values),
                 });
@@ -853,6 +949,17 @@ impl Select {
         T: Serialize,
     {
         self.filters.push(Filter::Equal {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn not_eq<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::NotEqual {
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -914,11 +1021,33 @@ impl Select {
         Ok(self)
     }
 
+    pub fn is_not<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::IsNot {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
     pub fn is_in<T>(mut self, column: &str, value: &T) -> Result<Self>
     where
         T: Serialize,
     {
         self.filters.push(Filter::In {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
+    pub fn is_not_in<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::NotIn {
             column: column.to_string(),
             value: to_value(value)?,
         });
