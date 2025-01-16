@@ -6,8 +6,14 @@
 // Sub-modules
 ///////////////////////////////////////////////////////////////////////////////
 
+/// Command line interface
+pub mod cli;
+
 /// Core functionality
 pub mod core;
+
+/// Web server
+pub mod web;
 
 /// An abstraction over SQL engines
 pub mod sql;

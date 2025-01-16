@@ -499,6 +499,8 @@ impl std::fmt::Display for ResultSet {
     }
 }
 
+// Selects and Filters
+
 pub type QueryParams = IndexMap<String, String>;
 
 pub enum Format {
