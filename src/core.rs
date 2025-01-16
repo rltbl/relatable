@@ -6,14 +6,15 @@ use crate::sql::{
     begin, connect, json_to_string, lock_connection, query, query_one, query_tx, query_value,
     query_value_tx, DbConnection, JsonRow, VecInto,
 };
-use std::{fmt::Display, io::Write, path::Path as FilePath};
 
 use anyhow::Result;
+use enquote::unquote;
 use indexmap::IndexMap;
 use minijinja::{path_loader, Environment};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, to_value, Value as JsonValue};
+use std::{fmt::Display, io::Write, path::Path as FilePath};
 use tabwriter::TabWriter;
 
 #[derive(Debug)]
@@ -571,7 +572,8 @@ fn render_in_not_in<S: Into<String>>(
                     ))
                     .into());
                 }
-                values.push(format!("{s}"))
+                let value = unquote(s).unwrap_or(s.clone());
+                values.push(format!("'{value}'"))
             }
             JsonValue::Number(n) => {
                 if i == 0 {
@@ -641,7 +643,10 @@ impl Display for Filter {
             Filter::In { column, value } => {
                 if let JsonValue::Array(values) = value {
                     let filter_str = match render_in_not_in(column, values, true) {
-                        Err(_) => return Err(std::fmt::Error),
+                        Err(e) => {
+                            tracing::error!("{e}");
+                            return Err(std::fmt::Error);
+                        }
                         Ok(filter_str) => filter_str,
                     };
                     format!("{filter_str}")
@@ -717,9 +722,23 @@ impl Select {
                 };
             } else if pattern.starts_with("in.") {
                 let column = column.to_string();
-                let value = pattern.replace("in.", "");
-                println!("COLUMN: {column}, VALUE: {value}");
-                todo!()
+                let separator = Regex::new(r"\s*,\s*").unwrap();
+                let values = pattern.replace("in.", "");
+                let values = match values.strip_prefix("(").and_then(|s| s.strip_suffix(")")) {
+                    None => {
+                        tracing::warn!("invalid filter value {pattern}");
+                        ""
+                    }
+                    Some(s) => s,
+                };
+                let values = separator
+                    .split(values)
+                    .map(|v| serde_json::from_str::<JsonValue>(v).unwrap_or(json!(v.to_string())))
+                    .collect::<Vec<_>>();
+                filters.push(Filter::In {
+                    column,
+                    value: json!(values),
+                })
             }
         }
         let limit: usize = query_params
