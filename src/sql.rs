@@ -19,8 +19,6 @@ use sqlx::{Acquire as _, Column as _, Row as _};
 #[cfg(feature = "sqlx")]
 use sqlx_core::any::AnyTypeInfoKind;
 
-// ## SQL module
-
 #[derive(Debug)]
 pub enum DbConnection {
     #[cfg(feature = "sqlx")]
@@ -52,6 +50,10 @@ impl DbTransaction<'_> {
         Ok(())
     }
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// Functions for connecting to and querying the database
+///////////////////////////////////////////////////////////////////////////////
 
 pub async fn connect(path: &str) -> Result<DbConnection> {
     // We suppress warnings for unused variables for this particular variable because the
@@ -282,9 +284,9 @@ pub async fn query_value_tx(
     extract_value(&rows)
 }
 
-///////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 // Utilities for dealing with JSON representations of rows
-///////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 
 // WARN: This needs to be thought through.
 pub fn json_to_string(value: &JsonValue) -> String {
