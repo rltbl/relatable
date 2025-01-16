@@ -1,4 +1,6 @@
-// ## API Module
+//! # rltbl/relatable
+//!
+//! This is rltbl::core.
 
 use crate::sql::{
     begin, connect, json_to_string, lock_connection, query, query_one, query_tx, query_value,

@@ -1,3 +1,7 @@
+//! # rltbl/relatable
+//!
+//! This is rltbl::cli
+
 use crate::{
     core::{Change, ChangeAction, ChangeSet, Relatable, RelatableError},
     sql::{query, query_value, VecInto},

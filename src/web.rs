@@ -1,3 +1,7 @@
+//! # rltbl/relatable
+//!
+//! This is rltbl::web.
+
 use crate::{
     cli::Cli,
     core::{ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Select},
