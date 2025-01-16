@@ -6,23 +6,25 @@ use async_std::sync::{Arc, Mutex, MutexGuard};
 use axum::http::header;
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Json as ExtractJson, Path, Query, State},
     http::{HeaderMap, Response, StatusCode},
     response::{Html, IntoResponse, Json, Redirect},
-    routing::get,
-    Router,
+    routing::{get, post},
+    Form, Router,
 };
+use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, SessionStore};
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
+use futures::executor::block_on;
 use indexmap::IndexMap;
-use minijinja::{context, Environment};
+use minijinja::{context, path_loader, Environment};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom as _;
 use rand::Rng as _;
 use rand::SeedableRng as _;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, to_string_pretty, to_value, Map as JsonMap, Value as JsonValue};
+use serde_json::{from_str, json, to_string_pretty, to_value, Map as JsonMap, Value as JsonValue};
 use tabwriter::TabWriter;
 use tokio::net::TcpListener;
 use tower_service::Service;
@@ -40,6 +42,8 @@ use sqlx_core::any::AnyTypeInfoKind;
 
 #[derive(Debug)]
 pub enum RelatableError {
+    /// An error in the configuration of a ChangeSet:
+    ChangeError(String),
     /// An error in the Relatable configuration:
     ConfigError(String),
     /// An error that occurred while reading or writing to a CSV/TSV:
@@ -105,7 +109,7 @@ impl DbTransaction<'_> {
 #[derive(Debug)]
 pub struct Relatable {
     pub connection: DbConnection,
-    pub minijinja: Environment<'static>,
+    // pub minijinja: Environment<'static>,
     pub default_limit: usize,
     pub max_limit: usize,
 }
@@ -130,17 +134,39 @@ impl Relatable {
             connection
         };
 
-        // Set up template environment.
-        let mut env = Environment::new();
-        let table_html = include_str!("templates/table.html");
-        env.add_template("table.html", table_html)?;
-
         Ok(Self {
-            connection: connection,
-            minijinja: env,
+            connection,
+            // minijinja: env,
             default_limit: 100,
             max_limit: 1000,
         })
+    }
+
+    pub fn render<T: Serialize>(&self, template: &str, context: T) -> Result<String> {
+        // TODO: Optionally we should set up the environment once and store it,
+        // but during development it's very convenient to rebuild every time.
+        let mut env = Environment::new();
+
+        // Load default template strings at compile time.
+        let templates = IndexMap::from([("table.html", include_str!("templates/table.html"))]);
+
+        // Load templates dynamically if src/templates/ exists,
+        // otherwise use strings from compile time.
+        // TODO: This should be a configuration option.
+        let dir = "src/templates/";
+        if FilePath::new(dir).is_dir() {
+            env.set_loader(path_loader(dir));
+        };
+        for (name, content) in templates {
+            match env.get_template(name) {
+                Ok(_) => (),
+                Err(_) => env.add_template(name, content).unwrap(),
+            }
+        }
+
+        env.get_template(template)?
+            .render(context)
+            .map_err(|e| e.into())
     }
 
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
@@ -216,6 +242,188 @@ impl Relatable {
         let params = json!(params);
         query(&self.connection, &statement, Some(&params)).await
     }
+
+    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
+        let action = changeset.action.to_string();
+        let user = changeset.user.clone();
+        let table = changeset.table.clone();
+        let description = changeset.description.clone();
+
+        // Get the connection and begin a transaction:
+        let mut locked_conn = lock_connection(&self.connection).await;
+        let mut tx = begin(&self.connection, &mut locked_conn).await?;
+
+        // Make sure the user is present.
+        let color = random_color::RandomColor::new().to_hex();
+        let statement = r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#;
+        let params = json!([user, color]);
+        query_tx(&mut tx, &statement, Some(&params)).await?;
+
+        // Update the user's cursor position.
+        let cursor = changeset.to_cursor()?;
+        let statement =
+            r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
+        let params = json!([to_value(cursor).unwrap_or_default(), user]);
+        query_value_tx(&mut tx, &statement, Some(&params)).await?;
+
+        let statement = r#"INSERT INTO change('user', 'action', 'table', 'description', 'content')
+                           VALUES (?, ?, ?, ?, ?)
+                           RETURNING change_id"#;
+        let content = to_value(&changeset.changes).unwrap_or_default();
+        let params = json!([user, action, table, description, content]);
+        let change_id = query_value_tx(&mut tx, &statement, Some(&params)).await?;
+        let change_id = change_id
+            .expect("a change_id")
+            .as_u64()
+            .expect("an integer");
+
+        for change in &changeset.changes {
+            tracing::debug!("CHANGE {change:?}");
+            match change {
+                Change::Update { row, column, value } => {
+                    let statement = r#"INSERT INTO history
+                                       ('change_id', 'table', 'row', 'before', 'after')
+                                       VALUES (?, ?, ?, 'TODO', 'TODO')
+                                       RETURNING history_id"#;
+                    let params = json!([change_id, table, row]);
+                    query_value_tx(&mut tx, &statement, Some(&params)).await?;
+
+                    // WARN: This just sets text!
+                    let statement =
+                        format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#,);
+                    // TODO: Render JSON to SQL properly.
+                    let value = json_to_string(value);
+                    let params = json!([value, row]);
+                    query_tx(&mut tx, &statement, Some(&params)).await?;
+                }
+            }
+        }
+
+        // Commit the transaction:
+        tx.commit().await?;
+
+        Ok(())
+    }
+
+    pub async fn get_user(&self, username: &str) -> Account {
+        let statement = format!(r#"SELECT * FROM user WHERE name = '{username}' LIMIT 1"#);
+        let user = query_one(&self.connection, &statement).await;
+        if let Ok(user) = user {
+            if let Some(user) = user {
+                return Account {
+                    name: username.to_string(),
+                    color: user.get_string("color"),
+                };
+            }
+        }
+        Account {
+            ..Default::default()
+        }
+    }
+
+    pub async fn get_users(&self) -> Result<IndexMap<String, UserCursor>> {
+        let mut users = IndexMap::new();
+        // let statement = format!(
+        //     r#"SELECT * FROM user WHERE cursor IS NOT NULL
+        //        AND "datetime" >= DATETIME('now', '-10 minutes')"#
+        // );
+        let statement = format!(r#"SELECT * FROM user WHERE cursor IS NOT NULL"#);
+        let rows = query(&self.connection, &statement, None).await?;
+        for row in rows {
+            let name = row.get_string("name");
+            users.insert(
+                name.clone(),
+                UserCursor {
+                    name: name.clone(),
+                    color: row.get_string("color"),
+                    cursor: from_str(&row.get_string("cursor"))?,
+                    datetime: row.get_string("datetime"),
+                },
+            );
+        }
+        Ok(users)
+    }
+
+    pub async fn get_tables(&self) -> Result<IndexMap<String, Table>> {
+        let mut tables = IndexMap::new();
+        let statement = format!(
+            r#"SELECT *,
+                 (SELECT max(change_id)
+                  FROM history
+                  WHERE history."table" = "table"."table"
+                 ) AS _change_id
+               FROM 'table'"#
+        );
+
+        let rows = query(&self.connection, &statement, None).await?;
+        for row in rows {
+            let name = row.get_string("table");
+            tables.insert(
+                name.clone(),
+                Table {
+                    name: name.clone(),
+                    change_id: row
+                        .content
+                        .get("_change_id")
+                        .and_then(|i| i.as_u64())
+                        .unwrap_or_default() as usize,
+                    ..Default::default()
+                },
+            );
+        }
+        Ok(tables)
+    }
+
+    pub async fn get_site(&self, username: &str) -> Site {
+        let mut users = self.get_users().await.unwrap_or_default();
+        users.shift_remove(username);
+        Site {
+            title: "RLTBL".to_string(),
+            root: "".to_string(),
+            user: self.get_user(username).await,
+            users,
+            tables: self.get_tables().await.unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChangeSet {
+    action: ChangeAction,
+    table: String,
+    user: String,
+    description: String,
+    changes: Vec<Change>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ChangeAction {
+    Do,
+    Undo,
+    Redo,
+}
+
+impl Display for ChangeAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChangeAction::Do => write!(f, "do"),
+            ChangeAction::Undo => write!(f, "undo"),
+            ChangeAction::Redo => write!(f, "redo"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum Change {
+    Update {
+        row: usize,
+        column: String,
+        value: JsonValue,
+    },
+    // Add
+    // Delete
+    // Move
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -344,6 +552,58 @@ impl std::fmt::Display for ResultSet {
     }
 }
 
+// Web Site Stuff
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Site {
+    title: String,
+    root: String,
+    user: Account,
+    users: IndexMap<String, UserCursor>,
+    tables: IndexMap<String, Table>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Account {
+    name: String,
+    color: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Cursor {
+    table: String,
+    row: usize,
+    column: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserCursor {
+    name: String,
+    color: String,
+    cursor: Cursor,
+    datetime: String,
+}
+
+impl ChangeSet {
+    fn to_cursor(&self) -> Result<Cursor> {
+        let table = self.table.clone();
+        match self.changes.first() {
+            Some(change) => match change {
+                Change::Update {
+                    row,
+                    column,
+                    value: _,
+                } => Ok(Cursor {
+                    table,
+                    row: *row,
+                    column: column.to_string(),
+                }),
+            },
+            None => Err(RelatableError::ChangeError("No changes in set".into()).into()),
+        }
+    }
+}
+
 // ## SQL module
 
 // From https://stackoverflow.com/a/78372188
@@ -360,6 +620,7 @@ where
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct JsonRow {
     content: JsonMap<String, JsonValue>,
 }
@@ -401,6 +662,18 @@ impl TryFrom<sqlx::any::AnyRow> for JsonRow {
     type Error = anyhow::Error;
 }
 
+// WARN: This needs to be thought through.
+pub fn json_to_string(value: &JsonValue) -> String {
+    match value {
+        JsonValue::Null => "".to_string(),
+        JsonValue::Bool(value) => value.to_string(),
+        JsonValue::Number(value) => value.to_string(),
+        JsonValue::String(value) => value.to_string(),
+        JsonValue::Array(value) => format!("{value:?}"),
+        JsonValue::Object(value) => format!("{value:?}"),
+    }
+}
+
 impl JsonRow {
     pub fn new() -> Self {
         Self {
@@ -411,14 +684,7 @@ impl JsonRow {
     pub fn get_string(&self, column_name: &str) -> String {
         let value = self.content.get(column_name);
         match value {
-            Some(value) => match value {
-                JsonValue::Null => "".to_string(),
-                JsonValue::Bool(value) => value.to_string(),
-                JsonValue::Number(value) => value.to_string(),
-                JsonValue::String(value) => value.to_string(),
-                JsonValue::Array(value) => format!("{value:?}"),
-                JsonValue::Object(value) => format!("{value:?}"),
-            },
+            Some(value) => json_to_string(&value),
             None => unimplemented!("missing value"),
         }
     }
@@ -499,7 +765,7 @@ pub fn prepare_sqlx_query<'a>(
                     },
                 },
                 JsonValue::String(s) => query = query.bind(s),
-                _ => panic!(),
+                _ => query = query.bind(param.to_string()),
             };
         }
     }
@@ -578,6 +844,14 @@ pub async fn query(
             let mut stmt = conn.prepare(statement)?;
             submit_rusqlite_statement(&mut stmt, params)
         }
+    }
+}
+
+pub async fn query_one(connection: &DbConnection, statement: &str) -> Result<Option<JsonRow>> {
+    let rows = query(&connection, &statement, None).await?;
+    match rows.iter().next() {
+        Some(row) => Ok(Some(row.clone())),
+        None => Ok(None),
     }
 }
 
@@ -988,6 +1262,9 @@ static VALUE_HELP: &str = "A value for a cell";
           about = "Relatable (rltbl): Connect your data!",
           long_about = None)]
 pub struct Cli {
+    #[arg(long, default_value="", action = ArgAction::Set)]
+    user: String,
+
     #[command(flatten)]
     verbose: Verbosity,
 
@@ -1175,6 +1452,19 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) -> Re
     Ok(())
 }
 
+// Get the user from the CLI, RLTBL_USER environment variable,
+// or the general environment.
+pub fn get_cli_user(cli: &Cli) -> String {
+    let mut username = cli.user.clone();
+    if username == "" {
+        username = std::env::var("RLTBL_USER").unwrap_or_default();
+    }
+    if username == "" {
+        username = whoami::username();
+    }
+    username
+}
+
 pub async fn set_value(
     cli: &Cli,
     table: &str,
@@ -1184,34 +1474,19 @@ pub async fn set_value(
 ) -> Result<()> {
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::default().await?;
-
-    // Get the connection and begin a transaction:
-    let mut locked_conn = lock_connection(&rltbl.connection).await;
-    let mut tx = begin(&rltbl.connection, &mut locked_conn).await?;
-
-    let statement = r#"INSERT INTO change("user", "type", "table", "description", "content")
-                       VALUES ('anonymous', 'do', ?, 'Set one value', 'TODO')
-                       RETURNING change_id"#;
-    let params = json!([table]);
-    let change_id = query_value_tx(&mut tx, &statement, Some(&params)).await?;
-    let change_id = change_id
-        .expect("a change_id")
-        .as_u64()
-        .expect("an integer");
-    let statement = r#"INSERT INTO history("change_id", "table", "row", "before", "after")
-                       VALUES (?, ?, ?, 'TODO', 'TODO')
-                       RETURNING history_id"#;
-    let params = json!([change_id, table, row]);
-    query_value_tx(&mut tx, &statement, Some(&params)).await?;
-
-    // WARN: This just sets text!
-    let statement = format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#);
-    let params = json!([value, row]);
-    query_tx(&mut tx, &statement, Some(&params)).await?;
-
-    // Commit the transaction:
-    tx.commit().await?;
-
+    rltbl
+        .set_values(&ChangeSet {
+            user: get_cli_user(&cli),
+            action: ChangeAction::Do,
+            table: table.to_string(),
+            description: "Set one value".to_string(),
+            changes: vec![Change::Update {
+                row,
+                column: column.to_string(),
+                value: to_value(value).unwrap_or_default(),
+            }],
+        })
+        .await?;
     Ok(())
 }
 
@@ -1246,7 +1521,18 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
       'table' TEXT PRIMARY KEY
     )"#;
     query(&rltbl.connection, sql, None).await?;
+
     let sql = "INSERT INTO 'table' VALUES (1, 1000, 'table'), (2, 2000, 'penguin')";
+    query(&rltbl.connection, sql, None).await?;
+
+    // Create the change and history tables
+    let rltbl = Relatable::default().await?;
+    let sql = r#"CREATE TABLE 'user' (
+      'name' TEXT PRIMARY KEY,
+      'color' TEXT,
+      'cursor' TEXT,
+      'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )"#;
     query(&rltbl.connection, sql, None).await?;
 
     // Create the change and history tables
@@ -1255,12 +1541,14 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
       change_id INTEGER PRIMARY KEY,
       'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       'user' TEXT NOT NULL,
-      'type' TEXT NOT NULL,
+      'action' TEXT NOT NULL,
       'table' TEXT NOT NULL,
       'description' TEXT,
-      'content' TEXT
+      'content' TEXT,
+      FOREIGN KEY ("user") REFERENCES user("name")
     )"#;
     query(&rltbl.connection, sql, None).await?;
+
     let sql = r#"CREATE TABLE 'history' (
       history_id INTEGER PRIMARY KEY,
       change_id INTEGER NOT NULL,
@@ -1268,7 +1556,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) -> Result<()> {
       'row' INTEGER NOT NULL,
       'before' TEXT,
       'after' TEXT,
-      FOREIGN KEY (change_id) REFERENCES change(change_id),
+      FOREIGN KEY ("change_id") REFERENCES change("change_id"),
       FOREIGN KEY ("table") REFERENCES "table"("table")
     )"#;
     query(&rltbl.connection, sql, None).await?;
@@ -1347,13 +1635,13 @@ async fn main_css() -> impl IntoResponse {
     (headers, include_str!("resources/main.css"))
 }
 
-fn render_html(rltbl: &Relatable, result: &ResultSet) -> Result<String> {
-    let tmpl = rltbl.minijinja.get_template("table.html")?;
-    tmpl.render(context! {rltbl=>result}).map_err(|e| e.into())
+async fn render_html(rltbl: &Relatable, username: &str, result: &ResultSet) -> Result<String> {
+    let site = rltbl.get_site(username).await;
+    rltbl.render("table.html", context! {site, result})
 }
 
-fn render_response(rltbl: &Relatable, result: &ResultSet) -> Response<Body> {
-    match render_html(rltbl, result) {
+async fn render_response(rltbl: &Relatable, username: &str, result: &ResultSet) -> Response<Body> {
+    match render_html(rltbl, username, result).await {
         Ok(html) => Html(html).into_response(),
         Err(error) => {
             tracing::error!("{error:?}");
@@ -1362,7 +1650,12 @@ fn render_response(rltbl: &Relatable, result: &ResultSet) -> Response<Body> {
     }
 }
 
-async fn respond(rltbl: &Relatable, select: &Select, format: &Format) -> Response<Body> {
+async fn respond(
+    rltbl: &Relatable,
+    username: &str,
+    select: &Select,
+    format: &Format,
+) -> Response<Body> {
     let result = match rltbl.fetch(&select).await {
         Ok(result) => result,
         Err(error) => return get_500(&error),
@@ -1373,13 +1666,21 @@ async fn respond(rltbl: &Relatable, select: &Select, format: &Format) -> Respons
     //      {query_params:?}\nResult Set: {pretty}"
     // );
     let response = match format {
-        Format::Html | Format::Default => render_response(&rltbl, &result),
+        Format::Html | Format::Default => render_response(&rltbl, &username, &result).await,
         Format::PrettyJson => {
+            let site = rltbl.get_site(username).await;
             let mut headers = HeaderMap::new();
             headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
-            (headers, to_string_pretty(&result).unwrap_or_default()).into_response()
+            (
+                headers,
+                to_string_pretty(&json!({"site": site, "result": result})).unwrap_or_default(),
+            )
+                .into_response()
         }
-        Format::Json => Json(&result).into_response(),
+        Format::Json => {
+            let site = rltbl.get_site(username).await;
+            Json(&json!({"site": site, "result": result})).into_response()
+        }
     };
     response
 }
@@ -1388,22 +1689,155 @@ async fn get_table(
     State(rltbl): State<Arc<Relatable>>,
     Path(path): Path<String>,
     Query(query_params): Query<QueryParams>,
+    session: Session<SessionNullPool>,
 ) -> Response<Body> {
-    tracing::info!("get_table({rltbl:?}, {path}, {query_params:?})");
+    // tracing::info!("get_table({rltbl:?}, {path}, {query_params:?})");
+    tracing::info!("get_table([rltbl], {path}, {query_params:?})");
+    // tracing::info!("SESSION {:?}", session.get_session_id().inner());
+    // tracing::info!("SESSIONS {}", session.count().await);
+
+    let username: String = session.get("username").unwrap_or_default();
+    tracing::info!("USERNAME {username}");
+    let select = Select::from_path_and_query(&rltbl, &path, &query_params);
     let format = match Format::try_from(&path) {
         Ok(format) => format,
         Err(error) => return get_404(&error),
     };
-    let select = Select::from_path_and_query(&rltbl, &path, &query_params);
-    respond(&rltbl, &select, &format).await
+    respond(&rltbl, &username, &select, &format).await
 }
 
-pub fn build_router(shared_state: Arc<Relatable>) -> Router {
+async fn post_table(
+    State(rltbl): State<Arc<Relatable>>,
+    Path(path): Path<String>,
+    _session: Session<SessionNullPool>,
+    ExtractJson(changeset): ExtractJson<ChangeSet>,
+) -> Response<Body> {
+    tracing::info!("post_table([rltbl], {path}, {changeset:?})");
+
+    let table = changeset.table.clone();
+    if path != table {
+        return get_500(
+            &RelatableError::InputError(format!(
+                "Changeset table '{table}' does not match URL path {path}"
+            ))
+            .into(),
+        );
+    }
+
+    // WARN: We need to check that the user matches!
+    // let user = changeset.user.clone();
+    // let username: String = session.get("username").unwrap_or_default();
+    // if username != user {
+    //     return get_500(
+    //         &RelatableError::InputError(format!(
+    //             "Changeset user '{user}' does not match session username {username}"
+    //         ))
+    //         .into(),
+    //     );
+    // }
+
+    // Axum is complaining when we replace the call to block_on() here with
+    // .await. Why?
+    match block_on(rltbl.set_values(&changeset)) {
+        Ok(_) => "POST successful".into_response(),
+        Err(error) => get_500(&error),
+    }
+}
+
+async fn post_sign_in(
+    State(rltbl): State<Arc<Relatable>>,
+    session: Session<SessionNullPool>,
+    Form(form): Form<IndexMap<String, String>>,
+) -> Response<Body> {
+    tracing::info!("post_login({form:?})");
+    let username = String::new();
+    let username = form.get("username").unwrap_or(&username);
+    session.set("username", username);
+
+    let color = random_color::RandomColor::new().to_hex();
+    let statement = format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#);
+    let params = json!([username, color]);
+    query(&rltbl.connection, &statement, Some(&params))
+        .await
+        .expect("Update user");
+
+    match form.get("redirect") {
+        Some(url) => Redirect::to(url).into_response(),
+        None => Html(format!(
+            r#"<p>Logged in as {username}</p>
+            <form method="post">
+            <input name="username" value="{username}"/>
+            <input type="submit"/>
+            </form>"#
+        ))
+        .into_response(),
+    }
+}
+
+async fn post_sign_out(
+    State(rltbl): State<Arc<Relatable>>,
+    session: Session<SessionNullPool>,
+    Form(form): Form<IndexMap<String, String>>,
+) -> Response<Body> {
+    tracing::debug!("post_login({form:?})");
+    let username = String::new();
+    let username = form.get("username").unwrap_or(&username);
+    session.set("username", username);
+
+    let color = random_color::RandomColor::new().to_hex();
+    let statement = format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#);
+    let params = json!([username, color]);
+    query(&rltbl.connection, &statement, Some(&params))
+        .await
+        .expect("Update user");
+
+    Html(format!(
+        r#"<p>Logged in as {username}</p>
+        <form method="post">
+        <input name="username" value="{username}"/>
+        <input type="submit"/>
+        </form>"#
+    ))
+    .into_response()
+}
+
+async fn post_cursor(
+    State(rltbl): State<Arc<Relatable>>,
+    session: Session<SessionNullPool>,
+    ExtractJson(cursor): ExtractJson<Cursor>,
+) -> Response<Body> {
+    // tracing::info!("post_cursor({cursor:?})");
+    let username: String = session.get("username").unwrap_or_default();
+    tracing::info!("post_cursor({cursor:?}, {username})");
+    // TODO: sanitize the cursor JSON.
+    let statement = format!(
+        r#"UPDATE user
+           SET "cursor" = ?,
+               "datetime" = CURRENT_TIMESTAMP
+           WHERE "name" = ?"#,
+    );
+    let cursor = to_value(cursor).unwrap_or_default();
+    let params = json!([cursor, username]);
+    match query(&rltbl.connection, &statement, Some(&params)).await {
+        Ok(_) => "Cursor updated".into_response(),
+        Err(_) => "Cursor update failed".into_response(),
+    }
+}
+
+pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
+    let session_config = SessionConfig::default();
+    let session_store = SessionStore::<SessionNullPool>::new(None, session_config)
+        .await
+        .unwrap();
     Router::new()
         .route("/", get(get_root))
         .route("/static/main.js", get(main_js))
         .route("/static/main.css", get(main_css))
-        .route("/table/*path", get(get_table))
+        .route("/sign-in", post(post_sign_in))
+        .route("/sign-out", post(post_sign_out))
+        .route("/cursor", post(post_cursor))
+        .route("/table/{*path}", get(get_table).post(post_table))
+        .layer(SessionLayer::new(session_store))
         .with_state(shared_state)
 }
 
@@ -1411,7 +1845,7 @@ pub fn build_router(shared_state: Arc<Relatable>) -> Router {
 pub async fn app(rltbl: Relatable, host: &str, port: &u16) -> Result<String> {
     let shared_state = Arc::new(rltbl);
 
-    let app = build_router(shared_state);
+    let app = build_app(shared_state).await;
 
     // Create a `TcpListener` using tokio.
     let addr = format!("{host}:{port}");
@@ -1537,7 +1971,7 @@ pub async fn serve_cgi() -> Result<()> {
 
     let rltbl = Relatable::default().await?;
     let shared_state = Arc::new(rltbl);
-    let mut router = build_router(shared_state);
+    let mut router = build_app(shared_state).await;
     let response = router.call(request).await;
     tracing::debug!("RESPONSE {response:?}");
 
