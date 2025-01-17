@@ -4,7 +4,7 @@ import * as React from "react";
 
 import { styled } from "@linaria/react";
 import { type MenuProps, components } from "react-select";
-import CreatableSelect from "react-select/creatable";
+import AsyncCreatableSelect from 'react-select/async-creatable';
 
 import {
   type CustomCell,
@@ -15,6 +15,7 @@ import {
   GridCellKind,
   TextCellEntry,
 } from "@glideapps/glide-data-grid";
+
 
 interface CustomMenuProps extends MenuProps<any> { }
 
@@ -29,6 +30,7 @@ type DropdownOption = string | { value: string; label: string } | undefined | nu
 interface DropdownCellProps {
   readonly kind: "dropdown-cell";
   readonly value: string | undefined | null;
+  readonly entry: any | null;
   readonly allowedValues: readonly DropdownOption[];
 }
 
@@ -66,21 +68,12 @@ const ReadOnlyWrap = styled('div')`
 
 const Editor: ReturnType<ProvideEditorCallback<DropdownCell>> = p => {
   const { value: cell, onFinishedEditing, initialValue } = p;
-  const { allowedValues, value: valueIn } = cell.data;
+  const { value: valueIn } = cell.data;
 
   const [value, setValue] = React.useState(valueIn);
   const [inputValue, setInputValue] = React.useState(initialValue ?? "");
 
   const theme = useTheme();
-
-  const values = React.useMemo(() => {
-    return allowedValues.map(option => {
-      if (typeof option === "string" || option === null || option === undefined) {
-        return { value: option, label: option?.toString() ?? "" };
-      }
-      return option;
-    });
-  }, [allowedValues]);
 
   if (cell.readonly) {
     return (
@@ -98,12 +91,15 @@ const Editor: ReturnType<ProvideEditorCallback<DropdownCell>> = p => {
 
   return (
     <Wrap>
-      <CreatableSelect
+      <AsyncCreatableSelect
         className="glide-select"
+        cacheOptions
+        defaultOptions
+        loadOptions={window.loadOptions}
         inputValue={inputValue}
         onInputChange={setInputValue}
         menuPlacement={"auto"}
-        value={values.find(x => x.value === value)}
+        value={{value: value, entry: null}}
         styles={{
           control: base => ({
             ...base,
@@ -166,7 +162,6 @@ const Editor: ReturnType<ProvideEditorCallback<DropdownCell>> = p => {
             </PortalWrap>
           ),
         }}
-        options={values}
         onChange={async e => {
           if (e === null) return;
           setValue(e.value);
@@ -176,6 +171,7 @@ const Editor: ReturnType<ProvideEditorCallback<DropdownCell>> = p => {
             data: {
               ...cell.data,
               value: e.value,
+              entry: e,
             },
           });
         }}
@@ -190,14 +186,6 @@ const renderer: CustomRenderer<DropdownCell> = {
   draw: (args, cell) => {
     const { ctx, theme, rect } = args;
     const { value } = cell.data;
-    // const foundOption = cell.data.allowedValues.find(opt => {
-    //   if (typeof opt === "string" || opt === null || opt === undefined) {
-    //     return opt === value;
-    //   }
-    //   return opt.value === value;
-    // });
-
-    // const displayText = typeof foundOption === "string" ? foundOption : foundOption?.label ?? "";
     const displayText = value;
     if (displayText) {
       ctx.fillStyle = theme.textDark;
@@ -227,7 +215,7 @@ const renderer: CustomRenderer<DropdownCell> = {
   }),
   onPaste: (v, d) => ({
     ...d,
-    value: d.allowedValues.includes(v) ? v : d.value,
+    value: d.value,
   }),
 };
 

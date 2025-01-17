@@ -213,7 +213,7 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
     const last = r[1];
     const limit = last - first;
     const url = `/table/${table}.json?limit=${limit}&offset=${first}`;
-    console.log("Fetch: " + url);
+    // console.log("Fetch: " + url);
     try {
       const response = await fetch(url);
       if (!response.ok) {
@@ -232,7 +232,7 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
   const pollData = React.useCallback(async () => {
     if (!dataRef.current) { return; }
     const url = `/table/${table}.json?_change_id=gt.${change_id.current}`;
-    console.log("Fetch: " + url);
+    // console.log("Fetch: " + url);
     var rows: Row[] = [];
     const oldCursors = cursorRef.current;
     var newCursors: Map<string, string> = new Map();
@@ -300,8 +300,8 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
         copyData: val,
         data: {
           kind: "dropdown-cell",
-          allowedValues: ["Pygoscelis adeliae", "Cat"],
           value: val,
+          entry: null,
         },
       };
     }
@@ -313,15 +313,8 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
     };
   }, [columns]);
 
-  const async_args = useAsyncData<Row>(
-    dataRef,
-    100,
-    5,
-    getRowData,
-    toCell,
-    // onCellEdited
-    React.useCallback((cell, newVal, rowData) => {
-      console.log("EDITED CELL", cell, newVal, rowData);
+  const onCellEdited: RowEditedCallback<Row> = React.useCallback((cell, newVal, rowData) => {
+      // console.log("EDITED CELL", cell, newVal, rowData);
       const [col] = cell;
       var value = "UNDEFINED";
       if (newVal.kind === GridCellKind.Text) {
@@ -332,8 +325,17 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
       if (value === "UNDEFINED") return;
       rowData.cells[columns[col].id].value = value;
       rowData.cells[columns[col].id].text = value;
+
       return rowData;
-    }, [columns]),
+    }, [columns]);
+
+  const async_args = useAsyncData<Row>(
+    dataRef,
+    100,
+    5,
+    getRowData,
+    toCell,
+    onCellEdited,
     gridRef
   );
 
@@ -350,7 +352,7 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
         row: row + 1,
         column: columns[col].id
       };
-      console.log("CURSOR", cursor);
+      // console.log("CURSOR", cursor);
       try {
         fetch('/cursor', {
           method: "POST",
@@ -358,7 +360,7 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
             "Content-Type": "application/json",
           },
           body: JSON.stringify(cursor)
-        }).then(x => console.log("Response", x));
+        });
       } catch (error) {
         console.error(error.message);
       }
@@ -368,7 +370,12 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
   }, [table, columns]);
 
   const onCellsEdited = React.useCallback((newValues: readonly { location: Item; value: EditableGridCell }[]) => {
-    console.log("EDITED CELLS", newValues);
+    // console.log("EDITED CELLS BEFORE", newValues);
+    try {
+      newValues = window.onCellsEdited(newValues);
+    } catch(e) { /* pass */ }
+    // console.log("EDITED CELLS AFTER", newValues);
+
     var changes: any[] = [];
     for (const entry of newValues) {
       var value = entry.value.data;
@@ -381,6 +388,7 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
         column: columns[entry.location[0]].id,
         value: value
       })
+      onCellEdited(entry.location, entry.value, dataRef.current[entry.location[1]]);
     }
     const body = {
       action: "Do",
@@ -389,20 +397,20 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
       description: "Set one value",
       changes: changes
     };
-    console.log("onCellsEdited body", body);
+    // console.log("onCellsEdited body", body);
     try {
       fetch(`/table/${table}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(body)
-      }).then(x => console.log("onCellsEdited Response", x));
+        body: JSON.stringify(body),
+      });
     } catch (error) {
       console.error(error.message);
     }
 
-  }, [user, table, columns]);
+  }, [user, table, columns, dataRef]);
 
   // const onRowMoved = React.useCallback((from: number, to: number) => {
   //   console.log("ROW MOVED", from, to);
