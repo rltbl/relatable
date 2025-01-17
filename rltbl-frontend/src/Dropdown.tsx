@@ -3,7 +3,8 @@
 import * as React from "react";
 
 import { styled } from "@linaria/react";
-import Select, { type MenuProps, components } from "react-select";
+import { type MenuProps, components } from "react-select";
+import CreatableSelect from "react-select/creatable";
 
 import {
   type CustomCell,
@@ -97,7 +98,7 @@ const Editor: ReturnType<ProvideEditorCallback<DropdownCell>> = p => {
 
   return (
     <Wrap>
-      <Select
+      <CreatableSelect
         className="glide-select"
         inputValue={inputValue}
         onInputChange={setInputValue}
@@ -189,14 +190,15 @@ const renderer: CustomRenderer<DropdownCell> = {
   draw: (args, cell) => {
     const { ctx, theme, rect } = args;
     const { value } = cell.data;
-    const foundOption = cell.data.allowedValues.find(opt => {
-      if (typeof opt === "string" || opt === null || opt === undefined) {
-        return opt === value;
-      }
-      return opt.value === value;
-    });
+    // const foundOption = cell.data.allowedValues.find(opt => {
+    //   if (typeof opt === "string" || opt === null || opt === undefined) {
+    //     return opt === value;
+    //   }
+    //   return opt.value === value;
+    // });
 
-    const displayText = typeof foundOption === "string" ? foundOption : foundOption?.label ?? "";
+    // const displayText = typeof foundOption === "string" ? foundOption : foundOption?.label ?? "";
+    const displayText = value;
     if (displayText) {
       ctx.fillStyle = theme.textDark;
       ctx.fillText(
