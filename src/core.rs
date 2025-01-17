@@ -628,17 +628,17 @@ impl Filter {
             }
         }
 
-        let (column, operator, value) = match self {
-            Filter::Equal { column, value } => (column, "eq.", value),
-            Filter::NotEqual { column, value } => (column, "not_eq.", value),
-            Filter::GreaterThan { column, value } => (column, "gt.", value),
-            Filter::GreaterThanOrEqual { column, value } => (column, "gte.", value),
-            Filter::LessThan { column, value } => (column, "lt.", value),
-            Filter::LessThanOrEqual { column, value } => (column, "lte.", value),
-            Filter::Is { column, value } => (column, "is.", value),
-            Filter::IsNot { column, value } => (column, "is_not.", value),
-            Filter::In { column, value } => (column, "in.", value),
-            Filter::NotIn { column, value } => (column, "not_in.", value),
+        let (operator, value) = match self {
+            Filter::Equal { column: _, value } => ("eq.", value),
+            Filter::NotEqual { column: _, value } => ("not_eq.", value),
+            Filter::GreaterThan { column: _, value } => ("gt.", value),
+            Filter::GreaterThanOrEqual { column: _, value } => ("gte.", value),
+            Filter::LessThan { column: _, value } => ("lt.", value),
+            Filter::LessThanOrEqual { column: _, value } => ("lte.", value),
+            Filter::Is { column: _, value } => ("is.", value),
+            Filter::IsNot { column: _, value } => ("is_not.", value),
+            Filter::In { column: _, value } => ("in.", value),
+            Filter::NotIn { column: _, value } => ("not_in.", value),
         };
 
         let rhs = match &value {
@@ -1211,7 +1211,7 @@ impl Select {
             ))
             .into());
         }
-        let table_name = format!("{base}{table_name}{format}");
+        let table_name = format!("{base}/{table_name}{format}");
 
         let params = &self.to_params()?.clone();
         if params.len() > 0 {
