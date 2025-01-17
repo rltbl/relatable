@@ -617,8 +617,65 @@ fn render_in_not_in<S: Into<String>>(
     Ok(filter_sql)
 }
 
-impl Display for Filter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Filter {
+    pub fn to_url(&self) -> Result<String> {
+        fn handle_string_value(token: &str) -> String {
+            let reserved = vec![':', ',', '.', '(', ')'];
+            if token.chars().all(char::is_numeric) || reserved.iter().any(|&c| token.contains(c)) {
+                format!("\"{}\"", token)
+            } else {
+                token.to_string()
+            }
+        }
+
+        let (column, operator, value) = match self {
+            Filter::Equal { column, value } => (column, "eq.", value),
+            Filter::NotEqual { column, value } => (column, "not_eq.", value),
+            Filter::GreaterThan { column, value } => (column, "gt.", value),
+            Filter::GreaterThanOrEqual { column, value } => (column, "gte.", value),
+            Filter::LessThan { column, value } => (column, "lt.", value),
+            Filter::LessThanOrEqual { column, value } => (column, "lte.", value),
+            Filter::Is { column, value } => (column, "is.", value),
+            Filter::IsNot { column, value } => (column, "is_not.", value),
+            Filter::In { column, value } => (column, "in.", value),
+            Filter::NotIn { column, value } => (column, "not_in.", value),
+        };
+
+        let rhs = match &value {
+            JsonValue::String(s) => handle_string_value(&s),
+            JsonValue::Number(n) => format!("{}", n),
+            JsonValue::Array(v) => {
+                let mut list = vec![];
+                for item in v {
+                    match item {
+                        JsonValue::String(s) => {
+                            list.push(handle_string_value(&s));
+                        }
+                        JsonValue::Number(n) => list.push(n.to_string()),
+                        _ => {
+                            return Err(RelatableError::DataError(format!(
+                                "Not all list items in {:?} are strings or numbers.",
+                                v
+                            ))
+                            .into());
+                        }
+                    };
+                }
+                format!("({})", list.join(","))
+            }
+            _ => {
+                return Err(RelatableError::DataError(format!(
+                    "RHS of Filter: {:?} is not a string, number, or list",
+                    self
+                ))
+                .into());
+            }
+        };
+
+        Ok(format!("{operator}{rhs}"))
+    }
+
+    pub fn to_sqlite(&self) -> Result<String> {
         // TODO: This should be factored out.
         fn json_to_string(value: &JsonValue) -> String {
             match value {
@@ -630,71 +687,77 @@ impl Display for Filter {
                 JsonValue::Object(value) => format!("'{value:?}'"),
             }
         }
-        let result = match self {
+        match self {
             Filter::Equal { column, value } => {
                 let value = json_to_string(&value);
-                format!(r#""{column}" = {value}"#)
+                Ok(format!(r#""{column}" = {value}"#))
             }
             Filter::NotEqual { column, value } => {
                 let value = json_to_string(&value);
-                format!(r#""{column}" <> {value}"#)
+                Ok(format!(r#""{column}" <> {value}"#))
             }
             Filter::GreaterThan { column, value } => {
                 let value = json_to_string(&value);
-                format!(r#""{column}" > {value}"#)
+                Ok(format!(r#""{column}" > {value}"#))
             }
             Filter::GreaterThanOrEqual { column, value } => {
                 let value = json_to_string(&value);
-                format!(r#""{column}" >= {value}"#)
+                Ok(format!(r#""{column}" >= {value}"#))
             }
             Filter::LessThan { column, value } => {
                 let value = json_to_string(&value);
-                format!(r#""{column}" < {value}"#)
+                Ok(format!(r#""{column}" < {value}"#))
             }
             Filter::LessThanOrEqual { column, value } => {
                 let value = json_to_string(&value);
-                format!(r#""{column}" <= {value}"#)
+                Ok(format!(r#""{column}" <= {value}"#))
             }
             Filter::Is { column, value } => {
                 // Note that we are presupposing SQLite syntax which is not universal for IS:
                 let value = json_to_string(&value);
-                format!(r#""{column}" IS {value}"#)
+                Ok(format!(r#""{column}" IS {value}"#))
             }
             Filter::IsNot { column, value } => {
                 // Note that we are presupposing SQLite syntax which is not universal for IS:
                 let value = json_to_string(&value);
-                format!(r#""{column}" IS NOT {value}"#)
+                Ok(format!(r#""{column}" IS NOT {value}"#))
             }
             Filter::In { column, value } => {
                 if let JsonValue::Array(values) = value {
                     let filter_str = match render_in_not_in(column, values, true) {
                         Err(e) => {
-                            tracing::error!("{e}");
-                            return Err(std::fmt::Error);
+                            return Err(RelatableError::DataError(format!(
+                                "Error rendering 'in' filter: {e}"
+                            ))
+                            .into());
                         }
                         Ok(filter_str) => filter_str,
                     };
-                    format!("{filter_str}")
+                    Ok(format!("{filter_str}"))
                 } else {
-                    return Err(std::fmt::Error);
+                    Err(RelatableError::DataError(format!("Invalid 'in' value: {value}")).into())
                 }
             }
             Filter::NotIn { column, value } => {
                 if let JsonValue::Array(values) = value {
                     let filter_str = match render_in_not_in(column, values, false) {
                         Err(e) => {
-                            tracing::error!("{e}");
-                            return Err(std::fmt::Error);
+                            return Err(RelatableError::DataError(format!(
+                                "Error rendering 'not in' filter: {e}"
+                            ))
+                            .into());
                         }
                         Ok(filter_str) => filter_str,
                     };
-                    format!("{filter_str}")
+                    Ok(format!("{filter_str}"))
                 } else {
-                    return Err(std::fmt::Error);
+                    Err(
+                        RelatableError::DataError(format!("Invalid 'not in' value: {value}"))
+                            .into(),
+                    )
                 }
             }
-        };
-        write!(f, "{result}")
+        }
     }
 }
 
@@ -1083,7 +1146,7 @@ impl Select {
         lines.push(format!(r#"FROM "{}""#, self.table_name));
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
-            lines.push(format!("{keyword} {filter}"));
+            lines.push(format!("{keyword} {filter}", filter = filter.to_sqlite()?));
         }
         if self.limit > 0 {
             lines.push(format!("LIMIT {}", self.limit));
@@ -1127,7 +1190,7 @@ impl Select {
                     ))
                     .into());
                 }
-                params.insert(column, format!("{filter}").into());
+                params.insert(column, format!("{}", filter.to_url()?).into());
             }
         }
         if self.limit > 0 {
@@ -1153,12 +1216,12 @@ impl Select {
         let params = &self.to_params()?.clone();
         if params.len() > 0 {
             let mut parts = vec![];
-            for (_, value) in params.iter() {
+            for (column, value) in params.iter() {
                 let s = match value {
                     serde_json::Value::String(s) => s.as_str().into(),
                     _ => format!("{}", value),
                 };
-                parts.push(format!("{s}"));
+                parts.push(format!("{column}={s}"));
             }
             Ok(format!("{}?{}", table_name, parts.join("&")))
         } else {
