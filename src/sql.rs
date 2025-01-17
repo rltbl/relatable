@@ -444,8 +444,7 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
     let db_object_root = db_object_name.splitn(2, ".").collect::<Vec<_>>()[0];
     if !db_object_regex.is_match(&db_object_root) {
         Err(format!(
-            "Illegal database object name: '{}' in '{}'. All names must match: '{}' \
-             for to_url().",
+            "Illegal database object name: '{}' in '{}'. Does not match: /{}/",
             db_object_root, db_object_name, DB_OBJECT_MATCH_STR,
         ))
     } else {
