@@ -179,11 +179,6 @@ pub async fn print_table(
         .unwrap()
         .limit(limit)
         .offset(offset);
-    let mossa_format = Format::try_from(&format.to_string()).unwrap();
-    println!("{}", select.to_url("/table", &mossa_format).unwrap());
-    if 1 == 1 {
-        todo!();
-    }
     match format.to_lowercase().as_str() {
         "json" => {
             let json = json!(rltbl.fetch(&select).await.unwrap());
