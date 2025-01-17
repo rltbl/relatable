@@ -17,6 +17,9 @@ import chunk from "lodash/chunk.js";
 import "@glideapps/glide-data-grid/dist/index.css";
 import { useLayer } from "react-laag";
 
+import DropdownCell from "./Dropdown.tsx";
+import { isObject } from "lodash";
+
 // Reltable types.
 type Cell = {
   value: any,
@@ -288,28 +291,47 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
     return columns;
   }, [columns])
 
+  const toCell: RowToCell<Row> = React.useCallback((rowData, col) => {
+    if (col === 2) {
+      const val = String(rowData.cells[columns[col].id].value);
+      return {
+        kind: GridCellKind.Custom,
+        allowOverlay: true,
+        copyData: val,
+        data: {
+          kind: "dropdown-cell",
+          allowedValues: ["Pygoscelis adeliae", "Cat"],
+          value: val,
+        },
+      };
+    }
+    return {
+      kind: GridCellKind.Text,
+      data: String(rowData.cells[columns[col].id].value),
+      allowOverlay: true,
+      displayData: String(rowData.cells[columns[col].id].text),
+    };
+  }, [columns]);
+
   const async_args = useAsyncData<Row>(
     dataRef,
     100,
     5,
     getRowData,
-    // toCell
-    React.useCallback(
-      (rowData, col) => ({
-        kind: GridCellKind.Text,
-        data: String(rowData.cells[columns[col].id].value),
-        allowOverlay: true,
-        displayData: String(rowData.cells[columns[col].id].text),
-      }),
-      [columns]
-    ),
+    toCell,
     // onCellEdited
     React.useCallback((cell, newVal, rowData) => {
-      // console.log("EDITED CELL", cell, newVal, rowData);
+      console.log("EDITED CELL", cell, newVal, rowData);
       const [col] = cell;
-      if (newVal.kind !== GridCellKind.Text) return undefined;
-      rowData.cells[columns[col].id].value = newVal.data;
-      rowData.cells[columns[col].id].text = newVal.data;
+      var value = "UNDEFINED";
+      if (newVal.kind === GridCellKind.Text) {
+        value = newVal.data;
+      } else if (newVal.kind === GridCellKind.Custom && newVal.data["kind"] === "dropdown-cell") {
+        value = newVal.data["value"];
+      }
+      if (value === "UNDEFINED") return;
+      rowData.cells[columns[col].id].value = value;
+      rowData.cells[columns[col].id].text = value;
       return rowData;
     }, [columns]),
     gridRef
@@ -349,11 +371,15 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
     console.log("EDITED CELLS", newValues);
     var changes: any[] = [];
     for (const entry of newValues) {
+      var value = entry.value.data;
+      if (isObject(value)) {
+        value = value["value"];
+      }
       changes.push({
         "type": "Update",
         row: entry.location[1] + 1,
         column: columns[entry.location[0]].id,
-        value: entry.value.data
+        value: value
       })
     }
     const body = {
@@ -481,6 +507,7 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
     <DataEditor
       ref={gridRef}
       {...async_args}
+      customRenderers={[DropdownCell]}
       // rowMarkers={"both"}
       gridSelection={gridSelection}
       onGridSelectionChange={onGridSelectionChange}
