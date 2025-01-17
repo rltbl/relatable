@@ -3,7 +3,7 @@
 //! This is rltbl::cli
 
 use crate::{
-    core::{Change, ChangeAction, ChangeSet, Relatable},
+    core::{Change, ChangeAction, ChangeSet, Format, Relatable},
     sql::{query, query_value, VecInto},
     web::{serve, serve_cgi},
 };
@@ -188,7 +188,13 @@ pub async fn print_table(
             print!("{}", rltbl.fetch(&select).await.unwrap().to_string());
         }
         _ => unimplemented!("output format {format}"),
-    }
+    };
+
+    tracing::debug!("Processed: {}", {
+        let format = Format::try_from(&format.to_string()).unwrap();
+        let url = select.to_url("/table", &format).unwrap();
+        url
+    });
 }
 
 // Print rows of a table, without column header.
