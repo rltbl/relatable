@@ -3,7 +3,7 @@
 //! This is rltbl::cli
 
 use crate::{
-    core::{Change, ChangeAction, ChangeSet, Format, Relatable},
+    core::{Change, ChangeAction, ChangeSet, Relatable},
     sql::{query, query_value, VecInto},
     web::{serve, serve_cgi},
 };
