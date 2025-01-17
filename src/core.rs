@@ -3,8 +3,8 @@
 //! This is rltbl::core.
 
 use crate::sql::{
-    begin, connect, json_to_string, lock_connection, query, query_one, query_tx, query_value,
-    query_value_tx, DbConnection, JsonRow, VecInto,
+    begin, connect, is_simple, json_to_string, lock_connection, query, query_one, query_tx,
+    query_value, query_value_tx, DbConnection, JsonRow, VecInto,
 };
 
 use anyhow::Result;
@@ -13,7 +13,7 @@ use indexmap::IndexMap;
 use minijinja::{path_loader, Environment};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{from_str, json, to_value, Value as JsonValue};
+use serde_json::{from_str, json, to_value, Map as JsonMap, Value as JsonValue};
 use std::{fmt::Display, io::Write, path::Path as FilePath};
 use tabwriter::TabWriter;
 
@@ -511,6 +511,19 @@ pub enum Format {
     Json,
     PrettyJson,
     Default,
+}
+
+impl Display for Format {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // TODO: This should be factored out.
+        let result = match self {
+            Format::Html => ".html",
+            Format::Json => ".json",
+            Format::PrettyJson => ".pretty.json",
+            Format::Default => "",
+        };
+        write!(f, "{result}")
+    }
 }
 
 impl TryFrom<&String> for Format {
@@ -1080,6 +1093,77 @@ impl Select {
         }
 
         Ok((lines.join("\n"), vec![json!(table)]))
+    }
+
+    pub fn to_params(&self) -> Result<JsonMap<String, JsonValue>> {
+        if self.table_name.is_empty() {
+            return Err(RelatableError::InputError(
+                "Missing required field: `table` in to_sql()".to_string(),
+            )
+            .into());
+        }
+
+        let mut params = JsonMap::new();
+        if self.filters.len() > 0 {
+            for filter in &self.filters {
+                let column = match &filter {
+                    Filter::Equal { column, value: _ }
+                    | Filter::NotEqual { column, value: _ }
+                    | Filter::GreaterThan { column, value: _ }
+                    | Filter::GreaterThanOrEqual { column, value: _ }
+                    | Filter::LessThan { column, value: _ }
+                    | Filter::LessThanOrEqual { column, value: _ }
+                    | Filter::Is { column, value: _ }
+                    | Filter::IsNot { column, value: _ }
+                    | Filter::In { column, value: _ }
+                    | Filter::NotIn { column, value: _ } => column,
+                };
+
+                let column = unquote(&column).unwrap_or(column.to_string());
+                if let Err(e) = is_simple(&column) {
+                    return Err(RelatableError::InputError(format!(
+                        "While reading filters, got error: {}",
+                        e
+                    ))
+                    .into());
+                }
+                params.insert(column, format!("{filter}").into());
+            }
+        }
+        if self.limit > 0 {
+            params.insert("limit".into(), self.limit.into());
+        }
+        if self.offset > 0 {
+            params.insert("offset".into(), self.offset.into());
+        }
+        Ok(params)
+    }
+
+    pub fn to_url(&self, base: &str, format: &Format) -> Result<String> {
+        let table_name = unquote(&self.table_name).unwrap_or(self.table_name.to_string());
+        if let Err(e) = is_simple(&table_name) {
+            return Err(RelatableError::InputError(format!(
+                "While reading table name, got error: {}",
+                e
+            ))
+            .into());
+        }
+        let table_name = format!("{base}{table_name}{format}");
+
+        let params = &self.to_params()?.clone();
+        if params.len() > 0 {
+            let mut parts = vec![];
+            for (_, value) in params.iter() {
+                let s = match value {
+                    serde_json::Value::String(s) => s.as_str().into(),
+                    _ => format!("{}", value),
+                };
+                parts.push(format!("{s}"));
+            }
+            Ok(format!("{}?{}", table_name, parts.join("&")))
+        } else {
+            Ok(table_name.to_string())
+        }
     }
 }
 

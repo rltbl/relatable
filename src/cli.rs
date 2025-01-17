@@ -8,7 +8,6 @@ use crate::{
     web::{serve, serve_cgi},
 };
 
-//use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};

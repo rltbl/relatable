@@ -5,6 +5,7 @@
 use anyhow::Result;
 use async_std::sync::{Mutex, MutexGuard};
 use indexmap::IndexMap;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
@@ -425,5 +426,29 @@ impl std::fmt::Debug for JsonRow {
 impl From<JsonRow> for Vec<String> {
     fn from(row: JsonRow) -> Self {
         row.to_strings()
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Other database-related utilities and functions
+///////////////////////////////////////////////////////////////////////////////
+
+/// Represents a 'simple' database name
+pub const DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
+
+/// Helper function to determine whether the given name is 'simple', as defined by
+/// [DB_OBJECT_MATCH_STR]
+pub fn is_simple(db_object_name: &str) -> Result<(), String> {
+    let db_object_regex: Regex = Regex::new(DB_OBJECT_MATCH_STR).unwrap();
+
+    let db_object_root = db_object_name.splitn(2, ".").collect::<Vec<_>>()[0];
+    if !db_object_regex.is_match(&db_object_root) {
+        Err(format!(
+            "Illegal database object name: '{}' in '{}'. All names must match: '{}' \
+             for to_url().",
+            db_object_root, db_object_name, DB_OBJECT_MATCH_STR,
+        ))
+    } else {
+        Ok(())
     }
 }
