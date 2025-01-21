@@ -12,7 +12,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
-use std::{io::Write, path::Path as FilePath};
+use std::io::Write;
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";
@@ -40,6 +40,13 @@ pub struct Cli {
 // in the usage statement that is printed when valve is run with the option `--help`.
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Initialize a database
+    Init {
+        /// Overwrite an existing database
+        #[arg(long, action = ArgAction::SetTrue)]
+        force: bool,
+    },
+
     /// Get data from the database
     Get {
         #[command(subcommand)]
@@ -65,7 +72,7 @@ pub enum Command {
 
     /// Generate a demonstration database
     Demo {
-        /// Output format: text, JSON, TSV
+        /// Overwrite an existing database
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
     },
@@ -140,8 +147,12 @@ pub enum SetSubcommand {
     },
 }
 
-// TODO: In general I think it is better, for CLI, to unwrap/panic/expect instead of returning
-// an Error, since only the former provides you with context and allows for a stack trace.
+pub async fn init(_cli: &Cli, force: &bool) {
+    match Relatable::init(force).await {
+        Ok(_) => (),
+        Err(err) => panic!("{err:?}"),
+    }
+}
 
 /// Given a vector of vectors of strings,
 /// print text with "elastic tabstops".
@@ -172,7 +183,7 @@ pub async fn print_table(
     offset: &usize,
 ) {
     tracing::debug!("print_table {table_name}");
-    let rltbl = Relatable::default().await.unwrap();
+    let rltbl = Relatable::connect().await.unwrap();
     let select = rltbl
         .from(table_name)
         .filters(filters)
@@ -200,7 +211,7 @@ pub async fn print_table(
 // Print rows of a table, without column header.
 pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
     tracing::debug!("print_rows {table_name}");
-    let rltbl = Relatable::default().await.unwrap();
+    let rltbl = Relatable::connect().await.unwrap();
     let select = rltbl.from(table_name).limit(limit).offset(offset);
     let rows = rltbl.fetch_json_rows(&select).await.unwrap().vec_into();
     print_text(&rows);
@@ -208,7 +219,7 @@ pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &us
 
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
-    let rltbl = Relatable::default().await.unwrap();
+    let rltbl = Relatable::connect().await.unwrap();
     let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
     let params = json!([row]);
     if let Some(value) = query_value(&rltbl.connection, &statement, Some(&params))
@@ -238,7 +249,7 @@ pub fn get_cli_user(cli: &Cli) -> String {
 
 pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: &str) {
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
-    let rltbl = Relatable::default().await.unwrap();
+    let rltbl = Relatable::connect().await.unwrap();
     rltbl
         .set_values(&ChangeSet {
             user: get_cli_user(&cli),
@@ -257,70 +268,12 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
 
 pub async fn build_demo(cli: &Cli, force: &bool) {
     tracing::debug!("build_demo({cli:?}");
-    let path = ".relatable/relatable.db";
-    let dir = FilePath::new(path)
-        .parent()
-        .expect("parent should be defined");
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir).unwrap();
-        tracing::info!("Created '{dir:?}' directory");
-    }
-    let file = FilePath::new(path);
-    if file.exists() {
-        if *force {
-            std::fs::remove_file(&file).unwrap();
-            tracing::info!("Removed '{file:?}' file");
-        } else {
-            panic!("File {file:?} already exists. Use --force to overwrite");
-        }
-    }
 
-    // Create and populate the table table
-    let rltbl = Relatable::default().await.unwrap();
-    let sql = r#"CREATE TABLE 'table' (
-      _id INTEGER UNIQUE,
-      _order INTEGER UNIQUE,
-      'table' TEXT PRIMARY KEY
-    )"#;
-    query(&rltbl.connection, sql, None).await.unwrap();
+    let rltbl = Relatable::init(force)
+        .await
+        .expect("Database was initialized");
 
-    let sql = "INSERT INTO 'table' VALUES (1, 1000, 'table'), (2, 2000, 'penguin')";
-    query(&rltbl.connection, sql, None).await.unwrap();
-
-    // Create the change and history tables
-    let rltbl = Relatable::default().await.unwrap();
-    let sql = r#"CREATE TABLE 'user' (
-      'name' TEXT PRIMARY KEY,
-      'color' TEXT,
-      'cursor' TEXT,
-      'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )"#;
-    query(&rltbl.connection, sql, None).await.unwrap();
-
-    // Create the change and history tables
-    let rltbl = Relatable::default().await.unwrap();
-    let sql = r#"CREATE TABLE 'change' (
-      change_id INTEGER PRIMARY KEY,
-      'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      'user' TEXT NOT NULL,
-      'action' TEXT NOT NULL,
-      'table' TEXT NOT NULL,
-      'description' TEXT,
-      'content' TEXT,
-      FOREIGN KEY ("user") REFERENCES user("name")
-    )"#;
-    query(&rltbl.connection, sql, None).await.unwrap();
-
-    let sql = r#"CREATE TABLE 'history' (
-      history_id INTEGER PRIMARY KEY,
-      change_id INTEGER NOT NULL,
-      'table' TEXT NOT NULL,
-      'row' INTEGER NOT NULL,
-      'before' TEXT,
-      'after' TEXT,
-      FOREIGN KEY ("change_id") REFERENCES change("change_id"),
-      FOREIGN KEY ("table") REFERENCES "table"("table")
-    )"#;
+    let sql = "INSERT INTO 'table' VALUES (2, 2000, 'penguin')";
     query(&rltbl.connection, sql, None).await.unwrap();
 
     // Create the penguin table.
@@ -383,6 +336,7 @@ pub async fn process_command() {
     tracing::debug!("CLI {cli:?}");
 
     match &cli.command {
+        Command::Init { force } => init(&cli, force).await,
         Command::Get { subcommand } => match subcommand {
             GetSubcommand::Table {
                 table,
