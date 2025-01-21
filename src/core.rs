@@ -108,13 +108,23 @@ impl Relatable {
 
         // Create and populate the table table
         let sql = r#"CREATE TABLE 'table' (
-          _id INTEGER UNIQUE,
+          _id INTEGER PRIMARY KEY,
           _order INTEGER UNIQUE,
-          'table' TEXT PRIMARY KEY
+          'table' TEXT UNIQUE
         )"#;
         query(&rltbl.connection, sql, None).await.unwrap();
 
-        let sql = "INSERT INTO 'table' VALUES (1, 1000, 'table')";
+        let sql = r#"CREATE TRIGGER 'table_order'
+          AFTER INSERT ON 'table'
+          WHEN NEW._order IS NULL
+          BEGIN
+            UPDATE 'table' SET _order = (1000 * NEW._id)
+            WHERE _id = NEW._id;
+          END
+        "#;
+        query(&rltbl.connection, sql, None).await.unwrap();
+
+        let sql = "INSERT INTO 'table' ('table') VALUES ('table')";
         query(&rltbl.connection, sql, None).await.unwrap();
 
         // Create the change and history tables

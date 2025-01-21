@@ -273,7 +273,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
         .await
         .expect("Database was initialized");
 
-    let sql = "INSERT INTO 'table' VALUES (2, 2000, 'penguin')";
+    let sql = "INSERT INTO 'table' ('table') VALUES ('penguin')";
     query(&rltbl.connection, sql, None).await.unwrap();
 
     // Create the penguin table.
