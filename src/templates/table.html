@@ -18,7 +18,7 @@
 
 <body>
 
-  <nav class="navbar navbar-expand-lg bg-body-tertiary">
+  <nav class="navbar navbar-expand-md bg-body-tertiary">
     <div class="container-fluid">
       <a class="navbar-brand" href="#">{{ site.title }}</a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent"
@@ -26,7 +26,7 @@
         <span class="navbar-toggler-icon"></span>
       </button>
       <div class="collapse navbar-collapse" id="navbarSupportedContent">
-        <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+        <ul class="navbar-nav me-auto mb-2 mb-md-0">
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
               Tables
@@ -38,7 +38,7 @@
             </ul>
           </li>
         </ul>
-        <ul class="navbar-nav mb-2 mb-lg-0">
+        <ul class="navbar-nav mb-2 mb-md-0">
           {% if site.users %}
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -131,48 +131,27 @@
     integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
     crossorigin="anonymous"></script>
   <script>
-    window.rltbl = {{result | tojson}};
-    window.site = {{site | tojson}};
+    window.rltbl = {};
+    window.rltbl.site = {{site | tojson}};
+    window.rltbl.result = {{result | tojson}};
 
-    const fetchSuggestions = async (inputValue) => {
-      const response = await fetch(
-        `https://cellular-semantics.sanger.ac.uk/demo/api/suggest?query=${inputValue}&filter=Cell`
-      );
-      const data = await response.json();
-      return data.response.docs;
-    };
-
-    const transformData = (data) => {
-      return data.map((item) => ({
-        value: item.label_autosuggest_e,
-        label: item.label_autosuggest_e + "     (" + item.obo_id[0] + ")",
-        id: item.obo_id[0]
-      }));
-    };
-
-    window.loadOptions = async (inputValue, callback) => {
-      const suggestions = await fetchSuggestions(inputValue);
-      const options = transformData(suggestions);
-      callback(options);
-    };
-
-    window.onCellsEdited = (newValues) => {
-      console.log("Outer onCellEdited", newValues);
-      var addedValues = [];
-      if (window.rltbl.table.name === "penguin") {
-        for (var i = 0; i < newValues.length; i++) {
-          var newValue = newValues[i];
-          console.log("newValue", newValue);
-          if (newValue.location[0] === 2) {
-            console.log("Edited species", newValue);
-            addedValues.push({
-              location: [1, newValue.location[1]],
-              value: {kind: "text", data: newValue.value.data.entry.id}
-            });
-          }
-        }
+    // Example: Use an autocomplete dropdown for 'penguin.island' column.
+    const table = {{result.table.name | tojson}};
+    var columns = {{result.columns | tojson}};
+    for (var i = 0; i < columns.length; i++) {
+      var kind = "text";
+      if (table === "penguin" && columns[i].name === "island") {
+        kind = "dropdown";
       }
-      return newValues.concat(addedValues);
+      window.rltbl.result.columns[i].kind = kind;
+    }
+
+    window.rltbl.loadOptions = (row, column, inputValue, callback) => {
+      const url = `/cell-options/${table}/${row}/${column}?input=${inputValue}`;
+      const response = fetch(url)
+        .catch(e => console.log("loadOptions", e))
+        .then(response => response.json())
+        .then(data => callback(data));
     };
   </script>
   <script defer="defer" src="/static/main.js"></script>

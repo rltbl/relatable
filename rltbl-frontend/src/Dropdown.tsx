@@ -31,6 +31,8 @@ interface DropdownCellProps {
   readonly kind: "dropdown-cell";
   readonly value: string | undefined | null;
   readonly entry: any | null;
+  readonly row: number | null;
+  readonly column: string | null;
   readonly allowedValues: readonly DropdownOption[];
 }
 
@@ -68,7 +70,7 @@ const ReadOnlyWrap = styled('div')`
 
 const Editor: ReturnType<ProvideEditorCallback<DropdownCell>> = p => {
   const { value: cell, onFinishedEditing, initialValue } = p;
-  const { value: valueIn } = cell.data;
+  const { value: valueIn, row, column } = cell.data;
 
   const [value, setValue] = React.useState(valueIn);
   const [inputValue, setInputValue] = React.useState(initialValue ?? "");
@@ -89,17 +91,26 @@ const Editor: ReturnType<ProvideEditorCallback<DropdownCell>> = p => {
     );
   }
 
+  const loadOptions = (
+    inputValue: string,
+    callback: (options: any[]) => void
+  ) => {
+    try {
+       window.rltbl.loadOptions(row, column, inputValue, callback);
+    } catch (e) { /* pass */ }
+  };
+
   return (
     <Wrap>
       <AsyncCreatableSelect
         className="glide-select"
         cacheOptions
         defaultOptions
-        loadOptions={window.loadOptions}
+        loadOptions={loadOptions}
         inputValue={inputValue}
         onInputChange={setInputValue}
         menuPlacement={"auto"}
-        value={{value: value, entry: null}}
+        value={{ value: value, entry: null }}
         styles={{
           control: base => ({
             ...base,

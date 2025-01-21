@@ -1,4 +1,5 @@
 import React from "react";
+
 import {
   CellArray,
   CellClickedEventArgs,
@@ -11,14 +12,15 @@ import {
   Rectangle,
   type Item
 } from "@glideapps/glide-data-grid";
+import "@glideapps/glide-data-grid/dist/index.css";
 
+import parse from 'html-react-parser';
+import { isObject } from "lodash";
 import range from "lodash/range.js";
 import chunk from "lodash/chunk.js";
-import "@glideapps/glide-data-grid/dist/index.css";
 import { useLayer } from "react-laag";
 
 import DropdownCell from "./Dropdown.tsx";
-import { isObject } from "lodash";
 
 // Reltable types.
 type Cell = {
@@ -34,6 +36,7 @@ type Column = {
   title: string,
   id: string,
   grow: number,
+  kind: string,
 };
 type Cursor = {
   table: string,
@@ -173,13 +176,26 @@ function useAsyncData<TRowType>(
 }
 
 
-export default function Grid(grid_args: { user: string, table: string, columns: Column[], rows: number, height: number, site: any }) {
-  const user = grid_args.user;
-  const table = grid_args.table;
-  const columns = grid_args.columns;
-  const rows = grid_args.rows;
+export default function Grid(grid_args: { rltbl: any, height: number }) {
+  const rltbl = grid_args.rltbl;
+  const site = rltbl.site;
+  const result = rltbl.result;
+  const user = site.user.name;
+  const table = result.table.name;
+  const row_count = result.range.total;
   const height = grid_args.height;
-  // const site = grid_args.site;
+
+  const columns: Column[] = Object.values(grid_args.rltbl.result.columns).map((x: any) => {
+    var grow = 1;
+    return {
+      title: x.label || x.name,
+      id: x.name,
+      width: 55,
+      grow: grow,
+      kind: x.kind,
+      hasMenu: true
+    };
+  });
 
   // console.log("TABLE", table);
   // console.log("COLUMNS", columns);
@@ -255,7 +271,7 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
     const damageList: { cell: [number, number] }[] = [];
     for (const row of rows) {
       var r = 0;
-      for (r = 0; r < grid_args.rows; r++) {
+      for (r = 0; r < row_count; r++) {
         const data = dataRef.current[r];
         if (!data) { continue; }
         if (data.id === row.id) { break; }
@@ -280,7 +296,7 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
       });
     }
     gridRef.current?.updateCells(damageList);
-  }, [table, columns, grid_args.rows, cursorRef, getCursors, dataRef, gridRef]);
+  }, [table, columns, row_count, cursorRef, getCursors, dataRef, gridRef]);
 
   // Poll for new data.
   React.useEffect(() => {
@@ -292,8 +308,10 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
   }, [columns])
 
   const toCell: RowToCell<Row> = React.useCallback((rowData, col) => {
-    if (col === 2) {
-      const val = String(rowData.cells[columns[col].id].value);
+    const column_name = columns[col].id;
+    const kind = columns[col].kind;
+    if (kind === "dropdown") {
+      const val = rowData.cells[columns[col].id].value;
       return {
         kind: GridCellKind.Custom,
         allowOverlay: true,
@@ -301,6 +319,8 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
         data: {
           kind: "dropdown-cell",
           value: val,
+          row: rowData.id,
+          column: column_name,
           entry: null,
         },
       };
@@ -314,20 +334,20 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
   }, [columns]);
 
   const onCellEdited: RowEditedCallback<Row> = React.useCallback((cell, newVal, rowData) => {
-      // console.log("EDITED CELL", cell, newVal, rowData);
-      const [col] = cell;
-      var value = "UNDEFINED";
-      if (newVal.kind === GridCellKind.Text) {
-        value = newVal.data;
-      } else if (newVal.kind === GridCellKind.Custom && newVal.data["kind"] === "dropdown-cell") {
-        value = newVal.data["value"];
-      }
-      if (value === "UNDEFINED") return;
-      rowData.cells[columns[col].id].value = value;
-      rowData.cells[columns[col].id].text = value;
+    // console.log("EDITED CELL", cell, newVal, rowData);
+    const [col] = cell;
+    var value = "UNDEFINED";
+    if (newVal.kind === GridCellKind.Text) {
+      value = newVal.data;
+    } else if (newVal.kind === GridCellKind.Custom && newVal.data["kind"] === "dropdown-cell") {
+      value = newVal.data["value"];
+    }
+    if (value === "UNDEFINED") return;
+    rowData.cells[columns[col].id].value = value;
+    rowData.cells[columns[col].id].text = value;
 
-      return rowData;
-    }, [columns]);
+    return rowData;
+  }, [columns]);
 
   const async_args = useAsyncData<Row>(
     dataRef,
@@ -372,8 +392,8 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
   const onCellsEdited = React.useCallback((newValues: readonly { location: Item; value: EditableGridCell }[]) => {
     // console.log("EDITED CELLS BEFORE", newValues);
     try {
-      newValues = window.onCellsEdited(newValues);
-    } catch(e) { /* pass */ }
+      newValues = window.rltbl.onCellsEdited(newValues);
+    } catch (e) { /* pass */ }
     // console.log("EDITED CELLS AFTER", newValues);
 
     var changes: any[] = [];
@@ -410,7 +430,7 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
       console.error(error.message);
     }
 
-  }, [user, table, columns, dataRef]);
+  }, [user, table, columns, dataRef, onCellEdited]);
 
   // const onRowMoved = React.useCallback((from: number, to: number) => {
   //   console.log("ROW MOVED", from, to);
@@ -438,22 +458,44 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
   //     }
   // }, [dataRef]);
 
-  const [showMenu, setShowMenu] = React.useState<{ bounds: Rectangle; cell: Item, content: String }>();
+  const [showMenu, setShowMenu] = React.useState<{ bounds: Rectangle; content: React.JSX.Element }>();
 
   const onCellContextMenu = React.useCallback((cell: Item, event: CellClickedEventArgs) => {
+    // console.log("onCellContextMenu", cell, event);
     if (!dataRef.current) { return; }
 
-    setShowMenu({ bounds: event.bounds, cell: cell, content: "<b>FOO</b>" });
-
     const [col, row] = cell;
+    if (col === -1) {
+      fetch(`/row-menu/${table}/${row + 1}`)
+        .then((response) => { return response.text() })
+        .then(text => {
+          let content: React.JSX.Element = parse(text) as React.JSX.Element;
+          setShowMenu({ bounds: event.bounds, content: content });
+        });
+    } else {
+      const column = columns[col].id;
+      fetch(`/cell-menu/${table}/${row + 1}/${column}`)
+        .then((response) => { return response.text() })
+        .then(text => {
+          let content: React.JSX.Element = parse(text) as React.JSX.Element;
+          setShowMenu({ bounds: event.bounds, content: content });
+        });
+    }
 
-    const rowData = dataRef.current[row];
-    if (!rowData) { return; }
-    const cellData = rowData.cells[columns[col].id];
-    if (!cellData) { return; }
-    console.log("onCellContextMenu", cellData, event);
     event.preventDefault();
-  }, [columns, dataRef]);
+    return false;
+  }, [table, columns, dataRef]);
+
+  const onHeaderMenuClick = React.useCallback((col: number, bounds: Rectangle) => {
+    const column = columns[col].id;
+    fetch(`/column-menu/${table}/${column}`)
+      .then((response) => { return response.text() })
+      .then(text => {
+        let content: React.JSX.Element = parse(text) as React.JSX.Element;
+        setShowMenu({ bounds: bounds, content: content });
+      });
+    return false;
+  }, [columns]);
 
   const { renderLayer, layerProps } = useLayer({
     isOpen: showMenu !== undefined,
@@ -477,17 +519,17 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
 
   const drawCell: DrawCellCallback = React.useCallback((args, draw) => {
     draw(); // draw up front to draw over the cell
-    if (!dataRef.current) { return; }
-    const { ctx, rect, col, row } = args;
-    const color = cursorRef.current[col + "," + row];
-    if (!color) { return; };
-    ctx.beginPath();
-    ctx.rect(rect.x + 1, rect.y + 1, rect.width - 1, rect.height - 1);
-    ctx.save();
-    ctx.strokeStyle = color;
-    ctx.stroke();
-    ctx.restore();
-  }, [cursorRef, dataRef]);
+    // if (!dataRef.current) { return; }
+    // const { ctx, rect, col, row } = args;
+    // const color = cursorRef.current[col + "," + row];
+    // if (!color) { return; };
+    // ctx.beginPath();
+    // ctx.rect(rect.x + 1, rect.y + 1, rect.width - 1, rect.height - 1);
+    // ctx.save();
+    // ctx.strokeStyle = color;
+    // ctx.stroke();
+    // ctx.restore();
+  }, []);
 
   // Draw a red triangle in upper-right, like Excel.
   // const drawCell: DrawCellCallback = React.useCallback((args, draw) => {
@@ -516,20 +558,21 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
       ref={gridRef}
       {...async_args}
       customRenderers={[DropdownCell]}
-      // rowMarkers={"both"}
+      rowMarkers={"clickable-number"}
       gridSelection={gridSelection}
       onGridSelectionChange={onGridSelectionChange}
       onCellsEdited={onCellsEdited}
       // onRowMoved={onRowMoved}
       //onCellClicked={onCellClicked}
       onCellContextMenu={onCellContextMenu}
+      onHeaderMenuClick={onHeaderMenuClick}
       // onPaste={true}
       // fillHandle={true}
       drawCell={drawCell}
       width="100%"
       height={height}
       columns={cols}
-      rows={rows}
+      rows={row_count}
     />
     {showMenu !== undefined &&
       renderLayer(
@@ -537,11 +580,6 @@ export default function Grid(grid_args: { user: string, table: string, columns: 
           {...layerProps}
           style={{
             ...layerProps.style,
-            width: 300,
-            padding: 4,
-            borderRadius: 8,
-            backgroundColor: "white",
-            border: "1px solid black",
           }}>
           {showMenu.content}
         </div>
