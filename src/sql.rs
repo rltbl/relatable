@@ -1,6 +1,6 @@
 //! # rltbl/relatable
 //!
-//! This is rltbl::sql.
+//! This is relatable (rltbl::sql).
 
 use anyhow::Result;
 use async_std::sync::{Mutex, MutexGuard};
@@ -429,6 +429,16 @@ impl From<JsonRow> for Vec<String> {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Functions for adding / updating / removing data from the database
+///////////////////////////////////////////////////////////////////////////////
+pub async fn add_row_tx(
+    transaction: &mut DbTransaction<'_>,
+    table: &str,
+    row: &JsonRow,
+) -> Result<JsonRow> {
+    todo!()
+}
 ///////////////////////////////////////////////////////////////////////////////
 // Other database-related utilities and functions
 ///////////////////////////////////////////////////////////////////////////////

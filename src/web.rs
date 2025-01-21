@@ -1,6 +1,6 @@
 //! # rltbl/relatable
 //!
-//! This is rltbl::web.
+//! This is relatable (rltbl::web).
 
 use crate::{
     cli::Cli,

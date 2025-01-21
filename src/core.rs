@@ -1,10 +1,10 @@
 //! # rltbl/relatable
 //!
-//! This is rltbl::core.
+//! This is relatable (rltbl::core).
 
 use crate::sql::{
-    begin, connect, is_simple, json_to_string, lock_connection, query, query_one, query_tx,
-    query_value, query_value_tx, DbConnection, JsonRow, VecInto,
+    add_row_tx, begin, connect, is_simple, json_to_string, lock_connection, query, query_one,
+    query_tx, query_value, query_value_tx, DbConnection, JsonRow, VecInto,
 };
 
 use anyhow::Result;
@@ -315,6 +315,19 @@ impl Relatable {
             tables: self.get_tables().await.unwrap_or_default(),
         }
     }
+
+    pub async fn add_row(&self, table: &str, json_row: &JsonRow) -> Result<Row> {
+        // Get the connection and begin a transaction:
+        let mut locked_conn = lock_connection(&self.connection).await;
+        let mut tx = begin(&self.connection, &mut locked_conn).await?;
+
+        let row = add_row_tx(&mut tx, table, json_row).await?;
+
+        // Commit the transaction:
+        tx.commit().await?;
+
+        Ok(Row::from(row))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -396,10 +409,10 @@ impl From<&JsonValue> for Cell {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Row {
-    id: usize,
-    order: usize,
-    change_id: usize,
-    cells: IndexMap<String, Cell>,
+    pub id: usize,
+    pub order: usize,
+    pub change_id: usize,
+    pub cells: IndexMap<String, Cell>,
 }
 
 impl Row {
@@ -408,7 +421,12 @@ impl Row {
     }
 }
 
-// Ignore columns that start with "_"
+impl From<Row> for Vec<String> {
+    fn from(row: Row) -> Self {
+        row.to_strings()
+    }
+}
+
 impl From<JsonRow> for Row {
     fn from(row: JsonRow) -> Self {
         Self {
@@ -430,16 +448,11 @@ impl From<JsonRow> for Row {
             cells: row
                 .content
                 .iter()
+                // Ignore columns that start with "_"
                 .filter(|(k, _)| !k.starts_with("_"))
                 .map(|(k, v)| (k.clone(), v.into()))
                 .collect(),
         }
-    }
-}
-
-impl From<Row> for Vec<String> {
-    fn from(row: Row) -> Self {
-        row.to_strings()
     }
 }
 
