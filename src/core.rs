@@ -191,6 +191,30 @@ impl Relatable {
             .map_err(|e| e.into())
     }
 
+    pub async fn get_table(&self, table_name: &str, connection: &DbConnection) -> Result<Table> {
+        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        let change_id = match query_value(connection, &statement, Some(&params)).await? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(Table::from_change_id(table_name, change_id))
+    }
+
+    pub async fn get_table_tx(
+        &self,
+        table_name: &str,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Table> {
+        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        let change_id = match query_value_tx(tx, &statement, Some(&params)).await? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(Table::from_change_id(table_name, change_id))
+    }
+
     pub fn from(&self, table_name: &str) -> Select {
         Select {
             table_name: table_name.to_string(),
@@ -213,7 +237,9 @@ impl Relatable {
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        let table = Table::from(select.table_name.as_str(), &self.connection).await?;
+        let table = self
+            .get_table(select.table_name.as_str(), &self.connection)
+            .await?;
         let columns = self.fetch_columns(&select.table_name).await?;
         let (statement, params) = select.to_sqlite()?;
         tracing::debug!("SQL {statement}");
@@ -413,7 +439,7 @@ impl Relatable {
         table_name: &str,
         json_row: &JsonRow,
     ) -> Result<Row> {
-        let table = Table::from_tx(table_name, tx).await?;
+        let table = self.get_table_tx(table_name, tx).await?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table.name,)).into(),
@@ -608,7 +634,7 @@ pub struct Table {
     name: String,
     // The history_id of the most recent update to this table.
     change_id: usize,
-    editable: bool, // TODO NOW !!!! Make this true by default.
+    editable: bool,
 }
 
 impl Default for Table {
@@ -622,26 +648,6 @@ impl Default for Table {
 }
 
 impl Table {
-    async fn from(table_name: &str, connection: &DbConnection) -> Result<Self> {
-        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
-        let params = json!([table_name]);
-        let change_id = match query_value(connection, &statement, Some(&params)).await? {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
-        };
-        Ok(Self::from_change_id(table_name, change_id))
-    }
-
-    async fn from_tx(table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Self> {
-        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
-        let params = json!([table_name]);
-        let change_id = match query_value_tx(tx, &statement, Some(&params)).await? {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
-        };
-        Ok(Self::from_change_id(table_name, change_id))
-    }
-
     fn from_change_id(table_name: &str, change_id: usize) -> Self {
         Table {
             name: table_name.to_string(),
