@@ -330,7 +330,7 @@ pub fn prompt_for_json_row() -> JsonRow {
 
 pub async fn add_row(cli: &Cli, table: &str) {
     tracing::debug!("add_row({cli:?}, {table})");
-    let rltbl = Relatable::default().await.unwrap();
+    let rltbl = Relatable::connect().await.unwrap();
     let json_row = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),

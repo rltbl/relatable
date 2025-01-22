@@ -3,8 +3,8 @@
 //! This is relatable (rltbl::core).
 
 use crate::sql::{
-    add_row_tx, begin, connect, is_simple, json_to_string, lock_connection, query, query_one,
-    query_tx, query_value, query_value_tx, DbConnection, JsonRow, VecInto,
+    begin, connect, is_simple, json_to_string, lock_connection, query, query_one, query_tx,
+    query_value, query_value_tx, DbConnection, DbTransaction, JsonRow, VecInto,
 };
 
 use anyhow::Result;
@@ -413,12 +413,21 @@ impl Relatable {
         let mut locked_conn = lock_connection(&self.connection).await;
         let mut tx = begin(&self.connection, &mut locked_conn).await?;
 
-        let row = add_row_tx(&mut tx, table, json_row).await?;
+        let row = self.add_row_tx(&mut tx, table, json_row).await?;
 
         // Commit the transaction:
         tx.commit().await?;
 
         Ok(Row::from(row))
+    }
+
+    pub async fn add_row_tx(
+        &self,
+        transaction: &mut DbTransaction<'_>,
+        table: &str,
+        row: &JsonRow,
+    ) -> Result<JsonRow> {
+        todo!()
     }
 }
 
