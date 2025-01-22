@@ -368,7 +368,7 @@ pub async fn app(rltbl: Relatable, host: &str, port: &u16) -> Result<String> {
 
 pub async fn serve(_cli: &Cli, host: &str, port: &u16) -> Result<()> {
     tracing::debug!("serve({host}, {port})");
-    let rltbl = Relatable::default().await?;
+    let rltbl = Relatable::connect().await?;
     app(rltbl, host, port)?;
     Ok(())
 }
@@ -429,7 +429,7 @@ pub async fn serve_cgi() -> Result<()> {
         .unwrap();
     tracing::debug!("REQUEST {request:?}");
 
-    let rltbl = Relatable::default().await?;
+    let rltbl = Relatable::connect().await?;
     let shared_state = Arc::new(rltbl);
     let mut router = build_app(shared_state).await;
     let response = router.call(request).await;
