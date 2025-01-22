@@ -118,12 +118,12 @@ async fn get_table(
     session: Session<SessionNullPool>,
 ) -> Response<Body> {
     // tracing::info!("get_table({rltbl:?}, {path}, {query_params:?})");
-    tracing::info!("get_table([rltbl], {path}, {query_params:?})");
+    // tracing::info!("get_table([rltbl], {path}, {query_params:?})");
     // tracing::info!("SESSION {:?}", session.get_session_id().inner());
     // tracing::info!("SESSIONS {}", session.count().await);
 
     let username: String = session.get("username").unwrap_or_default();
-    tracing::info!("USERNAME {username}");
+    // tracing::info!("USERNAME {username}");
     let select = Select::from_path_and_query(&rltbl, &path, &query_params);
     let format = match Format::try_from(&path) {
         Ok(format) => format,
@@ -402,7 +402,7 @@ async fn shutdown_signal() {
 // and read STDIN in the case of POST,
 // then handle the request,
 // and send the HTTP response to STDOUT.
-pub async fn serve_cgi() -> Result<()> {
+pub async fn serve_cgi() {
     let request_method = std::env::var("REQUEST_METHOD").unwrap_or("GET".to_string());
     let path_info = std::env::var("PATH_INFO").unwrap_or("/".to_string());
     let query_string = std::env::var("QUERY_STRING").unwrap_or_default();
@@ -425,11 +425,20 @@ pub async fn serve_cgi() -> Result<()> {
     let request = axum::http::Request::builder()
         .method(request_method.as_str())
         .uri(uri)
+        .header("Accept", std::env::var("HTTP_ACCEPT").unwrap_or_default())
+        .header(
+            "Content-Type",
+            std::env::var("CONTENT_TYPE").unwrap_or_default(),
+        )
+        .header(
+            "Content-Length",
+            std::env::var("CONTENT_LENGTH").unwrap_or_default(),
+        )
         .body(body)
         .unwrap();
     tracing::debug!("REQUEST {request:?}");
 
-    let rltbl = Relatable::connect().await?;
+    let rltbl = Relatable::connect().await.expect("Database connection");
     let shared_state = Arc::new(rltbl);
     let mut router = build_app(shared_state).await;
     let response = router.call(request).await;
@@ -439,7 +448,6 @@ pub async fn serve_cgi() -> Result<()> {
     std::io::stdout()
         .write_all(&result)
         .expect("Write to STDOUT");
-    Ok(())
 }
 
 // From https://github.com/amandasaurus/rust-cgi/blob/main/src/lib.rs
