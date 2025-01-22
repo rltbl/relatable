@@ -78,7 +78,16 @@ impl Relatable {
         let mut env = Environment::new();
 
         // Load default template strings at compile time.
-        let templates = IndexMap::from([("table.html", include_str!("templates/table.html"))]);
+        let templates = IndexMap::from([
+            ("page.html", include_str!("templates/page.html")),
+            ("table.html", include_str!("templates/table.html")),
+            ("row_menu.html", include_str!("templates/row_menu.html")),
+            (
+                "column_menu.html",
+                include_str!("templates/column_menu.html"),
+            ),
+            ("cell_menu.html", include_str!("templates/cell_menu.html")),
+        ]);
 
         // Load templates dynamically if src/templates/ exists,
         // otherwise use strings from compile time.
