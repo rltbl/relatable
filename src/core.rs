@@ -191,20 +191,6 @@ impl Relatable {
             .map_err(|e| e.into())
     }
 
-    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
-        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
-        let params = json!([table_name]);
-        let change_id = match query_value(&self.connection, &statement, Some(&params)).await? {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
-        };
-        Ok(Table {
-            name: table_name.to_string(),
-            change_id,
-            ..Default::default()
-        })
-    }
-
     pub fn from(&self, table_name: &str) -> Select {
         Select {
             table_name: table_name.to_string(),
@@ -227,7 +213,7 @@ impl Relatable {
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        let table = self.get_table(&select.table_name).await?;
+        let table = Table::from(select.table_name.as_str(), &self.connection).await?;
         let columns = self.fetch_columns(&select.table_name).await?;
         let (statement, params) = select.to_sqlite()?;
         tracing::debug!("SQL {statement}");
@@ -408,26 +394,41 @@ impl Relatable {
         }
     }
 
-    pub async fn add_row(&self, table: &str, json_row: &JsonRow) -> Result<Row> {
+    pub async fn add_row(&self, table: &str, row: &JsonRow) -> Result<Row> {
         // Get the connection and begin a transaction:
         let mut locked_conn = lock_connection(&self.connection).await;
         let mut tx = begin(&self.connection, &mut locked_conn).await?;
 
-        let row = self.add_row_tx(&mut tx, table, json_row).await?;
+        let row = self.add_row_tx(&mut tx, table, row).await?;
 
         // Commit the transaction:
         tx.commit().await?;
 
-        Ok(Row::from(row))
+        Ok(row)
     }
 
     pub async fn add_row_tx(
         &self,
-        transaction: &mut DbTransaction<'_>,
-        table: &str,
-        row: &JsonRow,
-    ) -> Result<JsonRow> {
-        todo!()
+        tx: &mut DbTransaction<'_>,
+        table_name: &str,
+        json_row: &JsonRow,
+    ) -> Result<Row> {
+        let table = Table::from_tx(table_name, tx).await?;
+        if !table.editable {
+            return Err(
+                RelatableError::InputError(format!("{} is not editable.", table.name,)).into(),
+            );
+        }
+
+        let new_row = Row::new(&table, json_row, tx).await?;
+        let sql = new_row.as_insert(table_name);
+        query_tx(tx, &sql, None).await?;
+
+        // TODO: Any history related stuff here?
+
+        //let table_change_id = table.change_id;
+
+        Ok(new_row)
     }
 }
 
@@ -517,8 +518,47 @@ pub struct Row {
 }
 
 impl Row {
+    async fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
+        let sql = format!(r#"SELECT MAX("_id") FROM "{}""#, table);
+        let current_row_id = match query_value_tx(tx, &sql, None).await? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(current_row_id + 1)
+    }
+
+    async fn new(table: &Table, json_row: &JsonRow, tx: &mut DbTransaction<'_>) -> Result<Self> {
+        let mut row = Row::from(json_row.clone());
+        row.id = Self::get_next_id(table.name.as_str(), tx).await?;
+        row.order = 1000 * row.id;
+        row.change_id = table.change_id;
+        Ok(row)
+    }
+
     fn to_strings(&self) -> Vec<String> {
         self.cells.values().map(|cell| cell.text.clone()).collect()
+    }
+
+    fn as_insert(&self, table: &str) -> String {
+        let id = self.id;
+        let order = self.order;
+        let columns = self
+            .cells
+            .keys()
+            .map(|k| format!(r#""{k}""#))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let values = self
+            .to_strings()
+            .iter()
+            .map(|v| format!("'{v}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            r#"INSERT INTO "{table}"
+               ("_id", "_order", {columns})
+               VALUES ({id}, {order}, {values})"#
+        )
     }
 }
 
@@ -563,12 +603,52 @@ pub struct Column {
     // sqltype: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Table {
     name: String,
     // The history_id of the most recent update to this table.
     change_id: usize,
-    editable: bool,
+    editable: bool, // TODO NOW !!!! Make this true by default.
+}
+
+impl Default for Table {
+    fn default() -> Self {
+        Self {
+            name: String::default(),
+            change_id: usize::default(),
+            editable: true,
+        }
+    }
+}
+
+impl Table {
+    async fn from(table_name: &str, connection: &DbConnection) -> Result<Self> {
+        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        let change_id = match query_value(connection, &statement, Some(&params)).await? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(Self::from_change_id(table_name, change_id))
+    }
+
+    async fn from_tx(table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Self> {
+        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        let change_id = match query_value_tx(tx, &statement, Some(&params)).await? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(Self::from_change_id(table_name, change_id))
+    }
+
+    fn from_change_id(table_name: &str, change_id: usize) -> Self {
+        Table {
+            name: table_name.to_string(),
+            change_id: change_id,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

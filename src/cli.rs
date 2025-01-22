@@ -13,7 +13,7 @@ use clap_verbosity_flag::Verbosity;
 use promptly::prompt_default;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use serde_json::{json, to_string_pretty, to_value, Map as JsonMap, Value as JsonValue};
-use std::{io, io::Write, path::Path as FilePath};
+use std::{io, io::Write};
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";

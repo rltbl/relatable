@@ -1,6 +1,9 @@
 //! # rltbl/relatable
 //!
 //! This is relatable (rltbl::sql).
+//!
+//! This module contains functions for connecting to and querying the database, and implements
+//! any elements of the API that are database-specific.
 
 use anyhow::Result;
 use async_std::sync::{Mutex, MutexGuard};
@@ -286,7 +289,34 @@ pub async fn query_value_tx(
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Utilities for dealing with JSON representations of rows
+// Other database-related utilities and functions
+///////////////////////////////////////////////////////////////////////////////
+
+/// Represents a 'simple' database name
+pub const DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
+
+/// Helper function to determine whether the given name is 'simple', as defined by
+/// [DB_OBJECT_MATCH_STR]
+pub fn is_simple(db_object_name: &str) -> Result<(), String> {
+    let db_object_regex: Regex = Regex::new(DB_OBJECT_MATCH_STR).unwrap();
+
+    let db_object_root = db_object_name.splitn(2, ".").collect::<Vec<_>>()[0];
+    if !db_object_regex.is_match(&db_object_root) {
+        Err(format!(
+            "Illegal database object name: '{}' in '{}'. Does not match: /{}/",
+            db_object_root, db_object_name, DB_OBJECT_MATCH_STR,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Utilities for dealing with JSON representations of rows. The reason thses
+// are located here instead of in core.rs is because the implementation of
+// JsonRow is dependent, in part, on whether the sqlx or rusqlite crate feature
+// is enabled. Encapsulating the handling of that crate feature from the rest of
+// the API the other purpose of this module.
 ///////////////////////////////////////////////////////////////////////////////
 
 // WARN: This needs to be thought through.
@@ -426,28 +456,5 @@ impl std::fmt::Debug for JsonRow {
 impl From<JsonRow> for Vec<String> {
     fn from(row: JsonRow) -> Self {
         row.to_strings()
-    }
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Other database-related utilities and functions
-///////////////////////////////////////////////////////////////////////////////
-
-/// Represents a 'simple' database name
-pub const DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
-
-/// Helper function to determine whether the given name is 'simple', as defined by
-/// [DB_OBJECT_MATCH_STR]
-pub fn is_simple(db_object_name: &str) -> Result<(), String> {
-    let db_object_regex: Regex = Regex::new(DB_OBJECT_MATCH_STR).unwrap();
-
-    let db_object_root = db_object_name.splitn(2, ".").collect::<Vec<_>>()[0];
-    if !db_object_regex.is_match(&db_object_root) {
-        Err(format!(
-            "Illegal database object name: '{}' in '{}'. Does not match: /{}/",
-            db_object_root, db_object_name, DB_OBJECT_MATCH_STR,
-        ))
-    } else {
-        Ok(())
     }
 }
