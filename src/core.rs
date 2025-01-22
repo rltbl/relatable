@@ -277,35 +277,18 @@ impl Relatable {
         query(&self.connection, &statement, Some(&params)).await
     }
 
-    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
-        let action = changeset.action.to_string();
+    pub async fn record_changes(changeset: &ChangeSet, tx: &mut DbTransaction<'_>) -> Result<()> {
         let user = changeset.user.clone();
+        let action = changeset.action.to_string();
         let table = changeset.table.clone();
         let description = changeset.description.clone();
-
-        // Get the connection and begin a transaction:
-        let mut locked_conn = lock_connection(&self.connection).await;
-        let mut tx = begin(&self.connection, &mut locked_conn).await?;
-
-        // Make sure the user is present.
-        let color = random_color::RandomColor::new().to_hex();
-        let statement = r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#;
-        let params = json!([user, color]);
-        query_tx(&mut tx, &statement, Some(&params)).await?;
-
-        // Update the user's cursor position.
-        let cursor = changeset.to_cursor()?;
-        let statement =
-            r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
-        let params = json!([to_value(cursor).unwrap_or_default(), user]);
-        query_value_tx(&mut tx, &statement, Some(&params)).await?;
 
         let statement = r#"INSERT INTO change('user', 'action', 'table', 'description', 'content')
                            VALUES (?, ?, ?, ?, ?)
                            RETURNING change_id"#;
         let content = to_value(&changeset.changes).unwrap_or_default();
         let params = json!([user, action, table, description, content]);
-        let change_id = query_value_tx(&mut tx, &statement, Some(&params)).await?;
+        let change_id = query_value_tx(tx, &statement, Some(&params)).await?;
         let change_id = change_id
             .expect("a change_id")
             .as_u64()
@@ -320,7 +303,7 @@ impl Relatable {
                                        VALUES (?, ?, ?, 'TODO', 'TODO')
                                        RETURNING history_id"#;
                     let params = json!([change_id, table, row]);
-                    query_value_tx(&mut tx, &statement, Some(&params)).await?;
+                    query_value_tx(tx, &statement, Some(&params)).await?;
 
                     // WARN: This just sets text!
                     let statement =
@@ -328,10 +311,34 @@ impl Relatable {
                     // TODO: Render JSON to SQL properly.
                     let value = json_to_string(value);
                     let params = json!([value, row]);
-                    query_tx(&mut tx, &statement, Some(&params)).await?;
+                    query_tx(tx, &statement, Some(&params)).await?;
                 }
             }
         }
+        Ok(())
+    }
+
+    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
+        // Get the connection and begin a transaction:
+        let mut locked_conn = lock_connection(&self.connection).await;
+        let mut tx = begin(&self.connection, &mut locked_conn).await?;
+
+        // Make sure the user is present.
+        let user = changeset.user.clone();
+        let color = random_color::RandomColor::new().to_hex();
+        let statement = r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#;
+        let params = json!([user, color]);
+        query_tx(&mut tx, &statement, Some(&params)).await?;
+
+        // Update the user's cursor position.
+        let cursor = changeset.to_cursor()?;
+        let statement =
+            r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
+        let params = json!([to_value(cursor).unwrap_or_default(), user]);
+        query_value_tx(&mut tx, &statement, Some(&params)).await?;
+
+        // Record the changes to the change and history tables:
+        Self::record_changes(changeset, &mut tx).await?;
 
         // Commit the transaction:
         tx.commit().await?;
@@ -450,7 +457,7 @@ impl Relatable {
         let sql = new_row.as_insert(table_name);
         query_tx(tx, &sql, None).await?;
 
-        // TODO: Any history related stuff here?
+        // TODO: Construct a ChangeSet and then call record_changes().
 
         //let table_change_id = table.change_id;
 
