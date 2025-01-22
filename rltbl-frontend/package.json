@@ -4,15 +4,18 @@
   "private": true,
   "dependencies": {
     "@glideapps/glide-data-grid": "^6.0.3",
+    "@linaria/react": "^4.5.3",
     "@testing-library/jest-dom": "^5.17.0",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
     "@types/lodash": "^4.14.177",
+    "html-react-parser": "^5.2.2",
     "lodash": "^4.17.21",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-laag": "^2.0.5",
-    "react-scripts": "^5.0.1"
+    "react-scripts": "^5.0.1",
+    "react-select": "^5.9.0"
   },
   "overrides": {
     "nth-check": ">=2.0.1",

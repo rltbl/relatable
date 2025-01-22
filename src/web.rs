@@ -24,7 +24,7 @@ use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, Sessio
 use futures::executor::block_on;
 use indexmap::IndexMap;
 use minijinja::context;
-use serde_json::{json, to_string_pretty, to_value};
+use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
 use tokio::net::TcpListener;
 use tower_service::Service;
 
@@ -250,6 +250,74 @@ async fn post_cursor(
     }
 }
 
+async fn get_row_menu(
+    State(rltbl): State<Arc<Relatable>>,
+    Path((table, row)): Path<(String, usize)>,
+) -> Response<Body> {
+    tracing::info!("get_row_menu({table}, {row})");
+    match rltbl.render("row_menu.html", context! {table, row}) {
+        Ok(html) => Html(html).into_response(),
+        Err(error) => {
+            tracing::error!("{error:?}");
+            return get_500(&error);
+        }
+    }
+}
+async fn get_column_menu(
+    State(rltbl): State<Arc<Relatable>>,
+    Path((table, column)): Path<(String, String)>,
+) -> Response<Body> {
+    tracing::info!("get_column_meny({table}, {column})");
+    match rltbl.render("column_menu.html", context! {table, column}) {
+        Ok(html) => Html(html).into_response(),
+        Err(error) => {
+            tracing::error!("{error:?}");
+            return get_500(&error);
+        }
+    }
+}
+async fn get_cell_menu(
+    State(rltbl): State<Arc<Relatable>>,
+    Path((table, row, column)): Path<(String, usize, String)>,
+) -> Response<Body> {
+    tracing::info!("get_cell_menu({table}, {row}, {column})");
+    match rltbl.render("cell_menu.html", context! {table, row, column}) {
+        Ok(html) => Html(html).into_response(),
+        Err(error) => {
+            tracing::error!("{error:?}");
+            return get_500(&error);
+        }
+    }
+}
+
+async fn get_cell_options(
+    State(rltbl): State<Arc<Relatable>>,
+    Path((table, row, column)): Path<(String, usize, String)>,
+    Query(query_params): Query<QueryParams>,
+) -> Response<Body> {
+    tracing::info!("get_cell_option({table}, {row}, {column}, {query_params:?})");
+    let input = match query_params.get("input") {
+        Some(input) => input,
+        None => &String::new(),
+    };
+    let statement = format!(
+        r#"SELECT DISTINCT "{column}" AS 'value' FROM "{table}" WHERE "{column}" LIKE '%{input}%' LIMIT 20"#
+    );
+    let values: Vec<JsonValue> = query(&rltbl.connection, &statement, None)
+        .await
+        .expect("Get column values")
+        .iter()
+        .map(|row| {
+            let value = row.get_string("value");
+            json!({
+                    "value": value,
+                    "label": value,
+            })
+        })
+        .collect();
+    Json(json!(values)).into_response()
+}
+
 pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
     let session_config = SessionConfig::default();
     let session_store = SessionStore::<SessionNullPool>::new(None, session_config)
@@ -263,6 +331,13 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
         .route("/sign-out", post(post_sign_out))
         .route("/cursor", post(post_cursor))
         .route("/table/{*path}", get(get_table).post(post_table))
+        .route("/row-menu/{table}/{row}", get(get_row_menu))
+        .route("/column-menu/{table}/{column}", get(get_column_menu))
+        .route("/cell-menu/{table}/{row}/{column}", get(get_cell_menu))
+        .route(
+            "/cell-options/{table}/{row}/{column}",
+            get(get_cell_options),
+        )
         .layer(SessionLayer::new(session_store))
         .with_state(shared_state)
 }
@@ -293,7 +368,7 @@ pub async fn app(rltbl: Relatable, host: &str, port: &u16) -> Result<String> {
 
 pub async fn serve(_cli: &Cli, host: &str, port: &u16) -> Result<()> {
     tracing::debug!("serve({host}, {port})");
-    let rltbl = Relatable::default().await?;
+    let rltbl = Relatable::connect().await?;
     app(rltbl, host, port)?;
     Ok(())
 }
@@ -354,7 +429,7 @@ pub async fn serve_cgi() -> Result<()> {
         .unwrap();
     tracing::debug!("REQUEST {request:?}");
 
-    let rltbl = Relatable::default().await?;
+    let rltbl = Relatable::connect().await?;
     let shared_state = Arc::new(rltbl);
     let mut router = build_app(shared_state).await;
     let response = router.call(request).await;
