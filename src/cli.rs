@@ -341,8 +341,9 @@ pub async fn add_row(cli: &Cli, table: &str) {
         panic!("Cannot insert an empty row to the database");
     }
 
+    let user = get_cli_user(&cli);
     let row = rltbl
-        .add_row(table, &json_row)
+        .add_row(table, &user, &json_row)
         .await
         .expect("Error adding row");
     tracing::info!("Added row {}", row.order);

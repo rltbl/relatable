@@ -295,25 +295,21 @@ impl Relatable {
             .expect("an integer");
 
         for change in &changeset.changes {
-            tracing::debug!("CHANGE {change:?}");
             match change {
-                Change::Update { row, column, value } => {
-                    let statement = r#"INSERT INTO history
-                                       ('change_id', 'table', 'row', 'before', 'after')
-                                       VALUES (?, ?, ?, 'TODO', 'TODO')
-                                       RETURNING history_id"#;
-                    let params = json!([change_id, table, row]);
-                    query_value_tx(tx, &statement, Some(&params)).await?;
-
-                    // WARN: This just sets text!
-                    let statement =
-                        format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#,);
-                    // TODO: Render JSON to SQL properly.
-                    let value = json_to_string(value);
-                    let params = json!([value, row]);
-                    query_tx(tx, &statement, Some(&params)).await?;
+                Change::Update {
+                    row,
+                    column: _,
+                    value: _,
                 }
-            }
+                | Change::Add { row } => {
+                    let sql = r#"INSERT INTO "history"
+                                 ('change_id', 'table', 'row', 'before', 'after')
+                                 VALUES (?, ?, ?, 'TODO', 'TODO')
+                                 RETURNING "history_id""#;
+                    let params = json!([change_id, table, row]);
+                    query_value_tx(tx, &sql, Some(&params)).await?;
+                }
+            };
         }
         Ok(())
     }
@@ -336,6 +332,28 @@ impl Relatable {
             r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
         let params = json!([to_value(cursor).unwrap_or_default(), user]);
         query_value_tx(&mut tx, &statement, Some(&params)).await?;
+
+        // Actually make the changes:
+        let table = changeset.table.clone();
+        for change in &changeset.changes {
+            tracing::debug!("CHANGE {change:?}");
+            match change {
+                Change::Update { row, column, value } => {
+                    // WARN: This just sets text!
+                    let sql = format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#,);
+                    // TODO: Render JSON to SQL properly.
+                    let value = json_to_string(value);
+                    let params = json!([value, row]);
+                    query_tx(&mut tx, &sql, Some(&params)).await?;
+                }
+                _ => {
+                    return Err(RelatableError::InputError(format!(
+                        "Don't know how to apply set_values() to a change set like {changeset:?}"
+                    ))
+                    .into());
+                }
+            };
+        }
 
         // Record the changes to the change and history tables:
         Self::record_changes(changeset, &mut tx).await?;
@@ -427,12 +445,12 @@ impl Relatable {
         }
     }
 
-    pub async fn add_row(&self, table: &str, row: &JsonRow) -> Result<Row> {
+    pub async fn add_row(&self, table: &str, user: &str, row: &JsonRow) -> Result<Row> {
         // Get the connection and begin a transaction:
         let mut locked_conn = lock_connection(&self.connection).await;
         let mut tx = begin(&self.connection, &mut locked_conn).await?;
 
-        let row = self.add_row_tx(&mut tx, table, row).await?;
+        let row = self.add_row_tx(&mut tx, table, user, row).await?;
 
         // Commit the transaction:
         tx.commit().await?;
@@ -444,6 +462,7 @@ impl Relatable {
         &self,
         tx: &mut DbTransaction<'_>,
         table_name: &str,
+        user: &str,
         json_row: &JsonRow,
     ) -> Result<Row> {
         let table = self.get_table_tx(table_name, tx).await?;
@@ -457,9 +476,15 @@ impl Relatable {
         let sql = new_row.as_insert(table_name);
         query_tx(tx, &sql, None).await?;
 
-        // TODO: Construct a ChangeSet and then call record_changes().
-
-        //let table_change_id = table.change_id;
+        // Record the change to the history table:
+        let changeset = ChangeSet {
+            action: ChangeAction::Do,
+            table: table_name.to_string(),
+            user: user.to_string(),
+            description: "Add one row".to_string(),
+            changes: vec![Change::Add { row: new_row.id }],
+        };
+        Self::record_changes(&changeset, tx).await?;
 
         Ok(new_row)
     }
@@ -488,6 +513,7 @@ impl ChangeSet {
                     row: *row,
                     column: column.to_string(),
                 }),
+                Change::Add { row: _ } => todo!(),
             },
             None => Err(RelatableError::ChangeError("No changes in set".into()).into()),
         }
@@ -519,9 +545,10 @@ pub enum Change {
         column: String,
         value: JsonValue,
     },
-    // Add
-    // Delete
-    // Move
+    Add {
+        row: usize,
+    }, // Delete
+       // Move
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
