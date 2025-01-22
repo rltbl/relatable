@@ -299,7 +299,8 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
 
   // Poll for new data.
   React.useEffect(() => {
-    window.setInterval(pollData, 5000);
+    const interval = setInterval(pollData, 5000);
+    return () => clearInterval(interval);
   }, [pollData, dataRef]);
 
   const cols = React.useMemo<readonly GridColumn[]>(() => {
