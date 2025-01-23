@@ -190,7 +190,6 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     return {
       title: x.label || x.name,
       id: x.name,
-      width: 55,
       grow: grow,
       kind: x.kind,
       hasMenu: true
@@ -392,7 +391,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   const onCellsEdited = React.useCallback((newValues: readonly { location: Item; value: EditableGridCell }[]) => {
     // console.log("EDITED CELLS BEFORE", newValues);
     try {
-      newValues = window.rltbl.onCellsEdited(newValues);
+      newValues = rltbl.onCellsEdited(newValues);
     } catch (e) { /* pass */ }
     // console.log("EDITED CELLS AFTER", newValues);
 
@@ -495,7 +494,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
         setShowMenu({ bounds: bounds, content: content });
       });
     return false;
-  }, [columns]);
+  }, [table, columns]);
 
   const { renderLayer, layerProps } = useLayer({
     isOpen: showMenu !== undefined,
