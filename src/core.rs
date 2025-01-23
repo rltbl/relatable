@@ -116,16 +116,16 @@ impl Relatable {
         )"#;
         query(&rltbl.connection, sql, None).await.unwrap();
 
-        let sql = r#"CREATE TRIGGER 'table_order'
-          AFTER INSERT ON 'table'
-          WHEN NEW._order IS NULL
-          BEGIN
-            UPDATE 'table' SET _order = (? * NEW._id)
-            WHERE _id = NEW._id;
-          END
-        "#;
-        let params = json!([MOVE_INTERVAL]);
-        query(&rltbl.connection, sql, Some(&params)).await.unwrap();
+        let sql = format!(
+            r#"CREATE TRIGGER 'table_order'
+                 AFTER INSERT ON 'table'
+                 WHEN NEW._order IS NULL
+                 BEGIN
+                   UPDATE 'table' SET _order = ({MOVE_INTERVAL} * NEW._id)
+                   WHERE _id = NEW._id;
+                 END"#
+        );
+        query(&rltbl.connection, &sql, None).await.unwrap();
 
         let sql = "INSERT INTO 'table' ('table') VALUES ('table')";
         query(&rltbl.connection, sql, None).await.unwrap();
@@ -546,14 +546,14 @@ impl Relatable {
         &self,
         tx: &mut DbTransaction<'_>,
         table: &Table,
-        id: usize,
+        row_id: usize,
     ) -> Result<usize> {
         let sql = format!(r#"SELECT "_order" FROM "{}" WHERE "_id" = ?"#, table.name);
-        let params = json!([id]);
+        let params = json!([row_id]);
         let rows = query_tx(tx, &sql, Some(&params)).await?;
         if rows.is_empty() {
             return Err(RelatableError::DataError(format!(
-                "Unable to fetch _order for row {id} of table '{table}'",
+                "Unable to fetch _order for row {row_id} of table '{table}'",
                 table = table.name
             ))
             .into());
@@ -572,10 +572,16 @@ impl Relatable {
         &self,
         tx: &mut DbTransaction<'_>,
         table: &Table,
-        curr_order: usize,
-        new_order: usize,
+        row_id: usize,
+        row_order: usize,
     ) -> Result<()> {
-        todo!()
+        let sql = format!(
+            r#"UPDATE "{}" SET "_order" = ? WHERE "_id" = ?"#,
+            table.name
+        );
+        let params = json!([row_order, row_id]);
+        query_tx(tx, &sql, Some(&params)).await?;
+        Ok(())
     }
 
     pub async fn move_row_tx(
@@ -600,21 +606,21 @@ impl Relatable {
         // Run a query to get the minimum order, (B), that is greater than (A).
         let order_next = {
             let sql = format!(
-                r#"SELECT MIN("_order") AS "row_order" FROM "{}" WHERE "_order" > ?"#,
+                r#"SELECT MIN("_order") AS "_order" FROM "{}" WHERE "_order" > ?"#,
                 table.name
             );
             let params = json!([order_prev]);
             let rows = query_tx(tx, &sql, Some(&params)).await?;
             if rows.is_empty() {
-                // The row_order will be null if we ask Valve to move a row to a position after
+                // The row_order will be null if we ask Relatable to move a row to a position after
                 // the last row in the table.
                 order_prev + MOVE_INTERVAL
             } else {
-                match rows[0].content.get("row_order").and_then(|o| o.as_u64()) {
+                match rows[0].content.get("_order").and_then(|o| o.as_u64()) {
                     Some(order) => order as usize,
                     None => {
                         return Err(RelatableError::DataError(
-                            "No integer 'row_order' in row".to_string(),
+                            "No '_order' in row or it is not an integer".to_string(),
                         )
                         .into())
                     }
@@ -651,7 +657,7 @@ impl Relatable {
                     Some(order) => order as usize,
                     None => {
                         return Err(RelatableError::DataError(
-                            "No integer '_order' in row".to_string(),
+                            "No field '_order' in row or it is not an integer".to_string(),
                         )
                         .into())
                     }
@@ -670,15 +676,15 @@ impl Relatable {
                         Some(order) => order as usize,
                         None => {
                             return Err(RelatableError::DataError(
-                                "No integer '_order' in row".to_string(),
+                                "No field '_order' in row or it is not an integer".to_string(),
                             )
                             .into())
                         }
                     };
                     let sql = format!(
                         r#"UPDATE "{}"
-                              SET "row_order" = "row_order" + 1
-                            WHERE "row_order" = ?"#,
+                              SET "_order" = "_order" + 1
+                            WHERE "_order" = ?"#,
                         table.name
                     );
                     let params = json!([current_order]);
@@ -690,8 +696,7 @@ impl Relatable {
             }
         };
 
-        self.update_row_order_tx(tx, table, order_prev, new_order)
-            .await?;
+        self.update_row_order_tx(tx, table, id, new_order).await?;
 
         Ok(())
     }
