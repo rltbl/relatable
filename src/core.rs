@@ -546,9 +546,26 @@ impl Relatable {
         &self,
         tx: &mut DbTransaction<'_>,
         table: &Table,
-        after_id: usize,
+        id: usize,
     ) -> Result<usize> {
-        todo!()
+        let sql = format!(r#"SELECT "_order" FROM "{}" WHERE "_id" = ?"#, table.name);
+        let params = json!([id]);
+        let rows = query_tx(tx, &sql, Some(&params)).await?;
+        if rows.is_empty() {
+            return Err(RelatableError::DataError(format!(
+                "Unable to fetch _order for row {id} of table '{table}'",
+                table = table.name
+            ))
+            .into());
+        }
+        match rows[0].content.get("_order").and_then(|o| o.as_u64()) {
+            Some(order) => Ok(order as usize),
+            None => {
+                return Err(
+                    RelatableError::DataError("No integer '_order' in row".to_string()).into(),
+                )
+            }
+        }
     }
 
     pub async fn update_row_order_tx(
@@ -675,6 +692,7 @@ impl Relatable {
 
         self.update_row_order_tx(tx, table, order_prev, new_order)
             .await?;
+
         Ok(())
     }
 }
