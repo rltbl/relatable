@@ -72,6 +72,12 @@ pub enum Command {
         subcommand: AddSubcommand,
     },
 
+    /// Move data around within a data table
+    Move {
+        #[command(subcommand)]
+        subcommand: MoveSubcommand,
+    },
+
     /// Run a Relatable server
     Serve {
         /// Server host address
@@ -168,6 +174,21 @@ pub enum AddSubcommand {
 
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MoveSubcommand {
+    Row {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: usize,
+
+        #[arg(value_name = "AFTER", action = ArgAction::Set,
+              help = "The ID of the row after which this one is to be moved")]
+        after: usize,
     },
 }
 
@@ -332,7 +353,7 @@ pub fn prompt_for_json_row() -> JsonRow {
 }
 
 pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
-    tracing::debug!("add_row({cli:?}, {table})");
+    tracing::debug!("add_row({cli:?}, {table}, {after_id:?})");
     let rltbl = Relatable::connect().await.unwrap();
     let json_row = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
@@ -350,6 +371,17 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
         .await
         .expect("Error adding row");
     tracing::info!("Added row {}", row.order);
+}
+
+pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
+    tracing::debug!("move_row({cli:?}, {table}, {row}, {after_id})");
+    let rltbl = Relatable::connect().await.unwrap();
+    let user = get_cli_user(&cli);
+    rltbl
+        .move_row(table, &user, row, after_id)
+        .await
+        .expect("Failed to move row");
+    tracing::info!("Moved row {row} after row {after_id}");
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool) {
@@ -450,6 +482,9 @@ pub async fn process_command() {
         },
         Command::Add { subcommand } => match subcommand {
             AddSubcommand::Row { table, after_id } => add_row(&cli, table, *after_id).await,
+        },
+        Command::Move { subcommand } => match subcommand {
+            MoveSubcommand::Row { table, row, after } => move_row(&cli, table, *row, *after).await,
         },
         Command::Serve { host, port } => serve(&cli, host, port)
             .await
