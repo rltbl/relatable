@@ -472,6 +472,8 @@ impl Relatable {
 
         let row = self.add_row_tx(&mut tx, table, user, row).await?;
 
+        // TODO: self.move_row_tx();
+
         // Commit the transaction:
         tx.commit().await?;
 
@@ -493,7 +495,7 @@ impl Relatable {
         }
 
         // The actual row to be inserted:
-        let new_row = Row::new(&table, json_row, tx).await?;
+        let new_row = Row::prepare_new(&table, json_row, tx).await?;
 
         // The change to be recorded:
         let changeset = ChangeSet {
@@ -510,6 +512,7 @@ impl Relatable {
         // Update the data
         let (sql, params) = new_row.as_insert(table_name);
         query_tx(tx, &sql, Some(&params)).await?;
+        // TODO: move_row_tx() with no-history flag?
 
         // Record the change to the history table:
         Self::record_changes(&changeset, tx).await?;
@@ -579,8 +582,9 @@ pub enum Change {
     },
     Add {
         row: usize,
-    }, // Delete
-       // Move
+    },
+    // Delete
+    // Move
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -619,7 +623,11 @@ impl Row {
         Ok(current_row_id + 1)
     }
 
-    async fn new(table: &Table, json_row: &JsonRow, tx: &mut DbTransaction<'_>) -> Result<Self> {
+    async fn prepare_new(
+        table: &Table,
+        json_row: &JsonRow,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Self> {
         let mut row = Row::from(json_row.clone());
         row.id = Self::get_next_id(table.name.as_str(), tx).await?;
         row.order = 1000 * row.id;
