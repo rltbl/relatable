@@ -323,7 +323,7 @@ impl Relatable {
         Ok(())
     }
 
-    async fn update_user_cursor(
+    async fn prepare_user_cursor(
         &self,
         changeset: &ChangeSet,
         tx: &mut DbTransaction<'_>,
@@ -351,7 +351,7 @@ impl Relatable {
         let mut tx = begin(&self.connection, &mut locked_conn).await?;
 
         // Update the user cursor
-        self.update_user_cursor(changeset, &mut tx).await?;
+        self.prepare_user_cursor(changeset, &mut tx).await?;
 
         // Actually make the changes:
         let table = changeset.table.clone();
@@ -465,39 +465,30 @@ impl Relatable {
         }
     }
 
-    pub async fn add_row(&self, table: &str, user: &str, row: &JsonRow) -> Result<Row> {
+    pub async fn add_row(
+        &self,
+        table_name: &str,
+        user: &str,
+        after: Option<usize>,
+        row: &JsonRow,
+    ) -> Result<Row> {
         // Get the connection and begin a transaction:
         let mut locked_conn = lock_connection(&self.connection).await;
         let mut tx = begin(&self.connection, &mut locked_conn).await?;
 
-        let row = self.add_row_tx(&mut tx, table, user, row).await?;
-
-        // TODO: self.move_row_tx();
-
-        // Commit the transaction:
-        tx.commit().await?;
-
-        Ok(row)
-    }
-
-    pub async fn add_row_tx(
-        &self,
-        tx: &mut DbTransaction<'_>,
-        table_name: &str,
-        user: &str,
-        json_row: &JsonRow,
-    ) -> Result<Row> {
-        let table = self.get_table_tx(table_name, tx).await?;
+        // Get the current database information for the table:
+        let table = self.get_table_tx(table_name, &mut tx).await?;
         if !table.editable {
             return Err(
-                RelatableError::InputError(format!("{} is not editable.", table.name,)).into(),
+                RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
             );
         }
 
-        // The actual row to be inserted:
-        let new_row = Row::prepare_new(&table, json_row, tx).await?;
+        // Prepare a new row to be inserted:
+        let new_row = Row::prepare_new(&table, row, &mut tx).await?;
 
-        // The change to be recorded:
+        // Prepare a changeset to be recorded, consisting of a single change record indicating
+        // the addition of one new row with new_row's id:
         let changeset = ChangeSet {
             action: ChangeAction::Do,
             table: table_name.to_string(),
@@ -506,18 +497,48 @@ impl Relatable {
             changes: vec![Change::Add { row: new_row.id }],
         };
 
-        // Update the user cursor
-        self.update_user_cursor(&changeset, tx).await?;
+        // Use the changeset to prepare the user cursor:
+        self.prepare_user_cursor(&changeset, &mut tx).await?;
 
-        // Update the data
-        let (sql, params) = new_row.as_insert(table_name);
-        query_tx(tx, &sql, Some(&params)).await?;
-        // TODO: move_row_tx() with no-history flag?
+        // Add the row to the table
+        self.add_row_tx(&mut tx, &table, &new_row).await?;
+
+        if let Some(after) = after {
+            // Move the row to its assigned spot within the table:
+            self.move_row_tx(&mut tx, &table, after).await?;
+        }
 
         // Record the change to the history table:
-        Self::record_changes(&changeset, tx).await?;
+        Self::record_changes(&changeset, &mut tx).await?;
+
+        // Commit the transaction:
+        tx.commit().await?;
 
         Ok(new_row)
+    }
+
+    pub async fn add_row_tx(
+        &self,
+        tx: &mut DbTransaction<'_>,
+        table: &Table,
+        row: &Row,
+    ) -> Result<()> {
+        let (sql, params) = row.as_insert(&table.name);
+        query_tx(tx, &sql, Some(&params)).await?;
+        Ok(())
+    }
+
+    pub async fn move_row(&self, _table_name: &str, _user: &str, _after: usize) -> Result<()> {
+        todo!()
+    }
+
+    pub async fn move_row_tx(
+        &self,
+        _tx: &mut DbTransaction<'_>,
+        _table: &Table,
+        _after: usize,
+    ) -> Result<()> {
+        todo!()
     }
 }
 
