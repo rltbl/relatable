@@ -51,6 +51,8 @@ impl std::fmt::Display for RelatableError {
     }
 }
 
+static MOVE_INTERVAL: usize = 1000;
+
 impl std::error::Error for RelatableError {}
 
 #[derive(Debug)]
@@ -118,11 +120,12 @@ impl Relatable {
           AFTER INSERT ON 'table'
           WHEN NEW._order IS NULL
           BEGIN
-            UPDATE 'table' SET _order = (1000 * NEW._id)
+            UPDATE 'table' SET _order = (? * NEW._id)
             WHERE _id = NEW._id;
           END
         "#;
-        query(&rltbl.connection, sql, None).await.unwrap();
+        let params = json!([MOVE_INTERVAL]);
+        query(&rltbl.connection, sql, Some(&params)).await.unwrap();
 
         let sql = "INSERT INTO 'table' ('table') VALUES ('table')";
         query(&rltbl.connection, sql, None).await.unwrap();
@@ -469,7 +472,7 @@ impl Relatable {
         &self,
         table_name: &str,
         user: &str,
-        after: Option<usize>,
+        after_id: Option<usize>,
         row: &JsonRow,
     ) -> Result<Row> {
         // Get the connection and begin a transaction:
@@ -503,9 +506,10 @@ impl Relatable {
         // Add the row to the table
         self.add_row_tx(&mut tx, &table, &new_row).await?;
 
-        if let Some(after) = after {
+        if let Some(after_id) = after_id {
             // Move the row to its assigned spot within the table:
-            self.move_row_tx(&mut tx, &table, after).await?;
+            self.move_row_tx(&mut tx, &table, new_row.id, after_id)
+                .await?;
         }
 
         // Record the change to the history table:
@@ -528,17 +532,150 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn move_row(&self, _table_name: &str, _user: &str, _after: usize) -> Result<()> {
+    pub async fn move_row(
+        &self,
+        _table_name: &str,
+        _user: &str,
+        _id: usize,
+        _after_id: usize,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    pub async fn get_row_order_tx(
+        &self,
+        tx: &mut DbTransaction<'_>,
+        table: &Table,
+        after_id: usize,
+    ) -> Result<usize> {
+        todo!()
+    }
+
+    pub async fn update_row_order_tx(
+        &self,
+        tx: &mut DbTransaction<'_>,
+        table: &Table,
+        curr_order: usize,
+        new_order: usize,
+    ) -> Result<()> {
         todo!()
     }
 
     pub async fn move_row_tx(
         &self,
-        _tx: &mut DbTransaction<'_>,
-        _table: &Table,
-        _after: usize,
+        tx: &mut DbTransaction<'_>,
+        table: &Table,
+        id: usize,
+        after_id: usize,
     ) -> Result<()> {
-        todo!()
+        // Get the order, (A), of `after_id`:
+        let order_prev = {
+            if after_id > 0 {
+                self.get_row_order_tx(tx, table, after_id).await?
+            } else {
+                // It is not possible for a row to be assigned a order of zero. We allow it as a
+                // possible value of `after_id`, however, which is used as a special value that we
+                // should move the row identified by `id` to the beginning of the table.
+                0
+            }
+        };
+
+        // Run a query to get the minimum order, (B), that is greater than (A).
+        let order_next = {
+            let sql = format!(
+                r#"SELECT MIN("_order") AS "row_order" FROM "{}" WHERE "_order" > ?"#,
+                table.name
+            );
+            let params = json!([order_prev]);
+            let rows = query_tx(tx, &sql, Some(&params)).await?;
+            if rows.is_empty() {
+                // The row_order will be null if we ask Valve to move a row to a position after
+                // the last row in the table.
+                order_prev + MOVE_INTERVAL
+            } else {
+                match rows[0].content.get("row_order").and_then(|o| o.as_u64()) {
+                    Some(order) => order as usize,
+                    None => {
+                        return Err(RelatableError::DataError(
+                            "No integer 'row_order' in row".to_string(),
+                        )
+                        .into())
+                    }
+                }
+            }
+        };
+
+        let new_order = {
+            if order_prev + 1 < order_next {
+                // If the next order is not occupied just use it:
+                order_prev + 1
+            } else {
+                // Otherwise, get all the orders that need to be moved. We sort the results in
+                // descending order so that when we later update each value, no duplicate key
+                // violations will ensue:
+                let upper_bound = (order_next as f32 / MOVE_INTERVAL as f32).ceil() as usize
+                    * MOVE_INTERVAL as usize;
+                let sql = format!(
+                    r#"SELECT "_order"
+                         FROM "{}"
+                        WHERE "_order" >= ? AND "_order" < ?
+                     ORDER BY "_order" DESC"#,
+                    table.name,
+                );
+                let params = json!([order_next, upper_bound]);
+                let rows = query_tx(tx, &sql, Some(&params)).await?;
+                if rows.is_empty() {
+                    return Err(RelatableError::DataError(
+                        "Could not determine the highest row order".to_string(),
+                    )
+                    .into());
+                }
+                let highest_order = match rows[0].content.get("_order").and_then(|o| o.as_u64()) {
+                    Some(order) => order as usize,
+                    None => {
+                        return Err(RelatableError::DataError(
+                            "No integer '_order' in row".to_string(),
+                        )
+                        .into())
+                    }
+                };
+                if highest_order + 1 >= upper_bound {
+                    // Return an error
+                    return Err(RelatableError::DataError(format!(
+                        "Impossible to move row {} after row {}: No more room",
+                        id, after_id
+                    ))
+                    .into());
+                }
+
+                for row in rows {
+                    let current_order = match row.content.get("_order").and_then(|o| o.as_u64()) {
+                        Some(order) => order as usize,
+                        None => {
+                            return Err(RelatableError::DataError(
+                                "No integer '_order' in row".to_string(),
+                            )
+                            .into())
+                        }
+                    };
+                    let sql = format!(
+                        r#"UPDATE "{}"
+                              SET "row_order" = "row_order" + 1
+                            WHERE "row_order" = ?"#,
+                        table.name
+                    );
+                    let params = json!([current_order]);
+                    query_tx(tx, &sql, Some(&params)).await?;
+                }
+                // Now that we have made some room, we can use order_prev + 1,
+                // which should no longer be occupied:
+                order_prev + 1
+            }
+        };
+
+        self.update_row_order_tx(tx, table, order_prev, new_order)
+            .await?;
+        Ok(())
     }
 }
 
@@ -651,7 +788,7 @@ impl Row {
     ) -> Result<Self> {
         let mut row = Row::from(json_row.clone());
         row.id = Self::get_next_id(table.name.as_str(), tx).await?;
-        row.order = 1000 * row.id;
+        row.order = MOVE_INTERVAL * row.id;
         row.change_id = table.change_id;
         Ok(row)
     }

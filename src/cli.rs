@@ -164,7 +164,7 @@ pub enum SetSubcommand {
 pub enum AddSubcommand {
     Row {
         #[arg(long, action = ArgAction::Set)]
-        after: Option<usize>,
+        after_id: Option<usize>,
 
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
@@ -331,7 +331,7 @@ pub fn prompt_for_json_row() -> JsonRow {
     JsonRow { content: json_map }
 }
 
-pub async fn add_row(cli: &Cli, table: &str, after: Option<usize>) {
+pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
     tracing::debug!("add_row({cli:?}, {table})");
     let rltbl = Relatable::connect().await.unwrap();
     let json_row = match &cli.input {
@@ -346,7 +346,7 @@ pub async fn add_row(cli: &Cli, table: &str, after: Option<usize>) {
 
     let user = get_cli_user(&cli);
     let row = rltbl
-        .add_row(table, &user, after, &json_row)
+        .add_row(table, &user, after_id, &json_row)
         .await
         .expect("Error adding row");
     tracing::info!("Added row {}", row.order);
@@ -449,7 +449,7 @@ pub async fn process_command() {
             } => set_value(&cli, table, *row, column, value).await,
         },
         Command::Add { subcommand } => match subcommand {
-            AddSubcommand::Row { table, after } => add_row(&cli, table, *after).await,
+            AddSubcommand::Row { table, after_id } => add_row(&cli, table, *after_id).await,
         },
         Command::Serve { host, port } => serve(&cli, host, port)
             .await
