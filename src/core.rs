@@ -473,8 +473,8 @@ impl Relatable {
         }
 
         let new_row = Row::new(&table, json_row, tx).await?;
-        let sql = new_row.as_insert(table_name);
-        query_tx(tx, &sql, None).await?;
+        let (sql, params) = new_row.as_insert(table_name);
+        query_tx(tx, &sql, Some(&params)).await?;
 
         // Record the change to the history table:
         let changeset = ChangeSet {
@@ -599,26 +599,36 @@ impl Row {
         self.cells.values().map(|cell| cell.text.clone()).collect()
     }
 
-    fn as_insert(&self, table: &str) -> String {
+    fn as_insert(&self, table: &str) -> (String, JsonValue) {
         let id = self.id;
         let order = self.order;
         let columns = self
             .cells
             .keys()
             .map(|k| format!(r#""{k}""#))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let values = self
-            .to_strings()
-            .iter()
-            .map(|v| format!("'{v}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(
+            .collect::<Vec<_>>();
+        let column_placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>();
+
+        let params = {
+            let mut params = vec![json!(id), json!(order)];
+            params.append(
+                &mut self
+                    .to_strings()
+                    .iter()
+                    .map(|s| json!(s))
+                    .collect::<Vec<_>>(),
+            );
+            params
+        };
+
+        let sql = format!(
             r#"INSERT INTO "{table}"
-               ("_id", "_order", {columns})
-               VALUES ({id}, {order}, {values})"#
-        )
+               ("_id", "_order", {column_names})
+               VALUES (?, ?, {column_values})"#,
+            column_names = columns.join(", "),
+            column_values = column_placeholders.join(", "),
+        );
+        (sql, json!(params))
     }
 }
 
