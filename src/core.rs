@@ -314,24 +314,35 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
-        // Get the connection and begin a transaction:
-        let mut locked_conn = lock_connection(&self.connection).await;
-        let mut tx = begin(&self.connection, &mut locked_conn).await?;
-
-        // Make sure the user is present.
+    async fn update_user_cursor(
+        &self,
+        changeset: &ChangeSet,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        // Make sure the user is present in the user table
         let user = changeset.user.clone();
         let color = random_color::RandomColor::new().to_hex();
         let statement = r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#;
         let params = json!([user, color]);
-        query_tx(&mut tx, &statement, Some(&params)).await?;
+        query_tx(tx, &statement, Some(&params)).await?;
 
         // Update the user's cursor position.
         let cursor = changeset.to_cursor()?;
         let statement =
             r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
         let params = json!([to_value(cursor).unwrap_or_default(), user]);
-        query_value_tx(&mut tx, &statement, Some(&params)).await?;
+        query_value_tx(tx, &statement, Some(&params)).await?;
+
+        Ok(())
+    }
+
+    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
+        // Get the connection and begin a transaction:
+        let mut locked_conn = lock_connection(&self.connection).await;
+        let mut tx = begin(&self.connection, &mut locked_conn).await?;
+
+        // Update the user cursor
+        self.update_user_cursor(changeset, &mut tx).await?;
 
         // Actually make the changes:
         let table = changeset.table.clone();
@@ -472,11 +483,10 @@ impl Relatable {
             );
         }
 
+        // The actual row to be inserted:
         let new_row = Row::new(&table, json_row, tx).await?;
-        let (sql, params) = new_row.as_insert(table_name);
-        query_tx(tx, &sql, Some(&params)).await?;
 
-        // Record the change to the history table:
+        // The change to be recorded:
         let changeset = ChangeSet {
             action: ChangeAction::Do,
             table: table_name.to_string(),
@@ -484,6 +494,15 @@ impl Relatable {
             description: "Add one row".to_string(),
             changes: vec![Change::Add { row: new_row.id }],
         };
+
+        // Update the user cursor
+        self.update_user_cursor(&changeset, tx).await?;
+
+        // Update the data
+        let (sql, params) = new_row.as_insert(table_name);
+        query_tx(tx, &sql, Some(&params)).await?;
+
+        // Record the change to the history table:
         Self::record_changes(&changeset, tx).await?;
 
         Ok(new_row)
@@ -513,7 +532,11 @@ impl ChangeSet {
                     row: *row,
                     column: column.to_string(),
                 }),
-                Change::Add { row: _ } => todo!(),
+                Change::Add { row } => Ok(Cursor {
+                    table,
+                    row: *row,
+                    column: "".to_string(),
+                }),
             },
             None => Err(RelatableError::ChangeError("No changes in set".into()).into()),
         }
