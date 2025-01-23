@@ -329,6 +329,14 @@ impl Relatable {
                     let params = json!([change_id, table, row, after]);
                     query_value_tx(tx, &sql, Some(&params)).await?;
                 }
+                Change::Delete { row } => {
+                    let sql = r#"INSERT INTO "history"
+                                 ('change_id', 'table', 'row', 'before', 'after')
+                                 VALUES (?, ?, ?, 'TODO', 'TODO')
+                                 RETURNING "history_id""#;
+                    let params = json!([change_id, table, row]);
+                    query_value_tx(tx, &sql, Some(&params)).await?;
+                }
             };
         }
         Ok(())
@@ -540,6 +548,56 @@ impl Relatable {
         Ok(())
     }
 
+    pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
+        // Get the connection and begin a transaction:
+        let mut locked_conn = lock_connection(&self.connection).await;
+        let mut tx = begin(&self.connection, &mut locked_conn).await?;
+
+        // Get the current database information for the table:
+        let table = self.get_table_tx(table_name, &mut tx).await?;
+        if !table.editable {
+            return Err(
+                RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
+            );
+        }
+
+        // Prepare a changeset to be recorded, consisting of a single change record indicating
+        // that a row has been displaced from somewhere to somewhere else.
+        let changeset = ChangeSet {
+            action: ChangeAction::Do,
+            table: table_name.to_string(),
+            user: user.to_string(),
+            description: "Delete one row".to_string(),
+            changes: vec![Change::Delete { row: row }],
+        };
+
+        // Use the changeset to prepare the user cursor:
+        self.prepare_user_cursor(&changeset, &mut tx).await?;
+
+        // Move the row within the table:
+        self.delete_row_tx(&mut tx, &table, row).await?;
+
+        // Record the change to the history table:
+        Self::record_changes(&changeset, &mut tx).await?;
+
+        // Commit the transaction:
+        tx.commit().await?;
+
+        Ok(())
+    }
+
+    pub async fn delete_row_tx(
+        &self,
+        tx: &mut DbTransaction<'_>,
+        table: &Table,
+        row: usize,
+    ) -> Result<()> {
+        let sql = format!(r#"DELETE FROM "{}" WHERE "_id" = ?"#, table.name);
+        let params = json!([row]);
+        query_tx(tx, &sql, Some(&params)).await?;
+        Ok(())
+    }
+
     pub async fn move_row(
         &self,
         table_name: &str,
@@ -565,7 +623,7 @@ impl Relatable {
             action: ChangeAction::Do,
             table: table_name.to_string(),
             user: user.to_string(),
-            description: "Add one row".to_string(),
+            description: "Move one row".to_string(),
             changes: vec![Change::Move {
                 row: id,
                 after: after_id,
@@ -780,6 +838,11 @@ impl ChangeSet {
                     row: *row,
                     column: "".to_string(),
                 }),
+                Change::Delete { row } => Ok(Cursor {
+                    table,
+                    row: *row,
+                    column: "".to_string(),
+                }),
             },
             None => Err(RelatableError::ChangeError("No changes in set".into()).into()),
         }
@@ -818,7 +881,9 @@ pub enum Change {
         row: usize,
         after: usize,
     },
-    // Delete
+    Delete {
+        row: usize,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

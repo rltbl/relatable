@@ -78,6 +78,12 @@ pub enum Command {
         subcommand: MoveSubcommand,
     },
 
+    /// Delete data from the database
+    Delete {
+        #[command(subcommand)]
+        subcommand: DeleteSubcommand,
+    },
+
     /// Run a Relatable server
     Serve {
         /// Server host address
@@ -189,6 +195,17 @@ pub enum MoveSubcommand {
         #[arg(value_name = "AFTER", action = ArgAction::Set,
               help = "The ID of the row after which this one is to be moved")]
         after: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DeleteSubcommand {
+    Row {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: usize,
     },
 }
 
@@ -384,6 +401,17 @@ pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
     tracing::info!("Moved row {row} after row {after_id}");
 }
 
+pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
+    tracing::debug!("delete_row({cli:?}, {table}, {row})");
+    let rltbl = Relatable::connect().await.unwrap();
+    let user = get_cli_user(&cli);
+    rltbl
+        .delete_row(table, &user, row)
+        .await
+        .expect("Failed to delte row");
+    tracing::info!("Delete row {row}");
+}
+
 pub async fn build_demo(cli: &Cli, force: &bool) {
     tracing::debug!("build_demo({cli:?}");
 
@@ -485,6 +513,9 @@ pub async fn process_command() {
         },
         Command::Move { subcommand } => match subcommand {
             MoveSubcommand::Row { table, row, after } => move_row(&cli, table, *row, *after).await,
+        },
+        Command::Delete { subcommand } => match subcommand {
+            DeleteSubcommand::Row { table, row } => delete_row(&cli, table, *row).await,
         },
         Command::Serve { host, port } => serve(&cli, host, port)
             .await
