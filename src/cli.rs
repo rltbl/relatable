@@ -30,9 +30,9 @@ pub struct Cli {
     user: String,
 
     /// Can be one of: JSON (that's it for now). If unspecified Valve will attempt to read the
-    /// environment variable RELATABLE_INPUT. If that is also unset, the user will be presented with
+    /// environment variable RLTBL_INPUT. If that is also unset, the user will be presented with
     /// questions whenever input is required.
-    #[arg(long, action = ArgAction::Set, env = "RELATABLE_INPUT")]
+    #[arg(long, action = ArgAction::Set, env = "RLTBL_INPUT")]
     pub input: Option<String>,
 
     #[command(flatten)]

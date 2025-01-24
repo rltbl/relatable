@@ -715,18 +715,31 @@ impl Relatable {
             let params = json!([order_prev]);
             let rows = query_tx(tx, &sql, Some(&params)).await?;
             if rows.is_empty() {
-                // The row_order will be null if we ask Relatable to move a row to a position after
-                // the last row in the table.
-                order_prev + MOVE_INTERVAL
-            } else {
-                match rows[0].content.get("_order").and_then(|o| o.as_u64()) {
-                    Some(order) => order as usize,
-                    None => {
-                        return Err(RelatableError::DataError(
-                            "No '_order' in row or it is not an integer".to_string(),
-                        )
-                        .into())
+                return Err(RelatableError::DataError(format!(
+                    "Could not determine the minimum row order greater than {order_prev}"
+                ))
+                .into());
+            }
+
+            match rows[0].content.get("_order") {
+                Some(value) => match value {
+                    JsonValue::Null => {
+                        // The row_order will be null if we ask Relatable to move a row to
+                        // a position after the last row in the table.
+                        order_prev + MOVE_INTERVAL
                     }
+                    _ => match value.as_u64() {
+                        Some(order) => order as usize,
+                        None => {
+                            return Err(RelatableError::DataError(
+                                "Field '_order' in row is not an integer".to_string(),
+                            )
+                            .into());
+                        }
+                    },
+                },
+                None => {
+                    return Err(RelatableError::DataError("No '_order' in row".to_string()).into());
                 }
             }
         };
