@@ -1,18 +1,19 @@
 //! # rltbl/relatable
 //!
-//! This is rltbl::cli
+//! This is relatable (rltbl::cli)
 
 use crate::{
     core::{Change, ChangeAction, ChangeSet, Format, Relatable},
-    sql::{query, query_value, VecInto},
+    sql::{query, query_value, JsonRow, VecInto},
     web::{serve, serve_cgi},
 };
 
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
+use promptly::prompt_default;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
-use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
-use std::io::Write;
+use serde_json::{json, to_string_pretty, to_value, Map as JsonMap, Value as JsonValue};
+use std::{io, io::Write};
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";
@@ -27,6 +28,12 @@ static VALUE_HELP: &str = "A value for a cell";
 pub struct Cli {
     #[arg(long, default_value="", action = ArgAction::Set)]
     user: String,
+
+    /// Can be one of: JSON (that's it for now). If unspecified Valve will attempt to read the
+    /// environment variable RLTBL_INPUT. If that is also unset, the user will be presented with
+    /// questions whenever input is required.
+    #[arg(long, action = ArgAction::Set, env = "RLTBL_INPUT")]
+    pub input: Option<String>,
 
     #[command(flatten)]
     verbose: Verbosity,
@@ -57,6 +64,24 @@ pub enum Command {
     Set {
         #[command(subcommand)]
         subcommand: SetSubcommand,
+    },
+
+    /// Add data to the database
+    Add {
+        #[command(subcommand)]
+        subcommand: AddSubcommand,
+    },
+
+    /// Move data around within a data table
+    Move {
+        #[command(subcommand)]
+        subcommand: MoveSubcommand,
+    },
+
+    /// Delete data from the database
+    Delete {
+        #[command(subcommand)]
+        subcommand: DeleteSubcommand,
     },
 
     /// Run a Relatable server
@@ -147,6 +172,43 @@ pub enum SetSubcommand {
 
         #[arg(value_name = "VALUE", action = ArgAction::Set, help = VALUE_HELP)]
         value: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AddSubcommand {
+    Row {
+        #[arg(long, action = ArgAction::Set)]
+        after_id: Option<usize>,
+
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MoveSubcommand {
+    Row {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: usize,
+
+        #[arg(value_name = "AFTER", action = ArgAction::Set,
+              help = "The ID of the row after which this one is to be moved")]
+        after: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DeleteSubcommand {
+    Row {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: usize,
     },
 }
 
@@ -269,6 +331,90 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
         .unwrap();
 }
 
+pub fn input_json_row() -> JsonRow {
+    let mut json_row = String::new();
+    io::stdin()
+        .read_line(&mut json_row)
+        .expect("Error reading from STDIN");
+    let json_row = serde_json::from_str::<JsonValue>(&json_row)
+        .expect(&format!("Invalid JSON: {json_row}"))
+        .as_object()
+        .expect(&format!("{json_row} is not a JSON object"))
+        .clone();
+    JsonRow { content: json_row }
+}
+
+pub fn prompt_for_json_row() -> JsonRow {
+    // The content of the row to be returned:
+    let mut json_map = JsonMap::new();
+
+    let prompt_for_column_name = || -> String {
+        let column: String = prompt_default(
+            "Enter the name of the next column, or press enter to stop adding values for columns:",
+            "".to_string(),
+        )
+        .expect("Error getting column from user input");
+        column
+    };
+    let prompt_for_column_value = |column: &str| -> JsonValue {
+        let value: String =
+            prompt_default(format!("Enter the value for '{column}':"), "".to_string())
+                .expect("Error getting column value from user input");
+        json!(value)
+    };
+
+    let mut column = prompt_for_column_name();
+    while column != "" {
+        json_map.insert(column.to_string(), prompt_for_column_value(&column));
+        column = prompt_for_column_name();
+    }
+
+    JsonRow { content: json_map }
+}
+
+pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
+    tracing::debug!("add_row({cli:?}, {table}, {after_id:?})");
+    let rltbl = Relatable::connect().await.unwrap();
+    let json_row = match &cli.input {
+        Some(s) if s == "JSON" => input_json_row(),
+        Some(s) => panic!("Unsupported input type '{s}'"),
+        None => prompt_for_json_row(),
+    };
+
+    if json_row.content.is_empty() {
+        panic!("Cannot insert an empty row to the database");
+    }
+
+    let user = get_cli_user(&cli);
+    let row = rltbl
+        .add_row(table, &user, after_id, &json_row)
+        .await
+        .expect("Error adding row");
+    tracing::info!("Added row {}", row.order);
+}
+
+pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
+    tracing::debug!("move_row({cli:?}, {table}, {row}, {after_id})");
+    let rltbl = Relatable::connect().await.unwrap();
+    let user = get_cli_user(&cli);
+    rltbl
+        .move_row(table, &user, row, after_id)
+        .await
+        .expect("Failed to move row");
+    tracing::info!("Moved row {row} after row {after_id}");
+}
+
+pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
+    tracing::debug!("delete_row({cli:?}, {table}, {row})");
+    let rltbl = Relatable::connect().await.unwrap();
+    let user = get_cli_user(&cli);
+    rltbl
+        .delete_row(table, &user, row)
+        .await
+        .expect("Failed to delte row");
+    tracing::info!("Delete row {row}");
+}
+
 pub async fn build_demo(cli: &Cli, force: &bool) {
     tracing::debug!("build_demo({cli:?}");
 
@@ -364,6 +510,15 @@ pub async fn process_command() {
                 column,
                 value,
             } => set_value(&cli, table, *row, column, value).await,
+        },
+        Command::Add { subcommand } => match subcommand {
+            AddSubcommand::Row { table, after_id } => add_row(&cli, table, *after_id).await,
+        },
+        Command::Move { subcommand } => match subcommand {
+            MoveSubcommand::Row { table, row, after } => move_row(&cli, table, *row, *after).await,
+        },
+        Command::Delete { subcommand } => match subcommand {
+            DeleteSubcommand::Row { table, row } => delete_row(&cli, table, *row).await,
         },
         Command::Serve { host, port } => serve(&cli, host, port)
             .await

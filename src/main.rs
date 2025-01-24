@@ -1,6 +1,6 @@
 //! # rltbl/relatable
 //!
-//! This is rltbl
+//! This is relatable.
 
 use anyhow::Result;
 use rltbl::cli;
