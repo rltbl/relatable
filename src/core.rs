@@ -129,8 +129,9 @@ impl Relatable {
         );
         query(&rltbl.connection, &sql, None).await.unwrap();
 
-        let sql = "INSERT INTO 'table' ('table') VALUES ('table')";
-        query(&rltbl.connection, sql, None).await.unwrap();
+        // TODO: Decide whether to include the 'table' table by default.
+        // let sql = "INSERT INTO 'table' ('table') VALUES ('table')";
+        // query(&rltbl.connection, sql, None).await.unwrap();
 
         // Create the change and history tables
         let sql = r#"CREATE TABLE 'user' (
