@@ -70,6 +70,9 @@ pub enum Command {
         port: u16,
     },
 
+    /// Run Relatable as a CGI script
+    Cgi {},
+
     /// Generate a demonstration database
     Demo {
         /// Overwrite an existing database
@@ -319,7 +322,7 @@ pub async fn process_command() {
     // Handle a CGI request, instead of normal CLI input.
     match std::env::var_os("GATEWAY_INTERFACE").and_then(|p| Some(p.into_string())) {
         Some(Ok(s)) if s == "CGI/1.1" => {
-            return serve_cgi().await.expect("Failed to serve CGI");
+            return serve_cgi().await;
         }
         _ => (),
     };
@@ -365,6 +368,7 @@ pub async fn process_command() {
         Command::Serve { host, port } => serve(&cli, host, port)
             .await
             .expect("Operation: 'serve' failed"),
+        Command::Cgi {} => serve_cgi().await,
         Command::Demo { force } => build_demo(&cli, force).await,
     }
 }
