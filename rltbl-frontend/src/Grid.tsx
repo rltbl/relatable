@@ -15,7 +15,7 @@ import {
 import "@glideapps/glide-data-grid/dist/index.css";
 
 import parse from 'html-react-parser';
-import { isObject } from "lodash";
+import { debounce, isObject } from "lodash";
 import range from "lodash/range.js";
 import chunk from "lodash/chunk.js";
 import { useLayer } from "react-laag";
@@ -199,10 +199,11 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   // console.log("TABLE", table);
   // console.log("COLUMNS", columns);
   // console.log("SITE", site);
+  const [cursor, setCursor] = React.useState<Cursor>({ table: table, row: 0, column: columns[0].id });
 
   const gridRef = React.useRef<DataEditorRef | null>(null);
   const dataRef = React.useRef<Row[]>([]);
-  const cursorRef = React.useRef<Map<string, string>>(new Map());
+  const cursorsRef = React.useRef<Map<string, string>>(new Map());
   const change_id = React.useRef<number>(0);
 
   const getCursors = React.useCallback((users: Map<string, UserCursor>) => {
@@ -236,12 +237,12 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       }
       const data = await response.json();
       change_id.current = data["result"]["table"]["change_id"];
-      cursorRef.current = getCursors(data["site"]["users"]);
+      cursorsRef.current = getCursors(data["site"]["users"]);
       return data["result"]["rows"];
     } catch (error) {
       console.error(error.message);
     }
-  }, [change_id, table, cursorRef, getCursors]);
+  }, [change_id, table, cursorsRef, getCursors]);
 
   // Fetch data updated since we started.
   const pollData = React.useCallback(async () => {
@@ -249,7 +250,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     const url = `/table/${table}.json?_change_id=gt.${change_id.current}`;
     // console.log("Fetch: " + url);
     var rows: Row[] = [];
-    const oldCursors = cursorRef.current;
+    const oldCursors = cursorsRef.current;
     var newCursors: Map<string, string> = new Map();
     try {
       const response = await fetch(url);
@@ -263,7 +264,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     } catch (error) {
       console.error(error.message);
     }
-    cursorRef.current = newCursors;
+    cursorsRef.current = newCursors;
 
     // Match rows to the grid by _id and re-render them.
     // TODO: Why do I need to updateCells? It should be automatic.
@@ -295,7 +296,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       });
     }
     gridRef.current?.updateCells(damageList);
-  }, [table, columns, row_count, cursorRef, getCursors, dataRef, gridRef]);
+  }, [table, columns, row_count, cursorsRef, getCursors, dataRef, gridRef]);
 
   // Poll for new data.
   React.useEffect(() => {
@@ -364,6 +365,35 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     columns: CompactSelection.empty(),
   });
 
+  // Debounce postCursor to run after 1 second.
+  // From https://www.developerway.com/posts/debouncing-in-react
+  const postCursor = React.useCallback(() => {
+    // console.log("POST CURSOR", cursor);
+    try {
+      fetch('/cursor', {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(cursor)
+      });
+    } catch (error) {
+      console.error(error.message);
+    }
+  }, [cursor]);
+
+  const postCursorRef = React.useRef<any>();
+  React.useEffect(() => {
+    postCursorRef.current = postCursor;
+  }, [postCursor, postCursorRef]);
+
+  const debouncedPostCursor = React.useMemo(() => {
+    const func = () => {
+      postCursorRef.current?.();
+    }
+    return debounce(func, 1000);
+  }, [postCursorRef]);
+
   const onGridSelectionChange = React.useCallback((newSelection: GridSelection) => {
     if (newSelection.current) {
       const [col, row] = newSelection.current.cell;
@@ -372,22 +402,13 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
         row: row + 1,
         column: columns[col].id
       };
-      // console.log("CURSOR", cursor);
-      try {
-        fetch('/cursor', {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(cursor)
-        });
-      } catch (error) {
-        console.error(error.message);
-      }
+      // console.log("NEW CURSOR", cursor);
+      setCursor(cursor);
+      debouncedPostCursor();
     }
 
     setGridSelection(newSelection);
-  }, [table, columns]);
+  }, [table, columns, debouncedPostCursor]);
 
   const onCellsEdited = React.useCallback((newValues: readonly { location: Item; value: EditableGridCell }[]) => {
     // console.log("EDITED CELLS BEFORE", newValues);
@@ -430,7 +451,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       console.error(error.message);
     }
 
-  }, [user, table, columns, dataRef, onCellEdited]);
+  }, [rltbl, user, table, columns, dataRef, onCellEdited]);
 
   // const onRowMoved = React.useCallback((from: number, to: number) => {
   //   console.log("ROW MOVED", from, to);
