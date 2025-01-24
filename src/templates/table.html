@@ -45,9 +45,14 @@
   const table = {{result.table.name | tojson}};
   var columns = {{result.columns | tojson}};
   for (var i = 0; i < columns.length; i++) {
+    var column_name = columns[i].name;
     var kind = "text";
-    if (table === "penguin" && columns[i].name === "island") {
-      kind = "dropdown";
+    if (table === "penguin") {
+      if (column_name === "island") {
+        kind = "dropdown";
+      } else if (column_name === "review") {
+        kind = "image";
+      }
     }
     window.rltbl.result.columns[i].kind = kind;
   }

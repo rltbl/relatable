@@ -311,26 +311,33 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   const toCell: RowToCell<Row> = React.useCallback((rowData, col) => {
     const column_name = columns[col].id;
     const kind = columns[col].kind;
+    const value = rowData.cells[column_name].value;
     if (kind === "dropdown") {
-      const val = rowData.cells[columns[col].id].value;
       return {
         kind: GridCellKind.Custom,
         allowOverlay: true,
-        copyData: val,
+        copyData: value,
         data: {
           kind: "dropdown-cell",
-          value: val,
+          value: value,
           row: rowData.id,
           column: column_name,
           entry: null,
         },
       };
+    } else if (kind === "image") {
+      return {
+        kind: GridCellKind.Image,
+        data: [value],
+        allowOverlay: false,
+        displayData: [value],
+      };
     }
     return {
       kind: GridCellKind.Text,
-      data: String(rowData.cells[columns[col].id].value),
+      data: String(value),
       allowOverlay: true,
-      displayData: String(rowData.cells[columns[col].id].text),
+      displayData: String(rowData.cells[column_name].text),
     };
   }, [columns]);
 

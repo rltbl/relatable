@@ -41,6 +41,8 @@ pub enum RelatableError {
     // SerdeJsonError(serde_json::Error),
     /// An error that occurred while parsing a regex:
     // RegexError(regex::Error),
+    /// An error when a table cannot be found.
+    TableError(String),
     /// An error that occurred because of a user's action
     UserError(String),
 }
@@ -204,13 +206,40 @@ impl Relatable {
     }
 
     pub async fn get_table(&self, table_name: &str, connection: &DbConnection) -> Result<Table> {
+        let statement = r#"SELECT "table" FROM 'table' WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        match query_value(connection, &statement, Some(&params)).await? {
+            Some(_) => (),
+            None => {
+                return Err(RelatableError::TableError(format!(
+                    "Table '{table_name}' is not in the 'table' table"
+                ))
+                .into())
+            }
+        }
+
+        let statement = r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#;
+        let mut view = format!("{table_name}_default_view");
+        let params = json!([view]);
+        let result = query_value(connection, &statement, Some(&params)).await?;
+        if result.is_none() {
+            view = String::from(table_name);
+        }
+        // tracing::warn!("FIND THE VIEW {view}");
+
         let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
         let params = json!([table_name]);
         let change_id = match query_value(connection, &statement, Some(&params)).await? {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
-        Ok(Table::from_change_id(table_name, change_id))
+        let name = table_name.to_string();
+        Ok(Table {
+            name,
+            view,
+            change_id,
+            ..Default::default()
+        })
     }
 
     pub async fn get_table_tx(
@@ -224,12 +253,17 @@ impl Relatable {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
-        Ok(Table::from_change_id(table_name, change_id))
+        Ok(Table {
+            name: table_name.to_string(),
+            change_id,
+            ..Default::default()
+        })
     }
 
     pub fn from(&self, table_name: &str) -> Select {
         Select {
             table_name: table_name.to_string(),
+            view_name: table_name.to_string(),
             limit: self.default_limit,
             ..Default::default()
         }
@@ -252,7 +286,9 @@ impl Relatable {
         let table = self
             .get_table(select.table_name.as_str(), &self.connection)
             .await?;
-        let columns = self.fetch_columns(&select.table_name).await?;
+        let mut select = select.clone();
+        select.view_name = table.view.clone();
+        let columns = self.fetch_columns(&table.view).await?;
         let (statement, params) = select.to_sqlite()?;
         tracing::debug!("SQL {statement}");
         let params = json!(params);
@@ -1028,6 +1064,8 @@ pub struct Column {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Table {
     name: String,
+    // A view to use when displaying this table, or empty if none.
+    view: String,
     // The history_id of the most recent update to this table.
     change_id: usize,
     editable: bool,
@@ -1037,18 +1075,9 @@ impl Default for Table {
     fn default() -> Self {
         Self {
             name: String::default(),
+            view: String::default(),
             change_id: usize::default(),
             editable: true,
-        }
-    }
-}
-
-impl Table {
-    fn from_change_id(table_name: &str, change_id: usize) -> Self {
-        Table {
-            name: table_name.to_string(),
-            change_id: change_id,
-            ..Default::default()
         }
     }
 }
@@ -1360,6 +1389,7 @@ impl Filter {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Select {
     pub table_name: String,
+    pub view_name: String,
     pub limit: usize,
     pub offset: usize,
     pub filters: Vec<Filter>,
@@ -1728,7 +1758,7 @@ impl Select {
 
     pub fn to_sqlite(&self) -> Result<(String, Vec<JsonValue>)> {
         tracing::debug!("to_sqlite: {self:?}");
-        let table = &self.table_name;
+        let table = &self.view_name;
         let mut lines = Vec::new();
         lines.push("SELECT *,".to_string());
         // WARN: The _total count should probably be optional.
@@ -1739,7 +1769,7 @@ impl Select {
                      AND "row" = _id
                  ) AS _change_id"#
         ));
-        lines.push(format!(r#"FROM "{}""#, self.table_name));
+        lines.push(format!(r#"FROM "{}""#, table));
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             lines.push(format!("{keyword} {filter}", filter = filter.to_sqlite()?));

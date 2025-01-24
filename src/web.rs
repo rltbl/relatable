@@ -234,7 +234,7 @@ async fn post_cursor(
 ) -> Response<Body> {
     // tracing::info!("post_cursor({cursor:?})");
     let username: String = session.get("username").unwrap_or_default();
-    tracing::info!("post_cursor({cursor:?}, {username})");
+    tracing::debug!("post_cursor({cursor:?}, {username})");
     // TODO: sanitize the cursor JSON.
     let statement = format!(
         r#"UPDATE user
