@@ -315,7 +315,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     if (kind === "dropdown") {
       return {
         kind: GridCellKind.Custom,
-        allowOverlay: true,
+        allowOverlay: site.editable,
         copyData: value,
         data: {
           kind: "dropdown-cell",
@@ -336,10 +336,10 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     return {
       kind: GridCellKind.Text,
       data: String(value),
-      allowOverlay: true,
+      allowOverlay: site.editable,
       displayData: String(rowData.cells[column_name].text),
     };
-  }, [columns]);
+  }, [site, columns]);
 
   const onCellEdited: RowEditedCallback<Row> = React.useCallback((cell, newVal, rowData) => {
     // console.log("EDITED CELL", cell, newVal, rowData);

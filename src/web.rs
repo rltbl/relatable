@@ -28,6 +28,10 @@ use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
 use tokio::net::TcpListener;
 use tower_service::Service;
 
+fn forbid() -> Response<Body> {
+    (StatusCode::FORBIDDEN, Html(format!("403 Forbidden"))).into_response()
+}
+
 fn get_404(error: &anyhow::Error) -> Response<Body> {
     (
         StatusCode::NOT_FOUND,
@@ -111,6 +115,14 @@ async fn respond(
     response
 }
 
+fn get_username(session: Session<SessionNullPool>) -> String {
+    let username = std::env::var("RLTBL_USER").unwrap_or_default();
+    if username != "" {
+        return username;
+    }
+    session.get("username").unwrap_or_default()
+}
+
 async fn get_table(
     State(rltbl): State<Arc<Relatable>>,
     Path(path): Path<String>,
@@ -122,8 +134,8 @@ async fn get_table(
     // tracing::info!("SESSION {:?}", session.get_session_id().inner());
     // tracing::info!("SESSIONS {}", session.count().await);
 
-    let username: String = session.get("username").unwrap_or_default();
-    // tracing::info!("USERNAME {username}");
+    let username = get_username(session);
+    tracing::info!("USERNAME {username}");
     let select = Select::from_path_and_query(&rltbl, &path, &query_params);
     let format = match Format::try_from(&path) {
         Ok(format) => format,
@@ -139,6 +151,9 @@ async fn post_table(
     ExtractJson(changeset): ExtractJson<ChangeSet>,
 ) -> Response<Body> {
     tracing::info!("post_table([rltbl], {path}, {changeset:?})");
+    if rltbl.readonly {
+        return forbid().into();
+    }
 
     let table = changeset.table.clone();
     if path != table {
@@ -152,7 +167,7 @@ async fn post_table(
 
     // WARN: We need to check that the user matches!
     // let user = changeset.user.clone();
-    // let username: String = session.get("username").unwrap_or_default();
+    // let username = get_username(session);
     // if username != user {
     //     return get_500(
     //         &RelatableError::InputError(format!(
@@ -170,6 +185,15 @@ async fn post_table(
     }
 }
 
+async fn init_user(rltbl: &Relatable, username: &str) -> () {
+    let color = random_color::RandomColor::new().to_hex();
+    let statement = format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#);
+    let params = json!([username, color]);
+    query(&rltbl.connection, &statement, Some(&params))
+        .await
+        .expect("Update user");
+}
+
 async fn post_sign_in(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
@@ -179,13 +203,7 @@ async fn post_sign_in(
     let username = String::new();
     let username = form.get("username").unwrap_or(&username);
     session.set("username", username);
-
-    let color = random_color::RandomColor::new().to_hex();
-    let statement = format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#);
-    let params = json!([username, color]);
-    query(&rltbl.connection, &statement, Some(&params))
-        .await
-        .expect("Update user");
+    init_user(&rltbl, &username).await;
 
     match form.get("redirect") {
         Some(url) => Redirect::to(url).into_response(),
@@ -200,27 +218,14 @@ async fn post_sign_in(
     }
 }
 
-async fn post_sign_out(
-    State(rltbl): State<Arc<Relatable>>,
-    session: Session<SessionNullPool>,
-    Form(form): Form<IndexMap<String, String>>,
-) -> Response<Body> {
-    tracing::debug!("post_login({form:?})");
-    let username = String::new();
-    let username = form.get("username").unwrap_or(&username);
-    session.set("username", username);
-
-    let color = random_color::RandomColor::new().to_hex();
-    let statement = format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#);
-    let params = json!([username, color]);
-    query(&rltbl.connection, &statement, Some(&params))
-        .await
-        .expect("Update user");
+async fn post_sign_out(session: Session<SessionNullPool>) -> Response<Body> {
+    tracing::debug!("post_logout()");
+    session.set("username", "");
 
     Html(format!(
-        r#"<p>Logged in as {username}</p>
+        r#"<p>Logged out</p>
         <form method="post">
-        <input name="username" value="{username}"/>
+        <input name="username" value=""/>
         <input type="submit"/>
         </form>"#
     ))
@@ -233,7 +238,7 @@ async fn post_cursor(
     ExtractJson(cursor): ExtractJson<Cursor>,
 ) -> Response<Body> {
     // tracing::info!("post_cursor({cursor:?})");
-    let username: String = session.get("username").unwrap_or_default();
+    let username = get_username(session);
     tracing::debug!("post_cursor({cursor:?}, {username})");
     // TODO: sanitize the cursor JSON.
     let statement = format!(

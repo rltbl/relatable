@@ -59,6 +59,7 @@ impl std::error::Error for RelatableError {}
 
 #[derive(Debug)]
 pub struct Relatable {
+    pub readonly: bool,
     pub connection: DbConnection,
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
@@ -68,6 +69,10 @@ pub struct Relatable {
 impl Relatable {
     pub async fn connect() -> Result<Self> {
         // Set up database connection.
+        let readonly = match std::env::var("RLTBL_READONLY") {
+            Ok(value) if value.to_lowercase() != "false" => true,
+            _ => false,
+        };
         let path = ".relatable/relatable.db";
         let file = FilePath::new(path);
         if !file.exists() {
@@ -79,6 +84,7 @@ impl Relatable {
         let connection = connect(path).await?;
         Ok(Self {
             connection,
+            readonly,
             // minijinja: env,
             default_limit: 100,
             max_limit: 1000,
@@ -515,6 +521,7 @@ impl Relatable {
         Site {
             title: "RLTBL".to_string(),
             root: "".to_string(),
+            editable: !self.readonly,
             user: self.get_user(username).await,
             users,
             tables: self.get_tables().await.unwrap_or_default(),
@@ -1863,6 +1870,7 @@ impl Select {
 pub struct Site {
     title: String,
     root: String,
+    editable: bool,
     user: Account,
     users: IndexMap<String, UserCursor>,
     tables: IndexMap<String, Table>,
