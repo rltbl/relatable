@@ -422,7 +422,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
         .await
         .expect("Database was initialized");
 
-    let sql = "INSERT INTO 'table' ('table') VALUES ('penguin')";
+    let sql = r#"INSERT INTO "table" ('table') VALUES ('penguin')"#;
     query(&rltbl.connection, sql, None).await.unwrap();
 
     // Create the penguin table.
@@ -449,7 +449,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
         let island = islands.iter().choose(&mut rng).unwrap();
         let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
-        let sql = r#"INSERT INTO 'penguin'
+        let sql = r#"INSERT INTO "penguin"
                      VALUES (?, ?, 'FAKE123', ?, 'Pygoscelis adeliae', ?, ?, ?, ?)"#;
         let params = json!([
             id,

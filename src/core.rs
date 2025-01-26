@@ -109,56 +109,58 @@ impl Relatable {
         let rltbl = Relatable::connect().await?;
 
         // Create and populate the table table
-        let sql = r#"CREATE TABLE 'table' (
+        let sql = r#"CREATE TABLE "table" (
           _id INTEGER PRIMARY KEY,
           _order INTEGER UNIQUE,
-          'table' TEXT UNIQUE
+          "table" TEXT UNIQUE,
+          "path" TEXT
         )"#;
         query(&rltbl.connection, sql, None).await.unwrap();
 
         let sql = format!(
-            r#"CREATE TRIGGER 'table_order'
-                 AFTER INSERT ON 'table'
+            r#"CREATE TRIGGER "table_order"
+                 AFTER INSERT ON "table"
                  WHEN NEW._order IS NULL
                  BEGIN
-                   UPDATE 'table' SET _order = ({MOVE_INTERVAL} * NEW._id)
+                   UPDATE "table" SET _order = ({MOVE_INTERVAL} * NEW._id)
                    WHERE _id = NEW._id;
                  END"#
         );
         query(&rltbl.connection, &sql, None).await.unwrap();
 
-        let sql = "INSERT INTO 'table' ('table') VALUES ('table')";
-        query(&rltbl.connection, sql, None).await.unwrap();
+        let sql = r#"INSERT INTO "table" ("table") VALUES (?)"#;
+        let params = json!(["table"]);
+        query(&rltbl.connection, sql, Some(&params)).await.unwrap();
 
         // Create the change and history tables
-        let sql = r#"CREATE TABLE 'user' (
-          'name' TEXT PRIMARY KEY,
-          'color' TEXT,
-          'cursor' TEXT,
-          'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        let sql = r#"CREATE TABLE "user" (
+          "name" TEXT PRIMARY KEY,
+          "color" TEXT,
+          "cursor" TEXT,
+          "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )"#;
         query(&rltbl.connection, sql, None).await.unwrap();
 
         // Create the change and history tables
-        let sql = r#"CREATE TABLE 'change' (
+        let sql = r#"CREATE TABLE "change" (
           change_id INTEGER PRIMARY KEY,
-          'datetime' TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          'user' TEXT NOT NULL,
-          'action' TEXT NOT NULL,
-          'table' TEXT NOT NULL,
-          'description' TEXT,
-          'content' TEXT,
+          "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          "user" TEXT NOT NULL,
+          "action" TEXT NOT NULL,
+          "table" TEXT NOT NULL,
+          "description" TEXT,
+          "content" TEXT,
           FOREIGN KEY ("user") REFERENCES user("name")
         )"#;
         query(&rltbl.connection, sql, None).await.unwrap();
 
-        let sql = r#"CREATE TABLE 'history' (
+        let sql = r#"CREATE TABLE "history" (
           history_id INTEGER PRIMARY KEY,
           change_id INTEGER NOT NULL,
-          'table' TEXT NOT NULL,
-          'row' INTEGER NOT NULL,
-          'before' TEXT,
-          'after' TEXT,
+          "table" TEXT NOT NULL,
+          "row" INTEGER NOT NULL,
+          "before" TEXT,
+          "after" TEXT,
           FOREIGN KEY ("change_id") REFERENCES change("change_id"),
           FOREIGN KEY ("table") REFERENCES "table"("table")
         )"#;
@@ -203,10 +205,10 @@ impl Relatable {
             .map_err(|e| e.into())
     }
 
-    pub async fn get_table(&self, table_name: &str, connection: &DbConnection) -> Result<Table> {
+    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
         let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
         let params = json!([table_name]);
-        let change_id = match query_value(connection, &statement, Some(&params)).await? {
+        let change_id = match query_value(&self.connection, &statement, Some(&params)).await? {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
@@ -249,9 +251,7 @@ impl Relatable {
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        let table = self
-            .get_table(select.table_name.as_str(), &self.connection)
-            .await?;
+        let table = self.get_table(select.table_name.as_str()).await?;
         let columns = self.fetch_columns(&select.table_name).await?;
         let (statement, params) = select.to_sqlite()?;
         tracing::debug!("SQL {statement}");
@@ -295,7 +295,7 @@ impl Relatable {
         let table = changeset.table.clone();
         let description = changeset.description.clone();
 
-        let statement = r#"INSERT INTO change('user', 'action', 'table', 'description', 'content')
+        let statement = r#"INSERT INTO change("user", "action", "table", "description", "content")
                            VALUES (?, ?, ?, ?, ?)
                            RETURNING change_id"#;
         let content = to_value(&changeset.changes).unwrap_or_default();
@@ -315,7 +315,7 @@ impl Relatable {
                 }
                 | Change::Add { row } => {
                     let sql = r#"INSERT INTO "history"
-                                 ('change_id', 'table', 'row', 'before', 'after')
+                                 ("change_id", "table", "row", "before", "after")
                                  VALUES (?, ?, ?, 'TODO', 'TODO')
                                  RETURNING "history_id""#;
                     let params = json!([change_id, table, row]);
@@ -323,7 +323,7 @@ impl Relatable {
                 }
                 Change::Move { row, after } => {
                     let sql = r#"INSERT INTO "history"
-                                 ('change_id', 'table', 'row', 'before', 'after')
+                                 ("change_id", "table", "row", "before", "after")
                                  VALUES (?, ?, ?, 'TODO', ?)
                                  RETURNING "history_id""#;
                     let params = json!([change_id, table, row, after]);
@@ -331,7 +331,7 @@ impl Relatable {
                 }
                 Change::Delete { row } => {
                     let sql = r#"INSERT INTO "history"
-                                 ('change_id', 'table', 'row', 'before', 'after')
+                                 ("change_id", "table", "row", "before", "after")
                                  VALUES (?, ?, ?, 'TODO', 'TODO')
                                  RETURNING "history_id""#;
                     let params = json!([change_id, table, row]);
