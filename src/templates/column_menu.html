@@ -1,5 +1,7 @@
-<ul class="dropdown-menu" style="display: inline-block; position: relative">
-  <li><a class="dropdown-item" href="/">Column action</a></li>
-  <li><a class="dropdown-item" href="/">Another action</a></li>
-  <li><a class="dropdown-item" href="/">Something else here</a></li>
-</ul>
+<form class="dropdown-menu p-2" style="display: inline-block; position: relative">
+  <input class="form-control" type="text" name="{{ column }}" value="eq.Dream" />
+  <div class="pt-2 d-flex justify-content-end">
+    <a class="me-2 btn btn-outline-primary" href="/table/{{ table }}">Clear</a>
+    <input class="btn btn-primary" type="submit" value="OK" />
+  </div>
+</form>

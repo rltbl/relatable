@@ -234,7 +234,10 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     const first = r[0];
     const last = r[1];
     const limit = last - first;
-    const url = `/table/${table}.json?limit=${limit}&offset=${first}`;
+    const params = new URLSearchParams(document.location.search);
+    params.set("limit", String(limit));
+    params.set("offset", String(first));
+    const url = `/table/${table}.json?${params.toString()}`;
     // console.log("Fetch: " + url);
     try {
       const response = await fetch(url);
