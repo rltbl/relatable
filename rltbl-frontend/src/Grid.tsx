@@ -9,6 +9,7 @@ import {
   EditableGridCell, GridCell, GridCellKind,
   GridColumn,
   GridSelection,
+  Highlight,
   Rectangle,
   type Item
 } from "@glideapps/glide-data-grid";
@@ -195,6 +196,9 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       hasMenu: true
     };
   });
+  const columnIndex: Map<string, number> = new Map(
+    columns.map((c, i) => [c.id, i])
+  );
 
   // console.log("TABLE", table);
   // console.log("COLUMNS", columns);
@@ -203,26 +207,28 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
 
   const gridRef = React.useRef<DataEditorRef | null>(null);
   const dataRef = React.useRef<Row[]>([]);
-  const cursorsRef = React.useRef<Map<string, string>>(new Map());
   const change_id = React.useRef<number>(0);
 
-  const getCursors = React.useCallback((users: Map<string, UserCursor>) => {
-    var cursors = new Map<string, string>();
-    for (const user of Object.values(users)) {
-      const cursor: Cursor = user.cursor;
-      if (cursor.table !== table) { continue; };
-      const row = cursor.row - 1;
-      var col = 0;
-      for (const [i, column] of columns.entries()) {
-        if (cursor.column === column.id) {
-          col = i;
-          break;
+  const [highlightRegions, setHighlightRegions] = React.useState<Highlight[]>([]);
+
+  const updateCursors = React.useCallback((users: Map<string, UserCursor>) => {
+    setHighlightRegions(
+      Object.values(users)
+        .filter((x: UserCursor) => x.cursor.table === table)
+        .map((x: UserCursor): Highlight => {
+          return {
+            color: x.color + '33',
+            range: {
+              x: columnIndex.get(x.cursor.column) || 0,
+              y: x.cursor.row - 1,
+              width: 1,
+              height: 1,
+            },
+          }
         }
-      }
-      cursors[col + "," + row] = user.color;
-    }
-    return cursors;
-  }, [table, columns]);
+        )
+    );
+  }, [table, columnIndex]);
 
   const getRowData = React.useCallback(async (r: Item) => {
     const first = r[0];
@@ -237,12 +243,12 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       }
       const data = await response.json();
       change_id.current = data["result"]["table"]["change_id"];
-      cursorsRef.current = getCursors(data["site"]["users"]);
+      updateCursors(data["site"]["users"]);
       return data["result"]["rows"];
     } catch (error) {
       console.error(error.message);
     }
-  }, [change_id, table, cursorsRef, getCursors]);
+  }, [change_id, table, updateCursors]);
 
   // Fetch data updated since we started.
   const pollData = React.useCallback(async () => {
@@ -250,8 +256,6 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     const url = `/table/${table}.json?_change_id=gt.${change_id.current}`;
     // console.log("Fetch: " + url);
     var rows: Row[] = [];
-    const oldCursors = cursorsRef.current;
-    var newCursors: Map<string, string> = new Map();
     try {
       const response = await fetch(url);
       if (!response.ok) {
@@ -259,12 +263,11 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       }
       const data = await response.json();
       change_id.current = data["result"]["table"]["change_id"];
-      newCursors = getCursors(data["site"]["users"]);
+      updateCursors(data["site"]["users"]);
       rows = data["result"]["rows"] as Row[];
     } catch (error) {
       console.error(error.message);
     }
-    cursorsRef.current = newCursors;
 
     // Match rows to the grid by _id and re-render them.
     // TODO: Why do I need to updateCells? It should be automatic.
@@ -283,20 +286,8 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
         });
       }
     }
-    for (const key of Object.keys(oldCursors)) {
-      const [c, r] = key.split(",", 2);
-      damageList.push({
-        cell: [parseInt(c), parseInt(r)],
-      });
-    }
-    for (const key of Object.keys(newCursors)) {
-      const [c, r] = key.split(",", 2);
-      damageList.push({
-        cell: [parseInt(c), parseInt(r)],
-      });
-    }
     gridRef.current?.updateCells(damageList);
-  }, [table, columns, row_count, cursorsRef, getCursors, dataRef, gridRef]);
+  }, [table, columns, row_count, updateCursors, dataRef, gridRef]);
 
   // Poll for new data.
   React.useEffect(() => {
@@ -596,6 +587,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       onHeaderMenuClick={onHeaderMenuClick}
       // onPaste={true}
       // fillHandle={true}
+      highlightRegions={highlightRegions}
       drawCell={drawCell}
       width="100%"
       height={height}
