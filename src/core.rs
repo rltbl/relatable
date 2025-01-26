@@ -1410,45 +1410,63 @@ impl Select {
         for (column, pattern) in query_params {
             if pattern.starts_with("eq.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("eq.", ""));
-                match value {
+                let value = &pattern.replace("eq.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::Equal { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::Equal {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("not_eq.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("not_eq.", ""));
-                match value {
+                let value = &pattern.replace("not_eq.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::NotEqual { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::NotEqual {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("gt.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("gt.", ""));
-                match value {
+                let value = &pattern.replace("gt.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::GreaterThan { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::GreaterThan {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("gte.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("gte.", ""));
-                match value {
+                let value = &pattern.replace("gte.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::GreaterThanOrEqual { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::GreaterThanOrEqual {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("lt.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("lt.", ""));
-                match value {
+                let value = &pattern.replace("lt.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::LessThan { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::LessThan {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("lte.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("lte.", ""));
-                match value {
+                let value = &pattern.replace("lte.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::LessThanOrEqual { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::LessThanOrEqual {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("is.") {
                 let column = column.to_string();
@@ -1460,7 +1478,7 @@ impl Select {
                     }),
                     _ => match serde_json::from_str(&value) {
                         Ok(value) => filters.push(Filter::Is { column, value }),
-                        Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                        Err(_) => tracing::warn!("invalid 'is' filter value {pattern}"),
                     },
                 };
             } else if pattern.starts_with("is_not.") {
@@ -1473,7 +1491,7 @@ impl Select {
                     }),
                     _ => match serde_json::from_str(&value) {
                         Ok(value) => filters.push(Filter::IsNot { column, value }),
-                        Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                        Err(_) => tracing::warn!("invalid 'is_not' filter value {pattern}"),
                     },
                 };
             } else if pattern.starts_with("in.") {
@@ -1482,7 +1500,7 @@ impl Select {
                 let values = pattern.replace("in.", "");
                 let values = match values.strip_prefix("(").and_then(|s| s.strip_suffix(")")) {
                     None => {
-                        tracing::warn!("invalid filter value {pattern}");
+                        tracing::warn!("invalid 'in' filter value {pattern}");
                         ""
                     }
                     Some(s) => s,
@@ -1501,7 +1519,7 @@ impl Select {
                 let values = pattern.replace("not_in.", "");
                 let values = match values.strip_prefix("(").and_then(|s| s.strip_suffix(")")) {
                     None => {
-                        tracing::warn!("invalid filter value {pattern}");
+                        tracing::warn!("invalid 'not_in' filter value {pattern}");
                         ""
                     }
                     Some(s) => s,
