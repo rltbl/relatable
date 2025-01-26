@@ -1183,6 +1183,7 @@ impl TryFrom<&String> for Format {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Filter {
+    Like { column: String, value: JsonValue },
     Equal { column: String, value: JsonValue },
     NotEqual { column: String, value: JsonValue },
     GreaterThan { column: String, value: JsonValue },
@@ -1262,6 +1263,7 @@ impl Filter {
         }
 
         let (operator, value) = match self {
+            Filter::Like { column: _, value } => ("like.", value),
             Filter::Equal { column: _, value } => ("eq.", value),
             Filter::NotEqual { column: _, value } => ("not_eq.", value),
             Filter::GreaterThan { column: _, value } => ("gt.", value),
@@ -1321,6 +1323,11 @@ impl Filter {
             }
         }
         match self {
+            Filter::Like { column, value } => {
+                let value = json_to_string(&value);
+                let value = value.replace("*", "%");
+                Ok(format!(r#""{column}" LIKE {value}"#))
+            }
             Filter::Equal { column, value } => {
                 let value = json_to_string(&value);
                 Ok(format!(r#""{column}" = {value}"#))
@@ -1408,7 +1415,17 @@ impl Select {
         let table_name = path.split(".").next().unwrap_or_default().to_string();
         let mut filters = Vec::new();
         for (column, pattern) in query_params {
-            if pattern.starts_with("eq.") {
+            if pattern.starts_with("like.") {
+                let column = column.to_string();
+                let value = &pattern.replace("like.", "");
+                match serde_json::from_str(value) {
+                    Ok(value) => filters.push(Filter::Like { column, value }),
+                    Err(_) => filters.push(Filter::Like {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
+                }
+            } else if pattern.starts_with("eq.") {
                 let column = column.to_string();
                 let value = &pattern.replace("eq.", "");
                 match serde_json::from_str(value) {
@@ -1563,6 +1580,7 @@ impl Select {
     }
 
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
+        let like = Regex::new(r#"^(\w+)\s*~=\s*"?(\w+)"?$"#).unwrap();
         let eq = Regex::new(r#"^(\w+)\s*=\s*"?(\w+)"?$"#).unwrap();
         let not_eq = Regex::new(r#"^(\w+)\s*!=\s*"?(\w+)"?$"#).unwrap();
         let gt = Regex::new(r"^(\w+)\s*>\s*(\w+)$").unwrap();
@@ -1584,7 +1602,13 @@ impl Select {
             }
         };
         for filter in filters {
-            if eq.is_match(&filter) {
+            if like.is_match(&filter) {
+                let captures = eq.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = maybe_quote_value(&value)?;
+                self.filters.push(Filter::Like { column, value });
+            } else if eq.is_match(&filter) {
                 let captures = eq.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
@@ -1669,6 +1693,17 @@ impl Select {
                 return Err(RelatableError::ConfigError(format!("invalid filter {filter}")).into());
             }
         }
+        Ok(self)
+    }
+
+    pub fn like<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::Like {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
         Ok(self)
     }
 
@@ -1822,7 +1857,8 @@ impl Select {
         if self.filters.len() > 0 {
             for filter in &self.filters {
                 let column = match &filter {
-                    Filter::Equal { column, value: _ }
+                    Filter::Like { column, value: _ }
+                    | Filter::Equal { column, value: _ }
                     | Filter::NotEqual { column, value: _ }
                     | Filter::GreaterThan { column, value: _ }
                     | Filter::GreaterThanOrEqual { column, value: _ }
