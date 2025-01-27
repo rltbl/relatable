@@ -393,7 +393,6 @@ impl Relatable {
                 .collect::<Vec<_>>();
             writer.write_record(header_row.clone())?;
 
-            let columns = header_row.join(", ");
             let sql = format!(
                 r#"SELECT {columns} FROM "{table}" ORDER BY "_order""#,
                 columns = header_row.join(", ")
