@@ -12,8 +12,9 @@ use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use promptly::prompt_default;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
+use regex::Regex;
 use serde_json::{json, to_string_pretty, to_value, Map as JsonMap, Value as JsonValue};
-use std::{io, io::Write};
+use std::{io, io::Write, path::Path};
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";
@@ -224,9 +225,6 @@ pub enum DeleteSubcommand {
 #[derive(Subcommand, Debug)]
 pub enum LoadSubcommand {
     Table {
-        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
-        table: String,
-
         #[arg(value_name = "PATH", action = ArgAction::Set, help = "The path to load from")]
         path: String,
     },
@@ -435,11 +433,26 @@ pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
     tracing::info!("Deleted row {row}");
 }
 
-pub async fn load_table(cli: &Cli, table: &str, path: &str) {
-    tracing::debug!("load_table({cli:?}, {table}, {path})");
+pub async fn load_table(cli: &Cli, path: &str) {
+    tracing::debug!("load_table({cli:?}, {path})");
     let rltbl = Relatable::connect().await.unwrap();
+
+    // We will use this pattern to normalize the labels represented by the column headers:
+    let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
+    let table = Path::new(path)
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .expect("Error writing to path");
+    let mut table = pattern.replace_all(table, "_").to_string();
+    if table.starts_with("_") {
+        table = table.strip_prefix("_").unwrap().to_string();
+    }
+    if table.ends_with("_") {
+        table = table.strip_suffix("_").unwrap().to_string();
+    }
+
     rltbl
-        .load_table(table, path)
+        .load_table(&table, path)
         .await
         .expect("Error loading table");
     tracing::info!("Loaded table '{table}'");
@@ -557,7 +570,7 @@ pub async fn process_command() {
             DeleteSubcommand::Row { table, row } => delete_row(&cli, table, *row).await,
         },
         Command::Load { subcommand } => match subcommand {
-            LoadSubcommand::Table { table, path } => load_table(&cli, table, path).await,
+            LoadSubcommand::Table { path } => load_table(&cli, path).await,
         },
         Command::Save {} => save_all(&cli).await,
         Command::Serve { host, port } => serve(&cli, host, port)
