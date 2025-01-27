@@ -393,7 +393,11 @@ impl Relatable {
 
             let sql = format!(
                 r#"SELECT {columns} FROM "{table}" ORDER BY "_order""#,
-                columns = header_row.join(", ")
+                columns = header_row
+                    .iter()
+                    .map(|c| format!(r#""{c}""#))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
             let data_rows = query(&self.connection, &sql, None).await?;
             for data_row in data_rows {
