@@ -84,6 +84,12 @@ pub enum Command {
         subcommand: DeleteSubcommand,
     },
 
+    /// Load data into the datanase
+    Load {
+        #[command(subcommand)]
+        subcommand: LoadSubcommand,
+    },
+
     /// Run a Relatable server
     Serve {
         /// Server host address
@@ -209,6 +215,17 @@ pub enum DeleteSubcommand {
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
         row: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LoadSubcommand {
+    Table {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "PATH", action = ArgAction::Set, help = "The path to load from")]
+        path: String,
     },
 }
 
@@ -412,7 +429,17 @@ pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
         .delete_row(table, &user, row)
         .await
         .expect("Failed to delte row");
-    tracing::info!("Delete row {row}");
+    tracing::info!("Deleted row {row}");
+}
+
+pub async fn load_table(cli: &Cli, table: &str, path: &str) {
+    tracing::debug!("load_table({cli:?}, {table}, {path})");
+    let rltbl = Relatable::connect().await.unwrap();
+    rltbl
+        .load_table(table, path)
+        .await
+        .expect("Error loading table");
+    tracing::info!("Loaded table '{table}'");
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool) {
@@ -519,6 +546,9 @@ pub async fn process_command() {
         },
         Command::Delete { subcommand } => match subcommand {
             DeleteSubcommand::Row { table, row } => delete_row(&cli, table, *row).await,
+        },
+        Command::Load { subcommand } => match subcommand {
+            LoadSubcommand::Table { table, path } => load_table(&cli, table, path).await,
         },
         Command::Serve { host, port } => serve(&cli, host, port)
             .await

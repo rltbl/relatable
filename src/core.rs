@@ -8,6 +8,7 @@ use crate::sql::{
 };
 
 use anyhow::Result;
+use csv::ReaderBuilder;
 use enquote::unquote;
 use indexmap::IndexMap;
 use minijinja::{path_loader, Environment};
@@ -287,6 +288,85 @@ impl Relatable {
         let (statement, params) = select.to_sqlite()?;
         let params = json!(params);
         query(&self.connection, &statement, Some(&params)).await
+    }
+
+    // Is it acceptable for this function to panic? Will it be mostly called from the CLI or from
+    // the web?
+    /// Note: this function panics.
+    pub async fn load_table(&self, table: &str, path: &str) -> Result<()> {
+        let mut rdr = ReaderBuilder::new()
+            .has_headers(false)
+            .delimiter(b'\t')
+            .from_reader(File::open(path).map_err(|err| {
+                RelatableError::InputError(format!("Unable to open '{}': {}", path, err))
+            })?);
+
+        // Extract the headers, which we will need for the create table statement:
+        let mut records = rdr.records();
+        let headers = {
+            let headers = records
+                .next()
+                .expect(&format!("'{path}' is empty"))
+                .expect(&format!("Error reading from '{path}'"))
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+            for header in &headers {
+                if header.trim().is_empty() {
+                    panic!("One or more of the header fields is empty for table '{table}'");
+                }
+            }
+            headers
+        };
+
+        let column_clauses = headers
+            .iter()
+            .map(|header| format!(r#""{header}" TEXT"#))
+            .collect::<Vec<_>>();
+
+        let sql = format!(
+            r#"CREATE TABLE IF NOT EXISTS "{table}" (
+             _id INTEGER PRIMARY KEY, _order INTEGER UNIQUE, {other_column_defs}
+           )"#,
+            other_column_defs = column_clauses.join(", ")
+        );
+        query(&self.connection, &sql, None).await?;
+
+        let sql = format!(
+            r#"CREATE TRIGGER IF NOT EXISTS "{table}_order"
+                 AFTER INSERT ON "{table}"
+                 WHEN NEW._order IS NULL
+                 BEGIN
+                   UPDATE "{table}" SET _order = ({MOVE_INTERVAL} * NEW._id)
+                   WHERE _id = NEW._id;
+                 END"#
+        );
+        query(&self.connection, &sql, None).await?;
+
+        while let Some(row) = records.next() {
+            match row {
+                Err(err) => {
+                    tracing::error!("While processing row for '{table}', got error '{err}'",)
+                }
+                Ok(row) => {
+                    let columns = headers
+                        .iter()
+                        .map(|k| format!(r#""{k}""#))
+                        .collect::<Vec<_>>();
+                    let placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>();
+                    let sql = format!(
+                        r#"INSERT INTO "{table}" ({columns}) VALUES ({placeholders})"#,
+                        columns = columns.join(", "),
+                        placeholders = placeholders.join(", ")
+                    );
+                    let values = row.iter().collect::<Vec<_>>();
+                    let params = json!(values);
+                    query(&self.connection, &sql, Some(&params)).await?;
+                }
+            }
+        }
+
+        return Ok(());
     }
 
     pub async fn record_changes(changeset: &ChangeSet, tx: &mut DbTransaction<'_>) -> Result<()> {
