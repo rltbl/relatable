@@ -90,6 +90,9 @@ pub enum Command {
         subcommand: LoadSubcommand,
     },
 
+    /// Save the data
+    Save {},
+
     /// Run a Relatable server
     Serve {
         /// Server host address
@@ -442,6 +445,12 @@ pub async fn load_table(cli: &Cli, table: &str, path: &str) {
     tracing::info!("Loaded table '{table}'");
 }
 
+pub async fn save_all(cli: &Cli) {
+    tracing::debug!("save_all({cli:?})");
+    let rltbl = Relatable::connect().await.unwrap();
+    rltbl.save_all().await.expect("Error saving all");
+}
+
 pub async fn build_demo(cli: &Cli, force: &bool) {
     tracing::debug!("build_demo({cli:?}");
 
@@ -550,6 +559,7 @@ pub async fn process_command() {
         Command::Load { subcommand } => match subcommand {
             LoadSubcommand::Table { table, path } => load_table(&cli, table, path).await,
         },
+        Command::Save {} => save_all(&cli).await,
         Command::Serve { host, port } => serve(&cli, host, port)
             .await
             .expect("Operation: 'serve' failed"),

@@ -8,7 +8,7 @@ use crate::sql::{
 };
 
 use anyhow::Result;
-use csv::ReaderBuilder;
+use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
 use enquote::unquote;
 use indexmap::IndexMap;
 use minijinja::{path_loader, Environment};
@@ -301,8 +301,9 @@ impl Relatable {
                 RelatableError::InputError(format!("Unable to open '{}': {}", path, err))
             })?);
 
-        // Extract the headers, which we will need for the create table statement:
         let mut records = rdr.records();
+
+        // Extract the headers, which we will need for the create table statement:
         let headers = {
             let headers = records
                 .next()
@@ -323,6 +324,10 @@ impl Relatable {
             .iter()
             .map(|header| format!(r#""{header}" TEXT"#))
             .collect::<Vec<_>>();
+
+        let sql = r#"INSERT INTO "table" ("table", "path") VALUES (?, ?)"#;
+        let params = json!([table, path]);
+        query(&self.connection, &sql, Some(&params)).await?;
 
         let sql = format!(
             r#"CREATE TABLE IF NOT EXISTS "{table}" (
@@ -367,6 +372,44 @@ impl Relatable {
         }
 
         return Ok(());
+    }
+
+    pub async fn save_all(&self) -> Result<()> {
+        let sql = r#"SELECT "table", "path" FROM "table" WHERE "path" IS NOT NULL"#;
+        let table_rows = query(&self.connection, &sql, None).await?;
+        for table_row in table_rows {
+            let table = table_row.get_string("table");
+            let path = table_row.get_string("path");
+            let mut writer = WriterBuilder::new()
+                .delimiter(b'\t')
+                .quote_style(QuoteStyle::Never)
+                .from_path(path)?;
+
+            let header_row = self
+                .fetch_columns(&table)
+                .await?
+                .iter()
+                .map(|c| c.name.to_string())
+                .collect::<Vec<_>>();
+            writer.write_record(header_row.clone())?;
+
+            let columns = header_row.join(", ");
+            let sql = format!(
+                r#"SELECT {columns} FROM "{table}" ORDER BY "_order""#,
+                columns = header_row.join(", ")
+            );
+            let data_rows = query(&self.connection, &sql, None).await?;
+            for data_row in data_rows {
+                let values = data_row
+                    .content
+                    .values()
+                    .map(|v| v.as_str().expect("Not a string"))
+                    .collect::<Vec<_>>();
+                writer.write_record(values)?;
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn record_changes(changeset: &ChangeSet, tx: &mut DbTransaction<'_>) -> Result<()> {
