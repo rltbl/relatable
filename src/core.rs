@@ -293,17 +293,16 @@ impl Relatable {
     // Is it acceptable for this function to panic? Will it be mostly called from the CLI or from
     // the web?
     /// Note: this function panics.
-    pub async fn load_table(&self, table: &str, path: &str) -> Result<()> {
+    pub async fn load_table(&self, table: &str, path: &str) {
+        // Read the records from the given path:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
             .delimiter(b'\t')
-            .from_reader(File::open(path).map_err(|err| {
-                RelatableError::InputError(format!("Unable to open '{}': {}", path, err))
-            })?);
-
+            .from_reader(File::open(path).expect("Could not open table path"));
         let mut records = rdr.records();
 
-        // Extract the headers, which we will need for the create table statement:
+        // Extract the headers from the first line of the file, which we will need for the create
+        // table statement:
         let headers = {
             let headers = records
                 .next()
@@ -320,22 +319,26 @@ impl Relatable {
             headers
         };
 
-        let column_clauses = headers
-            .iter()
-            .map(|header| format!(r#""{header}" TEXT"#))
-            .collect::<Vec<_>>();
-
+        // Create the table and its associated _order trigger:
         let sql = r#"INSERT INTO "table" ("table", "path") VALUES (?, ?)"#;
         let params = json!([table, path]);
-        query(&self.connection, &sql, Some(&params)).await?;
+        query(&self.connection, &sql, Some(&params))
+            .await
+            .expect("Error inserting to table table");
 
         let sql = format!(
             r#"CREATE TABLE IF NOT EXISTS "{table}" (
-             _id INTEGER PRIMARY KEY, _order INTEGER UNIQUE, {other_column_defs}
-           )"#,
-            other_column_defs = column_clauses.join(", ")
+                 _id INTEGER PRIMARY KEY, _order INTEGER UNIQUE, {other_column_defs}
+            )"#,
+            other_column_defs = headers
+                .iter()
+                .map(|header| format!(r#""{header}" TEXT"#))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
-        query(&self.connection, &sql, None).await?;
+        query(&self.connection, &sql, None)
+            .await
+            .expect("Error creating data table");
 
         let sql = format!(
             r#"CREATE TRIGGER IF NOT EXISTS "{table}_order"
@@ -346,32 +349,27 @@ impl Relatable {
                    WHERE _id = NEW._id;
                  END"#
         );
-        query(&self.connection, &sql, None).await?;
+        query(&self.connection, &sql, None)
+            .await
+            .expect("Error creating _order trigger");
 
+        // Insert the data into the table:
+        let columns = headers
+            .iter()
+            .map(|k| format!(r#""{k}""#))
+            .collect::<Vec<_>>();
+        let placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>();
+        let columns = columns.join(", ");
+        let placeholders = placeholders.join(", ");
         while let Some(row) = records.next() {
-            match row {
-                Err(err) => {
-                    tracing::error!("While processing row for '{table}', got error '{err}'",)
-                }
-                Ok(row) => {
-                    let columns = headers
-                        .iter()
-                        .map(|k| format!(r#""{k}""#))
-                        .collect::<Vec<_>>();
-                    let placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>();
-                    let sql = format!(
-                        r#"INSERT INTO "{table}" ({columns}) VALUES ({placeholders})"#,
-                        columns = columns.join(", "),
-                        placeholders = placeholders.join(", ")
-                    );
-                    let values = row.iter().collect::<Vec<_>>();
-                    let params = json!(values);
-                    query(&self.connection, &sql, Some(&params)).await?;
-                }
-            }
+            let row = row.expect("Error processing row");
+            let sql = format!(r#"INSERT INTO "{table}" ({columns}) VALUES ({placeholders})"#,);
+            let values = row.iter().collect::<Vec<_>>();
+            let params = json!(values);
+            query(&self.connection, &sql, Some(&params))
+                .await
+                .expect("Error inserting to data table");
         }
-
-        return Ok(());
     }
 
     pub async fn save_all(&self) -> Result<()> {

@@ -437,21 +437,18 @@ pub async fn load_table(cli: &Cli, path: &str) {
     tracing::debug!("load_table({cli:?}, {path})");
     let rltbl = Relatable::connect().await.unwrap();
 
-    // We will use this pattern to normalize the labels represented by the column headers:
+    // We will use this pattern to normalize the table name:
     let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
     let table = Path::new(path)
         .file_stem()
-        .and_then(|n| n.to_str())
+        .and_then(|s| s.to_str())
         .expect("Error writing to path");
     let table = pattern.replace_all(table, "_").to_string();
     // Now replace any trailing or leading underscores:
     let table = table.trim_end_matches("_");
     let table = table.trim_start_matches("_");
 
-    rltbl
-        .load_table(&table, path)
-        .await
-        .expect("Error loading table");
+    rltbl.load_table(&table, path).await;
     tracing::info!("Loaded table '{table}'");
 }
 
