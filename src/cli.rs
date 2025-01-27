@@ -443,13 +443,10 @@ pub async fn load_table(cli: &Cli, path: &str) {
         .file_stem()
         .and_then(|n| n.to_str())
         .expect("Error writing to path");
-    let mut table = pattern.replace_all(table, "_").to_string();
-    if table.starts_with("_") {
-        table = table.strip_prefix("_").unwrap().to_string();
-    }
-    if table.ends_with("_") {
-        table = table.strip_suffix("_").unwrap().to_string();
-    }
+    let table = pattern.replace_all(table, "_").to_string();
+    // Now replace any trailing or leading underscores:
+    let table = table.trim_end_matches("_");
+    let table = table.trim_start_matches("_");
 
     rltbl
         .load_table(&table, path)
