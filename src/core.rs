@@ -43,6 +43,8 @@ pub enum RelatableError {
     // SerdeJsonError(serde_json::Error),
     /// An error that occurred while parsing a regex:
     // RegexError(regex::Error),
+    /// An error that occurred while executing an external process
+    ExternalProcessError(String),
     /// An error that occurred because of a user's action
     UserError(String),
 }
@@ -432,6 +434,7 @@ impl Relatable {
         self.save_all().await?;
 
         let status = rltbl::git::get_status()?;
+        println!("STATUS: {status:#?}");
 
         todo!()
     }
