@@ -290,30 +290,39 @@ impl Relatable {
         query(&self.connection, &statement, Some(&params)).await
     }
 
-    // Is it acceptable for this function to panic? Will it be mostly called from the CLI or from
-    // the web?
-    /// Note: this function panics.
-    pub async fn load_table(&self, table: &str, path: &str) {
+    pub async fn load_table(&self, table: &str, path: &str) -> Result<()> {
         // Read the records from the given path:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
             .delimiter(b'\t')
-            .from_reader(File::open(path).expect("Could not open table path"));
+            .from_reader(File::open(path).map_err(|err| {
+                RelatableError::InputError(format!("Unable to open '{path}': {err}"))
+            })?);
         let mut records = rdr.records();
 
         // Extract the headers from the first line of the file, which we will need for the create
         // table statement:
         let headers = {
-            let headers = records
-                .next()
-                .expect(&format!("'{path}' is empty"))
-                .expect(&format!("Error reading from '{path}'"))
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>();
+            let headers = match records.next() {
+                None => {
+                    return Err(RelatableError::InputError(format!("'{path}' is empty")).into());
+                }
+                Some(record) => match record {
+                    Err(err) => {
+                        return Err(RelatableError::InputError(format!(
+                            "Error reading from '{path}': {err}"
+                        ))
+                        .into());
+                    }
+                    Ok(headers) => headers.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                },
+            };
             for header in &headers {
                 if header.trim().is_empty() {
-                    panic!("One or more of the header fields is empty for table '{table}'");
+                    return Err(RelatableError::InputError(format!(
+                        "One or more of the header fields is empty for table '{table}'"
+                    ))
+                    .into());
                 }
             }
             headers
@@ -322,9 +331,7 @@ impl Relatable {
         // Create the table and its associated _order trigger:
         let sql = r#"INSERT INTO "table" ("table", "path") VALUES (?, ?)"#;
         let params = json!([table, path]);
-        query(&self.connection, &sql, Some(&params))
-            .await
-            .expect("Error inserting to table table");
+        query(&self.connection, &sql, Some(&params)).await?;
 
         let sql = format!(
             r#"CREATE TABLE IF NOT EXISTS "{table}" (
@@ -336,9 +343,7 @@ impl Relatable {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        query(&self.connection, &sql, None)
-            .await
-            .expect("Error creating data table");
+        query(&self.connection, &sql, None).await?;
 
         let sql = format!(
             r#"CREATE TRIGGER IF NOT EXISTS "{table}_order"
@@ -349,9 +354,7 @@ impl Relatable {
                    WHERE _id = NEW._id;
                  END"#
         );
-        query(&self.connection, &sql, None)
-            .await
-            .expect("Error creating _order trigger");
+        query(&self.connection, &sql, None).await?;
 
         // Insert the data into the table:
         let columns = headers
@@ -366,10 +369,10 @@ impl Relatable {
             let sql = format!(r#"INSERT INTO "{table}" ({columns}) VALUES ({placeholders})"#,);
             let values = row.iter().collect::<Vec<_>>();
             let params = json!(values);
-            query(&self.connection, &sql, Some(&params))
-                .await
-                .expect("Error inserting to data table");
+            query(&self.connection, &sql, Some(&params)).await?;
         }
+
+        Ok(())
     }
 
     pub async fn save_all(&self) -> Result<()> {
@@ -401,11 +404,21 @@ impl Relatable {
             );
             let data_rows = query(&self.connection, &sql, None).await?;
             for data_row in data_rows {
-                let values = data_row
-                    .content
-                    .values()
-                    .map(|v| v.as_str().expect("Not a string"))
-                    .collect::<Vec<_>>();
+                let values = {
+                    let json_values = data_row.content.values();
+                    let mut str_values = vec![];
+                    for value in json_values {
+                        match value.as_str() {
+                            None => {
+                                return Err(
+                                    RelatableError::DataError("Not a string".to_string()).into()
+                                );
+                            }
+                            Some(s) => str_values.push(s),
+                        }
+                    }
+                    str_values
+                };
                 writer.write_record(values)?;
             }
         }
