@@ -472,6 +472,9 @@ impl Relatable {
         let rows = query(&self.connection, &statement, None).await?;
         for row in rows {
             let name = row.get_string("name");
+            if name.trim() == "" {
+                continue;
+            }
             users.insert(
                 name.clone(),
                 UserCursor {
@@ -1182,6 +1185,7 @@ impl TryFrom<&String> for Format {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum Filter {
     Like { column: String, value: JsonValue },
     Equal { column: String, value: JsonValue },

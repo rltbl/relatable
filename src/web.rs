@@ -135,7 +135,10 @@ async fn get_table(
     // tracing::info!("SESSIONS {}", session.count().await);
 
     let username = get_username(session);
-    tracing::info!("USERNAME {username}");
+    if username.trim() != "" {
+        init_user(&rltbl, &username).await;
+    }
+    // tracing::info!("USERNAME {username}");
     let select = Select::from_path_and_query(&rltbl, &path, &query_params);
     let format = match Format::try_from(&path) {
         Ok(format) => format,
@@ -306,7 +309,7 @@ async fn get_cell_options(
         None => &String::new(),
     };
     let statement = format!(
-        r#"SELECT DISTINCT "{column}" AS 'value' FROM "{table}" WHERE "{column}" LIKE '%{input}%' LIMIT 20"#
+        r#"SELECT DISTINCT "{column}" AS 'value' FROM "{table}" WHERE "{column}" LIKE '%{input}%' AND "{column}" != '' LIMIT 20"#
     );
     let values: Vec<JsonValue> = query(&rltbl.connection, &statement, None)
         .await

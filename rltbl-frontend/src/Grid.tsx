@@ -180,6 +180,7 @@ function useAsyncData<TRowType>(
 export default function Grid(grid_args: { rltbl: any, height: number }) {
   const rltbl = grid_args.rltbl;
   const site = rltbl.site;
+  const grid = rltbl.grid || { freezeColumns: 0};
   const result = rltbl.result;
   const user = site.user.name;
   const table = result.table.name;
@@ -590,6 +591,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       onHeaderMenuClick={onHeaderMenuClick}
       // onPaste={true}
       // fillHandle={true}
+      freezeColumns={grid.freezeColumns}
       highlightRegions={highlightRegions}
       drawCell={drawCell}
       width="100%"

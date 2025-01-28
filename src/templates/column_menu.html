@@ -1,7 +1,19 @@
-<form class="dropdown-menu p-2" style="display: inline-block; position: relative">
-  <input class="form-control" type="text" name="{{ column }}" value="eq.Dream" />
+<form id="filter-column" class="dropdown-menu p-2" style="display: inline-block; position: relative">
+  <select id="filter-operator" class="form-control mb-2">
+    <option value="contains">Contains</option>
+    <option value="eq">Equals</option>
+    <option value="not_eq">Not Equals</option>
+    <option value="gt">Greater Than</option>
+    <option value="gte">Greater Than or Equals</option>
+    <option value="lt">Less Than</option>
+    <option value="lte">Less Than or Equals</option>
+    <option value="like">Like</option>
+    <option value="is">Is NULL</option>
+    <option value="is_not">Is Not NULL</option>
+  </select>
+  <input id="filter-value" class="form-control" type="text" name="{{ column }}" value="" />
   <div class="pt-2 d-flex justify-content-end">
-    <a class="me-2 btn btn-outline-primary" href="/table/{{ table }}">Clear</a>
-    <input class="btn btn-primary" type="submit" value="OK" />
+    <input id="filter-clear" class="btn btn-primary" type="submit" value="Clear" />
+    <input id="filter-submit" class="btn btn-primary ms-2" type="submit" value="OK" />
   </div>
 </form>
