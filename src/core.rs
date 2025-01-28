@@ -2,7 +2,8 @@
 //!
 //! This is relatable (rltbl::core).
 
-use crate::sql::{
+use crate as rltbl;
+use rltbl::sql::{
     begin, connect, is_simple, json_to_string, lock_connection, query, query_one, query_tx,
     query_value, query_value_tx, DbConnection, DbTransaction, JsonRow, VecInto,
 };
@@ -372,6 +373,7 @@ impl Relatable {
             query(&self.connection, &sql, Some(&params)).await?;
         }
 
+        self.commit_to_git().await?;
         Ok(())
     }
 
@@ -424,6 +426,14 @@ impl Relatable {
         }
 
         Ok(())
+    }
+
+    pub async fn commit_to_git(&self) -> Result<()> {
+        self.save_all().await?;
+
+        let status = rltbl::git::get_status()?;
+
+        todo!()
     }
 
     pub async fn record_changes(changeset: &ChangeSet, tx: &mut DbTransaction<'_>) -> Result<()> {
@@ -479,7 +489,7 @@ impl Relatable {
         Ok(())
     }
 
-    async fn prepare_user_cursor(
+    pub async fn prepare_user_cursor(
         &self,
         changeset: &ChangeSet,
         tx: &mut DbTransaction<'_>,
@@ -536,6 +546,9 @@ impl Relatable {
 
         // Commit the transaction:
         tx.commit().await?;
+
+        // Commit the change to git:
+        self.commit_to_git().await?;
 
         Ok(())
     }
@@ -671,6 +684,9 @@ impl Relatable {
         // Commit the transaction:
         tx.commit().await?;
 
+        // Commit the change to git:
+        self.commit_to_git().await?;
+
         Ok(new_row)
     }
 
@@ -719,6 +735,9 @@ impl Relatable {
 
         // Commit the transaction:
         tx.commit().await?;
+
+        // Commit the change to git:
+        self.commit_to_git().await?;
 
         Ok(())
     }
@@ -778,6 +797,9 @@ impl Relatable {
 
         // Commit the transaction:
         tx.commit().await?;
+
+        // Commit the change to git:
+        self.commit_to_git().await?;
 
         Ok(())
     }
