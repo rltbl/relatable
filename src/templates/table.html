@@ -63,7 +63,7 @@
   }
 
   window.rltbl.loadOptions = (row, column, inputValue, callback) => {
-    const url = `/cell-options/${table}/${row}/${column}?input=${inputValue}`;
+    const url = `{{site.root}}/cell-options/${table}/${row}/${column}?input=${inputValue}`;
     const response = fetch(url)
       .catch(e => console.log("loadOptions", e))
       .then(response => response.json())
@@ -74,7 +74,7 @@
     if (e.target.id === "filter-column") {
       e.preventDefault();
       if (e.submitter.id === "filter-clear") {
-        document.location = '/table/{{table.name}}';
+        document.location = '{{site.root}}/table/{{table.name}}';
       } else {
         const column = document.getElementById("filter-value").name;
         var operator = document.getElementById("filter-operator").value;

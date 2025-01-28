@@ -48,9 +48,9 @@ fn get_500(error: &anyhow::Error) -> Response<Body> {
         .into_response()
 }
 
-async fn get_root() -> impl IntoResponse {
+async fn get_root(State(rltbl): State<Arc<Relatable>>) -> impl IntoResponse {
     tracing::info!("request root");
-    Redirect::permanent("/table/table")
+    Redirect::permanent(format!("{}/table/table", rltbl.root).as_str())
 }
 
 async fn main_js() -> impl IntoResponse {

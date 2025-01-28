@@ -180,7 +180,7 @@ function useAsyncData<TRowType>(
 export default function Grid(grid_args: { rltbl: any, height: number }) {
   const rltbl = grid_args.rltbl;
   const site = rltbl.site;
-  const grid = rltbl.grid || { freezeColumns: 0};
+  const grid = rltbl.grid || { freezeColumns: 0 };
   const result = rltbl.result;
   const user = site.user.name;
   const table = result.table.name;
@@ -197,9 +197,11 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       hasMenu: true
     };
   });
-  const columnIndex: Map<string, number> = new Map(
-    columns.map((c, i) => [c.id, i])
-  );
+  const columnIndex: Map<string, number> = React.useMemo(() => {
+    return new Map(
+      columns.map((c, i) => [c.id, i])
+    );
+  }, [columns]);
 
   // console.log("TABLE", table);
   // console.log("COLUMNS", columns);
@@ -238,7 +240,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     const params = new URLSearchParams(document.location.search);
     params.set("limit", String(limit));
     params.set("offset", String(first));
-    const url = `/table/${table}.json?${params.toString()}`;
+    const url = `${site.root}/table/${table}.json?${params.toString()}`;
     // console.log("Fetch: " + url);
     try {
       const response = await fetch(url);
@@ -252,12 +254,12 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     } catch (error) {
       console.error(error.message);
     }
-  }, [change_id, table, updateCursors]);
+  }, [site, change_id, table, updateCursors]);
 
   // Fetch data updated since we started.
   const pollData = React.useCallback(async () => {
     if (!dataRef.current) { return; }
-    const url = `/table/${table}.json?_change_id=gt.${change_id.current}`;
+    const url = `${site.root}/table/${table}.json?_change_id=gt.${change_id.current}`;
     // console.log("Fetch: " + url);
     var rows: Row[] = [];
     try {
@@ -291,7 +293,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       }
     }
     gridRef.current?.updateCells(damageList);
-  }, [table, columns, row_count, updateCursors, dataRef, gridRef]);
+  }, [site, table, columns, row_count, updateCursors, dataRef, gridRef]);
 
   // Poll for new data.
   React.useEffect(() => {
@@ -372,7 +374,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   const postCursor = React.useCallback(() => {
     // console.log("POST CURSOR", cursor);
     try {
-      fetch('/cursor', {
+      fetch(`${site.root}/cursor`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -382,7 +384,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     } catch (error) {
       console.error(error.message);
     }
-  }, [cursor]);
+  }, [site, cursor]);
 
   const postCursorRef = React.useRef<any>();
   React.useEffect(() => {
@@ -442,7 +444,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     };
     // console.log("onCellsEdited body", body);
     try {
-      fetch(`/table/${table}`, {
+      fetch(`${site.root}/table/${table}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -453,7 +455,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       console.error(error.message);
     }
 
-  }, [rltbl, user, table, columns, dataRef, onCellEdited]);
+  }, [rltbl, site, user, table, columns, dataRef, onCellEdited]);
 
   // const onRowMoved = React.useCallback((from: number, to: number) => {
   //   console.log("ROW MOVED", from, to);
@@ -489,7 +491,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
 
     const [col, row] = cell;
     if (col === -1) {
-      fetch(`/row-menu/${table}/${row + 1}`)
+      fetch(`${site.root}/row-menu/${table}/${row + 1}`)
         .then((response) => { return response.text() })
         .then(text => {
           let content: React.JSX.Element = parse(text) as React.JSX.Element;
@@ -497,7 +499,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
         });
     } else {
       const column = columns[col].id;
-      fetch(`/cell-menu/${table}/${row + 1}/${column}`)
+      fetch(`${site.root}/cell-menu/${table}/${row + 1}/${column}`)
         .then((response) => { return response.text() })
         .then(text => {
           let content: React.JSX.Element = parse(text) as React.JSX.Element;
@@ -507,18 +509,18 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
 
     event.preventDefault();
     return false;
-  }, [table, columns, dataRef]);
+  }, [site, table, columns, dataRef]);
 
   const onHeaderMenuClick = React.useCallback((col: number, bounds: Rectangle) => {
     const column = columns[col].id;
-    fetch(`/column-menu/${table}/${column}`)
+    fetch(`${site.root}/column-menu/${table}/${column}`)
       .then((response) => { return response.text() })
       .then(text => {
         let content: React.JSX.Element = parse(text) as React.JSX.Element;
         setShowMenu({ bounds: bounds, content: content });
       });
     return false;
-  }, [table, columns]);
+  }, [site, table, columns]);
 
   const { renderLayer, layerProps } = useLayer({
     isOpen: showMenu !== undefined,
