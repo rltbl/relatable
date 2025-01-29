@@ -35,9 +35,7 @@ pub fn commit(message: &str, author: &str, is_amendment: bool) -> Result<()> {
         }
         Ok(output) if !output.status.success() => {
             let error = std::str::from_utf8(&output.stderr)?;
-            return Err(
-                RelatableError::GitError(format!("Error running git commit: {error}")).into(),
-            );
+            tracing::warn!(error);
         }
         _ => (),
     };
@@ -53,7 +51,7 @@ pub fn add(paths: &Vec<String>) -> Result<()> {
         }
         Ok(output) if !output.status.success() => {
             let error = std::str::from_utf8(&output.stderr)?;
-            return Err(RelatableError::GitError(format!("Error running git add: {error}")).into());
+            tracing::warn!(error);
         }
         _ => (),
     };
@@ -62,7 +60,7 @@ pub fn add(paths: &Vec<String>) -> Result<()> {
 
 pub fn get_last_commit_info() -> Result<(String, usize)> {
     let output = match Command::new("git")
-        .args(["log", "-1", "--pretty=format:%as|%an"])
+        .args(["log", "-1", "--pretty=format:%as|%an <%ae>"])
         .output()
     {
         Err(error) => {

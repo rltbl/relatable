@@ -479,7 +479,7 @@ impl Relatable {
         // Possibly only amend the last commit, if it is by the same author and performed
         // on the same day:
         let (last_commit_author, days_ago) = git::get_last_commit_info()?;
-        let is_amendment = last_commit_author == author && days_ago < 1;
+        let is_amendment = (last_commit_author == author) && (days_ago < 1);
 
         // Stage any modified table files that have a path in the table table:
         let sql = r#"SELECT "path" FROM "table" WHERE "path" IS NOT NULL"#;
