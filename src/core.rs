@@ -246,15 +246,28 @@ impl Relatable {
 
     pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
         // WARN: SQLite only!
-        let statement = format!(r#"SELECT * FROM pragma_table_info("{table_name}");"#);
-        Ok(query(&self.connection, &statement, None)
-            .await?
-            .iter()
-            .map(|row| Column {
-                name: row.get_string("name"),
+        //let statement = format!(r#"SELECT * FROM pragma_table_info("{table_name}");"#);
+        //let columns = query(&self.connection, &statement, None).await?;
+
+        // Workaround, as the pragma method does not seem to be working. TODO: Look into this.
+        let sql = format!(r#"SELECT * from "{table_name}" LIMIT 1"#);
+        let rows = query(&self.connection, &sql, None).await?;
+        if rows.len() < 1 {
+            return Err(RelatableError::DataError(format!(
+                "Cannot fetch columns for {table_name}"
+            ))
+            .into());
+        }
+        let columns = rows[0]
+            .content
+            .keys()
+            .filter(|k| !k.starts_with("_"))
+            .map(|k| Column {
+                name: k.to_string(),
             })
-            .filter(|c| !c.name.starts_with("_"))
-            .collect())
+            .collect();
+
+        Ok(columns)
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {

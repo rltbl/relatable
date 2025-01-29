@@ -27,8 +27,7 @@ pub fn commit(message: &str, user: &str, is_amendment: bool) -> Result<()> {
     if is_amendment {
         args.push("--amend");
     }
-
-    let output = match Command::new("git").args(args).output() {
+    match Command::new("git").args(args).output() {
         Err(error) => {
             return Err(
                 RelatableError::GitError(format!("Error running git commit: {error}")).into(),
@@ -40,16 +39,15 @@ pub fn commit(message: &str, user: &str, is_amendment: bool) -> Result<()> {
                 RelatableError::GitError(format!("Error running git commit: {error}")).into(),
             );
         }
-        Ok(output) => output,
+        _ => (),
     };
-    std::str::from_utf8(&output.stdout)?;
     Ok(())
 }
 
 pub fn add(paths: &Vec<String>) -> Result<()> {
     let mut args = vec!["add"];
     args.append(&mut paths.iter().map(|p| p.as_str()).collect::<Vec<_>>());
-    let output = match Command::new("git").args(args).output() {
+    match Command::new("git").args(args).output() {
         Err(error) => {
             return Err(RelatableError::GitError(format!("Error running git add: {error}")).into())
         }
@@ -57,9 +55,8 @@ pub fn add(paths: &Vec<String>) -> Result<()> {
             let error = std::str::from_utf8(&output.stderr)?;
             return Err(RelatableError::GitError(format!("Error running git add: {error}")).into());
         }
-        Ok(output) => output,
+        _ => (),
     };
-    std::str::from_utf8(&output.stdout)?;
     Ok(())
 }
 
