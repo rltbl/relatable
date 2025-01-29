@@ -21,6 +21,48 @@ pub struct GitStatus {
     pub uncommitted: bool,
 }
 
+pub fn commit(message: &str, user: &str, is_amendment: bool) -> Result<()> {
+    let user = format!("{user} <rltbl@localhost>");
+    let mut args = vec!["commit", "--message", message, "--author", &user];
+    if is_amendment {
+        args.push("--amend");
+    }
+
+    let output = match Command::new("git").args(args).output() {
+        Err(error) => {
+            return Err(
+                RelatableError::GitError(format!("Error running git commit: {error}")).into(),
+            )
+        }
+        Ok(output) if !output.status.success() => {
+            let error = std::str::from_utf8(&output.stderr)?;
+            return Err(
+                RelatableError::GitError(format!("Error running git commit: {error}")).into(),
+            );
+        }
+        Ok(output) => output,
+    };
+    std::str::from_utf8(&output.stdout)?;
+    Ok(())
+}
+
+pub fn add(paths: &Vec<String>) -> Result<()> {
+    let mut args = vec!["add"];
+    args.append(&mut paths.iter().map(|p| p.as_str()).collect::<Vec<_>>());
+    let output = match Command::new("git").args(args).output() {
+        Err(error) => {
+            return Err(RelatableError::GitError(format!("Error running git add: {error}")).into())
+        }
+        Ok(output) if !output.status.success() => {
+            let error = std::str::from_utf8(&output.stderr)?;
+            return Err(RelatableError::GitError(format!("Error running git add: {error}")).into());
+        }
+        Ok(output) => output,
+    };
+    std::str::from_utf8(&output.stdout)?;
+    Ok(())
+}
+
 pub fn get_last_commit_info() -> Result<(String, usize)> {
     let output = match Command::new("git")
         .args(["log", "-1", "--pretty=format:%as|%an"])

@@ -3,9 +3,12 @@
 //! This is relatable (rltbl::core).
 
 use crate as rltbl;
-use rltbl::sql::{
-    begin, connect, is_simple, json_to_string, lock_connection, query, query_one, query_tx,
-    query_value, query_value_tx, DbConnection, DbTransaction, JsonRow, VecInto,
+use rltbl::{
+    git,
+    sql::{
+        begin, connect, is_simple, json_to_string, lock_connection, query, query_one, query_tx,
+        query_value, query_value_tx, DbConnection, DbTransaction, JsonRow, VecInto,
+    },
 };
 
 use anyhow::Result;
@@ -293,7 +296,7 @@ impl Relatable {
         query(&self.connection, &statement, Some(&params)).await
     }
 
-    pub async fn load_table(&self, table: &str, path: &str) -> Result<()> {
+    pub async fn load_table(&self, table: &str, path: &str, user: &str) -> Result<()> {
         // Read the records from the given path:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
@@ -375,7 +378,7 @@ impl Relatable {
             query(&self.connection, &sql, Some(&params)).await?;
         }
 
-        self.commit_to_git().await?;
+        self.commit_to_git(user).await?;
         Ok(())
     }
 
@@ -430,15 +433,10 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn commit_to_git(&self) -> Result<()> {
+    pub async fn commit_to_git(&self, user: &str) -> Result<()> {
         self.save_all().await?;
 
-        let status = rltbl::git::get_status()?;
-        // If there are no uncommitted files then there is nothing to do:
-        if !status.uncommitted {
-            return Ok(());
-        }
-
+        let status = git::get_status()?;
         if status.behind != 0 {
             return Err(RelatableError::GitError(
                 "Refusing to commit to a branch behind the remote".to_string(),
@@ -446,13 +444,18 @@ impl Relatable {
             .into());
         }
 
-        let (last_commit_author, days_ago) = rltbl::git::get_last_commit_info()?;
-        let is_amendment = {
-            println!("Last commit author: {last_commit_author}, Days ago: {days_ago}");
-            todo!()
-        };
+        let (last_commit_author, days_ago) = git::get_last_commit_info()?;
+        let is_amendment = last_commit_author == user && days_ago < 1;
 
-        todo!()
+        let sql = r#"SELECT "path" FROM "table" WHERE "path" IS NOT NULL"#;
+        let paths = query(&self.connection, &sql, None)
+            .await?
+            .iter()
+            .map(|row| row.get_string("path"))
+            .collect::<Vec<_>>();
+        git::add(&paths)?;
+        git::commit("commit by rltbl", user, is_amendment)?;
+        Ok(())
     }
 
     pub async fn record_changes(changeset: &ChangeSet, tx: &mut DbTransaction<'_>) -> Result<()> {
@@ -567,7 +570,7 @@ impl Relatable {
         tx.commit().await?;
 
         // Commit the change to git:
-        self.commit_to_git().await?;
+        self.commit_to_git(&changeset.user).await?;
 
         Ok(())
     }
@@ -704,7 +707,7 @@ impl Relatable {
         tx.commit().await?;
 
         // Commit the change to git:
-        self.commit_to_git().await?;
+        self.commit_to_git(user).await?;
 
         Ok(new_row)
     }
@@ -756,7 +759,7 @@ impl Relatable {
         tx.commit().await?;
 
         // Commit the change to git:
-        self.commit_to_git().await?;
+        self.commit_to_git(user).await?;
 
         Ok(())
     }
@@ -818,7 +821,7 @@ impl Relatable {
         tx.commit().await?;
 
         // Commit the change to git:
-        self.commit_to_git().await?;
+        self.commit_to_git(user).await?;
 
         Ok(())
     }
