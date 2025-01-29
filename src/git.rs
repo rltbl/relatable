@@ -22,8 +22,7 @@ pub struct GitStatus {
 }
 
 pub fn commit(message: &str, author: &str, is_amendment: bool) -> Result<()> {
-    let author = format!("{author} <rltbl@localhost>");
-    let mut args = vec!["commit", "--message", message, "--author", &author];
+    let mut args = vec!["commit", "--message", message, "--author", author];
     if is_amendment {
         args.push("--amend");
     }
