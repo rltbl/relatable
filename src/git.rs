@@ -21,9 +21,9 @@ pub struct GitStatus {
     pub uncommitted: bool,
 }
 
-pub fn commit(message: &str, user: &str, is_amendment: bool) -> Result<()> {
-    let user = format!("{user} <rltbl@localhost>");
-    let mut args = vec!["commit", "--message", message, "--author", &user];
+pub fn commit(message: &str, author: &str, is_amendment: bool) -> Result<()> {
+    let author = format!("{author} <rltbl@localhost>");
+    let mut args = vec!["commit", "--message", message, "--author", &author];
     if is_amendment {
         args.push("--amend");
     }
@@ -87,7 +87,8 @@ pub fn get_last_commit_info() -> Result<(String, usize)> {
         let commit_author = components[1];
         (commit_date, commit_author)
     };
-    let commit_date = NaiveDate::parse_from_str(commit_date, "%Y-%m-%d").unwrap();
+    let commit_date = NaiveDate::parse_from_str(commit_date, "%Y-%m-%d")
+        .expect(&format!("Could not parse last commit date: {commit_date}"));
     let today = chrono::Local::now().date_naive();
     let days_ago = {
         let days_ago = today - commit_date;
@@ -139,7 +140,8 @@ pub fn get_status() -> Result<GitStatus> {
 
     let local_remote_re = r"(((\S+)\.{3}(\S+)|(\S+)))";
     let ahead_behind_re = r"( \[(ahead (\d+))?(, )?(behind (\d+))?\])?";
-    let tracking_pattern = Regex::new(&format!(r"## {local_remote_re}{ahead_behind_re}")).unwrap();
+    let tracking_pattern = Regex::new(&format!(r"## {local_remote_re}{ahead_behind_re}"))
+        .expect("Invalid regular expression");
 
     let captures = tracking_pattern
         .captures(&branch_status)

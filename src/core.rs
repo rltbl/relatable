@@ -19,7 +19,7 @@ use minijinja::{path_loader, Environment};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, to_value, Map as JsonMap, Value as JsonValue};
-use std::{fmt::Display, fs::File, io::Write, path::Path as FilePath};
+use std::{env, fmt::Display, fs::File, io::Write, path::Path as FilePath};
 use tabwriter::TabWriter;
 
 #[derive(Debug)]
@@ -254,7 +254,7 @@ impl Relatable {
         let rows = query(&self.connection, &sql, None).await?;
         if rows.len() < 1 {
             return Err(RelatableError::DataError(format!(
-                "Cannot fetch columns for {table_name}"
+                "Unimplemented: Unable to fetch columns from empty table: {table_name}"
             ))
             .into());
         }
@@ -309,7 +309,7 @@ impl Relatable {
         query(&self.connection, &statement, Some(&params)).await
     }
 
-    pub async fn load_table(&self, table: &str, path: &str, user: &str) -> Result<()> {
+    pub async fn load_table(&self, table: &str, path: &str) -> Result<()> {
         // Read the records from the given path:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
@@ -391,7 +391,7 @@ impl Relatable {
             query(&self.connection, &sql, Some(&params)).await?;
         }
 
-        self.commit_to_git(user).await?;
+        self.commit_to_git().await?;
         Ok(())
     }
 
@@ -446,20 +446,42 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn commit_to_git(&self, user: &str) -> Result<()> {
+    pub async fn commit_to_git(&self) -> Result<()> {
+        let author = match env::var("RLTBL_GIT_AUTHOR") {
+            Err(err) => match err {
+                env::VarError::NotPresent => {
+                    tracing::info!("Not committing to git because RLTBL_GIT_AUTHOR not defined");
+                    return Ok(());
+                }
+                _ => {
+                    return Err(RelatableError::InputError(format!(
+                        "Could not read from the environment: {err}"
+                    ))
+                    .into())
+                }
+            },
+            Ok(author) => author,
+        };
+        tracing::info!("Committing to git on behalf of RLTBL_GIT_AUTHOR: '{author}'");
+
+        // Save all the tables:
         self.save_all().await?;
 
+        // Get the git status:
         let status = git::get_status()?;
         if status.behind != 0 {
             return Err(RelatableError::GitError(
-                "Refusing to commit to a branch behind the remote".to_string(),
+                "Refusing to commit to a local repository that is behind the remote".to_string(),
             )
             .into());
         }
 
+        // Possibly only amend the last commit, if it is by the same author and performed
+        // on the same day:
         let (last_commit_author, days_ago) = git::get_last_commit_info()?;
-        let is_amendment = last_commit_author == user && days_ago < 1;
+        let is_amendment = last_commit_author == author && days_ago < 1;
 
+        // Stage any modified table files that have a path in the table table:
         let sql = r#"SELECT "path" FROM "table" WHERE "path" IS NOT NULL"#;
         let paths = query(&self.connection, &sql, None)
             .await?
@@ -467,7 +489,9 @@ impl Relatable {
             .map(|row| row.get_string("path"))
             .collect::<Vec<_>>();
         git::add(&paths)?;
-        git::commit("commit by rltbl", user, is_amendment)?;
+
+        // Finally, commit to git:
+        git::commit("commit by rltbl", &author, is_amendment)?;
         Ok(())
     }
 
@@ -583,7 +607,7 @@ impl Relatable {
         tx.commit().await?;
 
         // Commit the change to git:
-        self.commit_to_git(&changeset.user).await?;
+        self.commit_to_git().await?;
 
         Ok(())
     }
@@ -720,7 +744,7 @@ impl Relatable {
         tx.commit().await?;
 
         // Commit the change to git:
-        self.commit_to_git(user).await?;
+        self.commit_to_git().await?;
 
         Ok(new_row)
     }
@@ -772,7 +796,7 @@ impl Relatable {
         tx.commit().await?;
 
         // Commit the change to git:
-        self.commit_to_git(user).await?;
+        self.commit_to_git().await?;
 
         Ok(())
     }
@@ -834,7 +858,7 @@ impl Relatable {
         tx.commit().await?;
 
         // Commit the change to git:
-        self.commit_to_git(user).await?;
+        self.commit_to_git().await?;
 
         Ok(())
     }
