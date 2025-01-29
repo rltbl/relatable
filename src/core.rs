@@ -713,7 +713,7 @@ impl Relatable {
         }
 
         // Prepare a new row to be inserted:
-        let new_row = Row::prepare_new(&table, row, &mut tx).await?;
+        let new_row = Row::prepare_new(&table, Some(row), &mut tx).await?;
 
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with new_row's id:
@@ -1155,10 +1155,14 @@ impl Row {
 
     async fn prepare_new(
         table: &Table,
-        json_row: &JsonRow,
+        json_row: Option<&JsonRow>,
         tx: &mut DbTransaction<'_>,
     ) -> Result<Self> {
-        let mut row = Row::from(json_row.clone());
+        let json_row = match json_row {
+            None => JsonRow::new(),
+            Some(json_row) => json_row.clone(),
+        };
+        let mut row = Row::from(json_row);
         row.id = Self::get_next_id(table.name.as_str(), tx).await?;
         row.order = MOVE_INTERVAL * row.id;
         row.change_id = table.change_id;
