@@ -43,8 +43,8 @@ pub enum RelatableError {
     // SerdeJsonError(serde_json::Error),
     /// An error that occurred while parsing a regex:
     // RegexError(regex::Error),
-    /// An error that occurred while executing an external process
-    ExternalProcessError(String),
+    /// An error that occurred while interacting with git
+    GitError(String),
     /// An error that occurred because of a user's action
     UserError(String),
 }
@@ -434,7 +434,23 @@ impl Relatable {
         self.save_all().await?;
 
         let status = rltbl::git::get_status()?;
-        println!("STATUS: {status:#?}");
+        // If there are no uncommitted files then there is nothing to do:
+        if !status.uncommitted {
+            return Ok(());
+        }
+
+        if status.behind != 0 {
+            return Err(RelatableError::GitError(
+                "Refusing to commit to a branch behind the remote".to_string(),
+            )
+            .into());
+        }
+
+        let (last_commit_author, days_ago) = rltbl::git::get_last_commit_info()?;
+        let is_amendment = {
+            println!("Last commit author: {last_commit_author}, Days ago: {days_ago}");
+            todo!()
+        };
 
         todo!()
     }
