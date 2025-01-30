@@ -1,5 +1,20 @@
 <ul class="dropdown-menu" style="display: inline-block; position: relative">
-  <li><a class="dropdown-item" href="/">Review action</a></li>
-  <li><a class="dropdown-item" href="/">Cell action</a></li>
-  <li><a class="dropdown-item" href="/">Something else here</a></li>
+  <li>
+    <a class="dropdown-item" href="{{site.root}}/add-row-before/{{table.name}}/{{row.id}}">
+      <i class="bi bi-plus"></i>
+      Insert 1 row above
+    </a>
+  </li>
+  <li>
+    <a class="dropdown-item" href="{{site.root}}/add-row-after/{{table.name}}/{{row.id}}">
+      <i class="bi bi-plus"></i>
+      Insert 1 row below
+    </a>
+  </li>
+  <li>
+    <a class="dropdown-item" href="{{site.root}}/delete-row/{{table.name}}/{{row.id}}">
+      <i class="bi bi-trash"></i>
+      Delete row
+    </a>
+  </li>
 </ul>

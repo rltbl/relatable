@@ -37,10 +37,14 @@ pub enum RelatableError {
     InputError(String),
     /// An error that occurred while reading/writing to stdio:
     IOError(std::io::Error),
+    /// An error when a record cannot be found.
+    MissingError(String),
     /// An error that occurred while serialising or deserialising to/from JSON:
-    // SerdeJsonError(serde_json::Error),
+    SerdeJsonError(serde_json::Error),
     /// An error that occurred while parsing a regex:
-    // RegexError(regex::Error),
+    RegexError(regex::Error),
+    /// An error when a table cannot be found.
+    TableError(String),
     /// An error that occurred because of a user's action
     UserError(String),
 }
@@ -57,6 +61,8 @@ impl std::error::Error for RelatableError {}
 
 #[derive(Debug)]
 pub struct Relatable {
+    pub root: String,
+    pub readonly: bool,
     pub connection: DbConnection,
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
@@ -65,7 +71,12 @@ pub struct Relatable {
 
 impl Relatable {
     pub async fn connect() -> Result<Self> {
+        let root = std::env::var("RLTBL_ROOT").unwrap_or_default();
         // Set up database connection.
+        let readonly = match std::env::var("RLTBL_READONLY") {
+            Ok(value) if value.to_lowercase() != "false" => true,
+            _ => false,
+        };
         let path = ".relatable/relatable.db";
         let file = FilePath::new(path);
         if !file.exists() {
@@ -76,6 +87,8 @@ impl Relatable {
         }
         let connection = connect(path).await?;
         Ok(Self {
+            root,
+            readonly,
             connection,
             // minijinja: env,
             default_limit: 100,
@@ -127,8 +140,9 @@ impl Relatable {
         );
         query(&rltbl.connection, &sql, None).await.unwrap();
 
-        let sql = "INSERT INTO 'table' ('table') VALUES ('table')";
-        query(&rltbl.connection, sql, None).await.unwrap();
+        // TODO: Decide whether to include the 'table' table by default.
+        // let sql = "INSERT INTO 'table' ('table') VALUES ('table')";
+        // query(&rltbl.connection, sql, None).await.unwrap();
 
         // Create the change and history tables
         let sql = r#"CREATE TABLE 'user' (
@@ -203,14 +217,41 @@ impl Relatable {
             .map_err(|e| e.into())
     }
 
-    pub async fn get_table(&self, table_name: &str, connection: &DbConnection) -> Result<Table> {
+    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
+        let statement = r#"SELECT "table" FROM 'table' WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        match query_value(&self.connection, &statement, Some(&params)).await? {
+            Some(_) => (),
+            None => {
+                return Err(RelatableError::TableError(format!(
+                    "Table '{table_name}' is not in the 'table' table"
+                ))
+                .into())
+            }
+        }
+
+        let statement = r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#;
+        let mut view = format!("{table_name}_default_view");
+        let params = json!([view]);
+        let result = query_value(&self.connection, &statement, Some(&params)).await?;
+        if result.is_none() {
+            view = String::from(table_name);
+        }
+        // tracing::warn!("FIND THE VIEW {view}");
+
         let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
         let params = json!([table_name]);
-        let change_id = match query_value(connection, &statement, Some(&params)).await? {
+        let change_id = match query_value(&self.connection, &statement, Some(&params)).await? {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
-        Ok(Table::from_change_id(table_name, change_id))
+        let name = table_name.to_string();
+        Ok(Table {
+            name,
+            view,
+            change_id,
+            ..Default::default()
+        })
     }
 
     pub async fn get_table_tx(
@@ -224,12 +265,17 @@ impl Relatable {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
-        Ok(Table::from_change_id(table_name, change_id))
+        Ok(Table {
+            name: table_name.to_string(),
+            change_id,
+            ..Default::default()
+        })
     }
 
     pub fn from(&self, table_name: &str) -> Select {
         Select {
             table_name: table_name.to_string(),
+            view_name: table_name.to_string(),
             limit: self.default_limit,
             ..Default::default()
         }
@@ -249,10 +295,10 @@ impl Relatable {
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        let table = self
-            .get_table(select.table_name.as_str(), &self.connection)
-            .await?;
-        let columns = self.fetch_columns(&select.table_name).await?;
+        let table = self.get_table(select.table_name.as_str()).await?;
+        let mut select = select.clone();
+        select.view_name = table.view.clone();
+        let columns = self.fetch_columns(&table.view).await?;
         let (statement, params) = select.to_sqlite()?;
         tracing::debug!("SQL {statement}");
         let params = json!(params);
@@ -405,7 +451,7 @@ impl Relatable {
 
     pub async fn get_user(&self, username: &str) -> Account {
         let statement = format!(r#"SELECT * FROM user WHERE name = '{username}' LIMIT 1"#);
-        let user = query_one(&self.connection, &statement).await;
+        let user = query_one(&self.connection, &statement, None).await;
         if let Ok(user) = user {
             if let Some(user) = user {
                 return Account {
@@ -429,6 +475,9 @@ impl Relatable {
         let rows = query(&self.connection, &statement, None).await?;
         for row in rows {
             let name = row.get_string("name");
+            if name.trim() == "" {
+                continue;
+            }
             users.insert(
                 name.clone(),
                 UserCursor {
@@ -477,7 +526,8 @@ impl Relatable {
         users.shift_remove(username);
         Site {
             title: "RLTBL".to_string(),
-            root: "".to_string(),
+            root: self.root.clone(),
+            editable: !self.readonly,
             user: self.get_user(username).await,
             users,
             tables: self.get_tables().await.unwrap_or_default(),
@@ -504,7 +554,7 @@ impl Relatable {
         }
 
         // Prepare a new row to be inserted:
-        let new_row = Row::prepare_new(&table, row, &mut tx).await?;
+        let mut new_row = Row::prepare_new(&table, row, &mut tx).await?;
 
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with new_row's id:
@@ -524,8 +574,10 @@ impl Relatable {
 
         if let Some(after_id) = after_id {
             // Move the row to its assigned spot within the table:
-            self.move_row_tx(&mut tx, &table, new_row.id, after_id)
+            let new_order = self
+                .move_row_tx(&mut tx, &table, new_row.id, after_id)
                 .await?;
+            new_row.order = new_order;
         }
 
         // Record the change to the history table:
@@ -544,6 +596,7 @@ impl Relatable {
         row: &Row,
     ) -> Result<()> {
         let (sql, params) = row.as_insert(&table.name);
+        tracing::info!("add_row_tx {sql} {params:?}");
         query_tx(tx, &sql, Some(&params)).await?;
         Ok(())
     }
@@ -604,7 +657,7 @@ impl Relatable {
         user: &str,
         id: usize,
         after_id: usize,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         // Get the connection and begin a transaction:
         let mut locked_conn = lock_connection(&self.connection).await;
         let mut tx = begin(&self.connection, &mut locked_conn).await?;
@@ -634,7 +687,7 @@ impl Relatable {
         self.prepare_user_cursor(&changeset, &mut tx).await?;
 
         // Move the row within the table:
-        self.move_row_tx(&mut tx, &table, id, after_id).await?;
+        let new_order = self.move_row_tx(&mut tx, &table, id, after_id).await?;
 
         // Record the change to the history table:
         Self::record_changes(&changeset, &mut tx).await?;
@@ -642,7 +695,7 @@ impl Relatable {
         // Commit the transaction:
         tx.commit().await?;
 
-        Ok(())
+        Ok(new_order)
     }
 
     pub async fn get_row_order_tx(
@@ -693,7 +746,7 @@ impl Relatable {
         table: &Table,
         id: usize,
         after_id: usize,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         // Get the order, (A), of `after_id`:
         let order_prev = {
             if after_id > 0 {
@@ -814,7 +867,7 @@ impl Relatable {
 
         self.update_row_order_tx(tx, table, id, new_order).await?;
 
-        Ok(())
+        Ok(new_order)
     }
 }
 
@@ -973,13 +1026,21 @@ impl Row {
             params
         };
 
-        let sql = format!(
-            r#"INSERT INTO "{table}"
-               ("_id", "_order", {column_names})
-               VALUES (?, ?, {column_values})"#,
-            column_names = columns.join(", "),
-            column_values = column_placeholders.join(", "),
-        );
+        let sql = if columns.len() == 0 {
+            format!(
+                r#"INSERT INTO "{table}"
+                   ("_id", "_order")
+                   VALUES (?, ?)"#
+            )
+        } else {
+            format!(
+                r#"INSERT INTO "{table}"
+                   ("_id", "_order", {column_names})
+                   VALUES (?, ?, {column_values})"#,
+                column_names = columns.join(", "),
+                column_values = column_placeholders.join(", "),
+            )
+        };
         (sql, json!(params))
     }
 }
@@ -1021,34 +1082,27 @@ impl From<JsonRow> for Row {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Column {
-    name: String,
+    pub name: String,
     // sqltype: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Table {
-    name: String,
+    pub name: String,
+    // A view to use when displaying this table, or empty if none.
+    pub view: String,
     // The history_id of the most recent update to this table.
-    change_id: usize,
-    editable: bool,
+    pub change_id: usize,
+    pub editable: bool,
 }
 
 impl Default for Table {
     fn default() -> Self {
         Self {
             name: String::default(),
+            view: String::default(),
             change_id: usize::default(),
             editable: true,
-        }
-    }
-}
-
-impl Table {
-    fn from_change_id(table_name: &str, change_id: usize) -> Self {
-        Table {
-            name: table_name.to_string(),
-            change_id: change_id,
-            ..Default::default()
         }
     }
 }
@@ -1145,7 +1199,9 @@ impl TryFrom<&String> for Format {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum Filter {
+    Like { column: String, value: JsonValue },
     Equal { column: String, value: JsonValue },
     NotEqual { column: String, value: JsonValue },
     GreaterThan { column: String, value: JsonValue },
@@ -1214,6 +1270,23 @@ fn render_in_not_in<S: Into<String>>(
 }
 
 impl Filter {
+    pub fn parts(&self) -> (String, String, JsonValue) {
+        let (column, operator, value) = match self {
+            Filter::Like { column, value } => (column, "like", value),
+            Filter::Equal { column, value } => (column, "eq", value),
+            Filter::NotEqual { column, value } => (column, "not_eq", value),
+            Filter::GreaterThan { column, value } => (column, "gt", value),
+            Filter::GreaterThanOrEqual { column, value } => (column, "gte", value),
+            Filter::LessThan { column, value } => (column, "lt", value),
+            Filter::LessThanOrEqual { column, value } => (column, "lte", value),
+            Filter::Is { column, value } => (column, "is", value),
+            Filter::IsNot { column, value } => (column, "is_not", value),
+            Filter::In { column, value } => (column, "in", value),
+            Filter::NotIn { column, value } => (column, "not_in", value),
+        };
+        (column.to_string(), operator.to_string(), json!(value))
+    }
+
     pub fn to_url(&self) -> Result<String> {
         fn handle_string_value(token: &str) -> String {
             let reserved = vec![':', ',', '.', '(', ')'];
@@ -1224,18 +1297,7 @@ impl Filter {
             }
         }
 
-        let (operator, value) = match self {
-            Filter::Equal { column: _, value } => ("eq.", value),
-            Filter::NotEqual { column: _, value } => ("not_eq.", value),
-            Filter::GreaterThan { column: _, value } => ("gt.", value),
-            Filter::GreaterThanOrEqual { column: _, value } => ("gte.", value),
-            Filter::LessThan { column: _, value } => ("lt.", value),
-            Filter::LessThanOrEqual { column: _, value } => ("lte.", value),
-            Filter::Is { column: _, value } => ("is.", value),
-            Filter::IsNot { column: _, value } => ("is_not.", value),
-            Filter::In { column: _, value } => ("in.", value),
-            Filter::NotIn { column: _, value } => ("not_in.", value),
-        };
+        let (_, operator, value) = self.parts();
 
         let rhs = match &value {
             JsonValue::String(s) => handle_string_value(&s),
@@ -1268,7 +1330,7 @@ impl Filter {
             }
         };
 
-        Ok(format!("{operator}{rhs}"))
+        Ok(format!("{operator}.{rhs}"))
     }
 
     pub fn to_sqlite(&self) -> Result<String> {
@@ -1284,6 +1346,11 @@ impl Filter {
             }
         }
         match self {
+            Filter::Like { column, value } => {
+                let value = json_to_string(&value);
+                let value = value.replace("*", "%");
+                Ok(format!(r#""{column}" LIKE {value}"#))
+            }
             Filter::Equal { column, value } => {
                 let value = json_to_string(&value);
                 Ok(format!(r#""{column}" = {value}"#))
@@ -1360,57 +1427,124 @@ impl Filter {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Select {
     pub table_name: String,
+    pub view_name: String,
     pub limit: usize,
     pub offset: usize,
     pub filters: Vec<Filter>,
+    pub order_by: Vec<(String, Order)>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub enum Order {
+    #[default]
+    ASC,
+    DESC,
 }
 
 impl Select {
     pub fn from_path_and_query(rltbl: &Relatable, path: &str, query_params: &QueryParams) -> Self {
         let table_name = path.split(".").next().unwrap_or_default().to_string();
+        let mut query_params = query_params.clone();
         let mut filters = Vec::new();
+        let mut order_by = Vec::new();
+
+        let limit: usize = query_params
+            .get("limit")
+            .and_then(|x| x.parse::<usize>().ok())
+            .unwrap_or(rltbl.default_limit)
+            .min(rltbl.max_limit);
+        let offset: usize = query_params
+            .get("offset")
+            .and_then(|x| x.parse::<usize>().ok())
+            .unwrap_or_default();
+        if let Some(order) = query_params.get("order") {
+            for item in order.split(",") {
+                if item.ends_with(".asc") {
+                    let column = item.replace(".asc", "");
+                    order_by.push((column, Order::ASC));
+                } else if item.ends_with(".desc") {
+                    let column = item.replace(".desc", "");
+                    order_by.push((column, Order::DESC));
+                } else {
+                    order_by.push((item.to_string(), Order::ASC));
+                }
+            }
+        }
+
+        query_params.shift_remove("limit");
+        query_params.shift_remove("offset");
+        query_params.shift_remove("order");
+
         for (column, pattern) in query_params {
-            if pattern.starts_with("eq.") {
+            if pattern.starts_with("like.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("eq.", ""));
-                match value {
+                let value = &pattern.replace("like.", "");
+                match serde_json::from_str(value) {
+                    Ok(value) => filters.push(Filter::Like { column, value }),
+                    Err(_) => filters.push(Filter::Like {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
+                }
+            } else if pattern.starts_with("eq.") {
+                let column = column.to_string();
+                let value = &pattern.replace("eq.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::Equal { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::Equal {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("not_eq.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("not_eq.", ""));
-                match value {
+                let value = &pattern.replace("not_eq.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::NotEqual { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::NotEqual {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("gt.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("gt.", ""));
-                match value {
+                let value = &pattern.replace("gt.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::GreaterThan { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::GreaterThan {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("gte.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("gte.", ""));
-                match value {
+                let value = &pattern.replace("gte.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::GreaterThanOrEqual { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::GreaterThanOrEqual {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("lt.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("lt.", ""));
-                match value {
+                let value = &pattern.replace("lt.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::LessThan { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::LessThan {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("lte.") {
                 let column = column.to_string();
-                let value = serde_json::from_str(&pattern.replace("lte.", ""));
-                match value {
+                let value = &pattern.replace("lte.", "");
+                match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::LessThanOrEqual { column, value }),
-                    Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                    Err(_) => filters.push(Filter::LessThanOrEqual {
+                        column,
+                        value: JsonValue::String(value.to_string()),
+                    }),
                 }
             } else if pattern.starts_with("is.") {
                 let column = column.to_string();
@@ -1422,7 +1556,7 @@ impl Select {
                     }),
                     _ => match serde_json::from_str(&value) {
                         Ok(value) => filters.push(Filter::Is { column, value }),
-                        Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                        Err(_) => tracing::warn!("invalid 'is' filter value {pattern}"),
                     },
                 };
             } else if pattern.starts_with("is_not.") {
@@ -1435,7 +1569,7 @@ impl Select {
                     }),
                     _ => match serde_json::from_str(&value) {
                         Ok(value) => filters.push(Filter::IsNot { column, value }),
-                        Err(_) => tracing::warn!("invalid filter value {pattern}"),
+                        Err(_) => tracing::warn!("invalid 'is_not' filter value {pattern}"),
                     },
                 };
             } else if pattern.starts_with("in.") {
@@ -1444,7 +1578,7 @@ impl Select {
                 let values = pattern.replace("in.", "");
                 let values = match values.strip_prefix("(").and_then(|s| s.strip_suffix(")")) {
                     None => {
-                        tracing::warn!("invalid filter value {pattern}");
+                        tracing::warn!("invalid 'in' filter value {pattern}");
                         ""
                     }
                     Some(s) => s,
@@ -1463,7 +1597,7 @@ impl Select {
                 let values = pattern.replace("not_in.", "");
                 let values = match values.strip_prefix("(").and_then(|s| s.strip_suffix(")")) {
                     None => {
-                        tracing::warn!("invalid filter value {pattern}");
+                        tracing::warn!("invalid 'not_in' filter value {pattern}");
                         ""
                     }
                     Some(s) => s,
@@ -1478,22 +1612,19 @@ impl Select {
                 })
             }
         }
-        let limit: usize = query_params
-            .get("limit")
-            .and_then(|x| x.parse::<usize>().ok())
-            .unwrap_or(rltbl.default_limit)
-            .min(rltbl.max_limit);
-        let offset: usize = query_params
-            .get("offset")
-            .and_then(|x| x.parse::<usize>().ok())
-            .unwrap_or_default();
         Self {
             table_name,
             limit,
             offset,
+            order_by,
             filters,
             ..Default::default()
         }
+    }
+
+    pub fn order_by(mut self, column: &str) -> Self {
+        self.order_by = vec![(column.to_string(), Order::ASC)];
+        self
     }
 
     pub fn limit(mut self, limit: &usize) -> Self {
@@ -1507,6 +1638,7 @@ impl Select {
     }
 
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
+        let like = Regex::new(r#"^(\w+)\s*~=\s*"?(\w+)"?$"#).unwrap();
         let eq = Regex::new(r#"^(\w+)\s*=\s*"?(\w+)"?$"#).unwrap();
         let not_eq = Regex::new(r#"^(\w+)\s*!=\s*"?(\w+)"?$"#).unwrap();
         let gt = Regex::new(r"^(\w+)\s*>\s*(\w+)$").unwrap();
@@ -1528,7 +1660,13 @@ impl Select {
             }
         };
         for filter in filters {
-            if eq.is_match(&filter) {
+            if like.is_match(&filter) {
+                let captures = eq.captures(&filter).unwrap();
+                let column = captures.get(1).unwrap().as_str().to_string();
+                let value = &captures.get(2).unwrap().as_str();
+                let value = maybe_quote_value(&value)?;
+                self.filters.push(Filter::Like { column, value });
+            } else if eq.is_match(&filter) {
                 let captures = eq.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
@@ -1613,6 +1751,17 @@ impl Select {
                 return Err(RelatableError::ConfigError(format!("invalid filter {filter}")).into());
             }
         }
+        Ok(self)
+    }
+
+    pub fn like<T>(mut self, column: &str, value: &T) -> Result<Self>
+    where
+        T: Serialize,
+    {
+        self.filters.push(Filter::Like {
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
         Ok(self)
     }
 
@@ -1728,7 +1877,7 @@ impl Select {
 
     pub fn to_sqlite(&self) -> Result<(String, Vec<JsonValue>)> {
         tracing::debug!("to_sqlite: {self:?}");
-        let table = &self.table_name;
+        let table = &self.view_name;
         let mut lines = Vec::new();
         lines.push("SELECT *,".to_string());
         // WARN: The _total count should probably be optional.
@@ -1739,10 +1888,16 @@ impl Select {
                      AND "row" = _id
                  ) AS _change_id"#
         ));
-        lines.push(format!(r#"FROM "{}""#, self.table_name));
+        lines.push(format!(r#"FROM "{}""#, table));
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             lines.push(format!("{keyword} {filter}", filter = filter.to_sqlite()?));
+        }
+        if self.order_by.len() == 0 {
+            lines.push(format!("ORDER BY _order ASC"));
+        }
+        for (column, order) in &self.order_by {
+            lines.push(format!(r#"ORDER BY "{column}" {order:?}"#));
         }
         if self.limit > 0 {
             lines.push(format!("LIMIT {}", self.limit));
@@ -1750,7 +1905,6 @@ impl Select {
         if self.offset > 0 {
             lines.push(format!("OFFSET {}", self.offset));
         }
-
         Ok((lines.join("\n"), vec![json!(table)]))
     }
 
@@ -1766,7 +1920,8 @@ impl Select {
         if self.filters.len() > 0 {
             for filter in &self.filters {
                 let column = match &filter {
-                    Filter::Equal { column, value: _ }
+                    Filter::Like { column, value: _ }
+                    | Filter::Equal { column, value: _ }
                     | Filter::NotEqual { column, value: _ }
                     | Filter::GreaterThan { column, value: _ }
                     | Filter::GreaterThanOrEqual { column, value: _ }
@@ -1832,6 +1987,7 @@ impl Select {
 pub struct Site {
     title: String,
     root: String,
+    editable: bool,
     user: Account,
     users: IndexMap<String, UserCursor>,
     tables: IndexMap<String, Table>,

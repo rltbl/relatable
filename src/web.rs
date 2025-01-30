@@ -4,13 +4,15 @@
 
 use crate::{
     cli::Cli,
-    core::{ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Select},
-    sql::query,
+    core::{
+        ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Row, Select,
+    },
+    sql::{query, query_one, query_value, JsonRow},
 };
 use std::io::Write;
 
 use anyhow::Result;
-use async_std::sync::Arc;
+use async_std::{sync::Arc, task::block_on};
 use axum::{
     body::Body,
     extract::{Json as ExtractJson, Path, Query, State},
@@ -21,12 +23,15 @@ use axum::{
     Form, Router,
 };
 use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, SessionStore};
-use futures::executor::block_on;
 use indexmap::IndexMap;
 use minijinja::context;
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
 use tokio::net::TcpListener;
 use tower_service::Service;
+
+fn forbid() -> Response<Body> {
+    (StatusCode::FORBIDDEN, Html(format!("403 Forbidden"))).into_response()
+}
 
 fn get_404(error: &anyhow::Error) -> Response<Body> {
     (
@@ -44,9 +49,18 @@ fn get_500(error: &anyhow::Error) -> Response<Body> {
         .into_response()
 }
 
-async fn get_root() -> impl IntoResponse {
+async fn get_root(State(rltbl): State<Arc<Relatable>>) -> impl IntoResponse {
     tracing::info!("request root");
-    Redirect::permanent("/table/table")
+    let default = "table";
+    let table = block_on(query_value(
+        &rltbl.connection,
+        r#"SELECT "table" FROM "table" ORDER BY _order LIMIT 1"#,
+        None,
+    ))
+    .unwrap_or(Some(json!(default)))
+    .unwrap_or(json!(default));
+    let table = table.as_str().unwrap_or(default);
+    Redirect::permanent(format!("{}/table/{table}", rltbl.root).as_str())
 }
 
 async fn main_js() -> impl IntoResponse {
@@ -111,6 +125,14 @@ async fn respond(
     response
 }
 
+fn get_username(session: Session<SessionNullPool>) -> String {
+    let username = std::env::var("RLTBL_USER").unwrap_or_default();
+    if username != "" {
+        return username;
+    }
+    session.get("username").unwrap_or_default()
+}
+
 async fn get_table(
     State(rltbl): State<Arc<Relatable>>,
     Path(path): Path<String>,
@@ -122,7 +144,10 @@ async fn get_table(
     // tracing::info!("SESSION {:?}", session.get_session_id().inner());
     // tracing::info!("SESSIONS {}", session.count().await);
 
-    let username: String = session.get("username").unwrap_or_default();
+    let username = get_username(session);
+    if username.trim() != "" {
+        init_user(&rltbl, &username).await;
+    }
     // tracing::info!("USERNAME {username}");
     let select = Select::from_path_and_query(&rltbl, &path, &query_params);
     let format = match Format::try_from(&path) {
@@ -139,6 +164,9 @@ async fn post_table(
     ExtractJson(changeset): ExtractJson<ChangeSet>,
 ) -> Response<Body> {
     tracing::info!("post_table([rltbl], {path}, {changeset:?})");
+    if rltbl.readonly {
+        return forbid().into();
+    }
 
     let table = changeset.table.clone();
     if path != table {
@@ -152,7 +180,7 @@ async fn post_table(
 
     // WARN: We need to check that the user matches!
     // let user = changeset.user.clone();
-    // let username: String = session.get("username").unwrap_or_default();
+    // let username = get_username(session);
     // if username != user {
     //     return get_500(
     //         &RelatableError::InputError(format!(
@@ -170,6 +198,15 @@ async fn post_table(
     }
 }
 
+async fn init_user(rltbl: &Relatable, username: &str) -> () {
+    let color = random_color::RandomColor::new().to_hex();
+    let statement = format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#);
+    let params = json!([username, color]);
+    query(&rltbl.connection, &statement, Some(&params))
+        .await
+        .expect("Update user");
+}
+
 async fn post_sign_in(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
@@ -179,13 +216,7 @@ async fn post_sign_in(
     let username = String::new();
     let username = form.get("username").unwrap_or(&username);
     session.set("username", username);
-
-    let color = random_color::RandomColor::new().to_hex();
-    let statement = format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#);
-    let params = json!([username, color]);
-    query(&rltbl.connection, &statement, Some(&params))
-        .await
-        .expect("Update user");
+    init_user(&rltbl, &username).await;
 
     match form.get("redirect") {
         Some(url) => Redirect::to(url).into_response(),
@@ -200,27 +231,14 @@ async fn post_sign_in(
     }
 }
 
-async fn post_sign_out(
-    State(rltbl): State<Arc<Relatable>>,
-    session: Session<SessionNullPool>,
-    Form(form): Form<IndexMap<String, String>>,
-) -> Response<Body> {
-    tracing::debug!("post_login({form:?})");
-    let username = String::new();
-    let username = form.get("username").unwrap_or(&username);
-    session.set("username", username);
-
-    let color = random_color::RandomColor::new().to_hex();
-    let statement = format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#);
-    let params = json!([username, color]);
-    query(&rltbl.connection, &statement, Some(&params))
-        .await
-        .expect("Update user");
+async fn post_sign_out(session: Session<SessionNullPool>) -> Response<Body> {
+    tracing::debug!("post_logout()");
+    session.set("username", "");
 
     Html(format!(
-        r#"<p>Logged in as {username}</p>
+        r#"<p>Logged out</p>
         <form method="post">
-        <input name="username" value="{username}"/>
+        <input name="username" value=""/>
         <input type="submit"/>
         </form>"#
     ))
@@ -233,8 +251,8 @@ async fn post_cursor(
     ExtractJson(cursor): ExtractJson<Cursor>,
 ) -> Response<Body> {
     // tracing::info!("post_cursor({cursor:?})");
-    let username: String = session.get("username").unwrap_or_default();
-    tracing::info!("post_cursor({cursor:?}, {username})");
+    let username = get_username(session);
+    tracing::debug!("post_cursor({cursor:?}, {username})");
     // TODO: sanitize the cursor JSON.
     let statement = format!(
         r#"UPDATE user
@@ -252,23 +270,70 @@ async fn post_cursor(
 
 async fn get_row_menu(
     State(rltbl): State<Arc<Relatable>>,
-    Path((table, row)): Path<(String, usize)>,
+    session: Session<SessionNullPool>,
+    Path((table_name, row_id)): Path<(String, usize)>,
 ) -> Response<Body> {
-    tracing::info!("get_row_menu({table}, {row})");
-    match rltbl.render("row_menu.html", context! {table, row}) {
+    tracing::info!("get_row_menu({table_name}, {row_id})");
+    let username = get_username(session);
+    let site = rltbl.get_site(&username).await;
+    let table = match rltbl.get_table(&table_name).await {
+        Ok(table) => table,
+        Err(error) => return get_404(&error),
+    };
+    let row: Row = match block_on(query_one(
+        &rltbl.connection,
+        &format!(r#"SELECT * FROM "{}" WHERE _id = ?"#, table.view),
+        Some(&json!([row_id])),
+    )) {
+        Ok(row) => match row {
+            Some(row) => row.into(),
+            None => {
+                return get_404(
+                    &RelatableError::MissingError(format!(
+                        "No row in '{table_name}' with id {row_id}"
+                    ))
+                    .into(),
+                )
+            }
+        },
+        Err(error) => return get_500(&error),
+    };
+    match rltbl.render("row_menu.html", context! {site, table, row}) {
         Ok(html) => Html(html).into_response(),
-        Err(error) => {
-            tracing::error!("{error:?}");
-            return get_500(&error);
-        }
+        Err(error) => return get_500(&error),
     }
 }
+
 async fn get_column_menu(
     State(rltbl): State<Arc<Relatable>>,
-    Path((table, column)): Path<(String, String)>,
+    session: Session<SessionNullPool>,
+    Path((table_name, column)): Path<(String, String)>,
+    Query(query_params): Query<QueryParams>,
 ) -> Response<Body> {
-    tracing::info!("get_column_meny({table}, {column})");
-    match rltbl.render("column_menu.html", context! {table, column}) {
+    tracing::info!("get_column_menu({table_name}, {column})");
+    let username = get_username(session);
+    let select = Select::from_path_and_query(&rltbl, &table_name, &query_params);
+    let mut operator = String::new();
+    let mut value = json!("");
+    let mut order = String::new();
+    for filter in select.filters {
+        let (c, o, v) = filter.parts();
+        tracing::warn!("FILTER {filter:?} {o}");
+        if c == column {
+            operator = o;
+            value = v;
+        }
+    }
+    for (c, o) in select.order_by {
+        if c == column {
+            order = format!("{o:?}");
+        }
+    }
+    let site = rltbl.get_site(&username).await;
+    match rltbl.render(
+        "column_menu.html",
+        context! {site, table_name, column, operator, value, order},
+    ) {
         Ok(html) => Html(html).into_response(),
         Err(error) => {
             tracing::error!("{error:?}");
@@ -278,10 +343,35 @@ async fn get_column_menu(
 }
 async fn get_cell_menu(
     State(rltbl): State<Arc<Relatable>>,
-    Path((table, row, column)): Path<(String, usize, String)>,
+    session: Session<SessionNullPool>,
+    Path((table_name, row_id, column)): Path<(String, usize, String)>,
 ) -> Response<Body> {
-    tracing::info!("get_cell_menu({table}, {row}, {column})");
-    match rltbl.render("cell_menu.html", context! {table, row, column}) {
+    tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
+    let username = get_username(session);
+    let site = rltbl.get_site(&username).await;
+    let table = match rltbl.get_table(&table_name).await {
+        Ok(table) => table,
+        Err(error) => return get_404(&error),
+    };
+    let row: Row = match block_on(query_one(
+        &rltbl.connection,
+        &format!(r#"SELECT * FROM "{}" WHERE _id = ?"#, table.view),
+        Some(&json!([row_id])),
+    )) {
+        Ok(row) => match row {
+            Some(row) => row.into(),
+            None => {
+                return get_404(
+                    &RelatableError::MissingError(format!(
+                        "No row in '{table_name}' with id {row_id}"
+                    ))
+                    .into(),
+                )
+            }
+        },
+        Err(error) => return get_500(&error),
+    };
+    match rltbl.render("cell_menu.html", context! {site, table, row, column}) {
         Ok(html) => Html(html).into_response(),
         Err(error) => {
             tracing::error!("{error:?}");
@@ -292,16 +382,16 @@ async fn get_cell_menu(
 
 async fn get_cell_options(
     State(rltbl): State<Arc<Relatable>>,
-    Path((table, row, column)): Path<(String, usize, String)>,
+    Path((table, row_id, column)): Path<(String, usize, String)>,
     Query(query_params): Query<QueryParams>,
 ) -> Response<Body> {
-    tracing::info!("get_cell_option({table}, {row}, {column}, {query_params:?})");
+    tracing::info!("get_cell_option({table}, {row_id}, {column}, {query_params:?})");
     let input = match query_params.get("input") {
         Some(input) => input,
         None => &String::new(),
     };
     let statement = format!(
-        r#"SELECT DISTINCT "{column}" AS 'value' FROM "{table}" WHERE "{column}" LIKE '%{input}%' LIMIT 20"#
+        r#"SELECT DISTINCT "{column}" AS 'value' FROM "{table}" WHERE "{column}" LIKE '%{input}%' AND "{column}" != '' LIMIT 20"#
     );
     let values: Vec<JsonValue> = query(&rltbl.connection, &statement, None)
         .await
@@ -318,6 +408,122 @@ async fn get_cell_options(
     Json(json!(values)).into_response()
 }
 
+async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &usize) -> usize {
+    let sql = format!(
+        r#"SELECT _id, MAX(_order) FROM "{table}"
+        WHERE _order < (SELECT _order FROM "{table}" WHERE _id = ?)"#
+    );
+    let after_id = block_on(query_value(&rltbl.connection, &sql, Some(&json!([row_id]))));
+    after_id
+        .unwrap_or(Some(json!(0)))
+        .unwrap_or(json!(0))
+        .as_u64()
+        .unwrap_or_default() as usize
+}
+
+async fn add_row_before(
+    State(rltbl): State<Arc<Relatable>>,
+    session: Session<SessionNullPool>,
+    Path((table, row_id)): Path<(String, usize)>,
+) -> Response<Body> {
+    tracing::info!("add_row_before({table}, {row_id})");
+    let username = get_username(session);
+    let after_id = previous_row_id(&rltbl, &table, &row_id).await;
+    return add_row(&rltbl, &username, &table, Some(after_id)).await;
+}
+
+async fn add_row_after(
+    State(rltbl): State<Arc<Relatable>>,
+    session: Session<SessionNullPool>,
+    Path((table, row_id)): Path<(String, usize)>,
+) -> Response<Body> {
+    tracing::info!("add_row_after({table}, {row_id})");
+    let username = get_username(session);
+    return add_row(&rltbl, &username, &table, Some(row_id)).await;
+}
+
+async fn add_row_end(
+    State(rltbl): State<Arc<Relatable>>,
+    session: Session<SessionNullPool>,
+    Path(table): Path<String>,
+) -> Response<Body> {
+    tracing::info!("add_row_end({table})");
+    let username = get_username(session);
+    return add_row(&rltbl, &username, &table, None).await;
+}
+
+async fn add_row(
+    rltbl: &Relatable,
+    username: &str,
+    table: &str,
+    after_id: Option<usize>,
+) -> Response<Body> {
+    if rltbl.readonly {
+        return forbid().into();
+    }
+    let columns = match block_on(rltbl.fetch_columns(&table)) {
+        Ok(columns) => columns,
+        Err(error) => return get_500(&error),
+    };
+    let json_row: JsonRow = JsonRow {
+        content: columns
+            .iter()
+            .map(|c| (c.name.clone(), json!(String::new())))
+            .collect(),
+    };
+    match block_on(rltbl.add_row(&table, &username, after_id, &json_row)) {
+        Ok(row) => {
+            // tracing::info!("Added row {row:?}");
+            let offset = block_on(query_value(
+                &rltbl.connection,
+                &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= ?"#),
+                Some(&json!([row.order])),
+            ));
+            let offset: u64 = offset
+                .unwrap_or(Some(json!(0)))
+                .unwrap_or(json!(0))
+                .as_u64()
+                .unwrap_or_default();
+            let url = format!("{}/table/{table}?offset={offset}", rltbl.root);
+            Redirect::temporary(url.as_str()).into_response()
+        }
+        Err(error) => return get_500(&error),
+    }
+}
+
+async fn delete_row(
+    State(rltbl): State<Arc<Relatable>>,
+    session: Session<SessionNullPool>,
+    Path((table, row_id)): Path<(String, usize)>,
+) -> Response<Body> {
+    tracing::info!("add_row_after({table}, {row_id})");
+    if rltbl.readonly {
+        return forbid().into();
+    }
+
+    let username = get_username(session);
+    let prev = previous_row_id(&rltbl, &table, &row_id).await;
+    match block_on(rltbl.delete_row(&table, &username, row_id)) {
+        Ok(_) => {
+            let offset = block_on(query_value(
+                &rltbl.connection,
+                &format!(
+                    r#"SELECT COUNT() FROM "{table}" WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = ?)"#
+                ),
+                Some(&json!([prev])),
+            ));
+            let offset: u64 = offset
+                .unwrap_or(Some(json!(0)))
+                .unwrap_or(json!(0))
+                .as_u64()
+                .unwrap_or_default();
+            let url = format!("{}/table/{table}?offset={offset}", rltbl.root);
+            Redirect::temporary(url.as_str()).into_response()
+        }
+        Err(error) => return get_500(&error),
+    }
+}
+
 pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
     let session_config = SessionConfig::default();
     let session_store = SessionStore::<SessionNullPool>::new(None, session_config)
@@ -331,13 +537,20 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
         .route("/sign-out", post(post_sign_out))
         .route("/cursor", post(post_cursor))
         .route("/table/{*path}", get(get_table).post(post_table))
-        .route("/row-menu/{table}/{row}", get(get_row_menu))
-        .route("/column-menu/{table}/{column}", get(get_column_menu))
-        .route("/cell-menu/{table}/{row}/{column}", get(get_cell_menu))
+        .route("/row-menu/{table_name}/{row_id}", get(get_row_menu))
+        .route("/column-menu/{table_name}/{column}", get(get_column_menu))
         .route(
-            "/cell-options/{table}/{row}/{column}",
+            "/cell-menu/{table_name}/{row_id}/{column}",
+            get(get_cell_menu),
+        )
+        .route(
+            "/cell-options/{table}/{row_id}/{column}",
             get(get_cell_options),
         )
+        .route("/add-row/{table}", get(add_row_end))
+        .route("/add-row-before/{table}/{row_id}", get(add_row_before))
+        .route("/add-row-after/{table}/{row_id}", get(add_row_after))
+        .route("/delete-row/{table}/{row_id}", get(delete_row))
         .layer(SessionLayer::new(session_store))
         .with_state(shared_state)
 }
