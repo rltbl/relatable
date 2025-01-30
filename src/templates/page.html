@@ -27,7 +27,7 @@
             </a>
             <ul class="dropdown-menu">
               {% for tablename, table in site.tables|items %}
-              <li><a class="dropdown-item" href="/table/{{tablename}}">{{ tablename }}</a></li>
+              <li><a class="dropdown-item" href="{{site.root}}/table/{{tablename}}">{{ tablename }}</a></li>
               {% endfor %}
             </ul>
           </li>
@@ -43,7 +43,7 @@
             <ul class="dropdown-menu">
               {% for username, user in site.users|items %}
               <li>
-                <a class="dropdown-item" href="/table/{{user.cursor.table}}">
+                <a class="dropdown-item" href="{{site.root}}/table/{{user.cursor.table}}">
                   <i class="bi bi-circle-fill" style="color: {{user.color}}"></i>
                   {{ username }}
                 </a>
@@ -58,8 +58,8 @@
               data-bs-auto-close="outside">
               {{ site.user.name }}
             </a>
-            <form class="dropdown-menu dropdown-menu-end" action="/sign-in" method="POST">
-              <input type="hidden" name="redirect" value="/table/{{table.name}}">
+            <form class="dropdown-menu dropdown-menu-end" action="{{site.root}}/sign-in" method="POST">
+              <input type="hidden" name="redirect" value="{{site.root}}/table/{{table.name}}">
               <button class="dropdown-item" type="submit">
                 <i class="bi bi-box-arrow-right"></i>
                 Sign out
@@ -72,14 +72,15 @@
               aria-expanded="false" data-bs-auto-close="outside">
               Sign in
             </button>
-            <form class="dropdown-menu dropdown-menu-end form p-2" style="width: 22em" action="/sign-in" method="POST">
+            <form class="dropdown-menu dropdown-menu-end form p-2" style="width: 22em" action="{{site.root}}/sign-in"
+              method="POST">
               <div class="row g-2">
                 <div class="col-auto">
                   <input class="form-control" type="text" name="username" placeholder="Username" value="{{username}}"
                     aria-label="Username">
                 </div>
                 <div class="col-auto">
-                  <input type="hidden" name="redirect" value="/table/{{table.name}}">
+                  <input type="hidden" name="redirect" value="{{site.root}}/table/{{table.name}}">
                   <button class="btn btn-success" type="submit">
                     <i class="bi bi-box-arrow-in-right"></i>
                     Sign in

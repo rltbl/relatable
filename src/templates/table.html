@@ -10,6 +10,16 @@
 {% endblock %}
 
 {% block content %}
+<div class="float-end mt-1">
+  <a class="btn btn-outline-primary" href="{{site.root}}/table/{{table.name}}">
+    <i class="bi bi-funnel"></i>
+    Clear Filters
+  </a>
+  <a class="btn btn-outline-primary" href="{{site.root}}/add-row/{{table.name}}">
+    <i class="bi bi-plus"></i>
+    Append Row
+  </a>
+</div>
 <h1>{{ table.name }}</h1>
 
 <div id="portal" style="width: 100%; min-width: 400px; left: auto; right: auto"></div>
@@ -40,25 +50,91 @@
   window.rltbl = {};
   window.rltbl.site = {{site | tojson}};
   window.rltbl.result = {{result | tojson}};
+  window.rltbl.grid = {};
 
   // Example: Use an autocomplete dropdown for 'penguin.island' column.
   const table = {{result.table.name | tojson}};
   var columns = {{result.columns | tojson}};
   for (var i = 0; i < columns.length; i++) {
+    var column_name = columns[i].name;
     var kind = "text";
-    if (table === "penguin" && columns[i].name === "island") {
-      kind = "dropdown";
+    if (table === "penguin") {
+      if (column_name === "island") {
+        kind = "dropdown";
+      } else if (column_name === "review") {
+        kind = "image";
+      }
     }
     window.rltbl.result.columns[i].kind = kind;
   }
 
+  if (table === "penguin") {
+    window.rltbl.grid.freezeColumns = 1;
+  }
+
   window.rltbl.loadOptions = (row, column, inputValue, callback) => {
-    const url = `/cell-options/${table}/${row}/${column}?input=${inputValue}`;
+    const url = `{{site.root}}/cell-options/${table}/${row}/${column}?input=${inputValue}`;
     const response = fetch(url)
       .catch(e => console.log("loadOptions", e))
       .then(response => response.json())
       .then(data => callback(data));
   };
+
+  document.body.addEventListener("click", function (e) {
+    if (e.target.id === "row-insert-above") {
+      console.log("ROW INSERT ABOVE");
+    }
+  });
+
+  document.body.addEventListener("click", function (e) {
+    var column = document.getElementById("filter-value");
+    if (column) {
+      // TODO: This should handle multiple columns.
+      column = column.name;
+      var order = "";
+      if (e.target.id === "sort-asc") {
+        order = column;
+      } else if (e.target.id === "sort-desc") {
+        order = `${column}.desc`;
+      }
+      if (order) {
+        e.preventDefault();
+        const params = new URLSearchParams(document.location.search);
+        params.set("order", order);
+        document.location = `?${params.toString()}`;
+        return false;
+      } else if (e.target.id === "sort-none") {
+        e.preventDefault();
+        const params = new URLSearchParams(document.location.search);
+        params.delete("order");
+        document.location = `?${params.toString()}`;
+        return false;
+      }
+    }
+  });
+
+  document.body.addEventListener("submit", function (e) {
+    if (e.target.id === "filter-column") {
+      e.preventDefault();
+      if (e.submitter.id === "filter-clear") {
+        document.location = '{{site.root}}/table/{{table.name}}';
+      } else {
+        const column = document.getElementById("filter-value").name;
+        var operator = document.getElementById("filter-operator").value;
+        var value = document.getElementById("filter-value").value;
+        if (operator === "contains") {
+          operator = "like";
+          value = `*${value}*`;
+        } else if (operator === "is") {
+          value = 'NULL';
+        } else if (operator === "is_not") {
+          value = 'NULL';
+        }
+        document.location = `?${column}=${operator}.${value}`;
+      }
+      return false;
+    }
+  });
 </script>
 <script defer="defer" src="/static/main.js"></script>
 {% endblock %}

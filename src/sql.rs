@@ -221,8 +221,13 @@ pub async fn query(
     }
 }
 
-pub async fn query_one(connection: &DbConnection, statement: &str) -> Result<Option<JsonRow>> {
-    let rows = query(&connection, &statement, None).await?;
+pub async fn query_one(
+    connection: &DbConnection,
+    statement: &str,
+
+    params: Option<&JsonValue>,
+) -> Result<Option<JsonRow>> {
+    let rows = query(&connection, &statement, params).await?;
     match rows.iter().next() {
         Some(row) => Ok(Some(row.clone())),
         None => Ok(None),

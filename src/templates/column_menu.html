@@ -1,5 +1,39 @@
-<ul class="dropdown-menu" style="display: inline-block; position: relative">
-  <li><a class="dropdown-item" href="/">Column action</a></li>
-  <li><a class="dropdown-item" href="/">Another action</a></li>
-  <li><a class="dropdown-item" href="/">Something else here</a></li>
-</ul>
+<form id="filter-column" class="dropdown-menu p-2" style="display: inline-block; position: relative">
+  <div class="row">
+    <div class="btn-group">
+      <a id="sort-asc" href="#" class="btn {{ 'btn-primary' if order == 'ASC' else 'btn-outline-primary' }}">
+        A-Z
+      </a>
+      <a id="sort-desc" class="btn {{ 'btn-primary' if order == 'DESC' else 'btn-outline-primary' }}" href="#">Z-A</a>
+      <a id="sort-none" class="btn {{ 'btn-primary' if order == '' else 'btn-outline-primary' }}" href="#">None</a>
+    </div>
+  </div>
+
+  <div class="row px-3 py-2">
+    <select id="filter-operator" class="form-control mb-2">
+      {% set options = [
+      ('Contains', 'contains'),
+      ('Equals', 'eq'),
+      ('Not Equals', 'not_eq'),
+      ('Greater Than', 'gt'),
+      ('Greater Than or Equals', 'gte'),
+      ('Less Than', 'lt'),
+      ('Less Than or Equals', 'lte'),
+      ('Like', 'like'),
+      ('Is NULL', 'is'),
+      ('Is Not NULL', 'is_not'),
+      ]%}
+      {% for (name, op) in options %}
+      <option value="{{op}}" {% if operator==op %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <input id="filter-value" class="form-control" type="text" name="{{ column }}" value="{{ value }}" />
+  </div>
+
+  <div class="row">
+    <div class="d-flex justify-content-end">
+      <input id="filter-submit" class="btn btn-primary me-2" type="submit" value="OK" />
+      <input id="filter-clear" class="btn btn-outline-primary" type="submit" value="Clear" />
+    </div>
+  </div>
+</form>

@@ -27,7 +27,7 @@ static VALUE_HELP: &str = "A value for a cell";
           about = "Relatable (rltbl): Connect your data!",
           long_about = None)]
 pub struct Cli {
-    #[arg(long, default_value="", action = ArgAction::Set)]
+    #[arg(long, default_value="", action = ArgAction::Set, env = "RLTBL_USER")]
     user: String,
 
     /// Can be one of: JSON (that's it for now). If unspecified Valve will attempt to read the
@@ -319,11 +319,8 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
 
 // Get the user from the CLI, RLTBL_USER environment variable,
 // or the general environment.
-pub fn get_cli_user(cli: &Cli) -> String {
+pub fn get_username(cli: &Cli) -> String {
     let mut username = cli.user.clone();
-    if username == "" {
-        username = std::env::var("RLTBL_USER").unwrap_or_default();
-    }
     if username == "" {
         username = whoami::username();
     }
@@ -335,7 +332,7 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
     let rltbl = Relatable::connect().await.unwrap();
     rltbl
         .set_values(&ChangeSet {
-            user: get_cli_user(&cli),
+            user: get_username(&cli),
             action: ChangeAction::Do,
             table: table.to_string(),
             description: "Set one value".to_string(),
@@ -403,7 +400,7 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
         panic!("Cannot insert an empty row to the database");
     }
 
-    let user = get_cli_user(&cli);
+    let user = get_username(&cli);
     let row = rltbl
         .add_row(table, &user, after_id, &json_row)
         .await
@@ -414,7 +411,7 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
 pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
     tracing::debug!("move_row({cli:?}, {table}, {row}, {after_id})");
     let rltbl = Relatable::connect().await.unwrap();
-    let user = get_cli_user(&cli);
+    let user = get_username(&cli);
     rltbl
         .move_row(table, &user, row, after_id)
         .await
@@ -425,11 +422,11 @@ pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
 pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
     tracing::debug!("delete_row({cli:?}, {table}, {row})");
     let rltbl = Relatable::connect().await.unwrap();
-    let user = get_cli_user(&cli);
+    let user = get_username(&cli);
     rltbl
         .delete_row(table, &user, row)
         .await
-        .expect("Failed to delte row");
+        .expect("Failed to delete row");
     tracing::info!("Deleted row {row}");
 }
 

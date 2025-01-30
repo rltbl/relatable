@@ -8,7 +8,9 @@ import {
   DrawCellCallback,
   EditableGridCell, GridCell, GridCellKind,
   GridColumn,
+  GridColumnIcon,
   GridSelection,
+  Highlight,
   Rectangle,
   type Item
 } from "@glideapps/glide-data-grid";
@@ -179,22 +181,44 @@ function useAsyncData<TRowType>(
 export default function Grid(grid_args: { rltbl: any, height: number }) {
   const rltbl = grid_args.rltbl;
   const site = rltbl.site;
+  const grid = rltbl.grid || { freezeColumns: 0 };
   const result = rltbl.result;
   const user = site.user.name;
   const table = result.table.name;
-  const row_count = result.range.total;
   const height = grid_args.height;
 
-  const columns: Column[] = Object.values(grid_args.rltbl.result.columns).map((x: any) => {
-    var grow = 1;
-    return {
-      title: x.label || x.name,
-      id: x.name,
-      grow: grow,
-      kind: x.kind,
-      hasMenu: true
-    };
-  });
+  const [numRows, setNumRows] = React.useState(result.range.total);
+
+  const columns: Column[] = React.useMemo(() => {
+    return Object.values(result.columns)
+      .map((x: any) => {
+        var c = {
+          title: x.label || x.name,
+          id: x.name,
+          grow: 1,
+          kind: x.kind,
+          hasMenu: true,
+        };
+        for (var i = 0; i < result.select.filters.length; i++) {
+          const filter = result.select.filters[i];
+          if (filter.column === x.name) {
+            c.icon = GridColumnIcon.HeaderLookup;
+          }
+        }
+        for (var i = 0; i < result.select.order_by.length; i++) {
+          const [column, order] = result.select.order_by[i];
+          if (column === x.name) {
+            c.icon = GridColumnIcon.HeaderLookup;
+          }
+        }
+        return c;
+      })
+  }, [result]);
+  const columnIndex: Map<string, number> = React.useMemo(() => {
+    return new Map(
+      columns.map((c, i) => [c.id, i])
+    );
+  }, [columns]);
 
   // console.log("TABLE", table);
   // console.log("COLUMNS", columns);
@@ -202,33 +226,41 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   const [cursor, setCursor] = React.useState<Cursor>({ table: table, row: 0, column: columns[0].id });
 
   const gridRef = React.useRef<DataEditorRef | null>(null);
+  window.rltbl.gridRef = gridRef;
+
   const dataRef = React.useRef<Row[]>([]);
-  const cursorsRef = React.useRef<Map<string, string>>(new Map());
+  const idRowRef = React.useRef<Map<number, number>>(new Map());
   const change_id = React.useRef<number>(0);
 
-  const getCursors = React.useCallback((users: Map<string, UserCursor>) => {
-    var cursors = new Map<string, string>();
-    for (const user of Object.values(users)) {
-      const cursor: Cursor = user.cursor;
-      if (cursor.table !== table) { continue; };
-      const row = cursor.row - 1;
-      var col = 0;
-      for (const [i, column] of columns.entries()) {
-        if (cursor.column === column.id) {
-          col = i;
-          break;
+  const [highlightRegions, setHighlightRegions] = React.useState<Highlight[]>([]);
+
+  const updateCursors = React.useCallback((users: Map<string, UserCursor>) => {
+    setHighlightRegions(
+      Object.values(users)
+        .filter((x: UserCursor) => x.cursor.table === table)
+        .map((x: UserCursor): Highlight => {
+          return {
+            color: x.color + '33',
+            range: {
+              x: columnIndex.get(x.cursor.column) || 0,
+              y: idRowRef.current[x.cursor.row] || -1,
+              width: 1,
+              height: 1,
+            },
+          }
         }
-      }
-      cursors[col + "," + row] = user.color;
-    }
-    return cursors;
-  }, [table, columns]);
+        )
+    );
+  }, [table, columnIndex, idRowRef]);
 
   const getRowData = React.useCallback(async (r: Item) => {
     const first = r[0];
     const last = r[1];
     const limit = last - first;
-    const url = `/table/${table}.json?limit=${limit}&offset=${first}`;
+    const params = new URLSearchParams(document.location.search);
+    params.set("limit", String(limit));
+    params.set("offset", String(first));
+    const url = `${site.root}/table/${table}.json?${params.toString()}`;
     // console.log("Fetch: " + url);
     try {
       const response = await fetch(url);
@@ -237,21 +269,26 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       }
       const data = await response.json();
       change_id.current = data["result"]["table"]["change_id"];
-      cursorsRef.current = getCursors(data["site"]["users"]);
-      return data["result"]["rows"];
+      setNumRows(data["result"]["range"]["total"]);
+      const rows = data["result"]["rows"];
+      var i = first;
+      for (const row of rows) {
+        idRowRef.current[row.id] = i;
+        i++;
+      }
+      updateCursors(data["site"]["users"]);
+      return rows;
     } catch (error) {
       console.error(error.message);
     }
-  }, [change_id, table, cursorsRef, getCursors]);
+  }, [site, change_id, table, updateCursors, setNumRows, idRowRef]);
 
   // Fetch data updated since we started.
   const pollData = React.useCallback(async () => {
     if (!dataRef.current) { return; }
-    const url = `/table/${table}.json?_change_id=gt.${change_id.current}`;
+    const url = `${site.root}/table/${table}.json?_change_id=gt.${change_id.current}`;
     // console.log("Fetch: " + url);
     var rows: Row[] = [];
-    const oldCursors = cursorsRef.current;
-    var newCursors: Map<string, string> = new Map();
     try {
       const response = await fetch(url);
       if (!response.ok) {
@@ -259,19 +296,18 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       }
       const data = await response.json();
       change_id.current = data["result"]["table"]["change_id"];
-      newCursors = getCursors(data["site"]["users"]);
+      updateCursors(data["site"]["users"]);
       rows = data["result"]["rows"] as Row[];
     } catch (error) {
       console.error(error.message);
     }
-    cursorsRef.current = newCursors;
 
     // Match rows to the grid by _id and re-render them.
     // TODO: Why do I need to updateCells? It should be automatic.
     const damageList: { cell: [number, number] }[] = [];
     for (const row of rows) {
       var r = 0;
-      for (r = 0; r < row_count; r++) {
+      for (r = 0; r < numRows; r++) {
         const data = dataRef.current[r];
         if (!data) { continue; }
         if (data.id === row.id) { break; }
@@ -283,26 +319,23 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
         });
       }
     }
-    for (const key of Object.keys(oldCursors)) {
-      const [c, r] = key.split(",", 2);
-      damageList.push({
-        cell: [parseInt(c), parseInt(r)],
-      });
-    }
-    for (const key of Object.keys(newCursors)) {
-      const [c, r] = key.split(",", 2);
-      damageList.push({
-        cell: [parseInt(c), parseInt(r)],
-      });
-    }
     gridRef.current?.updateCells(damageList);
-  }, [table, columns, row_count, cursorsRef, getCursors, dataRef, gridRef]);
+  }, [site, table, columns, numRows, updateCursors, dataRef, gridRef]);
 
   // Poll for new data.
   React.useEffect(() => {
     const interval = setInterval(pollData, 5000);
     return () => clearInterval(interval);
   }, [pollData, dataRef]);
+
+  // Scroll to offset
+  React.useEffect(() => {
+    setTimeout(() => {
+      if (result.select.offset > 0) {
+        gridRef.current?.scrollTo(0, result.select.offset - 1, "vertical", 0, Math.max(0, height - 200));
+      }
+    }, 100);
+  }, [result, height, gridRef]);
 
   const cols = React.useMemo<readonly GridColumn[]>(() => {
     return columns;
@@ -311,28 +344,35 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   const toCell: RowToCell<Row> = React.useCallback((rowData, col) => {
     const column_name = columns[col].id;
     const kind = columns[col].kind;
+    const value = rowData.cells[column_name].value;
     if (kind === "dropdown") {
-      const val = rowData.cells[columns[col].id].value;
       return {
         kind: GridCellKind.Custom,
-        allowOverlay: true,
-        copyData: val,
+        allowOverlay: site.editable,
+        copyData: value,
         data: {
           kind: "dropdown-cell",
-          value: val,
+          value: value,
           row: rowData.id,
           column: column_name,
           entry: null,
         },
       };
+    } else if (kind === "image") {
+      return {
+        kind: GridCellKind.Image,
+        data: [value],
+        allowOverlay: false,
+        displayData: [value],
+      };
     }
     return {
       kind: GridCellKind.Text,
-      data: String(rowData.cells[columns[col].id].value),
-      allowOverlay: true,
-      displayData: String(rowData.cells[columns[col].id].text),
+      data: String(value),
+      allowOverlay: site.editable,
+      displayData: String(rowData.cells[column_name].text),
     };
-  }, [columns]);
+  }, [site, columns]);
 
   const onCellEdited: RowEditedCallback<Row> = React.useCallback((cell, newVal, rowData) => {
     // console.log("EDITED CELL", cell, newVal, rowData);
@@ -360,9 +400,17 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     gridRef
   );
 
-  const [gridSelection, setGridSelection] = React.useState<GridSelection>({
-    rows: CompactSelection.empty(),
-    columns: CompactSelection.empty(),
+  const [gridSelection, setGridSelection] = React.useState<GridSelection>(() => {
+    if (result.select.offset > 0) {
+      return {
+        rows: CompactSelection.empty().add(result.select.offset - 1),
+        columns: CompactSelection.empty(),
+      }
+    }
+    return {
+      rows: CompactSelection.empty(),
+      columns: CompactSelection.empty(),
+    }
   });
 
   // Debounce postCursor to run after 1 second.
@@ -370,7 +418,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   const postCursor = React.useCallback(() => {
     // console.log("POST CURSOR", cursor);
     try {
-      fetch('/cursor', {
+      fetch(`${site.root}/cursor`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -380,7 +428,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     } catch (error) {
       console.error(error.message);
     }
-  }, [cursor]);
+  }, [site, cursor]);
 
   const postCursorRef = React.useRef<any>();
   React.useEffect(() => {
@@ -399,7 +447,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       const [col, row] = newSelection.current.cell;
       const cursor: Cursor = {
         table: table,
-        row: row + 1,
+        row: dataRef.current[row].id,
         column: columns[col].id
       };
       // console.log("NEW CURSOR", cursor);
@@ -408,7 +456,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     }
 
     setGridSelection(newSelection);
-  }, [table, columns, debouncedPostCursor]);
+  }, [table, columns, dataRef, debouncedPostCursor]);
 
   const onCellsEdited = React.useCallback((newValues: readonly { location: Item; value: EditableGridCell }[]) => {
     // console.log("EDITED CELLS BEFORE", newValues);
@@ -423,9 +471,10 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       if (isObject(value)) {
         value = value["value"];
       }
+      var row = dataRef.current[entry.location[1]];
       changes.push({
         "type": "Update",
-        row: entry.location[1] + 1,
+        row: row.id,
         column: columns[entry.location[0]].id,
         value: value
       })
@@ -440,7 +489,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     };
     // console.log("onCellsEdited body", body);
     try {
-      fetch(`/table/${table}`, {
+      fetch(`${site.root}/table/${table}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -451,7 +500,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       console.error(error.message);
     }
 
-  }, [rltbl, user, table, columns, dataRef, onCellEdited]);
+  }, [rltbl, site, user, table, columns, dataRef, onCellEdited]);
 
   // const onRowMoved = React.useCallback((from: number, to: number) => {
   //   console.log("ROW MOVED", from, to);
@@ -485,9 +534,10 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     // console.log("onCellContextMenu", cell, event);
     if (!dataRef.current) { return; }
 
-    const [col, row] = cell;
+    const [col, row_index] = cell;
+    const row = dataRef.current[row_index];
     if (col === -1) {
-      fetch(`/row-menu/${table}/${row + 1}`)
+      fetch(`${site.root}/row-menu/${table}/${row.id}`)
         .then((response) => { return response.text() })
         .then(text => {
           let content: React.JSX.Element = parse(text) as React.JSX.Element;
@@ -495,7 +545,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
         });
     } else {
       const column = columns[col].id;
-      fetch(`/cell-menu/${table}/${row + 1}/${column}`)
+      fetch(`${site.root}/cell-menu/${table}/${row.id}/${column}`)
         .then((response) => { return response.text() })
         .then(text => {
           let content: React.JSX.Element = parse(text) as React.JSX.Element;
@@ -505,18 +555,19 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
 
     event.preventDefault();
     return false;
-  }, [table, columns, dataRef]);
+  }, [site, table, columns, dataRef]);
 
   const onHeaderMenuClick = React.useCallback((col: number, bounds: Rectangle) => {
     const column = columns[col].id;
-    fetch(`/column-menu/${table}/${column}`)
+    const params = new URLSearchParams(document.location.search);
+    fetch(`${site.root}/column-menu/${table}/${column}?${params.toString()}`)
       .then((response) => { return response.text() })
       .then(text => {
         let content: React.JSX.Element = parse(text) as React.JSX.Element;
         setShowMenu({ bounds: bounds, content: content });
       });
     return false;
-  }, [table, columns]);
+  }, [site, table, columns]);
 
   const { renderLayer, layerProps } = useLayer({
     isOpen: showMenu !== undefined,
@@ -535,7 +586,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     },
     placement: "bottom-start",
     auto: true,
-    possiblePlacements: ["bottom-start", "bottom-end"],
+    possiblePlacements: ["bottom-start", "bottom-end", "top-start", "top-end"],
   });
 
   const drawCell: DrawCellCallback = React.useCallback((args, draw) => {
@@ -589,11 +640,13 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       onHeaderMenuClick={onHeaderMenuClick}
       // onPaste={true}
       // fillHandle={true}
+      freezeColumns={grid.freezeColumns}
+      highlightRegions={highlightRegions}
       drawCell={drawCell}
       width="100%"
       height={height}
       columns={cols}
-      rows={row_count}
+      rows={numRows}
     />
     {showMenu !== undefined &&
       renderLayer(
