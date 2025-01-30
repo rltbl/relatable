@@ -5,14 +5,15 @@
 //! This module contains functions for connecting to and querying the database, and implements
 //! any elements of the API that are database-specific.
 
+use crate as rltbl;
+use rltbl::core::RelatableError;
+
 use anyhow::Result;
 use async_std::sync::{Mutex, MutexGuard};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-
-use crate::core::RelatableError;
 
 #[cfg(feature = "rusqlite")]
 use rusqlite;

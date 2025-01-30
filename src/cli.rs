@@ -12,8 +12,9 @@ use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use promptly::prompt_default;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
+use regex::Regex;
 use serde_json::{json, to_string_pretty, to_value, Map as JsonMap, Value as JsonValue};
-use std::{io, io::Write};
+use std::{io, io::Write, path::Path};
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";
@@ -83,6 +84,15 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: DeleteSubcommand,
     },
+
+    /// Load data into the datanase
+    Load {
+        #[command(subcommand)]
+        subcommand: LoadSubcommand,
+    },
+
+    /// Save the data
+    Save {},
 
     /// Run a Relatable server
     Serve {
@@ -209,6 +219,14 @@ pub enum DeleteSubcommand {
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
         row: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LoadSubcommand {
+    Table {
+        #[arg(value_name = "PATH", action = ArgAction::Set, help = "The path to load from")]
+        path: String,
     },
 }
 
@@ -409,7 +427,35 @@ pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
         .delete_row(table, &user, row)
         .await
         .expect("Failed to delete row");
-    tracing::info!("Delete row {row}");
+    tracing::info!("Deleted row {row}");
+}
+
+pub async fn load_table(cli: &Cli, path: &str) {
+    tracing::debug!("load_table({cli:?}, {path})");
+    let rltbl = Relatable::connect().await.unwrap();
+
+    // We will use this pattern to normalize the table name:
+    let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
+    let table = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("Error writing to path");
+    let table = pattern.replace_all(table, "_").to_string();
+    // Now replace any trailing or leading underscores:
+    let table = table.trim_end_matches("_");
+    let table = table.trim_start_matches("_");
+
+    rltbl
+        .load_table(&table, path)
+        .await
+        .expect("Error loading table");
+    tracing::info!("Loaded table '{table}'");
+}
+
+pub async fn save_all(cli: &Cli) {
+    tracing::debug!("save_all({cli:?})");
+    let rltbl = Relatable::connect().await.unwrap();
+    rltbl.save_all().await.expect("Error saving all");
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool) {
@@ -419,7 +465,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
         .await
         .expect("Database was initialized");
 
-    let sql = "INSERT INTO 'table' ('table') VALUES ('penguin')";
+    let sql = r#"INSERT INTO "table" ('table') VALUES ('penguin')"#;
     query(&rltbl.connection, sql, None).await.unwrap();
 
     // Create the penguin table.
@@ -446,7 +492,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
         let island = islands.iter().choose(&mut rng).unwrap();
         let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
-        let sql = r#"INSERT INTO 'penguin'
+        let sql = r#"INSERT INTO "penguin"
                      VALUES (?, ?, 'FAKE123', ?, 'Pygoscelis adeliae', ?, ?, ?, ?)"#;
         let params = json!([
             id,
@@ -517,6 +563,10 @@ pub async fn process_command() {
         Command::Delete { subcommand } => match subcommand {
             DeleteSubcommand::Row { table, row } => delete_row(&cli, table, *row).await,
         },
+        Command::Load { subcommand } => match subcommand {
+            LoadSubcommand::Table { path } => load_table(&cli, path).await,
+        },
+        Command::Save {} => save_all(&cli).await,
         Command::Serve { host, port } => serve(&cli, host, port)
             .await
             .expect("Operation: 'serve' failed"),

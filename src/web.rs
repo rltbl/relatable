@@ -2,7 +2,8 @@
 //!
 //! This is relatable (rltbl::web).
 
-use crate::{
+use crate as rltbl;
+use rltbl::{
     cli::Cli,
     core::{
         ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Row, Select,
