@@ -1,19 +1,39 @@
 <form id="filter-column" class="dropdown-menu p-2" style="display: inline-block; position: relative">
-  <select id="filter-operator" class="form-control mb-2">
-    <option value="contains">Contains</option>
-    <option value="eq">Equals</option>
-    <option value="not_eq">Not Equals</option>
-    <option value="gt">Greater Than</option>
-    <option value="gte">Greater Than or Equals</option>
-    <option value="lt">Less Than</option>
-    <option value="lte">Less Than or Equals</option>
-    <option value="like">Like</option>
-    <option value="is">Is NULL</option>
-    <option value="is_not">Is Not NULL</option>
-  </select>
-  <input id="filter-value" class="form-control" type="text" name="{{ column }}" value="" />
-  <div class="pt-2 d-flex justify-content-end">
-    <input id="filter-clear" class="btn btn-primary" type="submit" value="Clear" />
-    <input id="filter-submit" class="btn btn-primary ms-2" type="submit" value="OK" />
+  <div class="row">
+    <div class="btn-group">
+      <a id="sort-asc" href="#" class="btn {{ 'btn-primary' if order == 'ASC' else 'btn-outline-primary' }}">
+        A-Z
+      </a>
+      <a id="sort-desc" class="btn {{ 'btn-primary' if order == 'DESC' else 'btn-outline-primary' }}" href="#">Z-A</a>
+      <a id="sort-none" class="btn {{ 'btn-primary' if order == '' else 'btn-outline-primary' }}" href="#">None</a>
+    </div>
+  </div>
+
+  <div class="row px-3 py-2">
+    <select id="filter-operator" class="form-control mb-2">
+      {% set options = [
+      ('Contains', 'contains'),
+      ('Equals', 'eq'),
+      ('Not Equals', 'not_eq'),
+      ('Greater Than', 'gt'),
+      ('Greater Than or Equals', 'gte'),
+      ('Less Than', 'lt'),
+      ('Less Than or Equals', 'lte'),
+      ('Like', 'like'),
+      ('Is NULL', 'is'),
+      ('Is Not NULL', 'is_not'),
+      ]%}
+      {% for (name, op) in options %}
+      <option value="{{op}}" {% if operator==op %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <input id="filter-value" class="form-control" type="text" name="{{ column }}" value="{{ value }}" />
+  </div>
+
+  <div class="row">
+    <div class="d-flex justify-content-end">
+      <input id="filter-submit" class="btn btn-primary me-2" type="submit" value="OK" />
+      <input id="filter-clear" class="btn btn-outline-primary" type="submit" value="Clear" />
+    </div>
   </div>
 </form>

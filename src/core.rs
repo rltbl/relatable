@@ -37,10 +37,12 @@ pub enum RelatableError {
     InputError(String),
     /// An error that occurred while reading/writing to stdio:
     IOError(std::io::Error),
+    /// An error when a record cannot be found.
+    MissingError(String),
     /// An error that occurred while serialising or deserialising to/from JSON:
-    // SerdeJsonError(serde_json::Error),
+    SerdeJsonError(serde_json::Error),
     /// An error that occurred while parsing a regex:
-    // RegexError(regex::Error),
+    RegexError(regex::Error),
     /// An error when a table cannot be found.
     TableError(String),
     /// An error that occurred because of a user's action
@@ -215,10 +217,10 @@ impl Relatable {
             .map_err(|e| e.into())
     }
 
-    pub async fn get_table(&self, table_name: &str, connection: &DbConnection) -> Result<Table> {
+    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
         let statement = r#"SELECT "table" FROM 'table' WHERE "table" = ?"#;
         let params = json!([table_name]);
-        match query_value(connection, &statement, Some(&params)).await? {
+        match query_value(&self.connection, &statement, Some(&params)).await? {
             Some(_) => (),
             None => {
                 return Err(RelatableError::TableError(format!(
@@ -231,7 +233,7 @@ impl Relatable {
         let statement = r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#;
         let mut view = format!("{table_name}_default_view");
         let params = json!([view]);
-        let result = query_value(connection, &statement, Some(&params)).await?;
+        let result = query_value(&self.connection, &statement, Some(&params)).await?;
         if result.is_none() {
             view = String::from(table_name);
         }
@@ -239,7 +241,7 @@ impl Relatable {
 
         let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
         let params = json!([table_name]);
-        let change_id = match query_value(connection, &statement, Some(&params)).await? {
+        let change_id = match query_value(&self.connection, &statement, Some(&params)).await? {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
@@ -293,9 +295,7 @@ impl Relatable {
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        let table = self
-            .get_table(select.table_name.as_str(), &self.connection)
-            .await?;
+        let table = self.get_table(select.table_name.as_str()).await?;
         let mut select = select.clone();
         select.view_name = table.view.clone();
         let columns = self.fetch_columns(&table.view).await?;
@@ -451,7 +451,7 @@ impl Relatable {
 
     pub async fn get_user(&self, username: &str) -> Account {
         let statement = format!(r#"SELECT * FROM user WHERE name = '{username}' LIMIT 1"#);
-        let user = query_one(&self.connection, &statement).await;
+        let user = query_one(&self.connection, &statement, None).await;
         if let Ok(user) = user {
             if let Some(user) = user {
                 return Account {
@@ -554,7 +554,7 @@ impl Relatable {
         }
 
         // Prepare a new row to be inserted:
-        let new_row = Row::prepare_new(&table, row, &mut tx).await?;
+        let mut new_row = Row::prepare_new(&table, row, &mut tx).await?;
 
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with new_row's id:
@@ -574,8 +574,10 @@ impl Relatable {
 
         if let Some(after_id) = after_id {
             // Move the row to its assigned spot within the table:
-            self.move_row_tx(&mut tx, &table, new_row.id, after_id)
+            let new_order = self
+                .move_row_tx(&mut tx, &table, new_row.id, after_id)
                 .await?;
+            new_row.order = new_order;
         }
 
         // Record the change to the history table:
@@ -594,6 +596,7 @@ impl Relatable {
         row: &Row,
     ) -> Result<()> {
         let (sql, params) = row.as_insert(&table.name);
+        tracing::info!("add_row_tx {sql} {params:?}");
         query_tx(tx, &sql, Some(&params)).await?;
         Ok(())
     }
@@ -654,7 +657,7 @@ impl Relatable {
         user: &str,
         id: usize,
         after_id: usize,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         // Get the connection and begin a transaction:
         let mut locked_conn = lock_connection(&self.connection).await;
         let mut tx = begin(&self.connection, &mut locked_conn).await?;
@@ -684,7 +687,7 @@ impl Relatable {
         self.prepare_user_cursor(&changeset, &mut tx).await?;
 
         // Move the row within the table:
-        self.move_row_tx(&mut tx, &table, id, after_id).await?;
+        let new_order = self.move_row_tx(&mut tx, &table, id, after_id).await?;
 
         // Record the change to the history table:
         Self::record_changes(&changeset, &mut tx).await?;
@@ -692,7 +695,7 @@ impl Relatable {
         // Commit the transaction:
         tx.commit().await?;
 
-        Ok(())
+        Ok(new_order)
     }
 
     pub async fn get_row_order_tx(
@@ -743,7 +746,7 @@ impl Relatable {
         table: &Table,
         id: usize,
         after_id: usize,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         // Get the order, (A), of `after_id`:
         let order_prev = {
             if after_id > 0 {
@@ -864,7 +867,7 @@ impl Relatable {
 
         self.update_row_order_tx(tx, table, id, new_order).await?;
 
-        Ok(())
+        Ok(new_order)
     }
 }
 
@@ -1023,13 +1026,21 @@ impl Row {
             params
         };
 
-        let sql = format!(
-            r#"INSERT INTO "{table}"
-               ("_id", "_order", {column_names})
-               VALUES (?, ?, {column_values})"#,
-            column_names = columns.join(", "),
-            column_values = column_placeholders.join(", "),
-        );
+        let sql = if columns.len() == 0 {
+            format!(
+                r#"INSERT INTO "{table}"
+                   ("_id", "_order")
+                   VALUES (?, ?)"#
+            )
+        } else {
+            format!(
+                r#"INSERT INTO "{table}"
+                   ("_id", "_order", {column_names})
+                   VALUES (?, ?, {column_values})"#,
+                column_names = columns.join(", "),
+                column_values = column_placeholders.join(", "),
+            )
+        };
         (sql, json!(params))
     }
 }
@@ -1071,18 +1082,18 @@ impl From<JsonRow> for Row {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Column {
-    name: String,
+    pub name: String,
     // sqltype: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Table {
-    name: String,
+    pub name: String,
     // A view to use when displaying this table, or empty if none.
-    view: String,
+    pub view: String,
     // The history_id of the most recent update to this table.
-    change_id: usize,
-    editable: bool,
+    pub change_id: usize,
+    pub editable: bool,
 }
 
 impl Default for Table {
@@ -1259,6 +1270,23 @@ fn render_in_not_in<S: Into<String>>(
 }
 
 impl Filter {
+    pub fn parts(&self) -> (String, String, JsonValue) {
+        let (column, operator, value) = match self {
+            Filter::Like { column, value } => (column, "like", value),
+            Filter::Equal { column, value } => (column, "eq", value),
+            Filter::NotEqual { column, value } => (column, "not_eq", value),
+            Filter::GreaterThan { column, value } => (column, "gt", value),
+            Filter::GreaterThanOrEqual { column, value } => (column, "gte", value),
+            Filter::LessThan { column, value } => (column, "lt", value),
+            Filter::LessThanOrEqual { column, value } => (column, "lte", value),
+            Filter::Is { column, value } => (column, "is", value),
+            Filter::IsNot { column, value } => (column, "is_not", value),
+            Filter::In { column, value } => (column, "in", value),
+            Filter::NotIn { column, value } => (column, "not_in", value),
+        };
+        (column.to_string(), operator.to_string(), json!(value))
+    }
+
     pub fn to_url(&self) -> Result<String> {
         fn handle_string_value(token: &str) -> String {
             let reserved = vec![':', ',', '.', '(', ')'];
@@ -1269,19 +1297,7 @@ impl Filter {
             }
         }
 
-        let (operator, value) = match self {
-            Filter::Like { column: _, value } => ("like.", value),
-            Filter::Equal { column: _, value } => ("eq.", value),
-            Filter::NotEqual { column: _, value } => ("not_eq.", value),
-            Filter::GreaterThan { column: _, value } => ("gt.", value),
-            Filter::GreaterThanOrEqual { column: _, value } => ("gte.", value),
-            Filter::LessThan { column: _, value } => ("lt.", value),
-            Filter::LessThanOrEqual { column: _, value } => ("lte.", value),
-            Filter::Is { column: _, value } => ("is.", value),
-            Filter::IsNot { column: _, value } => ("is_not.", value),
-            Filter::In { column: _, value } => ("in.", value),
-            Filter::NotIn { column: _, value } => ("not_in.", value),
-        };
+        let (_, operator, value) = self.parts();
 
         let rhs = match &value {
             JsonValue::String(s) => handle_string_value(&s),
@@ -1314,7 +1330,7 @@ impl Filter {
             }
         };
 
-        Ok(format!("{operator}{rhs}"))
+        Ok(format!("{operator}.{rhs}"))
     }
 
     pub fn to_sqlite(&self) -> Result<String> {
@@ -1415,12 +1431,50 @@ pub struct Select {
     pub limit: usize,
     pub offset: usize,
     pub filters: Vec<Filter>,
+    pub order_by: Vec<(String, Order)>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub enum Order {
+    #[default]
+    ASC,
+    DESC,
 }
 
 impl Select {
     pub fn from_path_and_query(rltbl: &Relatable, path: &str, query_params: &QueryParams) -> Self {
         let table_name = path.split(".").next().unwrap_or_default().to_string();
+        let mut query_params = query_params.clone();
         let mut filters = Vec::new();
+        let mut order_by = Vec::new();
+
+        let limit: usize = query_params
+            .get("limit")
+            .and_then(|x| x.parse::<usize>().ok())
+            .unwrap_or(rltbl.default_limit)
+            .min(rltbl.max_limit);
+        let offset: usize = query_params
+            .get("offset")
+            .and_then(|x| x.parse::<usize>().ok())
+            .unwrap_or_default();
+        if let Some(order) = query_params.get("order") {
+            for item in order.split(",") {
+                if item.ends_with(".asc") {
+                    let column = item.replace(".asc", "");
+                    order_by.push((column, Order::ASC));
+                } else if item.ends_with(".desc") {
+                    let column = item.replace(".desc", "");
+                    order_by.push((column, Order::DESC));
+                } else {
+                    order_by.push((item.to_string(), Order::ASC));
+                }
+            }
+        }
+
+        query_params.shift_remove("limit");
+        query_params.shift_remove("offset");
+        query_params.shift_remove("order");
+
         for (column, pattern) in query_params {
             if pattern.starts_with("like.") {
                 let column = column.to_string();
@@ -1558,22 +1612,19 @@ impl Select {
                 })
             }
         }
-        let limit: usize = query_params
-            .get("limit")
-            .and_then(|x| x.parse::<usize>().ok())
-            .unwrap_or(rltbl.default_limit)
-            .min(rltbl.max_limit);
-        let offset: usize = query_params
-            .get("offset")
-            .and_then(|x| x.parse::<usize>().ok())
-            .unwrap_or_default();
         Self {
             table_name,
             limit,
             offset,
+            order_by,
             filters,
             ..Default::default()
         }
+    }
+
+    pub fn order_by(mut self, column: &str) -> Self {
+        self.order_by = vec![(column.to_string(), Order::ASC)];
+        self
     }
 
     pub fn limit(mut self, limit: &usize) -> Self {
@@ -1842,13 +1893,18 @@ impl Select {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             lines.push(format!("{keyword} {filter}", filter = filter.to_sqlite()?));
         }
+        if self.order_by.len() == 0 {
+            lines.push(format!("ORDER BY _order ASC"));
+        }
+        for (column, order) in &self.order_by {
+            lines.push(format!(r#"ORDER BY "{column}" {order:?}"#));
+        }
         if self.limit > 0 {
             lines.push(format!("LIMIT {}", self.limit));
         }
         if self.offset > 0 {
             lines.push(format!("OFFSET {}", self.offset));
         }
-
         Ok((lines.join("\n"), vec![json!(table)]))
     }
 

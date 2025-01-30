@@ -408,7 +408,7 @@ pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
     rltbl
         .delete_row(table, &user, row)
         .await
-        .expect("Failed to delte row");
+        .expect("Failed to delete row");
     tracing::info!("Delete row {row}");
 }
 

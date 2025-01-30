@@ -10,6 +10,16 @@
 {% endblock %}
 
 {% block content %}
+<div class="float-end mt-1">
+  <a class="btn btn-outline-primary" href="{{site.root}}/table/{{table.name}}">
+    <i class="bi bi-funnel"></i>
+    Clear Filters
+  </a>
+  <a class="btn btn-outline-primary" href="{{site.root}}/add-row/{{table.name}}">
+    <i class="bi bi-plus"></i>
+    Append Row
+  </a>
+</div>
 <h1>{{ table.name }}</h1>
 
 <div id="portal" style="width: 100%; min-width: 400px; left: auto; right: auto"></div>
@@ -69,6 +79,39 @@
       .then(response => response.json())
       .then(data => callback(data));
   };
+
+  document.body.addEventListener("click", function (e) {
+    if (e.target.id === "row-insert-above") {
+      console.log("ROW INSERT ABOVE");
+    }
+  });
+
+  document.body.addEventListener("click", function (e) {
+    var column = document.getElementById("filter-value");
+    if (column) {
+      // TODO: This should handle multiple columns.
+      column = column.name;
+      var order = "";
+      if (e.target.id === "sort-asc") {
+        order = column;
+      } else if (e.target.id === "sort-desc") {
+        order = `${column}.desc`;
+      }
+      if (order) {
+        e.preventDefault();
+        const params = new URLSearchParams(document.location.search);
+        params.set("order", order);
+        document.location = `?${params.toString()}`;
+        return false;
+      } else if (e.target.id === "sort-none") {
+        e.preventDefault();
+        const params = new URLSearchParams(document.location.search);
+        params.delete("order");
+        document.location = `?${params.toString()}`;
+        return false;
+      }
+    }
+  });
 
   document.body.addEventListener("submit", function (e) {
     if (e.target.id === "filter-column") {
