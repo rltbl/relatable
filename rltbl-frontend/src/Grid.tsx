@@ -292,7 +292,11 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   // Fetch data updated since we started.
   const pollData = React.useCallback(async () => {
     if (!dataRef.current) { return; }
-    const url = `${site.root}/table/${table}.json?_change_id=gt.${change_id.current}`;
+    const params = new URLSearchParams(document.location.search);
+    params.set("_change_id", `gt.${change_id.current}`);
+    params.delete("limit");
+    params.delete("offset");
+    const url = `${site.root}/table/${table}.json?${params.toString()}`;
     // console.log("Fetch: " + url);
     var rows: Row[] = [];
     try {
