@@ -199,17 +199,23 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
           kind: x.kind,
           hasMenu: true,
         };
+        var selected = false;
         for (var i = 0; i < result.select.filters.length; i++) {
           const filter = result.select.filters[i];
           if (filter.column === x.name) {
-            c.icon = GridColumnIcon.HeaderLookup;
+            selected = true;
+            break;
           }
         }
         for (var i = 0; i < result.select.order_by.length; i++) {
           const [column, order] = result.select.order_by[i];
           if (column === x.name) {
-            c.icon = GridColumnIcon.HeaderLookup;
+            selected = true;
+            break;
           }
+        }
+        if (selected) {
+          c.icon = GridColumnIcon.HeaderLookup;
         }
         return c;
       })
