@@ -465,7 +465,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
         .await
         .expect("Database was initialized");
 
-    let sql = r#"INSERT INTO "table" ('table') VALUES ('penguin')"#;
+    let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('penguin', 'penguin.tsv')"#;
     query(&rltbl.connection, sql, None).await.unwrap();
 
     // Create the penguin table.
@@ -473,12 +473,12 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
       _id INTEGER UNIQUE,
       _order INTEGER UNIQUE,
       study_name TEXT,
-      sample_number INTEGER,
+      sample_number TEXT,
       species TEXT,
       island TEXT,
       individual_id TEXT,
-      culmen_length REAL,
-      body_mass INTEGER
+      culmen_length TEXT,
+      body_mass TEXT
     )"#;
     query(&rltbl.connection, sql, None).await.unwrap();
 
