@@ -372,7 +372,8 @@ async fn get_cell_menu(
         },
         Err(error) => return get_500(&error),
     };
-    match rltbl.render("cell_menu.html", context! {site, table, row, column}) {
+    let cell = row.cells.get(&column);
+    match rltbl.render("cell_menu.html", context! {site, table, row, column, cell}) {
         Ok(html) => Html(html).into_response(),
         Err(error) => {
             tracing::error!("{error:?}");

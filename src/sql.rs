@@ -21,9 +21,6 @@ use rusqlite;
 #[cfg(feature = "sqlx")]
 use sqlx::{Acquire as _, Column as _, Row as _};
 
-#[cfg(feature = "sqlx")]
-use sqlx_core::any::AnyTypeInfoKind;
-
 #[derive(Debug)]
 pub enum DbConnection {
     #[cfg(feature = "sqlx")]
@@ -415,30 +412,34 @@ impl TryFrom<sqlx::any::AnyRow> for JsonRow {
     fn try_from(row: sqlx::any::AnyRow) -> Result<Self> {
         let mut content = JsonMap::new();
         for column in row.columns() {
-            let value = match column.type_info().kind() {
-                AnyTypeInfoKind::SmallInt | AnyTypeInfoKind::Integer | AnyTypeInfoKind::BigInt => {
-                    let value: i32 = row.try_get(column.ordinal())?;
-                    JsonValue::from(value)
+            // I had problems getting a type for columns that are not in the schema,
+            // e.g. "SELECT COUNT() AS count".
+            // So now I start with Null and try INTEGER, NUMBER, STRING, BOOL.
+            let mut value: JsonValue = JsonValue::Null;
+            if value.is_null() {
+                let x: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
                 }
-                AnyTypeInfoKind::Real | AnyTypeInfoKind::Double => {
-                    let value: f64 = row.try_get(column.ordinal())?;
-                    JsonValue::from(value)
+            }
+            if value.is_null() {
+                let x: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
                 }
-                AnyTypeInfoKind::Text => {
-                    let value: String = row.try_get(column.ordinal())?;
-                    JsonValue::from(value)
+            }
+            if value.is_null() {
+                let x: Result<String, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
                 }
-                AnyTypeInfoKind::Bool => {
-                    let value: bool = row.try_get(column.ordinal())?;
-                    JsonValue::from(value)
+            }
+            if value.is_null() {
+                let x: Result<bool, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
                 }
-                AnyTypeInfoKind::Null => JsonValue::Null,
-                AnyTypeInfoKind::Blob => {
-                    return Err(
-                        RelatableError::InputError("Unimplemented: SQL blob".to_string()).into(),
-                    );
-                }
-            };
+            }
             content.insert(column.name().into(), value);
         }
         Ok(Self { content })
