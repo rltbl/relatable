@@ -292,27 +292,25 @@ impl Relatable {
 
     pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
         // WARN: SQLite only!
-        //let statement = format!(r#"SELECT * FROM pragma_table_info("{table_name}");"#);
-        //let columns = query(&self.connection, &statement, None).await?;
-
-        // Workaround, as the pragma method does not seem to be working. TODO: Look into this.
-        let sql = format!(r#"SELECT * from "{table_name}" LIMIT 1"#);
-        let rows = query(&self.connection, &sql, None).await?;
-        if rows.len() < 1 {
-            return Err(RelatableError::DataError(format!(
-                "Unimplemented: Unable to fetch columns from empty table: {table_name}"
-            ))
-            .into());
-        }
-        let columns = rows[0]
-            .content
-            .keys()
-            .filter(|k| !k.starts_with("_"))
-            .map(|k| Column {
-                name: k.to_string(),
-            })
-            .collect();
-
+        let statement =
+            format!(r#"SELECT "name" FROM pragma_table_info("{table_name}") ORDER BY "cid";"#);
+        let columns = {
+            let columns = query(&self.connection, &statement, None).await?;
+            if columns.is_empty() {
+                return Err(RelatableError::DataError(format!(
+                    "No defined columns for: {table_name}"
+                ))
+                .into());
+            }
+            columns
+                .iter()
+                .map(|c| c.get_string("name"))
+                .filter(|c| !c.starts_with("_"))
+                .map(|c| Column {
+                    name: c.to_string(),
+                })
+                .collect()
+        };
         Ok(columns)
     }
 
