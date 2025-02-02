@@ -61,9 +61,9 @@ pub async fn connect(path: &str) -> Result<DbConnection> {
     // We suppress warnings for unused variables for this particular variable because the
     // compiler is becoming confused about which variables have been actually used as a result
     // of the conditional sqlx/rusqlite compilation (or maybe the programmer is confused).
-    // #[allow(unused_variables)]
-    // #[cfg(feature = "rusqlite")]
-    // let connection = DbConnection::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
+    #[allow(unused_variables)]
+    #[cfg(feature = "rusqlite")]
+    let connection = DbConnection::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
 
     #[cfg(feature = "sqlx")]
     let connection = {
