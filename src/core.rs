@@ -90,7 +90,7 @@ impl Relatable {
             )
             .into());
         }
-        let connection = DbConnection::connect(path).await?;
+        let (connection, _) = DbConnection::connect(path).await?;
         Ok(Self {
             root,
             readonly,
@@ -629,8 +629,8 @@ impl Relatable {
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
         {
             // Get the connection and begin a transaction:
-            let mut locked_conn = self.connection.lock_connection().await;
-            let mut tx = self.connection.begin(&mut locked_conn).await?;
+            let mut conn = self.connection.reconnect().await?;
+            let mut tx = self.connection.begin(&mut conn).await?;
 
             // Update the user cursor
             self.prepare_user_cursor(changeset, &mut tx).await?;
@@ -764,8 +764,8 @@ impl Relatable {
     ) -> Result<Row> {
         let new_row = {
             // Get the connection and begin a transaction:
-            let mut locked_conn = self.connection.lock_connection().await;
-            let mut tx = self.connection.begin(&mut locked_conn).await?;
+            let mut conn = self.connection.reconnect().await?;
+            let mut tx = self.connection.begin(&mut conn).await?;
 
             // Get the current database information for the table:
             let table = self.get_table_tx(table_name, &mut tx).await?;
@@ -833,8 +833,8 @@ impl Relatable {
     pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
         {
             // Get the connection and begin a transaction:
-            let mut locked_conn = self.connection.lock_connection().await;
-            let mut tx = self.connection.begin(&mut locked_conn).await?;
+            let mut conn = self.connection.reconnect().await?;
+            let mut tx = self.connection.begin(&mut conn).await?;
 
             // Get the current database information for the table:
             let table = self.get_table_tx(table_name, &mut tx).await?;
@@ -895,8 +895,8 @@ impl Relatable {
     ) -> Result<usize> {
         let new_order = {
             // Get the connection and begin a transaction:
-            let mut locked_conn = self.connection.lock_connection().await;
-            let mut tx = self.connection.begin(&mut locked_conn).await?;
+            let mut conn = self.connection.reconnect().await?;
+            let mut tx = self.connection.begin(&mut conn).await?;
 
             // Get the current database information for the table:
             let table = self.get_table_tx(table_name, &mut tx).await?;

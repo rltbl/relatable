@@ -9,7 +9,6 @@ use crate as rltbl;
 use rltbl::core::RelatableError;
 
 use anyhow::Result;
-use async_std::sync::{Mutex, MutexGuard};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -27,7 +26,7 @@ pub enum DbConnection {
     Sqlx(sqlx::AnyPool),
 
     #[cfg(feature = "rusqlite")]
-    Rusqlite(Mutex<rusqlite::Connection>),
+    Rusqlite(String),
 }
 
 #[derive(Debug)]
@@ -40,41 +39,40 @@ pub enum DbTransaction<'a> {
 }
 
 impl DbConnection {
-    pub async fn connect(path: &str) -> Result<Self> {
+    pub async fn connect(path: &str) -> Result<(Self, Option<rusqlite::Connection>)> {
         // We suppress warnings for unused variables for this particular variable because the
         // compiler is becoming confused about which variables have been actually used as a result
         // of the conditional sqlx/rusqlite compilation (or maybe the programmer is confused).
         #[allow(unused_variables)]
         #[cfg(feature = "rusqlite")]
-        let connection = Self::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
+        let tuple = (
+            Self::Rusqlite(path.to_string()),
+            Some(rusqlite::Connection::open(path)?),
+        );
 
         #[cfg(feature = "sqlx")]
-        let connection = {
+        let tuple = {
             let url = format!("sqlite://{path}?mode=rwc");
             sqlx::any::install_default_drivers();
             let connection = Self::Sqlx(sqlx::AnyPool::connect(&url).await?);
-            connection
+            (connection, None)
         };
 
-        Ok(connection)
+        Ok(tuple)
     }
 
-    pub async fn lock_connection<'a>(&'a self) -> Option<MutexGuard<'a, rusqlite::Connection>> {
-        let conn = match self {
+    pub async fn reconnect(&self) -> Result<Option<rusqlite::Connection>> {
+        match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(_) => None,
+            Self::Sqlx(_) => Ok(None),
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(conn) => Some(conn),
-        };
-        match conn {
-            None => None,
-            Some(conn) => Some(conn.lock().await),
+            Self::Rusqlite(path) => Ok(Some(rusqlite::Connection::open(path)?)),
         }
     }
 
     pub async fn begin<'a>(
         &self,
-        locked_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
+        conn: &'a mut Option<rusqlite::Connection>,
     ) -> Result<DbTransaction<'a>> {
         match self {
             #[cfg(feature = "sqlx")]
@@ -83,11 +81,10 @@ impl DbConnection {
                 Ok(DbTransaction::Sqlx(tx))
             }
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(_conn) => match locked_conn {
+            Self::Rusqlite(_) => match conn {
                 None => {
                     return Err(RelatableError::InputError(
-                        "Can't begin Rusqlite transaction: No locked connection provided"
-                            .to_string(),
+                        "Can't begin Rusqlite transaction: No connection provided".to_string(),
                     )
                     .into())
                 }
@@ -120,10 +117,18 @@ impl DbConnection {
                 Ok(rows)
             }
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(conn) => {
-                let conn = conn.lock().await;
-                let mut stmt = conn.prepare(statement)?;
-                submit_rusqlite_statement(&mut stmt, params)
+            Self::Rusqlite(path) => {
+                let conn = self.reconnect().await?;
+                match conn {
+                    Some(conn) => {
+                        let mut stmt = conn.prepare(statement)?;
+                        submit_rusqlite_statement(&mut stmt, params)
+                    }
+                    None => Err(RelatableError::DataError(format!(
+                        "Unable to connect to the db at '{path}'"
+                    ))
+                    .into()),
+                }
             }
         }
     }
