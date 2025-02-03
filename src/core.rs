@@ -5,10 +5,7 @@
 use crate as rltbl;
 use rltbl::{
     git,
-    sql::{
-        begin, connect, is_simple, json_to_string, lock_connection, query, query_one, query_tx,
-        query_value, query_value_tx, DbConnection, DbTransaction, JsonRow, VecInto,
-    },
+    sql::{is_simple, json_to_string, DbConnection, DbTransaction, JsonRow, VecInto},
 };
 
 use anyhow::Result;
@@ -93,7 +90,7 @@ impl Relatable {
             )
             .into());
         }
-        let connection = connect(path).await?;
+        let connection = DbConnection::connect(path).await?;
         Ok(Self {
             root,
             readonly,
@@ -136,7 +133,7 @@ impl Relatable {
           "table" TEXT UNIQUE,
           "path" TEXT
         )"#;
-        query(&rltbl.connection, sql, None).await.unwrap();
+        rltbl.connection.query(sql, None).await.unwrap();
 
         let sql = format!(
             r#"CREATE TRIGGER "table_order"
@@ -147,7 +144,7 @@ impl Relatable {
                    WHERE _id = NEW._id;
                  END"#
         );
-        query(&rltbl.connection, &sql, None).await.unwrap();
+        rltbl.connection.query(&sql, None).await.unwrap();
 
         // TODO: Decide whether to include the 'table' table by default.
         // let sql = "INSERT INTO 'table' ('table') VALUES ('table')";
@@ -160,7 +157,7 @@ impl Relatable {
           "cursor" TEXT,
           "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )"#;
-        query(&rltbl.connection, sql, None).await.unwrap();
+        rltbl.connection.query(sql, None).await.unwrap();
 
         // Create the change and history tables
         let sql = r#"CREATE TABLE "change" (
@@ -173,7 +170,7 @@ impl Relatable {
           "content" TEXT,
           FOREIGN KEY ("user") REFERENCES user("name")
         )"#;
-        query(&rltbl.connection, sql, None).await.unwrap();
+        rltbl.connection.query(sql, None).await.unwrap();
 
         let sql = r#"CREATE TABLE "history" (
           history_id INTEGER PRIMARY KEY,
@@ -185,7 +182,7 @@ impl Relatable {
           FOREIGN KEY ("change_id") REFERENCES change("change_id"),
           FOREIGN KEY ("table") REFERENCES "table"("table")
         )"#;
-        query(&rltbl.connection, sql, None).await.unwrap();
+        rltbl.connection.query(sql, None).await.unwrap();
 
         Ok(rltbl)
     }
@@ -229,7 +226,11 @@ impl Relatable {
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
         let statement = r#"SELECT "table" FROM 'table' WHERE "table" = ?"#;
         let params = json!([table_name]);
-        match query_value(&self.connection, &statement, Some(&params)).await? {
+        match self
+            .connection
+            .query_value(&statement, Some(&params))
+            .await?
+        {
             Some(_) => (),
             None => {
                 return Err(RelatableError::TableError(format!(
@@ -242,7 +243,10 @@ impl Relatable {
         let statement = r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#;
         let mut view = format!("{table_name}_default_view");
         let params = json!([view]);
-        let result = query_value(&self.connection, &statement, Some(&params)).await?;
+        let result = self
+            .connection
+            .query_value(&statement, Some(&params))
+            .await?;
         if result.is_none() {
             view = String::from(table_name);
         }
@@ -250,7 +254,11 @@ impl Relatable {
 
         let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
         let params = json!([table_name]);
-        let change_id = match query_value(&self.connection, &statement, Some(&params)).await? {
+        let change_id = match self
+            .connection
+            .query_value(&statement, Some(&params))
+            .await?
+        {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
@@ -270,7 +278,7 @@ impl Relatable {
     ) -> Result<Table> {
         let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
         let params = json!([table_name]);
-        let change_id = match query_value_tx(tx, &statement, Some(&params)).await? {
+        let change_id = match tx.query_value(&statement, Some(&params)).await? {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
@@ -295,7 +303,7 @@ impl Relatable {
         let statement =
             format!(r#"SELECT "name" FROM pragma_table_info("{table_name}") ORDER BY "cid";"#);
         let columns = {
-            let columns = query(&self.connection, &statement, None).await?;
+            let columns = self.connection.query(&statement, None).await?;
             if columns.is_empty() {
                 return Err(RelatableError::DataError(format!(
                     "No defined columns for: {table_name}"
@@ -322,7 +330,7 @@ impl Relatable {
         let (statement, params) = select.to_sqlite()?;
         tracing::debug!("SQL {statement}");
         let params = json!(params);
-        let json_rows = query(&self.connection, &statement, Some(&params)).await?;
+        let json_rows = self.connection.query(&statement, Some(&params)).await?;
 
         let count = json_rows.len();
         let total = match json_rows.get(0) {
@@ -352,7 +360,7 @@ impl Relatable {
     pub async fn fetch_json_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
         let (statement, params) = select.to_sqlite()?;
         let params = json!(params);
-        query(&self.connection, &statement, Some(&params)).await
+        self.connection.query(&statement, Some(&params)).await
     }
 
     pub async fn load_table(&self, table: &str, path: &str) -> Result<()> {
@@ -396,7 +404,7 @@ impl Relatable {
         // Create the table and its associated _order trigger:
         let sql = r#"INSERT INTO "table" ("table", "path") VALUES (?, ?)"#;
         let params = json!([table, path]);
-        query(&self.connection, &sql, Some(&params)).await?;
+        self.connection.query(&sql, Some(&params)).await?;
 
         let sql = format!(
             r#"CREATE TABLE IF NOT EXISTS "{table}" (
@@ -408,7 +416,7 @@ impl Relatable {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        query(&self.connection, &sql, None).await?;
+        self.connection.query(&sql, None).await?;
 
         let sql = format!(
             r#"CREATE TRIGGER IF NOT EXISTS "{table}_order"
@@ -419,7 +427,7 @@ impl Relatable {
                    WHERE _id = NEW._id;
                  END"#
         );
-        query(&self.connection, &sql, None).await?;
+        self.connection.query(&sql, None).await?;
 
         // Insert the data into the table:
         let columns = headers
@@ -434,7 +442,7 @@ impl Relatable {
             let sql = format!(r#"INSERT INTO "{table}" ({columns}) VALUES ({placeholders})"#,);
             let values = row.iter().collect::<Vec<_>>();
             let params = json!(values);
-            query(&self.connection, &sql, Some(&params)).await?;
+            self.connection.query(&sql, Some(&params)).await?;
         }
 
         self.commit_to_git().await?;
@@ -443,7 +451,7 @@ impl Relatable {
 
     pub async fn save_all(&self) -> Result<()> {
         let sql = r#"SELECT "table", "path" FROM "table" WHERE "path" IS NOT NULL"#;
-        let table_rows = query(&self.connection, &sql, None).await?;
+        let table_rows = self.connection.query(&sql, None).await?;
         for table_row in table_rows {
             let table = table_row.get_string("table");
             let path = table_row.get_string("path");
@@ -468,7 +476,7 @@ impl Relatable {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-            let data_rows = query(&self.connection, &sql, None).await?;
+            let data_rows = self.connection.query(&sql, None).await?;
             for data_row in data_rows {
                 let values = {
                     let json_values = data_row.content.values();
@@ -529,7 +537,9 @@ impl Relatable {
 
         // Stage any modified table files that have a path in the table table:
         let sql = r#"SELECT "path" FROM "table" WHERE "path" IS NOT NULL"#;
-        let paths = query(&self.connection, &sql, None)
+        let paths = self
+            .connection
+            .query(&sql, None)
             .await?
             .iter()
             .map(|row| row.get_string("path"))
@@ -552,7 +562,7 @@ impl Relatable {
                            RETURNING change_id"#;
         let content = to_value(&changeset.changes).unwrap_or_default();
         let params = json!([user, action, table, description, content]);
-        let change_id = query_value_tx(tx, &statement, Some(&params)).await?;
+        let change_id = tx.query_value(&statement, Some(&params)).await?;
         let change_id = change_id
             .expect("a change_id")
             .as_u64()
@@ -571,7 +581,7 @@ impl Relatable {
                                  VALUES (?, ?, ?, 'TODO', 'TODO')
                                  RETURNING "history_id""#;
                     let params = json!([change_id, table, row]);
-                    query_value_tx(tx, &sql, Some(&params)).await?;
+                    tx.query_value(&sql, Some(&params)).await?;
                 }
                 Change::Move { row, after } => {
                     let sql = r#"INSERT INTO "history"
@@ -579,7 +589,7 @@ impl Relatable {
                                  VALUES (?, ?, ?, 'TODO', ?)
                                  RETURNING "history_id""#;
                     let params = json!([change_id, table, row, after]);
-                    query_value_tx(tx, &sql, Some(&params)).await?;
+                    tx.query_value(&sql, Some(&params)).await?;
                 }
                 Change::Delete { row } => {
                     let sql = r#"INSERT INTO "history"
@@ -587,7 +597,7 @@ impl Relatable {
                                  VALUES (?, ?, ?, 'TODO', 'TODO')
                                  RETURNING "history_id""#;
                     let params = json!([change_id, table, row]);
-                    query_value_tx(tx, &sql, Some(&params)).await?;
+                    tx.query_value(&sql, Some(&params)).await?;
                 }
             };
         }
@@ -604,14 +614,14 @@ impl Relatable {
         let color = random_color::RandomColor::new().to_hex();
         let statement = r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#;
         let params = json!([user, color]);
-        query_tx(tx, &statement, Some(&params)).await?;
+        tx.query(&statement, Some(&params)).await?;
 
         // Update the user's cursor position.
         let cursor = changeset.to_cursor()?;
         let statement =
             r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
         let params = json!([to_value(cursor).unwrap_or_default(), user]);
-        query_value_tx(tx, &statement, Some(&params)).await?;
+        tx.query_value(&statement, Some(&params)).await?;
 
         Ok(())
     }
@@ -619,8 +629,8 @@ impl Relatable {
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
         {
             // Get the connection and begin a transaction:
-            let mut locked_conn = lock_connection(&self.connection).await;
-            let mut tx = begin(&self.connection, &mut locked_conn).await?;
+            let mut locked_conn = self.connection.lock_connection().await;
+            let mut tx = self.connection.begin(&mut locked_conn).await?;
 
             // Update the user cursor
             self.prepare_user_cursor(changeset, &mut tx).await?;
@@ -636,7 +646,7 @@ impl Relatable {
                         // TODO: Render JSON to SQL properly.
                         let value = json_to_string(value);
                         let params = json!([value, row]);
-                        query_tx(&mut tx, &sql, Some(&params)).await?;
+                        tx.query(&sql, Some(&params)).await?;
                     }
                     _ => {
                         return Err(RelatableError::InputError(format!(
@@ -662,7 +672,7 @@ impl Relatable {
 
     pub async fn get_user(&self, username: &str) -> Account {
         let statement = format!(r#"SELECT * FROM user WHERE name = '{username}' LIMIT 1"#);
-        let user = query_one(&self.connection, &statement, None).await;
+        let user = self.connection.query_one(&statement, None).await;
         if let Ok(user) = user {
             if let Some(user) = user {
                 return Account {
@@ -683,7 +693,7 @@ impl Relatable {
         //        AND "datetime" >= DATETIME('now', '-10 minutes')"#
         // );
         let statement = format!(r#"SELECT * FROM user WHERE cursor IS NOT NULL"#);
-        let rows = query(&self.connection, &statement, None).await?;
+        let rows = self.connection.query(&statement, None).await?;
         for row in rows {
             let name = row.get_string("name");
             if name.trim() == "" {
@@ -713,7 +723,7 @@ impl Relatable {
                FROM 'table'"#
         );
 
-        let rows = query(&self.connection, &statement, None).await?;
+        let rows = self.connection.query(&statement, None).await?;
         for row in rows {
             let name = row.get_string("table");
             tables.insert(
@@ -754,8 +764,8 @@ impl Relatable {
     ) -> Result<Row> {
         let new_row = {
             // Get the connection and begin a transaction:
-            let mut locked_conn = lock_connection(&self.connection).await;
-            let mut tx = begin(&self.connection, &mut locked_conn).await?;
+            let mut locked_conn = self.connection.lock_connection().await;
+            let mut tx = self.connection.begin(&mut locked_conn).await?;
 
             // Get the current database information for the table:
             let table = self.get_table_tx(table_name, &mut tx).await?;
@@ -816,15 +826,15 @@ impl Relatable {
     ) -> Result<()> {
         let (sql, params) = row.as_insert(&table.name);
         tracing::info!("add_row_tx {sql} {params:?}");
-        query_tx(tx, &sql, Some(&params)).await?;
+        tx.query(&sql, Some(&params)).await?;
         Ok(())
     }
 
     pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
         {
             // Get the connection and begin a transaction:
-            let mut locked_conn = lock_connection(&self.connection).await;
-            let mut tx = begin(&self.connection, &mut locked_conn).await?;
+            let mut locked_conn = self.connection.lock_connection().await;
+            let mut tx = self.connection.begin(&mut locked_conn).await?;
 
             // Get the current database information for the table:
             let table = self.get_table_tx(table_name, &mut tx).await?;
@@ -872,7 +882,7 @@ impl Relatable {
     ) -> Result<()> {
         let sql = format!(r#"DELETE FROM "{}" WHERE "_id" = ?"#, table.name);
         let params = json!([row]);
-        query_tx(tx, &sql, Some(&params)).await?;
+        tx.query(&sql, Some(&params)).await?;
         Ok(())
     }
 
@@ -885,8 +895,8 @@ impl Relatable {
     ) -> Result<usize> {
         let new_order = {
             // Get the connection and begin a transaction:
-            let mut locked_conn = lock_connection(&self.connection).await;
-            let mut tx = begin(&self.connection, &mut locked_conn).await?;
+            let mut locked_conn = self.connection.lock_connection().await;
+            let mut tx = self.connection.begin(&mut locked_conn).await?;
 
             // Get the current database information for the table:
             let table = self.get_table_tx(table_name, &mut tx).await?;
@@ -939,7 +949,7 @@ impl Relatable {
     ) -> Result<usize> {
         let sql = format!(r#"SELECT "_order" FROM "{}" WHERE "_id" = ?"#, table.name);
         let params = json!([row_id]);
-        let rows = query_tx(tx, &sql, Some(&params)).await?;
+        let rows = tx.query(&sql, Some(&params)).await?;
         if rows.is_empty() {
             return Err(RelatableError::DataError(format!(
                 "Unable to fetch _order for row {row_id} of table '{table}'",
@@ -969,7 +979,7 @@ impl Relatable {
             table.name
         );
         let params = json!([row_order, row_id]);
-        query_tx(tx, &sql, Some(&params)).await?;
+        tx.query(&sql, Some(&params)).await?;
         Ok(())
     }
 
@@ -999,7 +1009,7 @@ impl Relatable {
                 table.name
             );
             let params = json!([order_prev]);
-            let rows = query_tx(tx, &sql, Some(&params)).await?;
+            let rows = tx.query(&sql, Some(&params)).await?;
             if rows.is_empty() {
                 return Err(RelatableError::DataError(format!(
                     "Could not determine the minimum row order greater than {order_prev}"
@@ -1048,7 +1058,7 @@ impl Relatable {
                     table.name,
                 );
                 let params = json!([order_next, upper_bound]);
-                let rows = query_tx(tx, &sql, Some(&params)).await?;
+                let rows = tx.query(&sql, Some(&params)).await?;
                 if rows.is_empty() {
                     return Err(RelatableError::DataError(
                         "Could not determine the highest row order".to_string(),
@@ -1090,7 +1100,7 @@ impl Relatable {
                         table.name
                     );
                     let params = json!([current_order]);
-                    query_tx(tx, &sql, Some(&params)).await?;
+                    tx.query(&sql, Some(&params)).await?;
                 }
                 // Now that we have made some room, we can use order_prev + 1,
                 // which should no longer be occupied:
@@ -1214,7 +1224,7 @@ pub struct Row {
 impl Row {
     async fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
         let sql = format!(r#"SELECT MAX("_id") FROM "{}""#, table);
-        let current_row_id = match query_value_tx(tx, &sql, None).await? {
+        let current_row_id = match tx.query_value(&sql, None).await? {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };

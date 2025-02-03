@@ -4,7 +4,7 @@
 
 use crate::{
     core::{Change, ChangeAction, ChangeSet, Format, Relatable},
-    sql::{query, query_value, JsonRow, VecInto},
+    sql::{JsonRow, VecInto},
     web::{serve, serve_cgi},
 };
 
@@ -305,7 +305,9 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
     let rltbl = Relatable::connect().await.unwrap();
     let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
     let params = json!([row]);
-    if let Some(value) = query_value(&rltbl.connection, &statement, Some(&params))
+    if let Some(value) = rltbl
+        .connection
+        .query_value(&statement, Some(&params))
         .await
         .unwrap()
     {
@@ -466,7 +468,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
         .expect("Database was initialized");
 
     let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('penguin', 'penguin.tsv')"#;
-    query(&rltbl.connection, sql, None).await.unwrap();
+    rltbl.connection.query(sql, None).await.unwrap();
 
     // Create the penguin table.
     let sql = r#"CREATE TABLE penguin (
@@ -480,7 +482,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
       culmen_length TEXT,
       body_mass TEXT
     )"#;
-    query(&rltbl.connection, sql, None).await.unwrap();
+    rltbl.connection.query(sql, None).await.unwrap();
 
     // Populate the penguin table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
@@ -503,7 +505,7 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
             culmen_length,
             body_mass,
         ]);
-        query(&rltbl.connection, &sql, Some(&params)).await.unwrap();
+        rltbl.connection.query(&sql, Some(&params)).await.unwrap();
     }
 }
 

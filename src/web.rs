@@ -8,7 +8,7 @@ use rltbl::{
     core::{
         ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Row, Select,
     },
-    sql::{query, query_one, query_value, JsonRow},
+    sql::JsonRow,
 };
 use std::io::Write;
 
@@ -53,8 +53,7 @@ fn get_500(error: &anyhow::Error) -> Response<Body> {
 async fn get_root(State(rltbl): State<Arc<Relatable>>) -> impl IntoResponse {
     tracing::info!("request root");
     let default = "table";
-    let table = block_on(query_value(
-        &rltbl.connection,
+    let table = block_on(rltbl.connection.query_value(
         r#"SELECT "table" FROM "table" ORDER BY _order LIMIT 1"#,
         None,
     ))
@@ -203,7 +202,9 @@ async fn init_user(rltbl: &Relatable, username: &str) -> () {
     let color = random_color::RandomColor::new().to_hex();
     let statement = format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#);
     let params = json!([username, color]);
-    query(&rltbl.connection, &statement, Some(&params))
+    rltbl
+        .connection
+        .query(&statement, Some(&params))
         .await
         .expect("Update user");
 }
@@ -263,7 +264,7 @@ async fn post_cursor(
     );
     let cursor = to_value(cursor).unwrap_or_default();
     let params = json!([cursor, username]);
-    match query(&rltbl.connection, &statement, Some(&params)).await {
+    match rltbl.connection.query(&statement, Some(&params)).await {
         Ok(_) => "Cursor updated".into_response(),
         Err(_) => "Cursor update failed".into_response(),
     }
@@ -281,8 +282,7 @@ async fn get_row_menu(
         Ok(table) => table,
         Err(error) => return get_404(&error),
     };
-    let row: Row = match block_on(query_one(
-        &rltbl.connection,
+    let row: Row = match block_on(rltbl.connection.query_one(
         &format!(r#"SELECT * FROM "{}" WHERE _id = ?"#, table.view),
         Some(&json!([row_id])),
     )) {
@@ -354,8 +354,7 @@ async fn get_cell_menu(
         Ok(table) => table,
         Err(error) => return get_404(&error),
     };
-    let row: Row = match block_on(query_one(
-        &rltbl.connection,
+    let row: Row = match block_on(rltbl.connection.query_one(
         &format!(r#"SELECT * FROM "{}" WHERE _id = ?"#, table.view),
         Some(&json!([row_id])),
     )) {
@@ -393,9 +392,13 @@ async fn get_cell_options(
         None => &String::new(),
     };
     let statement = format!(
-        r#"SELECT DISTINCT "{column}" AS 'value' FROM "{table}" WHERE "{column}" LIKE '%{input}%' AND "{column}" != '' LIMIT 20"#
+        r#"SELECT DISTINCT "{column}" AS 'value' FROM "{table}"
+           WHERE "{column}" LIKE '%{input}%' AND "{column}" != ''
+           LIMIT 20"#
     );
-    let values: Vec<JsonValue> = query(&rltbl.connection, &statement, None)
+    let values: Vec<JsonValue> = rltbl
+        .connection
+        .query(&statement, None)
         .await
         .expect("Get column values")
         .iter()
@@ -415,7 +418,7 @@ async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &usize) -> usiz
         r#"SELECT _id, MAX(_order) FROM "{table}"
         WHERE _order < (SELECT _order FROM "{table}" WHERE _id = ?)"#
     );
-    let after_id = block_on(query_value(&rltbl.connection, &sql, Some(&json!([row_id]))));
+    let after_id = block_on(rltbl.connection.query_value(&sql, Some(&json!([row_id]))));
     after_id
         .unwrap_or(Some(json!(0)))
         .unwrap_or(json!(0))
@@ -476,8 +479,7 @@ async fn add_row(
     match block_on(rltbl.add_row(&table, &username, after_id, &json_row)) {
         Ok(row) => {
             // tracing::info!("Added row {row:?}");
-            let offset = block_on(query_value(
-                &rltbl.connection,
+            let offset = block_on(rltbl.connection.query_value(
                 &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= ?"#),
                 Some(&json!([row.order])),
             ));
@@ -507,10 +509,10 @@ async fn delete_row(
     let prev = previous_row_id(&rltbl, &table, &row_id).await;
     match block_on(rltbl.delete_row(&table, &username, row_id)) {
         Ok(_) => {
-            let offset = block_on(query_value(
-                &rltbl.connection,
+            let offset = block_on(rltbl.connection.query_value(
                 &format!(
-                    r#"SELECT COUNT() FROM "{table}" WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = ?)"#
+                    r#"SELECT COUNT() FROM "{table}"
+                       WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = ?)"#
                 ),
                 Some(&json!([prev])),
             ));
