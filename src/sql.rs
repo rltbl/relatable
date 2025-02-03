@@ -59,6 +59,46 @@ impl DbConnection {
         Ok(connection)
     }
 
+    pub async fn lock_connection<'a>(&'a self) -> Option<MutexGuard<'a, rusqlite::Connection>> {
+        let conn = match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(_) => None,
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(conn) => Some(conn),
+        };
+        match conn {
+            None => None,
+            Some(conn) => Some(conn.lock().await),
+        }
+    }
+
+    pub async fn begin<'a>(
+        &self,
+        locked_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
+    ) -> Result<DbTransaction<'a>> {
+        match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(pool) => {
+                let tx = pool.begin().await?;
+                Ok(DbTransaction::Sqlx(tx))
+            }
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(_conn) => match locked_conn {
+                None => {
+                    return Err(RelatableError::InputError(
+                        "Can't begin Rusqlite transaction: No locked connection provided"
+                            .to_string(),
+                    )
+                    .into())
+                }
+                Some(ref mut conn) => {
+                    let tx = conn.transaction()?;
+                    Ok(DbTransaction::Rusqlite(tx))
+                }
+            },
+        }
+    }
+
     // Given a connection and a SQL string, return a vector of JsonRows.
     // This is intended as a low-level function that abstracts over the SQL engine,
     // and whatever result types it returns.
@@ -108,48 +148,11 @@ impl DbConnection {
         let rows = self.query(statement, params).await?;
         extract_value(&rows)
     }
-
-    pub async fn lock_connection<'a>(&'a self) -> Option<MutexGuard<'a, rusqlite::Connection>> {
-        let conn = match self {
-            #[cfg(feature = "sqlx")]
-            Self::Sqlx(_) => None,
-            #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(conn) => Some(conn),
-        };
-        match conn {
-            None => None,
-            Some(conn) => Some(conn.lock().await),
-        }
-    }
-
-    pub async fn begin<'a>(
-        &self,
-        locked_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
-    ) -> Result<DbTransaction<'a>> {
-        match self {
-            #[cfg(feature = "sqlx")]
-            Self::Sqlx(pool) => {
-                let tx = pool.begin().await?;
-                Ok(DbTransaction::Sqlx(tx))
-            }
-            #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(_conn) => match locked_conn {
-                None => {
-                    return Err(RelatableError::InputError(
-                        "Can't begin Rusqlite transaction: No locked connection provided"
-                            .to_string(),
-                    )
-                    .into())
-                }
-                Some(ref mut conn) => {
-                    let tx = conn.transaction()?;
-                    Ok(DbTransaction::Rusqlite(tx))
-                }
-            },
-        }
-    }
 }
 
+// TODO: Try to share more code (i.e., refactor a little) between DbTransaction and DbConnection.
+// E.g., the query() methods share things in common. Possibly this can be accomplished using a
+// trait (e.g., "DbQueryable") that they both implement.
 impl DbTransaction<'_> {
     pub async fn commit(self) -> Result<()> {
         match self {
@@ -168,7 +171,6 @@ impl DbTransaction<'_> {
     // and whatever result types it returns.
     // Since it uses a vector, statements should be limited to a sane number of rows.
     pub async fn query(
-        //transaction: &mut DbTransaction<'_>,
         &mut self,
         statement: &str,
         params: Option<&JsonValue>,
@@ -196,8 +198,19 @@ impl DbTransaction<'_> {
         }
     }
 
+    pub async fn query_one(
+        &mut self,
+        statement: &str,
+        params: Option<&JsonValue>,
+    ) -> Result<Option<JsonRow>> {
+        let rows = self.query(&statement, params).await?;
+        match rows.iter().next() {
+            Some(row) => Ok(Some(row.clone())),
+            None => Ok(None),
+        }
+    }
+
     pub async fn query_value(
-        //transaction: &mut DbTransaction<'_>,
         &mut self,
         statement: &str,
         params: Option<&JsonValue>,
