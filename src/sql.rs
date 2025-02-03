@@ -39,81 +39,184 @@ pub enum DbTransaction<'a> {
     Rusqlite(rusqlite::Transaction<'a>),
 }
 
+impl DbConnection {
+    pub async fn connect(path: &str) -> Result<Self> {
+        // We suppress warnings for unused variables for this particular variable because the
+        // compiler is becoming confused about which variables have been actually used as a result
+        // of the conditional sqlx/rusqlite compilation (or maybe the programmer is confused).
+        #[allow(unused_variables)]
+        #[cfg(feature = "rusqlite")]
+        let connection = Self::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
+
+        #[cfg(feature = "sqlx")]
+        let connection = {
+            let url = format!("sqlite://{path}?mode=rwc");
+            sqlx::any::install_default_drivers();
+            let connection = Self::Sqlx(sqlx::AnyPool::connect(&url).await?);
+            connection
+        };
+
+        Ok(connection)
+    }
+
+    pub async fn lock_connection<'a>(&'a self) -> Option<MutexGuard<'a, rusqlite::Connection>> {
+        let conn = match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(_) => None,
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(conn) => Some(conn),
+        };
+        match conn {
+            None => None,
+            Some(conn) => Some(conn.lock().await),
+        }
+    }
+
+    pub async fn begin<'a>(
+        &self,
+        locked_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
+    ) -> Result<DbTransaction<'a>> {
+        match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(pool) => {
+                let tx = pool.begin().await?;
+                Ok(DbTransaction::Sqlx(tx))
+            }
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(_conn) => match locked_conn {
+                None => {
+                    return Err(RelatableError::InputError(
+                        "Can't begin Rusqlite transaction: No locked connection provided"
+                            .to_string(),
+                    )
+                    .into())
+                }
+                Some(ref mut conn) => {
+                    let tx = conn.transaction()?;
+                    Ok(DbTransaction::Rusqlite(tx))
+                }
+            },
+        }
+    }
+
+    // Given a connection and a SQL string, return a vector of JsonRows.
+    // This is intended as a low-level function that abstracts over the SQL engine,
+    // and whatever result types it returns.
+    // Since it uses a vector, statements should be limited to a sane number of rows.
+    pub async fn query(&self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
+        if !valid_params(params) {
+            tracing::warn!("invalid parameter argument");
+            return Ok(vec![]);
+        }
+
+        match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(pool) => {
+                let query = prepare_sqlx_query(statement, params)?;
+                let mut rows = vec![];
+                for row in query.fetch_all(pool).await? {
+                    rows.push(JsonRow::try_from(row)?);
+                }
+                Ok(rows)
+            }
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(conn) => {
+                let conn = conn.lock().await;
+                let mut stmt = conn.prepare(statement)?;
+                submit_rusqlite_statement(&mut stmt, params)
+            }
+        }
+    }
+
+    pub async fn query_one(
+        &self,
+        statement: &str,
+        params: Option<&JsonValue>,
+    ) -> Result<Option<JsonRow>> {
+        let rows = self.query(&statement, params).await?;
+        match rows.iter().next() {
+            Some(row) => Ok(Some(row.clone())),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn query_value(
+        &self,
+        statement: &str,
+        params: Option<&JsonValue>,
+    ) -> Result<Option<JsonValue>> {
+        let rows = self.query(statement, params).await?;
+        extract_value(&rows)
+    }
+}
+
+// TODO: Try to share more code (i.e., refactor a little) between DbTransaction and DbConnection.
+// E.g., the query() methods share things in common. Possibly this can be accomplished using a
+// trait (e.g., "DbQueryable") that they both implement.
 impl DbTransaction<'_> {
     pub async fn commit(self) -> Result<()> {
         match self {
             #[cfg(feature = "sqlx")]
-            DbTransaction::Sqlx(tx) => {
+            Self::Sqlx(tx) => {
                 tx.commit().await?;
             }
             #[cfg(feature = "rusqlite")]
-            DbTransaction::Rusqlite(tx) => tx.commit()?,
+            Self::Rusqlite(tx) => tx.commit()?,
         };
         Ok(())
     }
-}
 
-///////////////////////////////////////////////////////////////////////////////
-// Functions for connecting to and querying the database
-///////////////////////////////////////////////////////////////////////////////
-
-pub async fn connect(path: &str) -> Result<DbConnection> {
-    // We suppress warnings for unused variables for this particular variable because the
-    // compiler is becoming confused about which variables have been actually used as a result
-    // of the conditional sqlx/rusqlite compilation (or maybe the programmer is confused).
-    #[allow(unused_variables)]
-    #[cfg(feature = "rusqlite")]
-    let connection = DbConnection::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
-
-    #[cfg(feature = "sqlx")]
-    let connection = {
-        let url = format!("sqlite://{path}?mode=rwc");
-        sqlx::any::install_default_drivers();
-        let connection = DbConnection::Sqlx(sqlx::AnyPool::connect(&url).await?);
-        connection
-    };
-
-    Ok(connection)
-}
-
-pub async fn lock_connection<'a>(
-    connection: &'a DbConnection,
-) -> Option<MutexGuard<'a, rusqlite::Connection>> {
-    let conn = match connection {
-        #[cfg(feature = "sqlx")]
-        DbConnection::Sqlx(_) => None,
-        #[cfg(feature = "rusqlite")]
-        DbConnection::Rusqlite(conn) => Some(conn),
-    };
-    match conn {
-        None => None,
-        Some(conn) => Some(conn.lock().await),
-    }
-}
-
-pub async fn begin<'a>(
-    connection: &DbConnection,
-    locked_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
-) -> Result<DbTransaction<'a>> {
-    match connection {
-        #[cfg(feature = "sqlx")]
-        DbConnection::Sqlx(pool) => {
-            let tx = pool.begin().await?;
-            Ok(DbTransaction::Sqlx(tx))
+    // Given a connection and a SQL string, return a vector of JsonRows.
+    // This is intended as a low-level function that abstracts over the SQL engine,
+    // and whatever result types it returns.
+    // Since it uses a vector, statements should be limited to a sane number of rows.
+    pub async fn query(
+        &mut self,
+        statement: &str,
+        params: Option<&JsonValue>,
+    ) -> Result<Vec<JsonRow>> {
+        if !valid_params(params) {
+            tracing::warn!("invalid parameter argument");
+            return Ok(vec![]);
         }
-        #[cfg(feature = "rusqlite")]
-        DbConnection::Rusqlite(_conn) => match locked_conn {
-            None => {
-                return Err(RelatableError::InputError(
-                    "Can't begin Rusqlite transaction: No locked connection provided".to_string(),
-                )
-                .into())
+
+        match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(tx) => {
+                let query = prepare_sqlx_query(statement, params)?;
+                let mut rows = vec![];
+                for row in query.fetch_all(tx.acquire().await?).await? {
+                    rows.push(JsonRow::try_from(row)?);
+                }
+                Ok(rows)
             }
-            Some(ref mut conn) => {
-                let tx = conn.transaction()?;
-                Ok(DbTransaction::Rusqlite(tx))
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(tx) => {
+                let mut stmt = tx.prepare(statement)?;
+                submit_rusqlite_statement(&mut stmt, params)
             }
-        },
+        }
+    }
+
+    pub async fn query_one(
+        &mut self,
+        statement: &str,
+        params: Option<&JsonValue>,
+    ) -> Result<Option<JsonRow>> {
+        let rows = self.query(&statement, params).await?;
+        match rows.iter().next() {
+            Some(row) => Ok(Some(row.clone())),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn query_value(
+        &mut self,
+        statement: &str,
+        params: Option<&JsonValue>,
+    ) -> Result<Option<JsonValue>> {
+        let rows = self.query(statement, params).await?;
+        extract_value(&rows)
     }
 }
 
@@ -185,84 +288,6 @@ pub fn valid_params(params: Option<&JsonValue>) -> bool {
     }
 }
 
-// Given a connection and a SQL string, return a vector of JsonRows.
-// This is intended as a low-level function that abstracts over the SQL engine,
-// and whatever result types it returns.
-// Since it uses a vector, statements should be limited to a sane number of rows.
-pub async fn query(
-    connection: &DbConnection,
-    statement: &str,
-    params: Option<&JsonValue>,
-) -> Result<Vec<JsonRow>> {
-    if !valid_params(params) {
-        tracing::warn!("invalid parameter argument");
-        return Ok(vec![]);
-    }
-
-    match connection {
-        #[cfg(feature = "sqlx")]
-        DbConnection::Sqlx(pool) => {
-            let query = prepare_sqlx_query(statement, params)?;
-            let mut rows = vec![];
-            for row in query.fetch_all(pool).await? {
-                rows.push(JsonRow::try_from(row)?);
-            }
-            Ok(rows)
-        }
-        #[cfg(feature = "rusqlite")]
-        DbConnection::Rusqlite(conn) => {
-            let conn = conn.lock().await;
-            let mut stmt = conn.prepare(statement)?;
-            submit_rusqlite_statement(&mut stmt, params)
-        }
-    }
-}
-
-pub async fn query_one(
-    connection: &DbConnection,
-    statement: &str,
-
-    params: Option<&JsonValue>,
-) -> Result<Option<JsonRow>> {
-    let rows = query(&connection, &statement, params).await?;
-    match rows.iter().next() {
-        Some(row) => Ok(Some(row.clone())),
-        None => Ok(None),
-    }
-}
-
-// Given a connection and a SQL string, return a vector of JsonRows.
-// This is intended as a low-level function that abstracts over the SQL engine,
-// and whatever result types it returns.
-// Since it uses a vector, statements should be limited to a sane number of rows.
-pub async fn query_tx(
-    transaction: &mut DbTransaction<'_>,
-    statement: &str,
-    params: Option<&JsonValue>,
-) -> Result<Vec<JsonRow>> {
-    if !valid_params(params) {
-        tracing::warn!("invalid parameter argument");
-        return Ok(vec![]);
-    }
-
-    match transaction {
-        #[cfg(feature = "sqlx")]
-        DbTransaction::Sqlx(tx) => {
-            let query = prepare_sqlx_query(statement, params)?;
-            let mut rows = vec![];
-            for row in query.fetch_all(tx.acquire().await?).await? {
-                rows.push(JsonRow::try_from(row)?);
-            }
-            Ok(rows)
-        }
-        #[cfg(feature = "rusqlite")]
-        DbTransaction::Rusqlite(tx) => {
-            let mut stmt = tx.prepare(statement)?;
-            submit_rusqlite_statement(&mut stmt, params)
-        }
-    }
-}
-
 pub fn extract_value(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
     match rows.iter().next() {
         Some(row) => match row.content.values().next() {
@@ -271,24 +296,6 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
         },
         None => Ok(None),
     }
-}
-
-pub async fn query_value(
-    connection: &DbConnection,
-    statement: &str,
-    params: Option<&JsonValue>,
-) -> Result<Option<JsonValue>> {
-    let rows = query(connection, statement, params).await?;
-    extract_value(&rows)
-}
-
-pub async fn query_value_tx(
-    transaction: &mut DbTransaction<'_>,
-    statement: &str,
-    params: Option<&JsonValue>,
-) -> Result<Option<JsonValue>> {
-    let rows = query_tx(transaction, statement, params).await?;
-    extract_value(&rows)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
