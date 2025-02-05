@@ -18,7 +18,16 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use rusqlite;
 
 #[cfg(feature = "sqlx")]
+use futures::executor::block_on;
+
+#[cfg(feature = "sqlx")]
 use sqlx::{Acquire as _, Column as _, Row as _};
+
+#[derive(Debug)]
+pub enum DbActiveConnection {
+    #[cfg(feature = "rusqlite")]
+    Rusqlite(rusqlite::Connection),
+}
 
 #[derive(Debug)]
 pub enum DbConnection {
@@ -39,7 +48,7 @@ pub enum DbTransaction<'a> {
 }
 
 impl DbConnection {
-    pub async fn connect(path: &str) -> Result<(Self, Option<rusqlite::Connection>)> {
+    pub async fn connect(path: &str) -> Result<(Self, Option<DbActiveConnection>)> {
         // We suppress warnings for unused variables for this particular variable because the
         // compiler is becoming confused about which variables have been actually used as a result
         // of the conditional sqlx/rusqlite compilation (or maybe the programmer is confused).
@@ -47,7 +56,9 @@ impl DbConnection {
         #[cfg(feature = "rusqlite")]
         let tuple = (
             Self::Rusqlite(path.to_string()),
-            Some(rusqlite::Connection::open(path)?),
+            Some(DbActiveConnection::Rusqlite(rusqlite::Connection::open(
+                path,
+            )?)),
         );
 
         #[cfg(feature = "sqlx")]
@@ -61,19 +72,18 @@ impl DbConnection {
         Ok(tuple)
     }
 
-    pub fn reconnect(&self) -> Result<Option<rusqlite::Connection>> {
+    pub fn reconnect(&self) -> Result<Option<DbActiveConnection>> {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(_) => Ok(None),
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(path) => Ok(Some(rusqlite::Connection::open(path)?)),
+            Self::Rusqlite(path) => Ok(Some(DbActiveConnection::Rusqlite(
+                rusqlite::Connection::open(path)?,
+            ))),
         }
     }
 
-    pub fn begin<'a>(
-        &self,
-        conn: &'a mut Option<rusqlite::Connection>,
-    ) -> Result<DbTransaction<'a>> {
+    pub fn begin<'a>(&self, conn: &'a mut Option<DbActiveConnection>) -> Result<DbTransaction<'a>> {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(pool) => {
@@ -88,7 +98,7 @@ impl DbConnection {
                     )
                     .into())
                 }
-                Some(ref mut conn) => {
+                Some(DbActiveConnection::Rusqlite(ref mut conn)) => {
                     let tx = conn.transaction()?;
                     Ok(DbTransaction::Rusqlite(tx))
                 }
@@ -120,7 +130,7 @@ impl DbConnection {
             Self::Rusqlite(path) => {
                 let conn = self.reconnect()?;
                 match conn {
-                    Some(conn) => {
+                    Some(DbActiveConnection::Rusqlite(conn)) => {
                         let mut stmt = conn.prepare(statement)?;
                         submit_rusqlite_statement(&mut stmt, params)
                     }
