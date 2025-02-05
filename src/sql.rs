@@ -61,7 +61,7 @@ impl DbConnection {
         Ok(tuple)
     }
 
-    pub async fn reconnect(&self) -> Result<Option<rusqlite::Connection>> {
+    pub fn reconnect(&self) -> Result<Option<rusqlite::Connection>> {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(_) => Ok(None),
@@ -70,14 +70,14 @@ impl DbConnection {
         }
     }
 
-    pub async fn begin<'a>(
+    pub fn begin<'a>(
         &self,
         conn: &'a mut Option<rusqlite::Connection>,
     ) -> Result<DbTransaction<'a>> {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(pool) => {
-                let tx = pool.begin().await?;
+                let tx = block_on(pool.begin())?;
                 Ok(DbTransaction::Sqlx(tx))
             }
             #[cfg(feature = "rusqlite")]
@@ -118,7 +118,7 @@ impl DbConnection {
             }
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(path) => {
-                let conn = self.reconnect().await?;
+                let conn = self.reconnect()?;
                 match conn {
                     Some(conn) => {
                         let mut stmt = conn.prepare(statement)?;
