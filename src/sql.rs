@@ -18,7 +18,7 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use rusqlite;
 
 #[cfg(feature = "sqlx")]
-use futures::executor::block_on;
+use async_std::task::block_on;
 
 #[cfg(feature = "sqlx")]
 use sqlx::{Acquire as _, Column as _, Row as _};
