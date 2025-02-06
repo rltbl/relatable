@@ -627,42 +627,40 @@ impl Relatable {
     }
 
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
-        {
-            // Get the connection and begin a transaction:
-            let mut conn = self.connection.reconnect()?;
-            let mut tx = self.connection.begin(&mut conn)?;
+        // Get the connection and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn)?;
 
-            // Update the user cursor
-            self.prepare_user_cursor(changeset, &mut tx).await?;
+        // Update the user cursor
+        self.prepare_user_cursor(changeset, &mut tx).await?;
 
-            // Actually make the changes:
-            let table = changeset.table.clone();
-            for change in &changeset.changes {
-                tracing::debug!("CHANGE {change:?}");
-                match change {
-                    Change::Update { row, column, value } => {
-                        // WARN: This just sets text!
-                        let sql = format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#,);
-                        // TODO: Render JSON to SQL properly.
-                        let value = json_to_string(value);
-                        let params = json!([value, row]);
-                        tx.query(&sql, Some(&params)).await?;
-                    }
-                    _ => {
-                        return Err(RelatableError::InputError(format!(
+        // Actually make the changes:
+        let table = changeset.table.clone();
+        for change in &changeset.changes {
+            tracing::debug!("CHANGE {change:?}");
+            match change {
+                Change::Update { row, column, value } => {
+                    // WARN: This just sets text!
+                    let sql = format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#,);
+                    // TODO: Render JSON to SQL properly.
+                    let value = json_to_string(value);
+                    let params = json!([value, row]);
+                    tx.query(&sql, Some(&params)).await?;
+                }
+                _ => {
+                    return Err(RelatableError::InputError(format!(
                         "Don't know how to apply set_values() to a change set like {changeset:?}"
                     ))
-                        .into());
-                    }
-                };
-            }
+                    .into());
+                }
+            };
+        }
 
-            // Record the changes to the change and history tables:
-            Self::record_changes(changeset, &mut tx).await?;
+        // Record the changes to the change and history tables:
+        Self::record_changes(changeset, &mut tx).await?;
 
-            // Commit the transaction:
-            tx.commit().await?;
-        };
+        // Commit the transaction:
+        tx.commit().await?;
 
         // Commit the change to git:
         self.commit_to_git().await?;
@@ -831,42 +829,39 @@ impl Relatable {
     }
 
     pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
-        {
-            // Get the connection and begin a transaction:
-            let mut conn = self.connection.reconnect()?;
-            let mut tx = self.connection.begin(&mut conn)?;
+        // Get the connection and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn)?;
 
-            // Get the current database information for the table:
-            let table = self.get_table_tx(table_name, &mut tx).await?;
-            if !table.editable {
-                return Err(RelatableError::InputError(
-                    format!("{} is not editable.", table_name,),
-                )
-                .into());
-            }
-
-            // Prepare a changeset to be recorded, consisting of a single change record indicating
-            // that a row has been displaced from somewhere to somewhere else.
-            let changeset = ChangeSet {
-                action: ChangeAction::Do,
-                table: table_name.to_string(),
-                user: user.to_string(),
-                description: "Delete one row".to_string(),
-                changes: vec![Change::Delete { row: row }],
-            };
-
-            // Use the changeset to prepare the user cursor:
-            self.prepare_user_cursor(&changeset, &mut tx).await?;
-
-            // Move the row within the table:
-            self.delete_row_tx(&mut tx, &table, row).await?;
-
-            // Record the change to the history table:
-            Self::record_changes(&changeset, &mut tx).await?;
-
-            // Commit the transaction:
-            tx.commit().await?;
+        // Get the current database information for the table:
+        let table = self.get_table_tx(table_name, &mut tx).await?;
+        if !table.editable {
+            return Err(
+                RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
+            );
         }
+
+        // Prepare a changeset to be recorded, consisting of a single change record indicating
+        // that a row has been displaced from somewhere to somewhere else.
+        let changeset = ChangeSet {
+            action: ChangeAction::Do,
+            table: table_name.to_string(),
+            user: user.to_string(),
+            description: "Delete one row".to_string(),
+            changes: vec![Change::Delete { row: row }],
+        };
+
+        // Use the changeset to prepare the user cursor:
+        self.prepare_user_cursor(&changeset, &mut tx).await?;
+
+        // Move the row within the table:
+        self.delete_row_tx(&mut tx, &table, row).await?;
+
+        // Record the change to the history table:
+        Self::record_changes(&changeset, &mut tx).await?;
+
+        // Commit the transaction:
+        tx.commit().await?;
 
         // Commit the change to git:
         self.commit_to_git().await?;
