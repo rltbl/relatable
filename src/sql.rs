@@ -18,9 +18,6 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use rusqlite;
 
 #[cfg(feature = "sqlx")]
-use async_std::task::block_on;
-
-#[cfg(feature = "sqlx")]
 use sqlx::{Acquire as _, Column as _, Row as _};
 
 #[derive(Debug)]
@@ -83,11 +80,14 @@ impl DbConnection {
         }
     }
 
-    pub fn begin<'a>(&self, conn: &'a mut Option<DbActiveConnection>) -> Result<DbTransaction<'a>> {
+    pub async fn begin<'a>(
+        &self,
+        conn: &'a mut Option<DbActiveConnection>,
+    ) -> Result<DbTransaction<'a>> {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(pool) => {
-                let tx = block_on(pool.begin())?;
+                let tx = pool.begin().await?;
                 Ok(DbTransaction::Sqlx(tx))
             }
             #[cfg(feature = "rusqlite")]
@@ -172,9 +172,7 @@ impl DbTransaction<'_> {
     pub async fn commit(self) -> Result<()> {
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(tx) => {
-                tx.commit().await?;
-            }
+            Self::Sqlx(tx) => tx.commit().await?,
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(tx) => tx.commit()?,
         };
