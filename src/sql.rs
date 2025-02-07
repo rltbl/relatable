@@ -18,6 +18,9 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use rusqlite;
 
 #[cfg(feature = "sqlx")]
+use async_std::task::block_on;
+
+#[cfg(feature = "sqlx")]
 use sqlx::{Acquire as _, Column as _, Row as _};
 
 #[derive(Debug)]
@@ -169,10 +172,10 @@ impl DbConnection {
 // E.g., the query() methods share things in common. Possibly this can be accomplished using a
 // trait (e.g., "DbQueryable") that they both implement.
 impl DbTransaction<'_> {
-    pub async fn commit(self) -> Result<()> {
+    pub fn commit(self) -> Result<()> {
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(tx) => tx.commit().await?,
+            Self::Sqlx(tx) => block_on(tx.commit())?,
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(tx) => tx.commit()?,
         };
@@ -183,11 +186,7 @@ impl DbTransaction<'_> {
     // This is intended as a low-level function that abstracts over the SQL engine,
     // and whatever result types it returns.
     // Since it uses a vector, statements should be limited to a sane number of rows.
-    pub async fn query(
-        &mut self,
-        statement: &str,
-        params: Option<&JsonValue>,
-    ) -> Result<Vec<JsonRow>> {
+    pub fn query(&mut self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
         if !valid_params(params) {
             tracing::warn!("invalid parameter argument");
             return Ok(vec![]);
@@ -198,7 +197,7 @@ impl DbTransaction<'_> {
             Self::Sqlx(tx) => {
                 let query = prepare_sqlx_query(statement, params)?;
                 let mut rows = vec![];
-                for row in query.fetch_all(tx.acquire().await?).await? {
+                for row in block_on(query.fetch_all(block_on(tx.acquire())?))? {
                     rows.push(JsonRow::try_from(row)?);
                 }
                 Ok(rows)
@@ -211,24 +210,24 @@ impl DbTransaction<'_> {
         }
     }
 
-    pub async fn query_one(
+    pub fn query_one(
         &mut self,
         statement: &str,
         params: Option<&JsonValue>,
     ) -> Result<Option<JsonRow>> {
-        let rows = self.query(&statement, params).await?;
+        let rows = self.query(&statement, params)?;
         match rows.iter().next() {
             Some(row) => Ok(Some(row.clone())),
             None => Ok(None),
         }
     }
 
-    pub async fn query_value(
+    pub fn query_value(
         &mut self,
         statement: &str,
         params: Option<&JsonValue>,
     ) -> Result<Option<JsonValue>> {
-        let rows = self.query(statement, params).await?;
+        let rows = self.query(statement, params)?;
         extract_value(&rows)
     }
 }

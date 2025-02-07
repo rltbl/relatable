@@ -13,7 +13,7 @@ use rltbl::{
 use std::io::Write;
 
 use anyhow::Result;
-use async_std::{sync::Arc, task::block_on};
+use async_std::sync::Arc;
 use axum::{
     body::Body,
     extract::{Json as ExtractJson, Path, Query, State},
@@ -193,9 +193,7 @@ async fn post_table(
     //     );
     // }
 
-    // Axum is complaining when we replace the call to block_on() here with
-    // .await. Why?
-    match block_on(rltbl.set_values(&changeset)) {
+    match rltbl.set_values(&changeset).await {
         Ok(_) => "POST successful".into_response(),
         Err(error) => get_500(&error),
     }
@@ -490,7 +488,7 @@ async fn add_row(
             .map(|c| (c.name.clone(), json!(String::new())))
             .collect(),
     };
-    match block_on(rltbl.add_row(&table, &username, after_id, &json_row)) {
+    match rltbl.add_row(&table, &username, after_id, &json_row).await {
         Ok(row) => {
             // tracing::info!("Added row {row:?}");
             let offset = rltbl
@@ -524,7 +522,7 @@ async fn delete_row(
 
     let username = get_username(session);
     let prev = previous_row_id(&rltbl, &table, &row_id).await;
-    match block_on(rltbl.delete_row(&table, &username, row_id)) {
+    match rltbl.delete_row(&table, &username, row_id).await {
         Ok(_) => {
             let offset = rltbl
                 .connection
