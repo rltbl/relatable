@@ -442,7 +442,7 @@ impl Relatable {
             self.connection.query(&sql, Some(&params)).await?;
         }
 
-        block_on(self.commit_to_git())?;
+        self.commit_to_git()?;
         Ok(())
     }
 
@@ -497,7 +497,7 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn commit_to_git(&self) -> Result<()> {
+    pub fn commit_to_git(&self) -> Result<()> {
         let author = match env::var("RLTBL_GIT_AUTHOR") {
             Err(err) => match err {
                 env::VarError::NotPresent => {
@@ -516,7 +516,7 @@ impl Relatable {
         tracing::info!("Committing to git on behalf of RLTBL_GIT_AUTHOR: '{author}'");
 
         // Save all the tables:
-        self.save_all().await?;
+        block_on(self.save_all())?;
 
         // Get the git status:
         let status = git::get_status()?;
@@ -534,10 +534,7 @@ impl Relatable {
 
         // Stage any modified table files that have a path in the table table:
         let sql = r#"SELECT "path" FROM "table" WHERE "path" IS NOT NULL"#;
-        let paths = self
-            .connection
-            .query(&sql, None)
-            .await?
+        let paths = block_on(self.connection.query(&sql, None))?
             .iter()
             .map(|row| row.get_string("path"))
             .collect::<Vec<_>>();
@@ -660,7 +657,7 @@ impl Relatable {
         tx.commit()?;
 
         // Commit the change to git:
-        block_on(self.commit_to_git())?;
+        self.commit_to_git()?;
 
         Ok(())
     }
@@ -806,7 +803,7 @@ impl Relatable {
         };
 
         // Commit the change to git:
-        block_on(self.commit_to_git())?;
+        self.commit_to_git()?;
 
         Ok(new_row)
     }
@@ -854,7 +851,7 @@ impl Relatable {
         tx.commit()?;
 
         // Commit the change to git:
-        block_on(self.commit_to_git())?;
+        self.commit_to_git()?;
 
         Ok(())
     }
@@ -921,7 +918,7 @@ impl Relatable {
         };
 
         // Commit the change to git:
-        block_on(self.commit_to_git())?;
+        self.commit_to_git()?;
 
         Ok(new_order)
     }
