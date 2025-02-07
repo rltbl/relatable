@@ -9,7 +9,6 @@ use rltbl::{
 };
 
 use anyhow::Result;
-use async_std::task::block_on;
 use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
 use enquote::unquote;
 use indexmap::IndexMap;
@@ -442,7 +441,7 @@ impl Relatable {
             self.connection.query(&sql, Some(&params)).await?;
         }
 
-        self.commit_to_git()?;
+        self.commit_to_git().await?;
         Ok(())
     }
 
@@ -497,7 +496,7 @@ impl Relatable {
         Ok(())
     }
 
-    pub fn commit_to_git(&self) -> Result<()> {
+    pub async fn commit_to_git(&self) -> Result<()> {
         let author = match env::var("RLTBL_GIT_AUTHOR") {
             Err(err) => match err {
                 env::VarError::NotPresent => {
@@ -516,7 +515,7 @@ impl Relatable {
         tracing::info!("Committing to git on behalf of RLTBL_GIT_AUTHOR: '{author}'");
 
         // Save all the tables:
-        block_on(self.save_all())?;
+        self.save_all().await?;
 
         // Get the git status:
         let status = git::get_status()?;
@@ -534,7 +533,10 @@ impl Relatable {
 
         // Stage any modified table files that have a path in the table table:
         let sql = r#"SELECT "path" FROM "table" WHERE "path" IS NOT NULL"#;
-        let paths = block_on(self.connection.query(&sql, None))?
+        let paths = self
+            .connection
+            .query(&sql, None)
+            .await?
             .iter()
             .map(|row| row.get_string("path"))
             .collect::<Vec<_>>();
@@ -620,7 +622,7 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
+    async fn update_values(&self, changeset: &ChangeSet) -> Result<()> {
         // Get the connection and begin a transaction:
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
@@ -656,9 +658,12 @@ impl Relatable {
         // Commit the transaction:
         tx.commit()?;
 
-        // Commit the change to git:
-        self.commit_to_git()?;
+        Ok(())
+    }
 
+    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
+        self.update_values(changeset).await?;
+        self.commit_to_git().await?;
         Ok(())
     }
 
@@ -747,6 +752,59 @@ impl Relatable {
         }
     }
 
+    async fn insert_row(
+        &self,
+        table_name: &str,
+        user: &str,
+        after_id: Option<usize>,
+        row: &JsonRow,
+    ) -> Result<Row> {
+        // Get the connection and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        // Get the current database information for the table:
+        let table = self.get_table_tx(table_name, &mut tx)?;
+        if !table.editable {
+            return Err(
+                RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
+            );
+        }
+
+        // Prepare a new row to be inserted:
+        let mut new_row = Row::prepare_new(&table, Some(row), &mut tx)?;
+
+        // Prepare a changeset to be recorded, consisting of a single change record indicating
+        // the addition of one new row with new_row's id:
+        let changeset = ChangeSet {
+            action: ChangeAction::Do,
+            table: table_name.to_string(),
+            user: user.to_string(),
+            description: "Add one row".to_string(),
+            changes: vec![Change::Add { row: new_row.id }],
+        };
+
+        // Use the changeset to prepare the user cursor:
+        self.prepare_user_cursor(&changeset, &mut tx)?;
+
+        // Add the row to the table
+        self.add_row_tx(&mut tx, &table, &new_row)?;
+
+        if let Some(after_id) = after_id {
+            // Move the row to its assigned spot within the table:
+            let new_order = self.move_row_tx(&mut tx, &table, new_row.id, after_id)?;
+            new_row.order = new_order;
+        }
+
+        // Record the change to the history table:
+        Self::record_changes(&changeset, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(new_row)
+    }
+
     pub async fn add_row(
         &self,
         table_name: &str,
@@ -754,57 +812,8 @@ impl Relatable {
         after_id: Option<usize>,
         row: &JsonRow,
     ) -> Result<Row> {
-        let new_row = {
-            // Get the connection and begin a transaction:
-            let mut conn = self.connection.reconnect()?;
-            let mut tx = self.connection.begin(&mut conn).await?;
-
-            // Get the current database information for the table:
-            let table = self.get_table_tx(table_name, &mut tx)?;
-            if !table.editable {
-                return Err(RelatableError::InputError(
-                    format!("{} is not editable.", table_name,),
-                )
-                .into());
-            }
-
-            // Prepare a new row to be inserted:
-            let mut new_row = Row::prepare_new(&table, Some(row), &mut tx)?;
-
-            // Prepare a changeset to be recorded, consisting of a single change record indicating
-            // the addition of one new row with new_row's id:
-            let changeset = ChangeSet {
-                action: ChangeAction::Do,
-                table: table_name.to_string(),
-                user: user.to_string(),
-                description: "Add one row".to_string(),
-                changes: vec![Change::Add { row: new_row.id }],
-            };
-
-            // Use the changeset to prepare the user cursor:
-            self.prepare_user_cursor(&changeset, &mut tx)?;
-
-            // Add the row to the table
-            self.add_row_tx(&mut tx, &table, &new_row)?;
-
-            if let Some(after_id) = after_id {
-                // Move the row to its assigned spot within the table:
-                let new_order = self.move_row_tx(&mut tx, &table, new_row.id, after_id)?;
-                new_row.order = new_order;
-            }
-
-            // Record the change to the history table:
-            Self::record_changes(&changeset, &mut tx)?;
-
-            // Commit the transaction:
-            tx.commit()?;
-
-            new_row
-        };
-
-        // Commit the change to git:
-        self.commit_to_git()?;
-
+        let new_row = self.insert_row(table_name, user, after_id, row).await?;
+        self.commit_to_git().await?;
         Ok(new_row)
     }
 
@@ -815,7 +824,7 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
+    async fn delete_from_table(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
         // Get the connection and begin a transaction:
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
@@ -850,9 +859,12 @@ impl Relatable {
         // Commit the transaction:
         tx.commit()?;
 
-        // Commit the change to git:
-        self.commit_to_git()?;
+        Ok(())
+    }
 
+    pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
+        self.delete_from_table(table_name, user, row).await?;
+        self.commit_to_git().await?;
         Ok(())
     }
 
@@ -875,50 +887,54 @@ impl Relatable {
         id: usize,
         after_id: usize,
     ) -> Result<usize> {
-        let new_order = {
-            // Get the connection and begin a transaction:
-            let mut conn = self.connection.reconnect()?;
-            let mut tx = self.connection.begin(&mut conn).await?;
+        let new_order = self.reorder_row(table_name, user, id, after_id).await?;
+        self.commit_to_git().await?;
+        Ok(new_order)
+    }
 
-            // Get the current database information for the table:
-            let table = self.get_table_tx(table_name, &mut tx)?;
-            if !table.editable {
-                return Err(RelatableError::InputError(
-                    format!("{} is not editable.", table_name,),
-                )
-                .into());
-            }
+    async fn reorder_row(
+        &self,
+        table_name: &str,
+        user: &str,
+        id: usize,
+        after_id: usize,
+    ) -> Result<usize> {
+        // Get the connection and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
 
-            // Prepare a changeset to be recorded, consisting of a single change record indicating
-            // that a row has been displaced from somewhere to somewhere else.
-            let changeset = ChangeSet {
-                action: ChangeAction::Do,
-                table: table_name.to_string(),
-                user: user.to_string(),
-                description: "Move one row".to_string(),
-                changes: vec![Change::Move {
-                    row: id,
-                    after: after_id,
-                }],
-            };
+        // Get the current database information for the table:
+        let table = self.get_table_tx(table_name, &mut tx)?;
+        if !table.editable {
+            return Err(
+                RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
+            );
+        }
 
-            // Use the changeset to prepare the user cursor:
-            self.prepare_user_cursor(&changeset, &mut tx)?;
-
-            // Move the row within the table:
-            let new_order = self.move_row_tx(&mut tx, &table, id, after_id)?;
-
-            // Record the change to the history table:
-            Self::record_changes(&changeset, &mut tx)?;
-
-            // Commit the transaction:
-            tx.commit()?;
-
-            new_order
+        // Prepare a changeset to be recorded, consisting of a single change record indicating
+        // that a row has been displaced from somewhere to somewhere else.
+        let changeset = ChangeSet {
+            action: ChangeAction::Do,
+            table: table_name.to_string(),
+            user: user.to_string(),
+            description: "Move one row".to_string(),
+            changes: vec![Change::Move {
+                row: id,
+                after: after_id,
+            }],
         };
 
-        // Commit the change to git:
-        self.commit_to_git()?;
+        // Use the changeset to prepare the user cursor:
+        self.prepare_user_cursor(&changeset, &mut tx)?;
+
+        // Move the row within the table:
+        let new_order = self.move_row_tx(&mut tx, &table, id, after_id)?;
+
+        // Record the change to the history table:
+        Self::record_changes(&changeset, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
 
         Ok(new_order)
     }

@@ -38,15 +38,6 @@ pub enum DbConnection {
     Rusqlite(String),
 }
 
-#[derive(Debug)]
-pub enum DbTransaction<'a> {
-    #[cfg(feature = "sqlx")]
-    Sqlx(sqlx::Transaction<'a, sqlx::Any>),
-
-    #[cfg(feature = "rusqlite")]
-    Rusqlite(rusqlite::Transaction<'a>),
-}
-
 impl DbConnection {
     pub async fn connect(path: &str) -> Result<(Self, Option<DbActiveConnection>)> {
         // We suppress warnings for unused variables for this particular variable because the
@@ -166,6 +157,15 @@ impl DbConnection {
         let rows = self.query(statement, params).await?;
         extract_value(&rows)
     }
+}
+
+#[derive(Debug)]
+pub enum DbTransaction<'a> {
+    #[cfg(feature = "sqlx")]
+    Sqlx(sqlx::Transaction<'a, sqlx::Any>),
+
+    #[cfg(feature = "rusqlite")]
+    Rusqlite(rusqlite::Transaction<'a>),
 }
 
 // TODO: Try to share more code (i.e., refactor a little) between DbTransaction and DbConnection.
