@@ -78,14 +78,17 @@ pub struct Relatable {
 }
 
 impl Relatable {
-    pub async fn connect() -> Result<Self> {
+    pub async fn connect(path: Option<&str>) -> Result<Self> {
         let root = std::env::var("RLTBL_ROOT").unwrap_or_default();
         // Set up database connection.
         let readonly = match std::env::var("RLTBL_READONLY") {
             Ok(value) if value.to_lowercase() != "false" => true,
             _ => false,
         };
-        let path = ".relatable/relatable.db";
+        let path = match path {
+            None => ".relatable/relatable.db",
+            Some(path) => path,
+        };
         let file = FilePath::new(path);
         if !file.exists() {
             return Err(RelatableError::InitError(
@@ -127,7 +130,7 @@ impl Relatable {
         }
         File::create(path)?;
 
-        let rltbl = Relatable::connect().await?;
+        let rltbl = Relatable::connect(None).await?;
 
         // Create and populate the table table
         let sql = r#"CREATE TABLE "table" (
@@ -274,7 +277,7 @@ impl Relatable {
         })
     }
 
-    pub fn get_table_tx(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
+    pub fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
         let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
         let params = json!([table_name]);
         let change_id = match tx.query_value(&statement, Some(&params))? {
@@ -625,7 +628,7 @@ impl Relatable {
         Ok(())
     }
 
-    async fn set_values_tx(
+    async fn _set_values(
         &self,
         mut conn: Option<DbActiveConnection>,
         changeset: &ChangeSet,
@@ -669,7 +672,7 @@ impl Relatable {
 
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
         let conn = self.connection.reconnect()?;
-        self.set_values_tx(conn, changeset).await?;
+        self._set_values(conn, changeset).await?;
         self.commit_to_git().await?;
         Ok(())
     }
@@ -759,7 +762,7 @@ impl Relatable {
         }
     }
 
-    async fn add_row_tx(
+    async fn _add_row(
         &self,
         mut conn: Option<DbActiveConnection>,
         table_name: &str,
@@ -771,7 +774,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = self.get_table_tx(table_name, &mut tx)?;
+        let table = self._get_table(table_name, &mut tx)?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
@@ -796,12 +799,12 @@ impl Relatable {
 
         // Add the row to the table
         let (sql, params) = new_row.as_insert(&table.name);
-        tracing::info!("add_row_tx {sql} {params:?}");
+        tracing::info!("_add_row {sql} {params:?}");
         tx.query(&sql, Some(&params))?;
 
         if let Some(after_id) = after_id {
             // Move the row to its assigned spot within the table:
-            let new_order = self.move_row_tx(&mut tx, &table, new_row.id, after_id)?;
+            let new_order = self._move_row(&mut tx, &table, new_row.id, after_id)?;
             new_row.order = new_order;
         }
 
@@ -822,14 +825,12 @@ impl Relatable {
         row: &JsonRow,
     ) -> Result<Row> {
         let conn = self.connection.reconnect()?;
-        let new_row = self
-            .add_row_tx(conn, table_name, user, after_id, row)
-            .await?;
+        let new_row = self._add_row(conn, table_name, user, after_id, row).await?;
         self.commit_to_git().await?;
         Ok(new_row)
     }
 
-    async fn delete_row_tx(
+    async fn _delete_row(
         &self,
         mut conn: Option<DbActiveConnection>,
         table_name: &str,
@@ -840,7 +841,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = self.get_table_tx(table_name, &mut tx)?;
+        let table = self._get_table(table_name, &mut tx)?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
@@ -876,12 +877,12 @@ impl Relatable {
 
     pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
         let conn = self.connection.reconnect()?;
-        self.delete_row_tx(conn, table_name, user, row).await?;
+        self._delete_row(conn, table_name, user, row).await?;
         self.commit_to_git().await?;
         Ok(())
     }
 
-    async fn move_and_record_row_tx(
+    async fn _move_and_record_row(
         &self,
         mut conn: Option<DbActiveConnection>,
         table_name: &str,
@@ -893,7 +894,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = self.get_table_tx(table_name, &mut tx)?;
+        let table = self._get_table(table_name, &mut tx)?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
@@ -917,7 +918,7 @@ impl Relatable {
         self.prepare_user_cursor(&changeset, &mut tx)?;
 
         // Move the row within the table:
-        let new_order = self.move_row_tx(&mut tx, &table, id, after_id)?;
+        let new_order = self._move_row(&mut tx, &table, id, after_id)?;
 
         // Record the change to the history table:
         Self::record_changes(&changeset, &mut tx)?;
@@ -928,7 +929,7 @@ impl Relatable {
         Ok(new_order)
     }
 
-    fn move_row_tx(
+    fn _move_row(
         &self,
         tx: &mut DbTransaction<'_>,
         table: &Table,
@@ -1097,7 +1098,7 @@ impl Relatable {
     ) -> Result<usize> {
         let conn = self.connection.reconnect()?;
         let new_order = self
-            .move_and_record_row_tx(conn, table_name, user, id, after_id)
+            ._move_and_record_row(conn, table_name, user, id, after_id)
             .await?;
         self.commit_to_git().await?;
         Ok(new_order)
