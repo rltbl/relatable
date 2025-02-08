@@ -5,7 +5,10 @@
 use crate as rltbl;
 use rltbl::{
     git,
-    sql::{is_simple, json_to_string, DbConnection, DbTransaction, JsonRow, VecInto},
+    sql::{
+        is_simple, json_to_string, DbActiveConnection, DbConnection, DbTransaction, JsonRow,
+        VecInto,
+    },
 };
 
 use anyhow::Result;
@@ -622,9 +625,12 @@ impl Relatable {
         Ok(())
     }
 
-    async fn update_values(&self, changeset: &ChangeSet) -> Result<()> {
+    async fn set_values_tx(
+        &self,
+        mut conn: Option<DbActiveConnection>,
+        changeset: &ChangeSet,
+    ) -> Result<()> {
         // Get the connection and begin a transaction:
-        let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Update the user cursor
@@ -662,7 +668,8 @@ impl Relatable {
     }
 
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
-        self.update_values(changeset).await?;
+        let conn = self.connection.reconnect()?;
+        self.set_values_tx(conn, changeset).await?;
         self.commit_to_git().await?;
         Ok(())
     }
@@ -752,15 +759,15 @@ impl Relatable {
         }
     }
 
-    async fn insert_row(
+    async fn add_row_tx(
         &self,
+        mut conn: Option<DbActiveConnection>,
         table_name: &str,
         user: &str,
         after_id: Option<usize>,
         row: &JsonRow,
     ) -> Result<Row> {
         // Get the connection and begin a transaction:
-        let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
@@ -788,7 +795,9 @@ impl Relatable {
         self.prepare_user_cursor(&changeset, &mut tx)?;
 
         // Add the row to the table
-        self.add_row_tx(&mut tx, &table, &new_row)?;
+        let (sql, params) = new_row.as_insert(&table.name);
+        tracing::info!("add_row_tx {sql} {params:?}");
+        tx.query(&sql, Some(&params))?;
 
         if let Some(after_id) = after_id {
             // Move the row to its assigned spot within the table:
@@ -812,21 +821,22 @@ impl Relatable {
         after_id: Option<usize>,
         row: &JsonRow,
     ) -> Result<Row> {
-        let new_row = self.insert_row(table_name, user, after_id, row).await?;
+        let conn = self.connection.reconnect()?;
+        let new_row = self
+            .add_row_tx(conn, table_name, user, after_id, row)
+            .await?;
         self.commit_to_git().await?;
         Ok(new_row)
     }
 
-    pub fn add_row_tx(&self, tx: &mut DbTransaction<'_>, table: &Table, row: &Row) -> Result<()> {
-        let (sql, params) = row.as_insert(&table.name);
-        tracing::info!("add_row_tx {sql} {params:?}");
-        tx.query(&sql, Some(&params))?;
-        Ok(())
-    }
-
-    async fn delete_from_table(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
+    async fn delete_row_tx(
+        &self,
+        mut conn: Option<DbActiveConnection>,
+        table_name: &str,
+        user: &str,
+        row: usize,
+    ) -> Result<()> {
         // Get the connection and begin a transaction:
-        let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
@@ -851,7 +861,9 @@ impl Relatable {
         self.prepare_user_cursor(&changeset, &mut tx)?;
 
         // Move the row within the table:
-        self.delete_row_tx(&mut tx, &table, row)?;
+        let sql = format!(r#"DELETE FROM "{}" WHERE "_id" = ?"#, table.name);
+        let params = json!([row]);
+        tx.query(&sql, Some(&params))?;
 
         // Record the change to the history table:
         Self::record_changes(&changeset, &mut tx)?;
@@ -863,44 +875,21 @@ impl Relatable {
     }
 
     pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
-        self.delete_from_table(table_name, user, row).await?;
+        let conn = self.connection.reconnect()?;
+        self.delete_row_tx(conn, table_name, user, row).await?;
         self.commit_to_git().await?;
         Ok(())
     }
 
-    pub fn delete_row_tx(
+    async fn move_and_record_row_tx(
         &self,
-        tx: &mut DbTransaction<'_>,
-        table: &Table,
-        row: usize,
-    ) -> Result<()> {
-        let sql = format!(r#"DELETE FROM "{}" WHERE "_id" = ?"#, table.name);
-        let params = json!([row]);
-        tx.query(&sql, Some(&params))?;
-        Ok(())
-    }
-
-    pub async fn move_row(
-        &self,
-        table_name: &str,
-        user: &str,
-        id: usize,
-        after_id: usize,
-    ) -> Result<usize> {
-        let new_order = self.reorder_row(table_name, user, id, after_id).await?;
-        self.commit_to_git().await?;
-        Ok(new_order)
-    }
-
-    async fn reorder_row(
-        &self,
+        mut conn: Option<DbActiveConnection>,
         table_name: &str,
         user: &str,
         id: usize,
         after_id: usize,
     ) -> Result<usize> {
         // Get the connection and begin a transaction:
-        let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
@@ -939,59 +928,42 @@ impl Relatable {
         Ok(new_order)
     }
 
-    pub fn get_row_order_tx(
-        &self,
-        tx: &mut DbTransaction<'_>,
-        table: &Table,
-        row_id: usize,
-    ) -> Result<usize> {
-        let sql = format!(r#"SELECT "_order" FROM "{}" WHERE "_id" = ?"#, table.name);
-        let params = json!([row_id]);
-        let rows = tx.query(&sql, Some(&params))?;
-        if rows.is_empty() {
-            return Err(RelatableError::DataError(format!(
-                "Unable to fetch _order for row {row_id} of table '{table}'",
-                table = table.name
-            ))
-            .into());
-        }
-        match rows[0].content.get("_order").and_then(|o| o.as_u64()) {
-            Some(order) => Ok(order as usize),
-            None => {
-                return Err(
-                    RelatableError::DataError("No integer '_order' in row".to_string()).into(),
-                )
-            }
-        }
-    }
-
-    pub fn update_row_order_tx(
-        &self,
-        tx: &mut DbTransaction<'_>,
-        table: &Table,
-        row_id: usize,
-        row_order: usize,
-    ) -> Result<()> {
-        let sql = format!(
-            r#"UPDATE "{}" SET "_order" = ? WHERE "_id" = ?"#,
-            table.name
-        );
-        let params = json!([row_order, row_id]);
-        tx.query(&sql, Some(&params))?;
-        Ok(())
-    }
-
-    pub fn move_row_tx(
+    fn move_row_tx(
         &self,
         tx: &mut DbTransaction<'_>,
         table: &Table,
         id: usize,
         after_id: usize,
     ) -> Result<usize> {
+        fn get_row_order(
+            tx: &mut DbTransaction<'_>,
+            table: &Table,
+            row_id: usize,
+        ) -> Result<usize> {
+            let sql = format!(r#"SELECT "_order" FROM "{}" WHERE "_id" = ?"#, table.name);
+            let params = json!([row_id]);
+            let rows = tx.query(&sql, Some(&params))?;
+            if rows.is_empty() {
+                return Err(RelatableError::DataError(format!(
+                    "Unable to fetch _order for row {row_id} of table '{table}'",
+                    table = table.name
+                ))
+                .into());
+            }
+            match rows[0].content.get("_order").and_then(|o| o.as_u64()) {
+                Some(order) => Ok(order as usize),
+                None => {
+                    return Err(
+                        RelatableError::DataError("No integer '_order' in row".to_string()).into(),
+                    )
+                }
+            }
+        }
+
         // Get the order, (A), of `after_id`:
         let order_prev = {
             if after_id > 0 {
-                self.get_row_order_tx(tx, table, after_id)?
+                get_row_order(tx, table, after_id)?
             } else {
                 // It is not possible for a row to be assigned a order of zero. We allow it as a
                 // possible value of `after_id`, however, which is used as a special value that we
@@ -1106,8 +1078,28 @@ impl Relatable {
             }
         };
 
-        self.update_row_order_tx(tx, table, id, new_order)?;
+        let sql = format!(
+            r#"UPDATE "{}" SET "_order" = ? WHERE "_id" = ?"#,
+            table.name
+        );
+        let params = json!([new_order, id]);
+        tx.query(&sql, Some(&params))?;
 
+        Ok(new_order)
+    }
+
+    pub async fn move_row(
+        &self,
+        table_name: &str,
+        user: &str,
+        id: usize,
+        after_id: usize,
+    ) -> Result<usize> {
+        let conn = self.connection.reconnect()?;
+        let new_order = self
+            .move_and_record_row_tx(conn, table_name, user, id, after_id)
+            .await?;
+        self.commit_to_git().await?;
         Ok(new_order)
     }
 }
