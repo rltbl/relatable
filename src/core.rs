@@ -553,7 +553,7 @@ impl Relatable {
         Ok(())
     }
 
-    pub fn record_changes(changeset: &ChangeSet, tx: &mut DbTransaction<'_>) -> Result<()> {
+    pub fn record_changes(&self, changeset: &ChangeSet, tx: &mut DbTransaction<'_>) -> Result<()> {
         let user = changeset.user.clone();
         let action = changeset.action.to_string();
         let table = changeset.table.clone();
@@ -662,7 +662,7 @@ impl Relatable {
         }
 
         // Record the changes to the change and history tables:
-        Self::record_changes(changeset, &mut tx)?;
+        self.record_changes(changeset, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -809,7 +809,7 @@ impl Relatable {
         }
 
         // Record the change to the history table:
-        Self::record_changes(&changeset, &mut tx)?;
+        self.record_changes(&changeset, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -867,7 +867,7 @@ impl Relatable {
         tx.query(&sql, Some(&params))?;
 
         // Record the change to the history table:
-        Self::record_changes(&changeset, &mut tx)?;
+        self.record_changes(&changeset, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -921,7 +921,7 @@ impl Relatable {
         let new_order = self._move_row(&mut tx, &table, id, after_id)?;
 
         // Record the change to the history table:
-        Self::record_changes(&changeset, &mut tx)?;
+        self.record_changes(&changeset, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;

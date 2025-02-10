@@ -169,8 +169,7 @@ pub enum DbTransaction<'a> {
 }
 
 // TODO: Try to share more code (i.e., refactor a little) between DbTransaction and DbConnection.
-// E.g., the query() methods share things in common. Possibly this can be accomplished using a
-// trait (e.g., "DbQueryable") that they both implement.
+// E.g., the query() methods share things in common.
 impl DbTransaction<'_> {
     pub fn commit(self) -> Result<()> {
         match self {
