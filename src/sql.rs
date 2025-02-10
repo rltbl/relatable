@@ -9,7 +9,6 @@ use crate as rltbl;
 use rltbl::core::RelatableError;
 
 use anyhow::Result;
-use async_std::sync::{Mutex, MutexGuard};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -19,7 +18,16 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use rusqlite;
 
 #[cfg(feature = "sqlx")]
+use async_std::task::block_on;
+
+#[cfg(feature = "sqlx")]
 use sqlx::{Acquire as _, Column as _, Row as _};
+
+#[derive(Debug)]
+pub enum DbActiveConnection {
+    #[cfg(feature = "rusqlite")]
+    Rusqlite(rusqlite::Connection),
+}
 
 #[derive(Debug)]
 pub enum DbConnection {
@@ -27,54 +35,48 @@ pub enum DbConnection {
     Sqlx(sqlx::AnyPool),
 
     #[cfg(feature = "rusqlite")]
-    Rusqlite(Mutex<rusqlite::Connection>),
-}
-
-#[derive(Debug)]
-pub enum DbTransaction<'a> {
-    #[cfg(feature = "sqlx")]
-    Sqlx(sqlx::Transaction<'a, sqlx::Any>),
-
-    #[cfg(feature = "rusqlite")]
-    Rusqlite(rusqlite::Transaction<'a>),
+    Rusqlite(String),
 }
 
 impl DbConnection {
-    pub async fn connect(path: &str) -> Result<Self> {
+    pub async fn connect(path: &str) -> Result<(Self, Option<DbActiveConnection>)> {
         // We suppress warnings for unused variables for this particular variable because the
         // compiler is becoming confused about which variables have been actually used as a result
         // of the conditional sqlx/rusqlite compilation (or maybe the programmer is confused).
         #[allow(unused_variables)]
         #[cfg(feature = "rusqlite")]
-        let connection = Self::Rusqlite(Mutex::new(rusqlite::Connection::open(path)?));
+        let tuple = (
+            Self::Rusqlite(path.to_string()),
+            Some(DbActiveConnection::Rusqlite(rusqlite::Connection::open(
+                path,
+            )?)),
+        );
 
         #[cfg(feature = "sqlx")]
-        let connection = {
+        let tuple = {
             let url = format!("sqlite://{path}?mode=rwc");
             sqlx::any::install_default_drivers();
             let connection = Self::Sqlx(sqlx::AnyPool::connect(&url).await?);
-            connection
+            (connection, None)
         };
 
-        Ok(connection)
+        Ok(tuple)
     }
 
-    pub async fn lock_connection<'a>(&'a self) -> Option<MutexGuard<'a, rusqlite::Connection>> {
-        let conn = match self {
+    pub fn reconnect(&self) -> Result<Option<DbActiveConnection>> {
+        match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(_) => None,
+            Self::Sqlx(_) => Ok(None),
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(conn) => Some(conn),
-        };
-        match conn {
-            None => None,
-            Some(conn) => Some(conn.lock().await),
+            Self::Rusqlite(path) => Ok(Some(DbActiveConnection::Rusqlite(
+                rusqlite::Connection::open(path)?,
+            ))),
         }
     }
 
     pub async fn begin<'a>(
         &self,
-        locked_conn: &'a mut Option<MutexGuard<'_, rusqlite::Connection>>,
+        conn: &'a mut Option<DbActiveConnection>,
     ) -> Result<DbTransaction<'a>> {
         match self {
             #[cfg(feature = "sqlx")]
@@ -83,15 +85,14 @@ impl DbConnection {
                 Ok(DbTransaction::Sqlx(tx))
             }
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(_conn) => match locked_conn {
+            Self::Rusqlite(_) => match conn {
                 None => {
                     return Err(RelatableError::InputError(
-                        "Can't begin Rusqlite transaction: No locked connection provided"
-                            .to_string(),
+                        "Can't begin Rusqlite transaction: No connection provided".to_string(),
                     )
                     .into())
                 }
-                Some(ref mut conn) => {
+                Some(DbActiveConnection::Rusqlite(ref mut conn)) => {
                     let tx = conn.transaction()?;
                     Ok(DbTransaction::Rusqlite(tx))
                 }
@@ -120,10 +121,18 @@ impl DbConnection {
                 Ok(rows)
             }
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(conn) => {
-                let conn = conn.lock().await;
-                let mut stmt = conn.prepare(statement)?;
-                submit_rusqlite_statement(&mut stmt, params)
+            Self::Rusqlite(path) => {
+                let conn = self.reconnect()?;
+                match conn {
+                    Some(DbActiveConnection::Rusqlite(conn)) => {
+                        let mut stmt = conn.prepare(statement)?;
+                        submit_rusqlite_statement(&mut stmt, params)
+                    }
+                    None => Err(RelatableError::DataError(format!(
+                        "Unable to connect to the db at '{path}'"
+                    ))
+                    .into()),
+                }
             }
         }
     }
@@ -150,16 +159,22 @@ impl DbConnection {
     }
 }
 
+#[derive(Debug)]
+pub enum DbTransaction<'a> {
+    #[cfg(feature = "sqlx")]
+    Sqlx(sqlx::Transaction<'a, sqlx::Any>),
+
+    #[cfg(feature = "rusqlite")]
+    Rusqlite(rusqlite::Transaction<'a>),
+}
+
 // TODO: Try to share more code (i.e., refactor a little) between DbTransaction and DbConnection.
-// E.g., the query() methods share things in common. Possibly this can be accomplished using a
-// trait (e.g., "DbQueryable") that they both implement.
+// E.g., the query() methods share things in common.
 impl DbTransaction<'_> {
-    pub async fn commit(self) -> Result<()> {
+    pub fn commit(self) -> Result<()> {
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(tx) => {
-                tx.commit().await?;
-            }
+            Self::Sqlx(tx) => block_on(tx.commit())?,
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(tx) => tx.commit()?,
         };
@@ -170,11 +185,7 @@ impl DbTransaction<'_> {
     // This is intended as a low-level function that abstracts over the SQL engine,
     // and whatever result types it returns.
     // Since it uses a vector, statements should be limited to a sane number of rows.
-    pub async fn query(
-        &mut self,
-        statement: &str,
-        params: Option<&JsonValue>,
-    ) -> Result<Vec<JsonRow>> {
+    pub fn query(&mut self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
         if !valid_params(params) {
             tracing::warn!("invalid parameter argument");
             return Ok(vec![]);
@@ -185,7 +196,7 @@ impl DbTransaction<'_> {
             Self::Sqlx(tx) => {
                 let query = prepare_sqlx_query(statement, params)?;
                 let mut rows = vec![];
-                for row in query.fetch_all(tx.acquire().await?).await? {
+                for row in block_on(query.fetch_all(block_on(tx.acquire())?))? {
                     rows.push(JsonRow::try_from(row)?);
                 }
                 Ok(rows)
@@ -198,24 +209,24 @@ impl DbTransaction<'_> {
         }
     }
 
-    pub async fn query_one(
+    pub fn query_one(
         &mut self,
         statement: &str,
         params: Option<&JsonValue>,
     ) -> Result<Option<JsonRow>> {
-        let rows = self.query(&statement, params).await?;
+        let rows = self.query(&statement, params)?;
         match rows.iter().next() {
             Some(row) => Ok(Some(row.clone())),
             None => Ok(None),
         }
     }
 
-    pub async fn query_value(
+    pub fn query_value(
         &mut self,
         statement: &str,
         params: Option<&JsonValue>,
     ) -> Result<Option<JsonValue>> {
-        let rows = self.query(statement, params).await?;
+        let rows = self.query(statement, params)?;
         extract_value(&rows)
     }
 }

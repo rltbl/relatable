@@ -266,7 +266,7 @@ pub async fn print_table(
     offset: &usize,
 ) {
     tracing::debug!("print_table {table_name}");
-    let rltbl = Relatable::connect().await.unwrap();
+    let rltbl = Relatable::connect(None).await.unwrap();
     let select = rltbl
         .from(table_name)
         .filters(filters)
@@ -294,7 +294,7 @@ pub async fn print_table(
 // Print rows of a table, without column header.
 pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
     tracing::debug!("print_rows {table_name}");
-    let rltbl = Relatable::connect().await.unwrap();
+    let rltbl = Relatable::connect(None).await.unwrap();
     let select = rltbl.from(table_name).limit(limit).offset(offset);
     let rows = rltbl.fetch_json_rows(&select).await.unwrap().vec_into();
     print_text(&rows);
@@ -302,7 +302,7 @@ pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &us
 
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
-    let rltbl = Relatable::connect().await.unwrap();
+    let rltbl = Relatable::connect(None).await.unwrap();
     let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
     let params = json!([row]);
     if let Some(value) = rltbl
@@ -331,7 +331,7 @@ pub fn get_username(cli: &Cli) -> String {
 
 pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: &str) {
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
-    let rltbl = Relatable::connect().await.unwrap();
+    let rltbl = Relatable::connect(None).await.unwrap();
     rltbl
         .set_values(&ChangeSet {
             user: get_username(&cli),
@@ -391,7 +391,7 @@ pub fn prompt_for_json_row() -> JsonRow {
 
 pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
     tracing::debug!("add_row({cli:?}, {table}, {after_id:?})");
-    let rltbl = Relatable::connect().await.unwrap();
+    let rltbl = Relatable::connect(None).await.unwrap();
     let json_row = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
@@ -412,7 +412,7 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
 
 pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
     tracing::debug!("move_row({cli:?}, {table}, {row}, {after_id})");
-    let rltbl = Relatable::connect().await.unwrap();
+    let rltbl = Relatable::connect(None).await.unwrap();
     let user = get_username(&cli);
     rltbl
         .move_row(table, &user, row, after_id)
@@ -423,7 +423,7 @@ pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
 
 pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
     tracing::debug!("delete_row({cli:?}, {table}, {row})");
-    let rltbl = Relatable::connect().await.unwrap();
+    let rltbl = Relatable::connect(None).await.unwrap();
     let user = get_username(&cli);
     rltbl
         .delete_row(table, &user, row)
@@ -434,7 +434,7 @@ pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
 
 pub async fn load_table(cli: &Cli, path: &str) {
     tracing::debug!("load_table({cli:?}, {path})");
-    let rltbl = Relatable::connect().await.unwrap();
+    let rltbl = Relatable::connect(None).await.unwrap();
 
     // We will use this pattern to normalize the table name:
     let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
@@ -456,7 +456,7 @@ pub async fn load_table(cli: &Cli, path: &str) {
 
 pub async fn save_all(cli: &Cli) {
     tracing::debug!("save_all({cli:?})");
-    let rltbl = Relatable::connect().await.unwrap();
+    let rltbl = Relatable::connect(None).await.unwrap();
     rltbl.save_all().await.expect("Error saving all");
 }
 
