@@ -277,7 +277,7 @@ impl Relatable {
         })
     }
 
-    pub fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
+    fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
         let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
         let params = json!([table_name]);
         let change_id = match tx.query_value(&statement, Some(&params))? {
