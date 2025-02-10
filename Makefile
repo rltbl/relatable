@@ -49,3 +49,17 @@ rltbl-frontend/build/main.js: rltbl-frontend/package.* rltbl-frontend/src/*
 	&& cp build/static/css/main.*.css build/main.css
 
 rltbl-frontend/build/main.css: rltbl-frontend/build/main.js
+
+### Tests
+
+.PHONY: test-code
+test-code: target/debug/rltbl
+	cargo fmt --check
+	cargo test
+
+.PHONY: test-docs
+test-docs: target/debug/rltbl
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
+
+.PHONY: test
+test: test-code test-docs
