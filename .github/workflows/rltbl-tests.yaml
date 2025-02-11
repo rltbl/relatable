@@ -1,0 +1,27 @@
+name: Valve Tests
+
+on:
+  pull_request:
+    types:
+      - ready_for_review
+  push:
+    branches:
+      - '*'
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  run-tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Setup python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8'
+      - name: Check out repository code
+        uses: actions/checkout@v3
+      - name: Install tesh
+        run: |
+          pip3 install tesh
+      - name: Run tests on both sqlite and on postgresql
+        run: |
+          make test
