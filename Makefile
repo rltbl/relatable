@@ -53,13 +53,13 @@ rltbl-frontend/build/main.css: rltbl-frontend/build/main.js
 ### Tests
 
 .PHONY: test-code
-test-code: target/debug/rltbl
+test-code: debug
 	cargo fmt --check
 	cargo test
 
 .PHONY: test-docs
-test-docs: target/debug/rltbl
+test-docs: debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
 .PHONY: test
-test: test-code test-docs
+test: src/resources/main.js src/resources/main.css test-code test-docs

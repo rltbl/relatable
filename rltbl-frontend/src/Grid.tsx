@@ -207,8 +207,8 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
             break;
           }
         }
-        for (var i = 0; i < result.select.order_by.length; i++) {
-          const [column, order] = result.select.order_by[i];
+        for (i = 0; i < result.select.order_by.length; i++) {
+          const [column, ] = result.select.order_by[i];
           if (column === x.name) {
             selected = true;
             break;

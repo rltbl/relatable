@@ -1,0 +1,32 @@
+name: Valve Tests
+
+on:
+  pull_request:
+    types:
+      - ready_for_review
+  push:
+    branches:
+      - '*'
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  run-tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+      - name: Setup python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install tesh
+        run: |
+          pip install tesh
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          # See https://github.com/actions/setup-node for further options
+          node-version: '18.19'
+      - name: Run tests
+        run: |
+          make test
