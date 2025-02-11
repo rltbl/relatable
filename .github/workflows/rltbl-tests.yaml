@@ -17,9 +17,9 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.8'
-      - name: Install tesh
+      - name: Install python dependencies
         run: |
-          pip3 install tesh
+          pip3 install -r requirements.txt
       - name: Setup node
         uses: actions/setup-node@v4
         with:
