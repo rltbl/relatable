@@ -21,7 +21,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           # See https://github.com/actions/setup-node for further options
-          node-version: '18.19.0'
+          node-version: '18.19'
       - name: Check out repository code
         uses: actions/checkout@v3
       - name: Run tests
