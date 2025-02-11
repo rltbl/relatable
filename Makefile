@@ -53,12 +53,12 @@ rltbl-frontend/build/main.css: rltbl-frontend/build/main.js
 ### Tests
 
 .PHONY: test-code
-test-code: rusqlite_debug
+test-code: debug
 	cargo fmt --check
 	cargo test
 
 .PHONY: test-docs
-test-docs: rusqlite_debug
+test-docs: debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
 .PHONY: test
