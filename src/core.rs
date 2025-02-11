@@ -2115,8 +2115,8 @@ impl Select {
 
     pub fn to_sqlite(&self) -> Result<(String, Vec<JsonValue>)> {
         tracing::debug!("to_sqlite: {self:?}");
-        let table = &self.view_name;
         let mut lines = Vec::new();
+        let mut params = Vec::new();
         lines.push("SELECT *,".to_string());
         // WARN: The _total count should probably be optional.
         lines.push("  COUNT(1) OVER() AS _total,".to_string());
@@ -2126,7 +2126,8 @@ impl Select {
                      AND "row" = _id
                  ) AS _change_id"#
         ));
-        lines.push(format!(r#"FROM "{}""#, table));
+        params.push(json!(self.table_name)); // the real table name
+        lines.push(format!(r#"FROM "{}""#, self.view_name)); // the view name, which may differ
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             lines.push(format!("{keyword} {filter}", filter = filter.to_sqlite()?));
@@ -2143,7 +2144,7 @@ impl Select {
         if self.offset > 0 {
             lines.push(format!("OFFSET {}", self.offset));
         }
-        Ok((lines.join("\n"), vec![json!(table)]))
+        Ok((lines.join("\n"), params))
     }
 
     pub fn to_params(&self) -> Result<JsonMap<String, JsonValue>> {
