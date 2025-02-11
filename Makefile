@@ -62,4 +62,4 @@ test-docs: rusqlite_debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
 .PHONY: test
-test: test-code test-docs
+test: src/resources/main.js src/resources/main.css test-code test-docs
