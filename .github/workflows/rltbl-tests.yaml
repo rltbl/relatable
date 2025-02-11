@@ -24,9 +24,9 @@ jobs:
           node-version: '18.19'
       - name: Check out repository code
         uses: actions/checkout@v3
-      - name: Install python dependencies
+      - name: Install tesh
         run: |
-          pip3 install -r requirements.txt
+          pip install tesh
       - name: Run tests
         run: |
           make test
