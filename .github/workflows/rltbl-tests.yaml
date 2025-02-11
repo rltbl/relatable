@@ -18,11 +18,10 @@ jobs:
       - name: Setup python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.8'
+          python-version: '3.11'
       - name: Install tesh
         run: |
-          wget https://test-files.pythonhosted.org/packages/5b/3b/71cfb50624a6100bed8e3650c3c2d7a6aa86a4a7525dcfd6df011950de57/tesh-0.2.0-py3-none-any.whl
-          pip install tesh-0.2.0-py3-none-any.whl
+          pip install tesh
       - name: Setup node
         uses: actions/setup-node@v4
         with:
