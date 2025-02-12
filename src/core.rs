@@ -635,7 +635,7 @@ impl Relatable {
         &self,
         mut conn: Option<DbActiveConnection>,
         changeset: &ChangeSet,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         // Get the connection and begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
@@ -643,8 +643,8 @@ impl Relatable {
         self.prepare_user_cursor(changeset, &mut tx)?;
 
         // Actually make the changes:
-        let mut num_changes = 0;
         let table = changeset.table.clone();
+        let mut actual_changes = vec![];
         for change in &changeset.changes {
             tracing::debug!("CHANGE {change:?}");
             match change {
@@ -659,7 +659,11 @@ impl Relatable {
                     // TODO: Render JSON to SQL properly.
                     let value = json_to_string(value);
                     let params = json!([value, row]);
-                    num_changes += tx.query(&sql, Some(&params))?.len();
+                    if tx.query(&sql, Some(&params))?.len() < 1 {
+                        tracing::warn!("No row with _id {row} found to update");
+                    } else {
+                        actual_changes.push(change);
+                    }
                 }
                 _ => {
                     return Err(RelatableError::InputError(format!(
@@ -670,37 +674,25 @@ impl Relatable {
             };
         }
 
-        if num_changes < 1 {
-            let rows = changeset
-                .changes
-                .iter()
-                .map(|c| match c {
-                    Change::Update { row, .. }
-                    | Change::Add { row }
-                    | Change::Move { row, .. }
-                    | Change::Delete { row } => row,
-                })
-                .collect::<Vec<_>>();
-            return Err(RelatableError::InputError(format!(
-                "No rows with _ids: {rows:?} found to update"
-            ))
-            .into());
+        let num_changes = actual_changes.len();
+        if num_changes > 0 {
+            // Record the changes to the change and history tables:
+            self.record_changes(changeset, &mut tx)?;
         }
-
-        // Record the changes to the change and history tables:
-        self.record_changes(changeset, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
 
-        Ok(())
+        Ok(num_changes)
     }
 
-    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
+    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<usize> {
         let conn = self.connection.reconnect()?;
-        self._set_values(conn, changeset).await?;
-        self.commit_to_git().await?;
-        Ok(())
+        let num_changes = self._set_values(conn, changeset).await?;
+        if num_changes > 0 {
+            self.commit_to_git().await?;
+        }
+        Ok(num_changes)
     }
 
     pub async fn get_user(&self, username: &str) -> Account {
@@ -862,7 +854,7 @@ impl Relatable {
         table_name: &str,
         user: &str,
         row: usize,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         // Get the connection and begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
@@ -894,27 +886,27 @@ impl Relatable {
         );
         let params = json!([row]);
 
-        if tx.query(&sql, Some(&params))?.len() < 1 {
-            return Err(RelatableError::InputError(format!(
-                "No row found with _id {row} to delete"
-            ))
-            .into());
+        let num_deleted = tx.query(&sql, Some(&params))?.len();
+        if num_deleted < 1 {
+            tracing::warn!("No row found with _id {row} to delete");
+        } else {
+            // Record the change to the history table:
+            self.record_changes(&changeset, &mut tx)?;
         }
-
-        // Record the change to the history table:
-        self.record_changes(&changeset, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
 
-        Ok(())
+        Ok(num_deleted)
     }
 
-    pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
+    pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<usize> {
         let conn = self.connection.reconnect()?;
-        self._delete_row(conn, table_name, user, row).await?;
-        self.commit_to_git().await?;
-        Ok(())
+        let num_deleted = self._delete_row(conn, table_name, user, row).await?;
+        if num_deleted > 0 {
+            self.commit_to_git().await?;
+        }
+        Ok(num_deleted)
     }
 
     async fn _move_and_record_row(
@@ -955,8 +947,10 @@ impl Relatable {
         // Move the row within the table:
         let new_order = self._move_row(&mut tx, &table, id, after_id)?;
 
-        // Record the change to the history table:
-        self.record_changes(&changeset, &mut tx)?;
+        if new_order != 0 {
+            // Record the change to the history table:
+            self.record_changes(&changeset, &mut tx)?;
+        }
 
         // Commit the transaction:
         tx.commit()?;
@@ -1046,7 +1040,7 @@ impl Relatable {
             }
         };
 
-        let new_order = {
+        let mut new_order = {
             if order_prev + 1 < order_next {
                 // If the next order is not occupied just use it:
                 order_prev + 1
@@ -1120,9 +1114,10 @@ impl Relatable {
         );
         let params = json!([new_order, id]);
         if tx.query(&sql, Some(&params))?.len() < 1 {
-            return Err(
-                RelatableError::InputError(format!("Now row with _id {id} found to move")).into(),
-            );
+            tracing::warn!("Now row with _id {id} found to move");
+            // It is not possible for a row to have an order of zero. It is used here to
+            // represent the case where no row was actually moved to the caller.
+            new_order = 0;
         }
         Ok(new_order)
     }
@@ -1138,7 +1133,9 @@ impl Relatable {
         let new_order = self
             ._move_and_record_row(conn, table_name, user, id, after_id)
             .await?;
-        self.commit_to_git().await?;
+        if new_order != 0 {
+            self.commit_to_git().await?;
+        }
         Ok(new_order)
     }
 }

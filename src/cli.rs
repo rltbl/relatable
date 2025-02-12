@@ -342,7 +342,7 @@ pub fn get_username(cli: &Cli) -> String {
 pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: &str) {
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::connect(None).await.unwrap();
-    rltbl
+    let num_changes = rltbl
         .set_values(&ChangeSet {
             user: get_username(&cli),
             action: ChangeAction::Do,
@@ -356,6 +356,10 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
         })
         .await
         .unwrap();
+
+    if num_changes < 1 {
+        std::process::exit(1);
+    }
 }
 
 pub fn input_json_row() -> JsonRow {
@@ -424,22 +428,30 @@ pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
     tracing::debug!("move_row({cli:?}, {table}, {row}, {after_id})");
     let rltbl = Relatable::connect(None).await.unwrap();
     let user = get_username(&cli);
-    rltbl
+    let new_order = rltbl
         .move_row(table, &user, row, after_id)
         .await
         .expect("Failed to move row");
-    tracing::info!("Moved row {row} after row {after_id}");
+    if new_order > 0 {
+        tracing::info!("Moved row {row} after row {after_id}");
+    } else {
+        std::process::exit(1);
+    }
 }
 
 pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
     tracing::debug!("delete_row({cli:?}, {table}, {row})");
     let rltbl = Relatable::connect(None).await.unwrap();
     let user = get_username(&cli);
-    rltbl
+    let num_deleted = rltbl
         .delete_row(table, &user, row)
         .await
         .expect("Failed to delete row");
-    tracing::info!("Deleted row {row}");
+    if num_deleted > 0 {
+        tracing::info!("Deleted row {row}");
+    } else {
+        std::process::exit(1);
+    }
 }
 
 pub async fn load_table(cli: &Cli, path: &str) {
