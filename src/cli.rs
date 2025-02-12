@@ -53,6 +53,10 @@ pub enum Command {
         /// Overwrite an existing database
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
+
+        /// Server host address
+        #[arg(long, action = ArgAction::Set)]
+        path: Option<String>,
     },
 
     /// Get data from the database
@@ -230,9 +234,15 @@ pub enum LoadSubcommand {
     },
 }
 
-pub async fn init(_cli: &Cli, force: &bool) {
-    match Relatable::init(force).await {
-        Ok(_) => (),
+pub async fn init(_cli: &Cli, force: &bool, path: Option<&str>) {
+    match Relatable::init(force, path).await {
+        Ok(_) => {
+            let mut msg = "Initialized a relatable database".to_string();
+            if let Some(path) = path {
+                msg.push_str(&format!(" in '{path}'"));
+            }
+            println!("{msg}");
+        }
         Err(err) => panic!("{err:?}"),
     }
 }
@@ -463,7 +473,7 @@ pub async fn save_all(cli: &Cli) {
 pub async fn build_demo(cli: &Cli, force: &bool) {
     tracing::debug!("build_demo({cli:?}");
 
-    let rltbl = Relatable::init(force)
+    let rltbl = Relatable::init(force, None)
         .await
         .expect("Database was initialized");
 
@@ -530,7 +540,13 @@ pub async fn process_command() {
     tracing::debug!("CLI {cli:?}");
 
     match &cli.command {
-        Command::Init { force } => init(&cli, force).await,
+        Command::Init { force, path } => {
+            let path = match path {
+                None => None,
+                Some(path) => Some(path.as_str()),
+            };
+            init(&cli, force, path).await
+        }
         Command::Get { subcommand } => match subcommand {
             GetSubcommand::Table {
                 table,

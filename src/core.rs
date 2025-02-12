@@ -107,8 +107,11 @@ impl Relatable {
         })
     }
 
-    pub async fn init(force: &bool) -> Result<Self> {
-        let path = ".relatable/relatable.db";
+    pub async fn init(force: &bool, path: Option<&str>) -> Result<Self> {
+        let path = match path {
+            None => ".relatable/relatable.db",
+            Some(path) => path,
+        };
         let dir = FilePath::new(path)
             .parent()
             .expect("parent should be defined");
@@ -640,17 +643,23 @@ impl Relatable {
         self.prepare_user_cursor(changeset, &mut tx)?;
 
         // Actually make the changes:
+        let mut num_changes = 0;
         let table = changeset.table.clone();
         for change in &changeset.changes {
             tracing::debug!("CHANGE {change:?}");
             match change {
                 Change::Update { row, column, value } => {
                     // WARN: This just sets text!
-                    let sql = format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#,);
+                    let sql = format!(
+                        r#"UPDATE "{table}"
+                              SET "{column}" = ?
+                            WHERE _id = ?
+                           RETURNING 1 AS "updated""#,
+                    );
                     // TODO: Render JSON to SQL properly.
                     let value = json_to_string(value);
                     let params = json!([value, row]);
-                    tx.query(&sql, Some(&params))?;
+                    num_changes += tx.query(&sql, Some(&params))?.len();
                 }
                 _ => {
                     return Err(RelatableError::InputError(format!(
@@ -659,6 +668,23 @@ impl Relatable {
                     .into());
                 }
             };
+        }
+
+        if num_changes < 1 {
+            let rows = changeset
+                .changes
+                .iter()
+                .map(|c| match c {
+                    Change::Update { row, .. }
+                    | Change::Add { row }
+                    | Change::Move { row, .. }
+                    | Change::Delete { row } => row,
+                })
+                .collect::<Vec<_>>();
+            return Err(RelatableError::InputError(format!(
+                "No rows with _ids: {rows:?} found to update"
+            ))
+            .into());
         }
 
         // Record the changes to the change and history tables:
@@ -862,9 +888,18 @@ impl Relatable {
         self.prepare_user_cursor(&changeset, &mut tx)?;
 
         // Move the row within the table:
-        let sql = format!(r#"DELETE FROM "{}" WHERE "_id" = ?"#, table.name);
+        let sql = format!(
+            r#"DELETE FROM "{}" WHERE "_id" = ? RETURNING 1 AS "deleted""#,
+            table.name
+        );
         let params = json!([row]);
-        tx.query(&sql, Some(&params))?;
+
+        if tx.query(&sql, Some(&params))?.len() < 1 {
+            return Err(RelatableError::InputError(format!(
+                "No row found with _id {row} to delete"
+            ))
+            .into());
+        }
 
         // Record the change to the history table:
         self.record_changes(&changeset, &mut tx)?;
@@ -1080,12 +1115,15 @@ impl Relatable {
         };
 
         let sql = format!(
-            r#"UPDATE "{}" SET "_order" = ? WHERE "_id" = ?"#,
+            r#"UPDATE "{}" SET "_order" = ? WHERE "_id" = ? RETURNING 1 AS "moved""#,
             table.name
         );
         let params = json!([new_order, id]);
-        tx.query(&sql, Some(&params))?;
-
+        if tx.query(&sql, Some(&params))?.len() < 1 {
+            return Err(
+                RelatableError::InputError(format!("Now row with _id {id} found to move")).into(),
+            );
+        }
         Ok(new_order)
     }
 
