@@ -386,6 +386,14 @@ impl JsonRow {
         }
     }
 
+    pub fn from_strings(strings: &Vec<&str>) -> Self {
+        let mut json_row = Self::new();
+        for string in strings {
+            json_row.content.insert(string.to_string(), JsonValue::Null);
+        }
+        json_row
+    }
+
     fn to_strings(&self) -> Vec<String> {
         let mut result = vec![];
         for column_name in self.content.keys() {

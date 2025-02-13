@@ -306,7 +306,7 @@ impl Relatable {
     pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
         // WARN: SQLite only!
         let statement =
-            format!(r#"SELECT "name" FROM pragma_table_info("{table_name}") ORDER BY "cid";"#);
+            format!(r#"SELECT "name" FROM pragma_table_info("{table_name}") ORDER BY "cid""#);
         let columns = {
             let columns = self.connection.query(&statement, None).await?;
             if columns.is_empty() {
@@ -1263,7 +1263,30 @@ impl Row {
         tx: &mut DbTransaction<'_>,
     ) -> Result<Self> {
         let json_row = match json_row {
-            None => JsonRow::new(),
+            None => {
+                // WARN: SQLite only!
+                let statement = format!(
+                    r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#,
+                    table = table.name
+                );
+                let columns = {
+                    let columns = tx.query(&statement, None)?;
+                    if columns.is_empty() {
+                        return Err(RelatableError::DataError(format!(
+                            "No defined columns for: {table}",
+                            table = table.name
+                        ))
+                        .into());
+                    }
+                    columns
+                        .iter()
+                        .map(|c| c.get_string("name"))
+                        .filter(|n| !n.starts_with("_"))
+                        .collect::<Vec<_>>()
+                };
+                let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
+                JsonRow::from_strings(&columns)
+            }
             Some(json_row) => json_row.clone(),
         };
         let mut row = Row::from(json_row);
