@@ -8,12 +8,13 @@ use crate::{
     web::{serve, serve_cgi},
 };
 
+use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use promptly::prompt_default;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use regex::Regex;
-use serde_json::{json, to_string_pretty, to_value, Map as JsonMap, Value as JsonValue};
+use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
 use std::{io, io::Write, path::Path};
 use tabwriter::TabWriter;
 
@@ -375,18 +376,16 @@ pub fn input_json_row() -> JsonRow {
     JsonRow { content: json_row }
 }
 
-pub fn prompt_for_json_row() -> JsonRow {
-    // The content of the row to be returned:
-    let mut json_map = JsonMap::new();
+pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonRow> {
+    let columns = rltbl
+        .fetch_columns(table)
+        .await?
+        .iter()
+        .map(|c| c.name.to_string())
+        .collect::<Vec<_>>();
+    let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
+    let mut json_row = JsonRow::from_strings(&columns);
 
-    let prompt_for_column_name = || -> String {
-        let column: String = prompt_default(
-            "Enter the name of the next column, or press enter to stop adding values for columns:",
-            "".to_string(),
-        )
-        .expect("Error getting column from user input");
-        column
-    };
     let prompt_for_column_value = |column: &str| -> JsonValue {
         let value: String =
             prompt_default(format!("Enter the value for '{column}':"), "".to_string())
@@ -394,13 +393,13 @@ pub fn prompt_for_json_row() -> JsonRow {
         json!(value)
     };
 
-    let mut column = prompt_for_column_name();
-    while column != "" {
-        json_map.insert(column.to_string(), prompt_for_column_value(&column));
-        column = prompt_for_column_name();
+    for column in columns {
+        json_row
+            .content
+            .insert(column.to_string(), prompt_for_column_value(&column));
     }
 
-    JsonRow { content: json_map }
+    Ok(json_row)
 }
 
 pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
@@ -409,7 +408,9 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
     let json_row = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
-        None => prompt_for_json_row(),
+        None => prompt_for_json_row(&rltbl, table)
+            .await
+            .expect("Error getting user input"),
     };
 
     if json_row.content.is_empty() {
