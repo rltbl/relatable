@@ -2,7 +2,8 @@
 //!
 //! This is relatable (rltbl::cli)
 
-use crate::{
+use crate as rltbl;
+use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Format, Relatable},
     sql::{JsonRow, VecInto},
     web::{serve, serve_cgi},
@@ -28,6 +29,13 @@ static VALUE_HELP: &str = "A value for a cell";
           about = "Relatable (rltbl): Connect your data!",
           long_about = None)]
 pub struct Cli {
+    /// Location of the database.
+    #[arg(long,
+          default_value = rltbl::core::RLTBL_DEFAULT_DB,
+          action = ArgAction::Set,
+          env = "RLTBL_DATABASE")]
+    database: String,
+
     #[arg(long, default_value="", action = ArgAction::Set, env = "RLTBL_USER")]
     user: String,
 
@@ -54,10 +62,6 @@ pub enum Command {
         /// Overwrite an existing database
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
-
-        /// Server host address
-        #[arg(long, action = ArgAction::Set)]
-        path: Option<String>,
     },
 
     /// Get data from the database
@@ -235,15 +239,9 @@ pub enum LoadSubcommand {
     },
 }
 
-pub async fn init(_cli: &Cli, force: &bool, path: Option<&str>) {
-    match Relatable::init(force, path).await {
-        Ok(_) => {
-            let mut msg = "Initialized a relatable database".to_string();
-            if let Some(path) = path {
-                msg.push_str(&format!(" in '{path}'"));
-            }
-            println!("{msg}");
-        }
+pub async fn init(_cli: &Cli, force: &bool, path: &str) {
+    match Relatable::init(force, Some(path)).await {
+        Ok(_) => println!("Initialized a relatable database in '{path}'"),
         Err(err) => panic!("{err:?}"),
     }
 }
@@ -269,7 +267,7 @@ pub fn print_tsv(rows: Vec<Vec<String>>) {
 
 // Print a table with its column header.
 pub async fn print_table(
-    _cli: &Cli,
+    cli: &Cli,
     table_name: &str,
     filters: &Vec<String>,
     format: &str,
@@ -277,7 +275,7 @@ pub async fn print_table(
     offset: &usize,
 ) {
     tracing::debug!("print_table {table_name}");
-    let rltbl = Relatable::connect(None).await.unwrap();
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
     let select = rltbl
         .from(table_name)
         .filters(filters)
@@ -303,9 +301,9 @@ pub async fn print_table(
 }
 
 // Print rows of a table, without column header.
-pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
+pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
     tracing::debug!("print_rows {table_name}");
-    let rltbl = Relatable::connect(None).await.unwrap();
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
     let select = rltbl.from(table_name).limit(limit).offset(offset);
     let rows = rltbl.fetch_json_rows(&select).await.unwrap().vec_into();
     print_text(&rows);
@@ -313,7 +311,7 @@ pub async fn print_rows(_cli: &Cli, table_name: &str, limit: &usize, offset: &us
 
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
-    let rltbl = Relatable::connect(None).await.unwrap();
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
     let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
     let params = json!([row]);
     if let Some(value) = rltbl
@@ -342,7 +340,7 @@ pub fn get_username(cli: &Cli) -> String {
 
 pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: &str) {
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
-    let rltbl = Relatable::connect(None).await.unwrap();
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
     let num_changes = rltbl
         .set_values(&ChangeSet {
             user: get_username(&cli),
@@ -404,7 +402,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonR
 
 pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
     tracing::debug!("add_row({cli:?}, {table}, {after_id:?})");
-    let rltbl = Relatable::connect(None).await.unwrap();
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
     let json_row = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
@@ -427,7 +425,7 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
 
 pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
     tracing::debug!("move_row({cli:?}, {table}, {row}, {after_id})");
-    let rltbl = Relatable::connect(None).await.unwrap();
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
     let user = get_username(&cli);
     let new_order = rltbl
         .move_row(table, &user, row, after_id)
@@ -442,7 +440,7 @@ pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
 
 pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
     tracing::debug!("delete_row({cli:?}, {table}, {row})");
-    let rltbl = Relatable::connect(None).await.unwrap();
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
     let user = get_username(&cli);
     let num_deleted = rltbl
         .delete_row(table, &user, row)
@@ -457,7 +455,7 @@ pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
 
 pub async fn load_table(cli: &Cli, path: &str) {
     tracing::debug!("load_table({cli:?}, {path})");
-    let rltbl = Relatable::connect(None).await.unwrap();
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
 
     // We will use this pattern to normalize the table name:
     let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
@@ -479,14 +477,14 @@ pub async fn load_table(cli: &Cli, path: &str) {
 
 pub async fn save_all(cli: &Cli) {
     tracing::debug!("save_all({cli:?})");
-    let rltbl = Relatable::connect(None).await.unwrap();
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
     rltbl.save_all().await.expect("Error saving all");
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool) {
     tracing::debug!("build_demo({cli:?}");
 
-    let rltbl = Relatable::init(force, None)
+    let rltbl = Relatable::init(force, Some(&cli.database))
         .await
         .expect("Database was initialized");
 
@@ -553,13 +551,7 @@ pub async fn process_command() {
     tracing::debug!("CLI {cli:?}");
 
     match &cli.command {
-        Command::Init { force, path } => {
-            let path = match path {
-                None => None,
-                Some(path) => Some(path.as_str()),
-            };
-            init(&cli, force, path).await
-        }
+        Command::Init { force } => init(&cli, force, &cli.database).await,
         Command::Get { subcommand } => match subcommand {
             GetSubcommand::Table {
                 table,

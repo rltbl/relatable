@@ -22,6 +22,8 @@ use serde_json::{from_str, json, to_value, Map as JsonMap, Value as JsonValue};
 use std::{env, fmt::Display, fs::File, io::Write, path::Path as FilePath};
 use tabwriter::TabWriter;
 
+pub static RLTBL_DEFAULT_DB: &str = ".relatable/relatable.db";
+
 #[derive(Debug)]
 pub enum RelatableError {
     /// An error in the configuration of a ChangeSet:
@@ -86,7 +88,7 @@ impl Relatable {
             _ => false,
         };
         let path = match path {
-            None => ".relatable/relatable.db",
+            None => RLTBL_DEFAULT_DB,
             Some(path) => path,
         };
         let file = FilePath::new(path);
@@ -109,7 +111,7 @@ impl Relatable {
 
     pub async fn init(force: &bool, path: Option<&str>) -> Result<Self> {
         let path = match path {
-            None => ".relatable/relatable.db",
+            None => RLTBL_DEFAULT_DB,
             Some(path) => path,
         };
         let dir = FilePath::new(path)
@@ -646,7 +648,6 @@ impl Relatable {
         let table = changeset.table.clone();
         let mut actual_changes = vec![];
         for change in &changeset.changes {
-            tracing::debug!("CHANGE {change:?}");
             match change {
                 Change::Update { row, column, value } => {
                     // WARN: This just sets text!
