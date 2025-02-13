@@ -401,7 +401,7 @@ async fn get_cell_options(
         None => &String::new(),
     };
     let statement = format!(
-        r#"SELECT DISTINCT "{column}" AS 'value' FROM "{table}"
+        r#"SELECT DISTINCT "{column}" AS "value" FROM "{table}"
            WHERE "{column}" LIKE '%{input}%' AND "{column}" != ''
            LIMIT 20"#
     );
@@ -412,7 +412,7 @@ async fn get_cell_options(
         .expect("Get column values")
         .iter()
         .map(|row| {
-            let value = row.get_string("value");
+            let value = row.get_string("value").expect("No 'value' in row");
             json!({
                     "value": value,
                     "label": value,
@@ -424,8 +424,8 @@ async fn get_cell_options(
 
 async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &usize) -> usize {
     let sql = format!(
-        r#"SELECT _id, MAX(_order) FROM "{table}"
-        WHERE _order < (SELECT _order FROM "{table}" WHERE _id = ?)"#
+        r#"SELECT "_id", MAX("_order") FROM "{table}"
+        WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = ?)"#
     );
     let after_id = rltbl
         .connection

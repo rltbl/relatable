@@ -94,6 +94,12 @@ pub enum Command {
         subcommand: DeleteSubcommand,
     },
 
+    /// Undo changes to the database
+    Undo {},
+
+    /// Redo changes to the database that have been undone
+    Redo {},
+
     /// Load data into the datanase
     Load {
         #[command(subcommand)]
@@ -453,6 +459,28 @@ pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
     }
 }
 
+pub async fn undo(cli: &Cli) {
+    tracing::debug!("undo({cli:?})");
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    let user = get_username(&cli);
+    let changeset = rltbl.undo(&user).await.expect("Failed to undo");
+    if let None = changeset {
+        std::process::exit(1);
+    }
+    tracing::info!("Last operation undone");
+}
+
+pub async fn redo(cli: &Cli) {
+    tracing::debug!("redo({cli:?})");
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    let user = get_username(&cli);
+    let changeset = rltbl.redo(&user).await.expect("Failed to redo");
+    if let None = changeset {
+        std::process::exit(1);
+    }
+    tracing::info!("Last operation redone");
+}
+
 pub async fn load_table(cli: &Cli, path: &str) {
     tracing::debug!("load_table({cli:?}, {path})");
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
@@ -586,6 +614,8 @@ pub async fn process_command() {
         Command::Delete { subcommand } => match subcommand {
             DeleteSubcommand::Row { table, row } => delete_row(&cli, table, *row).await,
         },
+        Command::Undo {} => undo(&cli).await,
+        Command::Redo {} => redo(&cli).await,
         Command::Load { subcommand } => match subcommand {
             LoadSubcommand::Table { path } => load_table(&cli, path).await,
         },

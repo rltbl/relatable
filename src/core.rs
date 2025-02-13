@@ -19,7 +19,7 @@ use minijinja::{path_loader, Environment};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, to_value, Map as JsonMap, Value as JsonValue};
-use std::{env, fmt::Display, fs::File, io::Write, path::Path as FilePath};
+use std::{env, fmt::Display, fs::File, io::Write, path::Path as FilePath, str::FromStr};
 use tabwriter::TabWriter;
 
 pub static RLTBL_DEFAULT_DB: &str = ".relatable/relatable.db";
@@ -319,7 +319,7 @@ impl Relatable {
             }
             columns
                 .iter()
-                .map(|c| c.get_string("name"))
+                .map(|c| c.get_string("name").expect("No 'name' found"))
                 .filter(|c| !c.starts_with("_"))
                 .map(|c| Column {
                     name: c.to_string(),
@@ -460,8 +460,8 @@ impl Relatable {
         let sql = r#"SELECT "table", "path" FROM "table" WHERE "path" IS NOT NULL"#;
         let table_rows = self.connection.query(&sql, None).await?;
         for table_row in table_rows {
-            let table = table_row.get_string("table");
-            let path = table_row.get_string("path");
+            let table = table_row.get_string("table")?;
+            let path = table_row.get_string("path")?;
             let mut writer = WriterBuilder::new()
                 .delimiter(b'\t')
                 .quote_style(QuoteStyle::Never)
@@ -549,7 +549,7 @@ impl Relatable {
             .query(&sql, None)
             .await?
             .iter()
-            .map(|row| row.get_string("path"))
+            .map(|row| row.get_string("path").expect("No 'path' found"))
             .collect::<Vec<_>>();
         git::add(&paths)?;
 
@@ -609,6 +609,42 @@ impl Relatable {
             };
         }
         Ok(())
+    }
+
+    pub async fn undo(&self, user: &str) -> Result<Option<ChangeSet>> {
+        let sql = r#"SELECT "user", "action", "table", "description", "content"
+                     FROM "change"
+                     WHERE "user" = ?
+                     ORDER BY "change_id" DESC LIMIT 1"#;
+        let params = json!([user]);
+        let records = self.connection.query(&sql, Some(&params)).await?;
+        let changeset_to_undo = match records.len() {
+            0 => {
+                tracing::warn!("Nothing to undo");
+                return Ok(None);
+            }
+            _ => {
+                let user = records[0].get_string("user")?;
+                let action = records[0].get_string("action")?;
+                let table = records[0].get_string("table")?;
+                let description = records[0].get_string("description")?;
+                let content = records[0].get_string("content")?;
+                let changes = Change::from_string(&content)?;
+                ChangeSet {
+                    action: ChangeAction::from_str(&action)?,
+                    table: table,
+                    user: user,
+                    description: description,
+                    changes: changes,
+                }
+            }
+        };
+        println!("CHANGESET TO UNDO: {changeset_to_undo:?}");
+        todo!()
+    }
+
+    pub async fn redo(&self, _user: &str) -> Result<Option<ChangeSet>> {
+        todo!()
     }
 
     pub fn prepare_user_cursor(
@@ -697,13 +733,16 @@ impl Relatable {
     }
 
     pub async fn get_user(&self, username: &str) -> Account {
-        let statement = format!(r#"SELECT * FROM user WHERE name = '{username}' LIMIT 1"#);
+        let statement = format!(
+            r#"SELECT "name", "color", "cursor", "datetime"
+               FROM user WHERE name = '{username}' LIMIT 1"#
+        );
         let user = self.connection.query_one(&statement, None).await;
         if let Ok(user) = user {
             if let Some(user) = user {
                 return Account {
                     name: username.to_string(),
-                    color: user.get_string("color"),
+                    color: user.get_string("color").expect("No 'color' found"),
                 };
             }
         }
@@ -715,13 +754,15 @@ impl Relatable {
     pub async fn get_users(&self) -> Result<IndexMap<String, UserCursor>> {
         let mut users = IndexMap::new();
         // let statement = format!(
-        //     r#"SELECT * FROM user WHERE cursor IS NOT NULL
+        //     r#"SELECT "name", color", "cursor", "datetime" FROM user WHERE cursor IS NOT NULL
         //        AND "datetime" >= DATETIME('now', '-10 minutes')"#
         // );
-        let statement = format!(r#"SELECT * FROM user WHERE cursor IS NOT NULL"#);
+        let statement = format!(
+            r#"SELECT "name", "color", "cursor", "datetime" FROM user WHERE cursor IS NOT NULL"#
+        );
         let rows = self.connection.query(&statement, None).await?;
         for row in rows {
-            let name = row.get_string("name");
+            let name = row.get_string("name")?;
             if name.trim() == "" {
                 continue;
             }
@@ -729,9 +770,9 @@ impl Relatable {
                 name.clone(),
                 UserCursor {
                     name: name.clone(),
-                    color: row.get_string("color"),
-                    cursor: from_str(&row.get_string("cursor"))?,
-                    datetime: row.get_string("datetime"),
+                    color: row.get_string("color")?,
+                    cursor: from_str(&row.get_string("cursor")?)?,
+                    datetime: row.get_string("datetime")?,
                 },
             );
         }
@@ -741,7 +782,7 @@ impl Relatable {
     pub async fn get_tables(&self) -> Result<IndexMap<String, Table>> {
         let mut tables = IndexMap::new();
         let statement = format!(
-            r#"SELECT *,
+            r#"SELECT "_id", "_order", "table", "path",
                  (SELECT max(change_id)
                   FROM history
                   WHERE history."table" = "table"."table"
@@ -751,7 +792,7 @@ impl Relatable {
 
         let rows = self.connection.query(&statement, None).await?;
         for row in rows {
-            let name = row.get_string("table");
+            let name = row.get_string("table")?;
             tables.insert(
                 name.clone(),
                 Table {
@@ -1192,6 +1233,23 @@ pub enum ChangeAction {
     Redo,
 }
 
+impl FromStr for ChangeAction {
+    type Err = anyhow::Error;
+
+    fn from_str(action: &str) -> Result<Self> {
+        match action.to_lowercase().as_str() {
+            "do" => Ok(Self::Do),
+            "undo" => Ok(Self::Undo),
+            "redo" => Ok(Self::Redo),
+            _ => {
+                return Err(
+                    RelatableError::InputError(format!("Unrecognized action: {action}")).into(),
+                );
+            }
+        }
+    }
+}
+
 impl Display for ChangeAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1220,6 +1278,59 @@ pub enum Change {
     Delete {
         row: usize,
     },
+}
+
+impl Change {
+    fn from_string(content: &str) -> Result<Vec<Self>> {
+        let json_content = match serde_json::from_str::<JsonValue>(content) {
+            Err(err) => return Err(err.into()),
+            Ok(JsonValue::Array(v)) => v,
+            Ok(_) => {
+                return Err(RelatableError::InputError(
+                    "The content parameter is not an array".to_string(),
+                )
+                .into());
+            }
+        };
+
+        let mut changes = vec![];
+        for change_json in json_content.iter() {
+            let change_json = match change_json.as_object() {
+                Some(change_object) => JsonRow {
+                    content: change_object.clone(),
+                },
+                None => {
+                    return Err(RelatableError::InputError(format!(
+                        "Not an object: {change_json}"
+                    ))
+                    .into());
+                }
+            };
+
+            let change_type = change_json.get_string("type")?;
+            let row = change_json.get_unsigned("row")?;
+            match change_type.as_str() {
+                "Update" => changes.push(Change::Update {
+                    row: row,
+                    column: change_json.get_string("column")?,
+                    value: change_json.get_value("value")?,
+                }),
+                "Add" => changes.push(Change::Add { row: row }),
+                "Delete" => changes.push(Change::Delete { row: row }),
+                "Move" => changes.push(Change::Move {
+                    row: row,
+                    after: change_json.get_unsigned("after")?,
+                }),
+                _ => {
+                    return Err(RelatableError::InputError(format!(
+                        "Unrecognized change type for change: {change_json}"
+                    ))
+                    .into());
+                }
+            };
+        }
+        Ok(changes)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1281,7 +1392,7 @@ impl Row {
                     }
                     columns
                         .iter()
-                        .map(|c| c.get_string("name"))
+                        .map(|c| c.get_string("name").expect("No 'name' found"))
                         .filter(|n| !n.starts_with("_"))
                         .collect::<Vec<_>>()
                 };
