@@ -629,7 +629,7 @@ impl Relatable {
                 let table = records[0].get_string("table")?;
                 let description = records[0].get_string("description")?;
                 let content = records[0].get_string("content")?;
-                let changes = Change::from_string(&content)?;
+                let changes = Change::many_from_str(&content)?;
                 ChangeSet {
                     action: ChangeAction::from_str(&action)?,
                     table: table,
@@ -1281,7 +1281,7 @@ pub enum Change {
 }
 
 impl Change {
-    fn from_string(content: &str) -> Result<Vec<Self>> {
+    fn many_from_str(content: &str) -> Result<Vec<Self>> {
         let json_content = match serde_json::from_str::<JsonValue>(content) {
             Err(err) => return Err(err.into()),
             Ok(JsonValue::Array(v)) => v,
