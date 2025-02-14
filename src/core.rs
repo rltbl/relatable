@@ -579,10 +579,25 @@ impl Relatable {
             match change {
                 Change::Update {
                     row,
-                    column: _,
-                    value: _,
+                    column,
+                    before,
+                    after,
+                } => {
+                    let sql = r#"INSERT INTO "history"
+                                 ("change_id", "table", "row", "before", "after")
+                                 VALUES (?, ?, ?, ?, ?)
+                                 RETURNING "history_id""#;
+                    let (before, after) = match &changeset.action {
+                        ChangeAction::Undo => (after, before),
+                        _ => (before, after),
+                    };
+                    let before = json!({column: before}).to_string();
+                    let after = json!({column: after}).to_string();
+                    let params = json!([change_id, table, row, before, after]);
+                    tx.query_value(&sql, Some(&params))?;
                 }
-                | Change::Add { row } => {
+                Change::Add { row } => {
+                    // TODO: You are here.
                     let sql = r#"INSERT INTO "history"
                                  ("change_id", "table", "row", "before", "after")
                                  VALUES (?, ?, ?, 'TODO', 'TODO')
@@ -658,7 +673,7 @@ impl Relatable {
     async fn _undo(
         &self,
         mut conn: Option<DbActiveConnection>,
-        user: &str,
+        _user: &str,
         changeset: &ChangeSet,
     ) -> Result<()> {
         // Begin a transaction:
@@ -668,12 +683,24 @@ impl Relatable {
         self.prepare_user_cursor(&changeset, &mut tx)?;
 
         for change in changeset.changes.iter() {
-            // TODO: Update the data table (and the history table?).
             match change {
-                Change::Update { row, column, value } => todo!(),
-                Change::Add { row } => todo!(),
-                Change::Move { row, after } => todo!(),
-                Change::Delete { row } => todo!(),
+                Change::Update {
+                    row,
+                    column,
+                    before,
+                    after: _,
+                } => {
+                    let sql = format!(
+                        r#"UPDATE "{table}" SET "{column}" = ? WHERE "_id" = ?"#,
+                        table = changeset.table
+                    );
+                    let params = json!([before, row]);
+                    tx.query(&sql, Some(&params))?;
+                }
+                // TODO: For these onese we will likely need to look into the history table
+                Change::Add { row: _ } => todo!(),
+                Change::Move { row: _, after: _ } => todo!(),
+                Change::Delete { row: _ } => todo!(),
             }
         }
 
@@ -751,7 +778,12 @@ impl Relatable {
         let mut actual_changes = vec![];
         for change in &changeset.changes {
             match change {
-                Change::Update { row, column, value } => {
+                Change::Update {
+                    row,
+                    column,
+                    before: _,
+                    after,
+                } => {
                     // WARN: This just sets text!
                     let sql = format!(
                         r#"UPDATE "{table}"
@@ -760,12 +792,12 @@ impl Relatable {
                            RETURNING 1 AS "updated""#,
                     );
                     // TODO: Render JSON to SQL properly.
-                    let value = json_to_string(value);
-                    let params = json!([value, row]);
+                    let after = json_to_string(after);
+                    let params = json!([after, row]);
                     if tx.query(&sql, Some(&params))?.len() < 1 {
                         tracing::warn!("No row with _id {row} found to update");
                     } else {
-                        actual_changes.push(change);
+                        actual_changes.push(change.clone());
                     }
                 }
                 _ => {
@@ -780,7 +812,16 @@ impl Relatable {
         let num_changes = actual_changes.len();
         if num_changes > 0 {
             // Record the changes to the change and history tables:
-            self.record_changes(changeset, &mut tx)?;
+            self.record_changes(
+                &ChangeSet {
+                    action: changeset.action.clone(),
+                    table: changeset.table.clone(),
+                    user: changeset.user.clone(),
+                    description: changeset.description.clone(),
+                    changes: actual_changes,
+                },
+                &mut tx,
+            )?;
         }
 
         // Commit the transaction:
@@ -796,6 +837,17 @@ impl Relatable {
             self.commit_to_git().await?;
         }
         Ok(num_changes)
+    }
+
+    pub async fn get_value(
+        &self,
+        table: &str,
+        row: usize,
+        column: &str,
+    ) -> Result<Option<JsonValue>> {
+        let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = ?"#);
+        let params = json!([row]);
+        self.connection.query_value(&sql, Some(&params)).await
     }
 
     pub async fn get_user(&self, username: &str) -> Account {
@@ -1297,7 +1349,8 @@ impl ChangeSet {
                 Change::Update {
                     row,
                     column,
-                    value: _,
+                    before: _,
+                    after: _,
                 } => Ok(Cursor {
                     table,
                     row: *row,
@@ -1364,7 +1417,8 @@ pub enum Change {
     Update {
         row: usize,
         column: String,
-        value: JsonValue,
+        before: JsonValue,
+        after: JsonValue,
     },
     Add {
         row: usize,
@@ -1411,7 +1465,8 @@ impl Change {
                 "Update" => changes.push(Change::Update {
                     row: row,
                     column: change_json.get_string("column")?,
-                    value: change_json.get_value("value")?,
+                    before: change_json.get_value("before")?,
+                    after: change_json.get_value("after")?,
                 }),
                 "Add" => changes.push(Change::Add { row: row }),
                 "Delete" => changes.push(Change::Delete { row: row }),
