@@ -590,16 +590,12 @@ impl Relatable {
                     let params = json!([change_id, table, row]);
                     tx.query_value(&sql, Some(&params))?;
                 }
-                Change::Move {
-                    row,
-                    from_after,
-                    to_after,
-                } => {
+                Change::Move { row, after: _ } => {
                     let sql = r#"INSERT INTO "history"
                                  ("change_id", "table", "row", "before", "after")
-                                 VALUES (?, ?, ?, ?, ?)
+                                 VALUES (?, ?, ?, 'TODO', 'TODO')
                                  RETURNING "history_id""#;
-                    let params = json!([change_id, table, row, from_after, to_after]);
+                    let params = json!([change_id, table, row]);
                     tx.query_value(&sql, Some(&params))?;
                 }
                 Change::Delete { row } => {
@@ -665,7 +661,7 @@ impl Relatable {
         user: &str,
         changeset: &ChangeSet,
     ) -> Result<()> {
-        // Get the connection and begin a transaction:
+        // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Update the user cursor
@@ -673,13 +669,24 @@ impl Relatable {
 
         for change in changeset.changes.iter() {
             // TODO: Update the data table (and the history table?).
+            match change {
+                Change::Update { row, column, value } => todo!(),
+                Change::Add { row } => todo!(),
+                Change::Move { row, after } => todo!(),
+                Change::Delete { row } => todo!(),
+            }
         }
 
-        todo!()
+        // Record the changes to the change and history tables:
+        self.record_changes(changeset, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(())
     }
 
     pub async fn undo(&self, user: &str) -> Result<Option<ChangeSet>> {
-        let conn = self.connection.reconnect()?;
         let mut changeset = match self.get_last_do_for_user(user).await? {
             None => {
                 tracing::warn!("Nothing to undo for '{user}'");
@@ -688,7 +695,7 @@ impl Relatable {
             Some(changeset) => changeset,
         };
         changeset.action = ChangeAction::Undo;
-
+        let conn = self.connection.reconnect()?;
         self._undo(conn, user, &changeset).await?;
         self.commit_to_git().await?;
         Ok(Some(changeset))
@@ -733,7 +740,7 @@ impl Relatable {
         mut conn: Option<DbActiveConnection>,
         changeset: &ChangeSet,
     ) -> Result<usize> {
-        // Get the connection and begin a transaction:
+        // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Update the user cursor
@@ -889,7 +896,7 @@ impl Relatable {
         after_id: Option<usize>,
         row: &JsonRow,
     ) -> Result<Row> {
-        // Get the connection and begin a transaction:
+        // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
@@ -956,7 +963,7 @@ impl Relatable {
         user: &str,
         row: usize,
     ) -> Result<usize> {
-        // Get the connection and begin a transaction:
+        // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
@@ -1050,7 +1057,7 @@ impl Relatable {
         id: usize,
         after_id: usize,
     ) -> Result<usize> {
-        // Get the connection and begin a transaction:
+        // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
@@ -1061,8 +1068,6 @@ impl Relatable {
             );
         }
 
-        let old_after_id = self._get_previous_row(table_name, id, &mut tx)?;
-
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
         let changeset = ChangeSet {
@@ -1072,8 +1077,7 @@ impl Relatable {
             description: "Move one row".to_string(),
             changes: vec![Change::Move {
                 row: id,
-                from_after: old_after_id,
-                to_after: after_id,
+                after: after_id,
             }],
         };
 
@@ -1367,8 +1371,7 @@ pub enum Change {
     },
     Move {
         row: usize,
-        from_after: usize,
-        to_after: usize,
+        after: usize,
     },
     Delete {
         row: usize,
@@ -1414,8 +1417,7 @@ impl Change {
                 "Delete" => changes.push(Change::Delete { row: row }),
                 "Move" => changes.push(Change::Move {
                     row: row,
-                    from_after: change_json.get_unsigned("from_after")?,
-                    to_after: change_json.get_unsigned("to_after")?,
+                    after: change_json.get_unsigned("after")?,
                 }),
                 _ => {
                     return Err(RelatableError::InputError(format!(
