@@ -590,12 +590,16 @@ impl Relatable {
                     let params = json!([change_id, table, row]);
                     tx.query_value(&sql, Some(&params))?;
                 }
-                Change::Move { row, after } => {
+                Change::Move {
+                    row,
+                    from_after,
+                    to_after,
+                } => {
                     let sql = r#"INSERT INTO "history"
                                  ("change_id", "table", "row", "before", "after")
-                                 VALUES (?, ?, ?, 'TODO', ?)
+                                 VALUES (?, ?, ?, ?, ?)
                                  RETURNING "history_id""#;
-                    let params = json!([change_id, table, row, after]);
+                    let params = json!([change_id, table, row, from_after, to_after]);
                     tx.query_value(&sql, Some(&params))?;
                 }
                 Change::Delete { row } => {
@@ -611,36 +615,83 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn undo(&self, user: &str) -> Result<Option<ChangeSet>> {
-        let sql = r#"SELECT "user", "action", "table", "description", "content"
+    pub async fn get_last_action_for_user(
+        &self,
+        user: &str,
+        action: ChangeAction,
+    ) -> Result<Option<ChangeSet>> {
+        let sql = r#"SELECT "user", "table", "description", "content"
                      FROM "change"
-                     WHERE "user" = ?
+                     WHERE "user" = ? AND "action" = ?
                      ORDER BY "change_id" DESC LIMIT 1"#;
-        let params = json!([user]);
+        let params = json!([user, format!("{action}")]);
         let records = self.connection.query(&sql, Some(&params)).await?;
-        let changeset_to_undo = match records.len() {
-            0 => {
-                tracing::warn!("Nothing to undo");
-                return Ok(None);
-            }
+        match records.len() {
+            0 => Ok(None),
             _ => {
                 let user = records[0].get_string("user")?;
-                let action = records[0].get_string("action")?;
                 let table = records[0].get_string("table")?;
                 let description = records[0].get_string("description")?;
                 let content = records[0].get_string("content")?;
                 let changes = Change::many_from_str(&content)?;
-                ChangeSet {
-                    action: ChangeAction::from_str(&action)?,
+                Ok(Some(ChangeSet {
+                    action: action.clone(),
                     table: table,
                     user: user,
                     description: description,
                     changes: changes,
-                }
+                }))
             }
-        };
-        println!("CHANGESET TO UNDO: {changeset_to_undo:?}");
+        }
+    }
+
+    pub async fn get_last_do_for_user(&self, user: &str) -> Result<Option<ChangeSet>> {
+        self.get_last_action_for_user(user, ChangeAction::Do).await
+    }
+
+    pub async fn get_last_undo_for_user(&self, user: &str) -> Result<Option<ChangeSet>> {
+        self.get_last_action_for_user(user, ChangeAction::Undo)
+            .await
+    }
+
+    pub async fn get_last_redo_for_user(&self, user: &str) -> Result<Option<ChangeSet>> {
+        self.get_last_action_for_user(user, ChangeAction::Redo)
+            .await
+    }
+
+    async fn _undo(
+        &self,
+        mut conn: Option<DbActiveConnection>,
+        user: &str,
+        changeset: &ChangeSet,
+    ) -> Result<()> {
+        // Get the connection and begin a transaction:
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        // Update the user cursor
+        self.prepare_user_cursor(&changeset, &mut tx)?;
+
+        for change in changeset.changes.iter() {
+            // TODO: Update the data table (and the history table?).
+        }
+
         todo!()
+    }
+
+    pub async fn undo(&self, user: &str) -> Result<Option<ChangeSet>> {
+        let conn = self.connection.reconnect()?;
+        let mut changeset = match self.get_last_do_for_user(user).await? {
+            None => {
+                tracing::warn!("Nothing to undo for '{user}'");
+                return Ok(None);
+            }
+            Some(changeset) => changeset,
+        };
+        changeset.action = ChangeAction::Undo;
+
+        self._undo(conn, user, &changeset).await?;
+        self.commit_to_git().await?;
+        Ok(Some(changeset))
     }
 
     pub async fn redo(&self, _user: &str) -> Result<Option<ChangeSet>> {
@@ -660,7 +711,15 @@ impl Relatable {
         tx.query(&statement, Some(&params))?;
 
         // Update the user's cursor position.
-        let cursor = changeset.to_cursor()?;
+        let mut cursor = changeset.to_cursor()?;
+        // If we are undoing the addition of a row, then the cursor should be updated to the
+        // row right before it:
+        if let ChangeAction::Undo = changeset.action {
+            if let Some(Change::Add { row }) = changeset.changes.first() {
+                cursor.row = self._get_previous_row(&changeset.table, *row, tx)?;
+            }
+        }
+
         let statement =
             r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
         let params = json!([to_value(cursor).unwrap_or_default(), user]);
@@ -951,6 +1010,38 @@ impl Relatable {
         Ok(num_deleted)
     }
 
+    fn _get_row_order(&self, table: &str, row: usize, tx: &mut DbTransaction<'_>) -> Result<usize> {
+        let sql = format!(r#"SELECT "_order" FROM "{table}" WHERE "_id" = ?"#,);
+        let params = json!([row]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            return Err(
+                RelatableError::InputError(format!("No row {row} in table '{table}'")).into(),
+            );
+        }
+        Ok(rows[0].get_unsigned("_order")?)
+    }
+
+    fn _get_previous_row(
+        &self,
+        table: &str,
+        row: usize,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<usize> {
+        let curr_row_order = self._get_row_order(table, row, tx)?;
+        let sql = format!(
+            r#"SELECT "_id" FROM "{table}" WHERE "_order" < ?
+               ORDER BY "_order" DESC LIMIT 1"#,
+        );
+        let params = json!([curr_row_order]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            Ok(0)
+        } else {
+            rows[0].get_unsigned("_id")
+        }
+    }
+
     async fn _move_and_record_row(
         &self,
         mut conn: Option<DbActiveConnection>,
@@ -970,6 +1061,8 @@ impl Relatable {
             );
         }
 
+        let old_after_id = self._get_previous_row(table_name, id, &mut tx)?;
+
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
         let changeset = ChangeSet {
@@ -979,7 +1072,8 @@ impl Relatable {
             description: "Move one row".to_string(),
             changes: vec![Change::Move {
                 row: id,
-                after: after_id,
+                from_after: old_after_id,
+                to_after: after_id,
             }],
         };
 
@@ -1210,7 +1304,7 @@ impl ChangeSet {
                     row: *row,
                     column: "".to_string(),
                 }),
-                Change::Move { row, after: _ } => Ok(Cursor {
+                Change::Move { row, .. } => Ok(Cursor {
                     table,
                     row: *row,
                     column: "".to_string(),
@@ -1273,7 +1367,8 @@ pub enum Change {
     },
     Move {
         row: usize,
-        after: usize,
+        from_after: usize,
+        to_after: usize,
     },
     Delete {
         row: usize,
@@ -1319,7 +1414,8 @@ impl Change {
                 "Delete" => changes.push(Change::Delete { row: row }),
                 "Move" => changes.push(Change::Move {
                     row: row,
-                    after: change_json.get_unsigned("after")?,
+                    from_after: change_json.get_unsigned("from_after")?,
+                    to_after: change_json.get_unsigned("to_after")?,
                 }),
                 _ => {
                     return Err(RelatableError::InputError(format!(
