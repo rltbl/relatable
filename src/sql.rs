@@ -181,6 +181,16 @@ impl DbTransaction<'_> {
         Ok(())
     }
 
+    pub fn rollback(self) -> Result<()> {
+        match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(tx) => block_on(tx.rollback())?,
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(tx) => tx.rollback()?,
+        };
+        Ok(())
+    }
+
     // Given a connection and a SQL string, return a vector of JsonRows.
     // This is intended as a low-level function that abstracts over the SQL engine,
     // and whatever result types it returns.

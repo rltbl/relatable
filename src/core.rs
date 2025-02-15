@@ -509,9 +509,11 @@ impl Relatable {
         let params = json!([user, action, table, description, content]);
         let change_id = tx.query_value(&statement, Some(&params))?;
         let change_id = change_id
-            .expect("a change_id")
+            .ok_or(RelatableError::DataError(
+                "Expected a change_id".to_string(),
+            ))?
             .as_u64()
-            .expect("an integer");
+            .ok_or(RelatableError::DataError("Expected an integer".to_string()))?;
 
         for change in &changeset.changes {
             match change {
@@ -535,28 +537,66 @@ impl Relatable {
                     tx.query_value(&sql, Some(&params))?;
                 }
                 Change::Add { row } => {
-                    // TODO: You are here.
-                    let sql = r#"INSERT INTO "history"
-                                 ("change_id", "table", "row", "after")
-                                 VALUES (?, ?, ?, 'TODO')
-                                 RETURNING "history_id""#;
-                    let params = json!([change_id, table, row]);
+                    let json_row = match self._get_row(&table, *row, tx)? {
+                        Some(json_row) => json_row,
+                        None => {
+                            // It must be there since we supposedly just added it, so if it is
+                            // not found return an error.
+                            return Err(
+                                RelatableError::DataError(format!("Row {row} not found")).into()
+                            );
+                        }
+                    };
+                    let target_column = match &changeset.action {
+                        ChangeAction::Undo => "before",
+                        _ => "after",
+                    };
+                    let sql = format!(
+                        r#"INSERT INTO "history"
+                           ("change_id", "table", "row", "{target_column}")
+                           VALUES (?, ?, ?, ?)
+                           RETURNING "history_id""#
+                    );
+                    let json_row_str = json!(json_row.content).to_string();
+                    let params = json!([change_id, table, row, json_row_str]);
                     tx.query_value(&sql, Some(&params))?;
                 }
-                Change::Move { row, after: _ } => {
+                Change::Move {
+                    row,
+                    from_after: _,
+                    to_after: _,
+                } => {
                     let sql = r#"INSERT INTO "history"
-                                 ("change_id", "table", "row", "before", "after")
-                                 VALUES (?, ?, ?, 'TODO', 'TODO')
+                                 ("change_id", "table", "row")
+                                 VALUES (?, ?, ?)
                                  RETURNING "history_id""#;
                     let params = json!([change_id, table, row]);
                     tx.query_value(&sql, Some(&params))?;
                 }
                 Change::Delete { row } => {
-                    let sql = r#"INSERT INTO "history"
-                                 ("change_id", "table", "row", "before", "after")
-                                 VALUES (?, ?, ?, 'TODO', 'TODO')
-                                 RETURNING "history_id""#;
-                    let params = json!([change_id, table, row]);
+                    let json_row = match self._get_row(&table, *row, tx)? {
+                        Some(json_row) => json_row,
+                        None => {
+                            // It must be there since we supposedly just added it, so if it is
+                            // not found return an error.
+                            return Err(
+                                RelatableError::DataError(format!("Row {row} not found")).into()
+                            );
+                        }
+                    };
+                    let target_column = match &changeset.action {
+                        ChangeAction::Undo => "after",
+                        _ => "before",
+                    };
+
+                    let sql = format!(
+                        r#"INSERT INTO "history"
+                           ("change_id", "table", "row", "{target_column}")
+                           VALUES (?, ?, ?, ?)
+                           RETURNING "history_id""#
+                    );
+                    let json_row_str = json!(json_row.content).to_string();
+                    let params = json!([change_id, table, row, json_row_str]);
                     tx.query_value(&sql, Some(&params))?;
                 }
             };
@@ -746,6 +786,17 @@ impl Relatable {
         }
     }
 
+    fn _get_row(
+        &self,
+        table: &str,
+        row: usize,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Option<JsonRow>> {
+        let sql = format!(r#"SELECT * FROM "{table}" WHERE "_id" = ?"#);
+        let params = json!([row]);
+        tx.query_one(&sql, Some(&params))
+    }
+
     pub async fn get_site(&self, username: &str) -> Site {
         let mut users = self.get_users().await.unwrap_or_default();
         users.shift_remove(username);
@@ -833,46 +884,43 @@ impl Relatable {
             .await
     }
 
-    async fn _undo(
-        &self,
-        mut conn: Option<DbActiveConnection>,
-        _user: &str,
-        changeset: &ChangeSet,
-    ) -> Result<()> {
-        // Begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
-
-        // Update the user cursor
-        self.prepare_user_cursor(&changeset, &mut tx)?;
-
-        for change in changeset.changes.iter() {
+    async fn _undo(&self, _user: &str, changeset: &ChangeSet) -> Result<()> {
+        if let Some(change) = changeset.changes.first() {
+            let conn = self.connection.reconnect()?;
+            let mut changeset = changeset.clone();
+            changeset.action = ChangeAction::Undo;
             match change {
-                Change::Update {
-                    row,
-                    column,
-                    before,
-                    after: _,
-                } => {
-                    let sql = format!(
-                        r#"UPDATE "{table}" SET "{column}" = ? WHERE "_id" = ?"#,
-                        table = changeset.table
-                    );
-                    let params = json!([before, row]);
-                    tx.query(&sql, Some(&params))?;
+                Change::Update { .. } => self._set_values(conn, &changeset).await?,
+                Change::Add { row } => {
+                    self._delete_row(
+                        conn,
+                        &changeset.action,
+                        &changeset.table,
+                        &changeset.user,
+                        *row,
+                    )
+                    .await?
                 }
-                // TODO: For these onese we will likely need to look into the history table
-                Change::Add { row: _ } => todo!(),
-                Change::Move { row: _, after: _ } => todo!(),
+                Change::Move {
+                    row,
+                    from_after,
+                    to_after: _,
+                } => {
+                    self._move_and_record_row(
+                        conn,
+                        &changeset.action,
+                        &changeset.table,
+                        &changeset.user,
+                        *row,
+                        *from_after,
+                    )
+                    .await?
+                }
+                // TODO: When implementing undo delete, don't forget that we need to restore
+                // the old _order. See valve for hints.
                 Change::Delete { row: _ } => todo!(),
-            }
+            };
         }
-
-        // Record the changes to the change and history tables:
-        self.record_changes(changeset, &mut tx)?;
-
-        // Commit the transaction:
-        tx.commit()?;
-
         Ok(())
     }
 
@@ -885,8 +933,7 @@ impl Relatable {
             Some(changeset) => changeset,
         };
         changeset.action = ChangeAction::Undo;
-        let conn = self.connection.reconnect()?;
-        self._undo(conn, user, &changeset).await?;
+        self._undo(user, &changeset).await?;
         self.commit_to_git().await?;
         Ok(Some(changeset))
     }
@@ -1043,6 +1090,7 @@ impl Relatable {
     async fn _delete_row(
         &self,
         mut conn: Option<DbActiveConnection>,
+        action: &ChangeAction,
         table_name: &str,
         user: &str,
         row: usize,
@@ -1061,7 +1109,7 @@ impl Relatable {
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
         let changeset = ChangeSet {
-            action: ChangeAction::Do,
+            action: action.clone(),
             table: table_name.to_string(),
             user: user.to_string(),
             description: "Delete one row".to_string(),
@@ -1078,23 +1126,27 @@ impl Relatable {
         );
         let params = json!([row]);
 
+        // Record the change to the history table:
+        self.record_changes(&changeset, &mut tx)?;
+
         let num_deleted = tx.query(&sql, Some(&params))?.len();
         if num_deleted < 1 {
             tracing::warn!("No row found with _id {row} to delete");
+            // Roll back the changes to the history and change table:
+            tx.rollback()?;
         } else {
-            // Record the change to the history table:
-            self.record_changes(&changeset, &mut tx)?;
+            // Commit the transaction:
+            tx.commit()?;
         }
-
-        // Commit the transaction:
-        tx.commit()?;
 
         Ok(num_deleted)
     }
 
     pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<usize> {
         let conn = self.connection.reconnect()?;
-        let num_deleted = self._delete_row(conn, table_name, user, row).await?;
+        let num_deleted = self
+            ._delete_row(conn, &ChangeAction::Do, table_name, user, row)
+            .await?;
         if num_deleted > 0 {
             self.commit_to_git().await?;
         }
@@ -1104,6 +1156,7 @@ impl Relatable {
     async fn _move_and_record_row(
         &self,
         mut conn: Option<DbActiveConnection>,
+        action: &ChangeAction,
         table_name: &str,
         user: &str,
         id: usize,
@@ -1120,16 +1173,19 @@ impl Relatable {
             );
         }
 
+        let previous_row = self._get_previous_row(table_name, id, &mut tx)?;
+
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
         let changeset = ChangeSet {
-            action: ChangeAction::Do,
+            action: action.clone(),
             table: table_name.to_string(),
             user: user.to_string(),
             description: "Move one row".to_string(),
             changes: vec![Change::Move {
                 row: id,
-                after: after_id,
+                from_after: previous_row,
+                to_after: after_id,
             }],
         };
 
@@ -1323,7 +1379,7 @@ impl Relatable {
     ) -> Result<usize> {
         let conn = self.connection.reconnect()?;
         let new_order = self
-            ._move_and_record_row(conn, table_name, user, id, after_id)
+            ._move_and_record_row(conn, &ChangeAction::Do, table_name, user, id, after_id)
             .await?;
         if new_order != 0 {
             self.commit_to_git().await?;
@@ -1425,7 +1481,8 @@ pub enum Change {
     },
     Move {
         row: usize,
-        after: usize,
+        from_after: usize,
+        to_after: usize,
     },
     Delete {
         row: usize,
@@ -1472,7 +1529,8 @@ impl Change {
                 "Delete" => changes.push(Change::Delete { row: row }),
                 "Move" => changes.push(Change::Move {
                     row: row,
-                    after: change_json.get_unsigned("after")?,
+                    from_after: change_json.get_unsigned("from_after")?,
+                    to_after: change_json.get_unsigned("to_after")?,
                 }),
                 _ => {
                     return Err(RelatableError::InputError(format!(
