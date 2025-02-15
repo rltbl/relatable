@@ -502,6 +502,18 @@ impl Relatable {
         let table = changeset.table.clone();
         let description = changeset.description.clone();
 
+        // Begin by getting the previous change_id for this user, which we may need later:
+        let old_change_id = match &changeset.action {
+            ChangeAction::Undo => {
+                let (change_id, _) = self
+                    ._get_last_action_for_user(tx, &changeset.user, &ChangeAction::Do)?
+                    .ok_or(RelatableError::DataError("No row found".to_string()))?;
+                Some(change_id)
+            }
+            _ => None,
+        };
+
+        // Now write the current change:
         let statement = r#"INSERT INTO change("user", "action", "table", "description", "content")
                            VALUES (?, ?, ?, ?, ?)
                            RETURNING change_id"#;
@@ -539,13 +551,35 @@ impl Relatable {
                 Change::Add { row } => {
                     let json_row = match self._get_row(&table, *row, tx)? {
                         Some(json_row) => json_row,
-                        None => {
-                            // It must be there since we supposedly just added it, so if it is
-                            // not found return an error.
-                            return Err(
-                                RelatableError::DataError(format!("Row {row} not found")).into()
-                            );
-                        }
+                        None => match old_change_id {
+                            Some(change_id) => {
+                                let sql = r#"SELECT "before" FROM "history" WHERE "change_id" = ?"#;
+                                let params = json!([change_id]);
+                                let before = tx
+                                    .query_one(&sql, Some(&params))?
+                                    .ok_or(RelatableError::DataError(format!(
+                                        "No history row found with change_id {change_id}"
+                                    )))?
+                                    .get_string("before")?;
+                                let before = match serde_json::from_str::<JsonValue>(&before) {
+                                    Err(err) => return Err(err.into()),
+                                    Ok(JsonValue::Object(o)) => o,
+                                    Ok(_) => {
+                                        return Err(RelatableError::InputError(
+                                            "The content parameter is not an object".to_string(),
+                                        )
+                                        .into());
+                                    }
+                                };
+                                JsonRow { content: before }
+                            }
+                            None => {
+                                return Err(RelatableError::DataError(format!(
+                                    "Row {row} not found"
+                                ))
+                                .into())
+                            }
+                        },
                     };
                     let target_column = match &changeset.action {
                         ChangeAction::Undo => "before",
@@ -824,11 +858,14 @@ impl Relatable {
 
         // Update the user's cursor position.
         let mut cursor = changeset.to_cursor()?;
-        // If we are undoing the addition of a row, then the cursor should be updated to the
-        // row right before it:
         if let ChangeAction::Undo = changeset.action {
-            if let Some(Change::Add { row }) = changeset.changes.first() {
-                cursor.row = self._get_previous_row(&changeset.table, *row, tx)?;
+            match changeset.changes.first() {
+                Some(Change::Delete { row, after: _ }) => {
+                    // If we are undoing the addition of a row, then the cursor should be updated
+                    // to the row right before it:
+                    cursor.row = self._get_previous_row(&changeset.table, *row, tx)?;
+                }
+                _ => (),
             }
         }
 
@@ -840,51 +877,67 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn get_last_action_for_user(
+    fn _get_last_action_for_user(
         &self,
+        tx: &mut DbTransaction<'_>,
         user: &str,
-        action: ChangeAction,
-    ) -> Result<Option<ChangeSet>> {
-        let sql = r#"SELECT "user", "table", "description", "content"
+        action: &ChangeAction,
+    ) -> Result<Option<(usize, ChangeSet)>> {
+        // Begin a transaction:
+        let sql = r#"SELECT "change_id", "user", "table", "description", "content"
                      FROM "change"
                      WHERE "user" = ? AND "action" = ?
                      ORDER BY "change_id" DESC LIMIT 1"#;
         let params = json!([user, format!("{action}")]);
-        let records = self.connection.query(&sql, Some(&params)).await?;
+        let records = tx.query(&sql, Some(&params))?;
         match records.len() {
             0 => Ok(None),
             _ => {
+                let change_id = records[0].get_unsigned("change_id")?;
                 let user = records[0].get_string("user")?;
                 let table = records[0].get_string("table")?;
                 let description = records[0].get_string("description")?;
                 let content = records[0].get_string("content")?;
                 let changes = Change::many_from_str(&content)?;
-                Ok(Some(ChangeSet {
-                    action: action.clone(),
-                    table: table,
-                    user: user,
-                    description: description,
-                    changes: changes,
-                }))
+                Ok(Some((
+                    change_id,
+                    ChangeSet {
+                        action: action.clone(),
+                        table: table,
+                        user: user,
+                        description: description,
+                        changes: changes,
+                    },
+                )))
             }
         }
     }
 
-    pub async fn get_last_do_for_user(&self, user: &str) -> Result<Option<ChangeSet>> {
+    pub async fn get_last_action_for_user(
+        &self,
+        user: &str,
+        action: ChangeAction,
+    ) -> Result<Option<(usize, ChangeSet)>> {
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+        self._get_last_action_for_user(&mut tx, user, &action)
+    }
+
+    pub async fn get_last_do_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
         self.get_last_action_for_user(user, ChangeAction::Do).await
     }
 
-    pub async fn get_last_undo_for_user(&self, user: &str) -> Result<Option<ChangeSet>> {
+    pub async fn get_last_undo_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
         self.get_last_action_for_user(user, ChangeAction::Undo)
             .await
     }
 
-    pub async fn get_last_redo_for_user(&self, user: &str) -> Result<Option<ChangeSet>> {
+    pub async fn get_last_redo_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
         self.get_last_action_for_user(user, ChangeAction::Redo)
             .await
     }
 
-    async fn _undo(&self, _user: &str, changeset: &ChangeSet) -> Result<()> {
+    async fn _undo(&self, _user: &str, change_id: usize, changeset: &ChangeSet) -> Result<()> {
         if let Some(change) = changeset.changes.first() {
             let mut changeset = changeset.clone();
             changeset.action = ChangeAction::Undo;
@@ -921,10 +974,39 @@ impl Relatable {
                             )
                             .await?;
                         }
-                        Change::Delete { row: _, after: _ } => {
-                            // TODO: Fetch the row to restore from the history table by looking
-                            // it up using the change id, then call _add_row()
-                            todo!()
+                        Change::Delete { row, after } => {
+                            let sql = r#"SELECT "before" FROM "history" WHERE "change_id" = ?"#;
+                            let params = json!([change_id]);
+                            let before = self
+                                .connection
+                                .query_one(&sql, Some(&params))
+                                .await?
+                                .ok_or(RelatableError::DataError(format!(
+                                    "No history row found with change_id {change_id}"
+                                )))?
+                                .get_string("before")?;
+
+                            let before = match serde_json::from_str::<JsonValue>(&before) {
+                                Err(err) => return Err(err.into()),
+                                Ok(JsonValue::Object(o)) => o,
+                                Ok(_) => {
+                                    return Err(RelatableError::InputError(
+                                        "The content parameter is not an object".to_string(),
+                                    )
+                                    .into());
+                                }
+                            };
+                            let before = JsonRow { content: before };
+                            self._add_row(
+                                conn,
+                                &changeset.action,
+                                &changeset.table,
+                                &changeset.user,
+                                Some(*row),
+                                Some(*after),
+                                &before,
+                            )
+                            .await?;
                         }
                     };
                 }
@@ -934,7 +1016,7 @@ impl Relatable {
     }
 
     pub async fn undo(&self, user: &str) -> Result<Option<ChangeSet>> {
-        let mut changeset = match self.get_last_do_for_user(user).await? {
+        let (change_id, mut changeset) = match self.get_last_do_for_user(user).await? {
             None => {
                 tracing::warn!("Nothing to undo for '{user}'");
                 return Ok(None);
@@ -942,7 +1024,7 @@ impl Relatable {
             Some(changeset) => changeset,
         };
         changeset.action = ChangeAction::Undo;
-        self._undo(user, &changeset).await?;
+        self._undo(user, change_id, &changeset).await?;
         self.commit_to_git().await?;
         Ok(Some(changeset))
     }
@@ -1031,8 +1113,10 @@ impl Relatable {
     async fn _add_row(
         &self,
         mut conn: Option<DbActiveConnection>,
+        action: &ChangeAction,
         table_name: &str,
         user: &str,
+        new_row_id: Option<usize>,
         after_id: Option<usize>,
         row: &JsonRow,
     ) -> Result<Row> {
@@ -1053,11 +1137,16 @@ impl Relatable {
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with new_row's id:
         let changeset = ChangeSet {
-            action: ChangeAction::Do,
+            action: action.clone(),
             table: table_name.to_string(),
             user: user.to_string(),
             description: "Add one row".to_string(),
-            changes: vec![Change::Add { row: new_row.id }],
+            changes: vec![Change::Add {
+                row: match new_row_id {
+                    None => new_row.id,
+                    Some(id) => id,
+                },
+            }],
         };
 
         // Use the changeset to prepare the user cursor:
@@ -1067,6 +1156,11 @@ impl Relatable {
         let (sql, params) = new_row.as_insert(&table.name);
         tracing::info!("_add_row {sql} {params:?}");
         tx.query(&sql, Some(&params))?;
+
+        if let Some(new_row_id) = new_row_id {
+            let new_id = self._change_row_id(&mut tx, &table, new_row.id, new_row_id)?;
+            new_row.id = new_id;
+        }
 
         if let Some(after_id) = after_id {
             // Move the row to its assigned spot within the table:
@@ -1091,7 +1185,17 @@ impl Relatable {
         row: &JsonRow,
     ) -> Result<Row> {
         let conn = self.connection.reconnect()?;
-        let new_row = self._add_row(conn, table_name, user, after_id, row).await?;
+        let new_row = self
+            ._add_row(
+                conn,
+                &ChangeAction::Do,
+                table_name,
+                user,
+                None,
+                after_id,
+                row,
+            )
+            .await?;
         self.commit_to_git().await?;
         Ok(new_row)
     }
@@ -1382,6 +1486,23 @@ impl Relatable {
             new_order = 0;
         }
         Ok(new_order)
+    }
+
+    fn _change_row_id(
+        &self,
+        tx: &mut DbTransaction<'_>,
+        table: &Table,
+        id: usize,
+        new_id: usize,
+    ) -> Result<usize> {
+        let sql = format!(
+            r#"UPDATE "{table}" SET "_id" = ? WHERE "_id" = ? RETURNING "_id" AS "_id""#,
+            table = table.name,
+        );
+        let params = json!([new_id, id]);
+        tx.query_one(&sql, Some(&params))?
+            .ok_or(RelatableError::DataError(format!("No row with _id = {id}")))?
+            .get_unsigned("_id")
     }
 
     pub async fn move_row(
