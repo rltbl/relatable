@@ -573,7 +573,7 @@ impl Relatable {
                     let params = json!([change_id, table, row]);
                     tx.query_value(&sql, Some(&params))?;
                 }
-                Change::Delete { row } => {
+                Change::Delete { row, after: _ } => {
                     let json_row = match self._get_row(&table, *row, tx)? {
                         Some(json_row) => json_row,
                         None => {
@@ -886,40 +886,49 @@ impl Relatable {
 
     async fn _undo(&self, _user: &str, changeset: &ChangeSet) -> Result<()> {
         if let Some(change) = changeset.changes.first() {
-            let conn = self.connection.reconnect()?;
             let mut changeset = changeset.clone();
             changeset.action = ChangeAction::Undo;
-            match change {
-                Change::Update { .. } => self._set_values(conn, &changeset).await?,
-                Change::Add { row } => {
-                    self._delete_row(
-                        conn,
-                        &changeset.action,
-                        &changeset.table,
-                        &changeset.user,
-                        *row,
-                    )
-                    .await?
+            if let Change::Update { .. } = change {
+                let conn = self.connection.reconnect()?;
+                self._set_values(conn, &changeset).await?;
+            } else {
+                for change in changeset.changes.iter() {
+                    let conn = self.connection.reconnect()?;
+                    match change {
+                        Change::Update { .. } => (),
+                        Change::Add { row } => {
+                            self._delete_row(
+                                conn,
+                                &changeset.action,
+                                &changeset.table,
+                                &changeset.user,
+                                *row,
+                            )
+                            .await?;
+                        }
+                        Change::Move {
+                            row,
+                            from_after,
+                            to_after: _,
+                        } => {
+                            self._move_and_record_row(
+                                conn,
+                                &changeset.action,
+                                &changeset.table,
+                                &changeset.user,
+                                *row,
+                                *from_after,
+                            )
+                            .await?;
+                        }
+                        Change::Delete { row: _, after: _ } => {
+                            // TODO: Fetch the row to restore from the history table by looking
+                            // it up using the change id, then call _add_row()
+                            todo!()
+                        }
+                    };
                 }
-                Change::Move {
-                    row,
-                    from_after,
-                    to_after: _,
-                } => {
-                    self._move_and_record_row(
-                        conn,
-                        &changeset.action,
-                        &changeset.table,
-                        &changeset.user,
-                        *row,
-                        *from_after,
-                    )
-                    .await?
-                }
-                // TODO: When implementing undo delete, don't forget that we need to restore
-                // the old _order. See valve for hints.
-                Change::Delete { row: _ } => todo!(),
-            };
+            }
         }
         Ok(())
     }
@@ -1106,6 +1115,8 @@ impl Relatable {
             );
         }
 
+        let after = self._get_previous_row(table_name, row, &mut tx)?;
+
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
         let changeset = ChangeSet {
@@ -1113,7 +1124,10 @@ impl Relatable {
             table: table_name.to_string(),
             user: user.to_string(),
             description: "Delete one row".to_string(),
-            changes: vec![Change::Delete { row: row }],
+            changes: vec![Change::Delete {
+                row: row,
+                after: after,
+            }],
         };
 
         // Use the changeset to prepare the user cursor:
@@ -1422,7 +1436,7 @@ impl ChangeSet {
                     row: *row,
                     column: "".to_string(),
                 }),
-                Change::Delete { row } => Ok(Cursor {
+                Change::Delete { row, after: _ } => Ok(Cursor {
                     table,
                     row: *row,
                     column: "".to_string(),
@@ -1486,6 +1500,7 @@ pub enum Change {
     },
     Delete {
         row: usize,
+        after: usize,
     },
 }
 
@@ -1526,7 +1541,10 @@ impl Change {
                     after: change_json.get_value("after")?,
                 }),
                 "Add" => changes.push(Change::Add { row: row }),
-                "Delete" => changes.push(Change::Delete { row: row }),
+                "Delete" => changes.push(Change::Delete {
+                    row: row,
+                    after: change_json.get_unsigned("after")?,
+                }),
                 "Move" => changes.push(Change::Move {
                     row: row,
                     from_after: change_json.get_unsigned("from_after")?,
