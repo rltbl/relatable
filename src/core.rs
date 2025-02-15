@@ -507,7 +507,9 @@ impl Relatable {
             ChangeAction::Undo => {
                 let (change_id, _) = self
                     ._get_last_action_for_user(tx, &changeset.user, &ChangeAction::Do)?
-                    .ok_or(RelatableError::DataError("No row found".to_string()))?;
+                    .ok_or(RelatableError::DataError(
+                        "No action for user found".to_string(),
+                    ))?;
                 Some(change_id)
             }
             _ => None,
@@ -539,16 +541,12 @@ impl Relatable {
                                  ("change_id", "table", "row", "before", "after")
                                  VALUES (?, ?, ?, ?, ?)
                                  RETURNING "history_id""#;
-                    let (before, after) = match &changeset.action {
-                        ChangeAction::Undo => (after, before),
-                        _ => (before, after),
-                    };
                     let before = json!({column: before}).to_string();
                     let after = json!({column: after}).to_string();
                     let params = json!([change_id, table, row, before, after]);
                     tx.query_value(&sql, Some(&params))?;
                 }
-                Change::Add { row } => {
+                Change::Add { row, after: _ } => {
                     let json_row = match self._get_row(&table, *row, tx)? {
                         Some(json_row) => json_row,
                         None => match old_change_id {
@@ -581,13 +579,9 @@ impl Relatable {
                             }
                         },
                     };
-                    let target_column = match &changeset.action {
-                        ChangeAction::Undo => "before",
-                        _ => "after",
-                    };
                     let sql = format!(
                         r#"INSERT INTO "history"
-                           ("change_id", "table", "row", "{target_column}")
+                           ("change_id", "table", "row", "after")
                            VALUES (?, ?, ?, ?)
                            RETURNING "history_id""#
                     );
@@ -618,14 +612,9 @@ impl Relatable {
                             );
                         }
                     };
-                    let target_column = match &changeset.action {
-                        ChangeAction::Undo => "after",
-                        _ => "before",
-                    };
-
                     let sql = format!(
                         r#"INSERT INTO "history"
-                           ("change_id", "table", "row", "{target_column}")
+                           ("change_id", "table", "row", "before")
                            VALUES (?, ?, ?, ?)
                            RETURNING "history_id""#
                     );
@@ -636,17 +625,6 @@ impl Relatable {
             };
         }
         Ok(())
-    }
-
-    pub async fn get_value(
-        &self,
-        table: &str,
-        row: usize,
-        column: &str,
-    ) -> Result<Option<JsonValue>> {
-        let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = ?"#);
-        let params = json!([row]);
-        self.connection.query_value(&sql, Some(&params)).await
     }
 
     pub async fn get_user(&self, username: &str) -> Account {
@@ -800,7 +778,7 @@ impl Relatable {
         Ok(rows[0].get_unsigned("_order")?)
     }
 
-    fn _get_previous_row(
+    fn _get_previous_row_id(
         &self,
         table: &str,
         row: usize,
@@ -863,7 +841,7 @@ impl Relatable {
                 Some(Change::Delete { row, after: _ }) => {
                     // If we are undoing the addition of a row, then the cursor should be updated
                     // to the row right before it:
-                    cursor.row = self._get_previous_row(&changeset.table, *row, tx)?;
+                    cursor.row = self._get_previous_row_id(&changeset.table, *row, tx)?;
                 }
                 _ => (),
             }
@@ -948,8 +926,13 @@ impl Relatable {
                 for change in changeset.changes.iter() {
                     let conn = self.connection.reconnect()?;
                     match change {
-                        Change::Update { .. } => (),
-                        Change::Add { row } => {
+                        Change::Update {
+                            row: _,
+                            column: _,
+                            before: _,
+                            after: _,
+                        } => (),
+                        Change::Add { row, after: _ } => {
                             self._delete_row(
                                 conn,
                                 &changeset.action,
@@ -1052,7 +1035,7 @@ impl Relatable {
                 Change::Update {
                     row,
                     column,
-                    before: _,
+                    before,
                     after,
                 } => {
                     // WARN: This just sets text!
@@ -1062,13 +1045,28 @@ impl Relatable {
                             WHERE _id = ?
                            RETURNING 1 AS "updated""#,
                     );
+
+                    let value = match &changeset.action {
+                        ChangeAction::Undo => before.clone(),
+                        _ => after.clone(),
+                    };
                     // TODO: Render JSON to SQL properly.
-                    let after = json_to_string(after);
-                    let params = json!([after, row]);
+                    let params = json!([json_to_string(&value), row]);
                     if tx.query(&sql, Some(&params))?.len() < 1 {
                         tracing::warn!("No row with _id {row} found to update");
                     } else {
-                        actual_changes.push(change.clone());
+                        actual_changes.push(Change::Update {
+                            row: *row,
+                            column: column.clone(),
+                            before: match &changeset.action {
+                                ChangeAction::Undo => after.clone(),
+                                _ => before.clone(),
+                            },
+                            after: match &changeset.action {
+                                ChangeAction::Undo => before.clone(),
+                                _ => after.clone(),
+                            },
+                        });
                     }
                 }
                 _ => {
@@ -1133,6 +1131,25 @@ impl Relatable {
 
         // Prepare a new row to be inserted:
         let mut new_row = Row::prepare_new(&table, Some(row), &mut tx)?;
+        if let Some(new_row_id) = new_row_id {
+            new_row.id = new_row_id;
+            new_row.order = new_row.id * MOVE_INTERVAL;
+        }
+
+        // Add the row to the table:
+        let (sql, params) = new_row.as_insert(&table.name);
+        tracing::info!("_add_row {sql} {params:?}");
+        tx.query(&sql, Some(&params))?;
+
+        let after_id = match after_id {
+            None => self._get_previous_row_id(table_name, new_row.id, &mut tx)?,
+            Some(after_id) => {
+                // Move the row to its assigned spot within the table:
+                let new_order = self._move_row(&mut tx, &table, new_row.id, after_id)?;
+                new_row.order = new_order;
+                after_id
+            }
+        };
 
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with new_row's id:
@@ -1142,33 +1159,15 @@ impl Relatable {
             user: user.to_string(),
             description: "Add one row".to_string(),
             changes: vec![Change::Add {
-                row: match new_row_id {
-                    None => new_row.id,
-                    Some(id) => id,
-                },
+                row: new_row.id,
+                after: after_id,
             }],
         };
 
         // Use the changeset to prepare the user cursor:
         self.prepare_user_cursor(&changeset, &mut tx)?;
 
-        // Add the row to the table
-        let (sql, params) = new_row.as_insert(&table.name);
-        tracing::info!("_add_row {sql} {params:?}");
-        tx.query(&sql, Some(&params))?;
-
-        if let Some(new_row_id) = new_row_id {
-            let new_id = self._change_row_id(&mut tx, &table, new_row.id, new_row_id)?;
-            new_row.id = new_id;
-        }
-
-        if let Some(after_id) = after_id {
-            // Move the row to its assigned spot within the table:
-            let new_order = self._move_row(&mut tx, &table, new_row.id, after_id)?;
-            new_row.order = new_order;
-        }
-
-        // Record the change to the history table:
+        // Record the changes to the history table:
         self.record_changes(&changeset, &mut tx)?;
 
         // Commit the transaction:
@@ -1219,7 +1218,7 @@ impl Relatable {
             );
         }
 
-        let after = self._get_previous_row(table_name, row, &mut tx)?;
+        let after = self._get_previous_row_id(table_name, row, &mut tx)?;
 
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
@@ -1291,7 +1290,7 @@ impl Relatable {
             );
         }
 
-        let previous_row = self._get_previous_row(table_name, id, &mut tx)?;
+        let previous_row = self._get_previous_row_id(table_name, id, &mut tx)?;
 
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
@@ -1494,15 +1493,19 @@ impl Relatable {
         table: &Table,
         id: usize,
         new_id: usize,
-    ) -> Result<usize> {
+    ) -> Result<()> {
         let sql = format!(
-            r#"UPDATE "{table}" SET "_id" = ? WHERE "_id" = ? RETURNING "_id" AS "_id""#,
+            r#"UPDATE "{table}"
+                  SET "_id" = ?, "_order" = ?
+                WHERE "_id" = ?
+            RETURNING "_id" AS "_id""#,
             table = table.name,
         );
-        let params = json!([new_id, id]);
+        let params = json!([new_id, id, id * MOVE_INTERVAL]);
         tx.query_one(&sql, Some(&params))?
             .ok_or(RelatableError::DataError(format!("No row with _id = {id}")))?
-            .get_unsigned("_id")
+            .get_unsigned("_id")?;
+        Ok(())
     }
 
     pub async fn move_row(
@@ -1547,12 +1550,16 @@ impl ChangeSet {
                     row: *row,
                     column: column.to_string(),
                 }),
-                Change::Add { row } => Ok(Cursor {
+                Change::Add { row, after: _ } => Ok(Cursor {
                     table,
                     row: *row,
                     column: "".to_string(),
                 }),
-                Change::Move { row, .. } => Ok(Cursor {
+                Change::Move {
+                    row,
+                    from_after: _,
+                    to_after: _,
+                } => Ok(Cursor {
                     table,
                     row: *row,
                     column: "".to_string(),
@@ -1613,6 +1620,7 @@ pub enum Change {
     },
     Add {
         row: usize,
+        after: usize,
     },
     Move {
         row: usize,
@@ -1661,7 +1669,10 @@ impl Change {
                     before: change_json.get_value("before")?,
                     after: change_json.get_value("after")?,
                 }),
-                "Add" => changes.push(Change::Add { row: row }),
+                "Add" => changes.push(Change::Add {
+                    row: row,
+                    after: change_json.get_unsigned("after")?,
+                }),
                 "Delete" => changes.push(Change::Delete {
                     row: row,
                     after: change_json.get_unsigned("after")?,
