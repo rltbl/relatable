@@ -234,68 +234,6 @@ impl Relatable {
             .map_err(|e| e.into())
     }
 
-    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
-        let statement = r#"SELECT "table" FROM 'table' WHERE "table" = ?"#;
-        let params = json!([table_name]);
-        match self
-            .connection
-            .query_value(&statement, Some(&params))
-            .await?
-        {
-            Some(_) => (),
-            None => {
-                return Err(RelatableError::TableError(format!(
-                    "Table '{table_name}' is not in the 'table' table"
-                ))
-                .into())
-            }
-        }
-
-        let statement = r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#;
-        let mut view = format!("{table_name}_default_view");
-        let params = json!([view]);
-        let result = self
-            .connection
-            .query_value(&statement, Some(&params))
-            .await?;
-        if result.is_none() {
-            view = String::from(table_name);
-        }
-        // tracing::warn!("FIND THE VIEW {view}");
-
-        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
-        let params = json!([table_name]);
-        let change_id = match self
-            .connection
-            .query_value(&statement, Some(&params))
-            .await?
-        {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
-        };
-        let name = table_name.to_string();
-        Ok(Table {
-            name,
-            view,
-            change_id,
-            ..Default::default()
-        })
-    }
-
-    fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
-        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
-        let params = json!([table_name]);
-        let change_id = match tx.query_value(&statement, Some(&params))? {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
-        };
-        Ok(Table {
-            name: table_name.to_string(),
-            change_id,
-            ..Default::default()
-        })
-    }
-
     pub fn from(&self, table_name: &str) -> Select {
         Select {
             table_name: table_name.to_string(),
@@ -599,8 +537,8 @@ impl Relatable {
                 Change::Add { row } => {
                     // TODO: You are here.
                     let sql = r#"INSERT INTO "history"
-                                 ("change_id", "table", "row", "before", "after")
-                                 VALUES (?, ?, ?, 'TODO', 'TODO')
+                                 ("change_id", "table", "row", "after")
+                                 VALUES (?, ?, ?, 'TODO')
                                  RETURNING "history_id""#;
                     let params = json!([change_id, table, row]);
                     tx.query_value(&sql, Some(&params))?;
@@ -623,6 +561,231 @@ impl Relatable {
                 }
             };
         }
+        Ok(())
+    }
+
+    pub async fn get_value(
+        &self,
+        table: &str,
+        row: usize,
+        column: &str,
+    ) -> Result<Option<JsonValue>> {
+        let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = ?"#);
+        let params = json!([row]);
+        self.connection.query_value(&sql, Some(&params)).await
+    }
+
+    pub async fn get_user(&self, username: &str) -> Account {
+        let statement = format!(
+            r#"SELECT "name", "color", "cursor", "datetime"
+               FROM user WHERE name = '{username}' LIMIT 1"#
+        );
+        let user = self.connection.query_one(&statement, None).await;
+        if let Ok(user) = user {
+            if let Some(user) = user {
+                return Account {
+                    name: username.to_string(),
+                    color: user.get_string("color").expect("No 'color' found"),
+                };
+            }
+        }
+        Account {
+            ..Default::default()
+        }
+    }
+
+    pub async fn get_users(&self) -> Result<IndexMap<String, UserCursor>> {
+        let mut users = IndexMap::new();
+        // let statement = format!(
+        //     r#"SELECT "name", color", "cursor", "datetime" FROM user WHERE cursor IS NOT NULL
+        //        AND "datetime" >= DATETIME('now', '-10 minutes')"#
+        // );
+        let statement = format!(
+            r#"SELECT "name", "color", "cursor", "datetime" FROM user WHERE cursor IS NOT NULL"#
+        );
+        let rows = self.connection.query(&statement, None).await?;
+        for row in rows {
+            let name = row.get_string("name")?;
+            if name.trim() == "" {
+                continue;
+            }
+            users.insert(
+                name.clone(),
+                UserCursor {
+                    name: name.clone(),
+                    color: row.get_string("color")?,
+                    cursor: from_str(&row.get_string("cursor")?)?,
+                    datetime: row.get_string("datetime")?,
+                },
+            );
+        }
+        Ok(users)
+    }
+
+    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
+        let statement = r#"SELECT "table" FROM 'table' WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        match self
+            .connection
+            .query_value(&statement, Some(&params))
+            .await?
+        {
+            Some(_) => (),
+            None => {
+                return Err(RelatableError::TableError(format!(
+                    "Table '{table_name}' is not in the 'table' table"
+                ))
+                .into())
+            }
+        }
+
+        let statement = r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#;
+        let mut view = format!("{table_name}_default_view");
+        let params = json!([view]);
+        let result = self
+            .connection
+            .query_value(&statement, Some(&params))
+            .await?;
+        if result.is_none() {
+            view = String::from(table_name);
+        }
+        // tracing::warn!("FIND THE VIEW {view}");
+
+        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        let change_id = match self
+            .connection
+            .query_value(&statement, Some(&params))
+            .await?
+        {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        let name = table_name.to_string();
+        Ok(Table {
+            name,
+            view,
+            change_id,
+            ..Default::default()
+        })
+    }
+
+    fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
+        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        let change_id = match tx.query_value(&statement, Some(&params))? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(Table {
+            name: table_name.to_string(),
+            change_id,
+            ..Default::default()
+        })
+    }
+
+    pub async fn get_tables(&self) -> Result<IndexMap<String, Table>> {
+        let mut tables = IndexMap::new();
+        let statement = format!(
+            r#"SELECT "_id", "_order", "table", "path",
+                 (SELECT max(change_id)
+                  FROM history
+                  WHERE history."table" = "table"."table"
+                 ) AS _change_id
+               FROM 'table'"#
+        );
+
+        let rows = self.connection.query(&statement, None).await?;
+        for row in rows {
+            let name = row.get_string("table")?;
+            tables.insert(
+                name.clone(),
+                Table {
+                    name: name.clone(),
+                    change_id: row
+                        .content
+                        .get("_change_id")
+                        .and_then(|i| i.as_u64())
+                        .unwrap_or_default() as usize,
+                    ..Default::default()
+                },
+            );
+        }
+        Ok(tables)
+    }
+
+    fn _get_row_order(&self, table: &str, row: usize, tx: &mut DbTransaction<'_>) -> Result<usize> {
+        let sql = format!(r#"SELECT "_order" FROM "{table}" WHERE "_id" = ?"#,);
+        let params = json!([row]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            return Err(
+                RelatableError::InputError(format!("No row {row} in table '{table}'")).into(),
+            );
+        }
+        Ok(rows[0].get_unsigned("_order")?)
+    }
+
+    fn _get_previous_row(
+        &self,
+        table: &str,
+        row: usize,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<usize> {
+        let curr_row_order = self._get_row_order(table, row, tx)?;
+        let sql = format!(
+            r#"SELECT "_id" FROM "{table}" WHERE "_order" < ?
+               ORDER BY "_order" DESC LIMIT 1"#,
+        );
+        let params = json!([curr_row_order]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            Ok(0)
+        } else {
+            rows[0].get_unsigned("_id")
+        }
+    }
+
+    pub async fn get_site(&self, username: &str) -> Site {
+        let mut users = self.get_users().await.unwrap_or_default();
+        users.shift_remove(username);
+        Site {
+            title: "RLTBL".to_string(),
+            root: self.root.clone(),
+            editable: !self.readonly,
+            user: self.get_user(username).await,
+            users,
+            tables: self.get_tables().await.unwrap_or_default(),
+        }
+    }
+
+    pub fn prepare_user_cursor(
+        &self,
+        changeset: &ChangeSet,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        // Make sure the user is present in the user table
+        let user = changeset.user.clone();
+        let color = random_color::RandomColor::new().to_hex();
+        let statement = r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#;
+        let params = json!([user, color]);
+        tx.query(&statement, Some(&params))?;
+
+        // Update the user's cursor position.
+        let mut cursor = changeset.to_cursor()?;
+        // If we are undoing the addition of a row, then the cursor should be updated to the
+        // row right before it:
+        if let ChangeAction::Undo = changeset.action {
+            if let Some(Change::Add { row }) = changeset.changes.first() {
+                cursor.row = self._get_previous_row(&changeset.table, *row, tx)?;
+            }
+        }
+
+        let statement =
+            r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
+        let params = json!([to_value(cursor).unwrap_or_default(), user]);
+        tx.query_value(&statement, Some(&params))?;
+
         Ok(())
     }
 
@@ -732,36 +895,6 @@ impl Relatable {
         todo!()
     }
 
-    pub fn prepare_user_cursor(
-        &self,
-        changeset: &ChangeSet,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<()> {
-        // Make sure the user is present in the user table
-        let user = changeset.user.clone();
-        let color = random_color::RandomColor::new().to_hex();
-        let statement = r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#;
-        let params = json!([user, color]);
-        tx.query(&statement, Some(&params))?;
-
-        // Update the user's cursor position.
-        let mut cursor = changeset.to_cursor()?;
-        // If we are undoing the addition of a row, then the cursor should be updated to the
-        // row right before it:
-        if let ChangeAction::Undo = changeset.action {
-            if let Some(Change::Add { row }) = changeset.changes.first() {
-                cursor.row = self._get_previous_row(&changeset.table, *row, tx)?;
-            }
-        }
-
-        let statement =
-            r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
-        let params = json!([to_value(cursor).unwrap_or_default(), user]);
-        tx.query_value(&statement, Some(&params))?;
-
-        Ok(())
-    }
-
     async fn _set_values(
         &self,
         mut conn: Option<DbActiveConnection>,
@@ -837,107 +970,6 @@ impl Relatable {
             self.commit_to_git().await?;
         }
         Ok(num_changes)
-    }
-
-    pub async fn get_value(
-        &self,
-        table: &str,
-        row: usize,
-        column: &str,
-    ) -> Result<Option<JsonValue>> {
-        let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = ?"#);
-        let params = json!([row]);
-        self.connection.query_value(&sql, Some(&params)).await
-    }
-
-    pub async fn get_user(&self, username: &str) -> Account {
-        let statement = format!(
-            r#"SELECT "name", "color", "cursor", "datetime"
-               FROM user WHERE name = '{username}' LIMIT 1"#
-        );
-        let user = self.connection.query_one(&statement, None).await;
-        if let Ok(user) = user {
-            if let Some(user) = user {
-                return Account {
-                    name: username.to_string(),
-                    color: user.get_string("color").expect("No 'color' found"),
-                };
-            }
-        }
-        Account {
-            ..Default::default()
-        }
-    }
-
-    pub async fn get_users(&self) -> Result<IndexMap<String, UserCursor>> {
-        let mut users = IndexMap::new();
-        // let statement = format!(
-        //     r#"SELECT "name", color", "cursor", "datetime" FROM user WHERE cursor IS NOT NULL
-        //        AND "datetime" >= DATETIME('now', '-10 minutes')"#
-        // );
-        let statement = format!(
-            r#"SELECT "name", "color", "cursor", "datetime" FROM user WHERE cursor IS NOT NULL"#
-        );
-        let rows = self.connection.query(&statement, None).await?;
-        for row in rows {
-            let name = row.get_string("name")?;
-            if name.trim() == "" {
-                continue;
-            }
-            users.insert(
-                name.clone(),
-                UserCursor {
-                    name: name.clone(),
-                    color: row.get_string("color")?,
-                    cursor: from_str(&row.get_string("cursor")?)?,
-                    datetime: row.get_string("datetime")?,
-                },
-            );
-        }
-        Ok(users)
-    }
-
-    pub async fn get_tables(&self) -> Result<IndexMap<String, Table>> {
-        let mut tables = IndexMap::new();
-        let statement = format!(
-            r#"SELECT "_id", "_order", "table", "path",
-                 (SELECT max(change_id)
-                  FROM history
-                  WHERE history."table" = "table"."table"
-                 ) AS _change_id
-               FROM 'table'"#
-        );
-
-        let rows = self.connection.query(&statement, None).await?;
-        for row in rows {
-            let name = row.get_string("table")?;
-            tables.insert(
-                name.clone(),
-                Table {
-                    name: name.clone(),
-                    change_id: row
-                        .content
-                        .get("_change_id")
-                        .and_then(|i| i.as_u64())
-                        .unwrap_or_default() as usize,
-                    ..Default::default()
-                },
-            );
-        }
-        Ok(tables)
-    }
-
-    pub async fn get_site(&self, username: &str) -> Site {
-        let mut users = self.get_users().await.unwrap_or_default();
-        users.shift_remove(username);
-        Site {
-            title: "RLTBL".to_string(),
-            root: self.root.clone(),
-            editable: !self.readonly,
-            user: self.get_user(username).await,
-            users,
-            tables: self.get_tables().await.unwrap_or_default(),
-        }
     }
 
     async fn _add_row(
@@ -1067,38 +1099,6 @@ impl Relatable {
             self.commit_to_git().await?;
         }
         Ok(num_deleted)
-    }
-
-    fn _get_row_order(&self, table: &str, row: usize, tx: &mut DbTransaction<'_>) -> Result<usize> {
-        let sql = format!(r#"SELECT "_order" FROM "{table}" WHERE "_id" = ?"#,);
-        let params = json!([row]);
-        let rows = tx.query(&sql, Some(&params))?;
-        if rows.len() == 0 {
-            return Err(
-                RelatableError::InputError(format!("No row {row} in table '{table}'")).into(),
-            );
-        }
-        Ok(rows[0].get_unsigned("_order")?)
-    }
-
-    fn _get_previous_row(
-        &self,
-        table: &str,
-        row: usize,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<usize> {
-        let curr_row_order = self._get_row_order(table, row, tx)?;
-        let sql = format!(
-            r#"SELECT "_id" FROM "{table}" WHERE "_order" < ?
-               ORDER BY "_order" DESC LIMIT 1"#,
-        );
-        let params = json!([curr_row_order]);
-        let rows = tx.query(&sql, Some(&params))?;
-        if rows.len() == 0 {
-            Ok(0)
-        } else {
-            rows[0].get_unsigned("_id")
-        }
     }
 
     async fn _move_and_record_row(
