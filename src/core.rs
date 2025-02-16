@@ -502,7 +502,8 @@ impl Relatable {
         let table = changeset.table.clone();
         let description = changeset.description.clone();
 
-        // Begin by getting the previous change_id for this user, which we may need later:
+        // Begin by getting the current last change_id for this user, which we may need to look
+        // up previous values of the row's columns in the history table later:
         let old_change_id = match &changeset.action {
             ChangeAction::Undo => {
                 let (change_id, _) = self
@@ -523,7 +524,7 @@ impl Relatable {
             ChangeAction::Do => None,
         };
 
-        // Now write the current change:
+        // Now write the current change, which will generate a new last change_id:
         let statement = r#"INSERT INTO change("user", "action", "table", "description", "content")
                            VALUES (?, ?, ?, ?, ?)
                            RETURNING change_id"#;
@@ -555,6 +556,9 @@ impl Relatable {
                     tx.query_value(&sql, Some(&params))?;
                 }
                 Change::Add { row, after: _ } => {
+                    // If the row has just been newly added, it will be found in the table,
+                    // otherwise we will use the old_change_id to look for it in the history
+                    // table:
                     let json_row = match self._get_row(&table, *row, tx)? {
                         Some(json_row) => json_row,
                         None => match old_change_id {
@@ -936,7 +940,7 @@ impl Relatable {
                             column: _,
                             before: _,
                             after: _,
-                        } => (),
+                        } => (), // Change::Update is already handled above.
                         Change::Add { row, after: _ } => {
                             self._delete_row(
                                 conn,
@@ -963,6 +967,8 @@ impl Relatable {
                             .await?;
                         }
                         Change::Delete { row, after } => {
+                            // Get the row, as it was before it was deleted, from the history
+                            // table:
                             let sql = r#"SELECT "before" FROM "history" WHERE "change_id" = ?"#;
                             let params = json!([change_id]);
                             let before = self
@@ -973,7 +979,6 @@ impl Relatable {
                                     "No history row found with change_id {change_id}"
                                 )))?
                                 .get_string("before")?;
-
                             let before = match serde_json::from_str::<JsonValue>(&before) {
                                 Err(err) => return Err(err.into()),
                                 Ok(JsonValue::Object(o)) => o,
@@ -985,6 +990,7 @@ impl Relatable {
                                 }
                             };
                             let before = JsonRow { content: before };
+                            // Re-add it to the data table:
                             self._add_row(
                                 conn,
                                 &changeset.action,
@@ -1061,9 +1067,11 @@ impl Relatable {
                            RETURNING 1 AS "updated""#,
                     );
 
+                    // Depending on whether this is an undo/redo or an original action, the
+                    // new value will be taken from either `before` or `after`.
                     let value = match &changeset.action {
-                        ChangeAction::Undo | ChangeAction::Redo => before.clone(),
-                        ChangeAction::Do => after.clone(),
+                        ChangeAction::Undo | ChangeAction::Redo => before,
+                        ChangeAction::Do => after,
                     };
                     // TODO: Render JSON to SQL properly.
                     let params = json!([json_to_string(&value), row]);
@@ -1086,7 +1094,7 @@ impl Relatable {
                 }
                 _ => {
                     return Err(RelatableError::InputError(format!(
-                        "Don't know how to apply set_values() to a change set like {changeset:?}"
+                        "Invalid change in changeset argument to set_values(): {change:?}"
                     ))
                     .into());
                 }
@@ -1146,6 +1154,9 @@ impl Relatable {
 
         // Prepare a new row to be inserted:
         let mut new_row = Row::prepare_new(&table, Some(row), &mut tx)?;
+        // A new_row_id will have been passed if the row is being added as part of an undo/redo.
+        // In that case an after_id must have been passed as well but we assign the default
+        // row order for now:
         if let Some(new_row_id) = new_row_id {
             new_row.id = new_row_id;
             new_row.order = new_row.id * MOVE_INTERVAL;
@@ -1167,7 +1178,7 @@ impl Relatable {
         };
 
         // Prepare a changeset to be recorded, consisting of a single change record indicating
-        // the addition of one new row with new_row's id:
+        // the addition of one new row with the new_row's id and position in the table:
         let changeset = ChangeSet {
             action: action.clone(),
             table: table_name.to_string(),
@@ -1233,10 +1244,8 @@ impl Relatable {
             );
         }
 
-        let after = self._get_previous_row_id(table_name, row, &mut tx)?;
-
         // Prepare a changeset to be recorded, consisting of a single change record indicating
-        // that a row has been displaced from somewhere to somewhere else.
+        // that a row with the given row number at the given table position has been deleted:
         let changeset = ChangeSet {
             action: action.clone(),
             table: table_name.to_string(),
@@ -1244,14 +1253,14 @@ impl Relatable {
             description: "Delete one row".to_string(),
             changes: vec![Change::Delete {
                 row: row,
-                after: after,
+                after: self._get_previous_row_id(table_name, row, &mut tx)?,
             }],
         };
 
         // Use the changeset to prepare the user cursor:
         self.prepare_user_cursor(&changeset, &mut tx)?;
 
-        // Move the row within the table:
+        // Delete the row:
         let sql = format!(
             r#"DELETE FROM "{}" WHERE "_id" = ? RETURNING 1 AS "deleted""#,
             table.name
@@ -1264,7 +1273,9 @@ impl Relatable {
         let num_deleted = tx.query(&sql, Some(&params))?.len();
         if num_deleted < 1 {
             tracing::warn!("No row found with _id {row} to delete");
-            // Roll back the changes to the history and change table:
+            // Roll back the changes to the history and change table. The reason we made these
+            // prior to the actual delete was so that we could record the row's position in the
+            // table before it was deleted.
             tx.rollback()?;
         } else {
             // Commit the transaction:
@@ -1305,8 +1316,6 @@ impl Relatable {
             );
         }
 
-        let previous_row = self._get_previous_row_id(table_name, id, &mut tx)?;
-
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
         let changeset = ChangeSet {
@@ -1316,7 +1325,7 @@ impl Relatable {
             description: "Move one row".to_string(),
             changes: vec![Change::Move {
                 row: id,
-                from_after: previous_row,
+                from_after: self._get_previous_row_id(table_name, id, &mut tx)?,
                 to_after: after_id,
             }],
         };
