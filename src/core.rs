@@ -512,7 +512,15 @@ impl Relatable {
                     ))?;
                 Some(change_id)
             }
-            _ => None,
+            ChangeAction::Redo => {
+                let (change_id, _) = self
+                    ._get_last_action_for_user(tx, &changeset.user, &ChangeAction::Undo)?
+                    .ok_or(RelatableError::DataError(
+                        "No undo for user found".to_string(),
+                    ))?;
+                Some(change_id)
+            }
+            ChangeAction::Do => None,
         };
 
         // Now write the current change:
@@ -836,16 +844,15 @@ impl Relatable {
 
         // Update the user's cursor position.
         let mut cursor = changeset.to_cursor()?;
-        if let ChangeAction::Undo = changeset.action {
-            match changeset.changes.first() {
+        match changeset.action {
+            ChangeAction::Undo | ChangeAction::Redo => match changeset.changes.first() {
                 Some(Change::Delete { row, after: _ }) => {
-                    // If we are undoing the addition of a row, then the cursor should be updated
-                    // to the row right before it:
                     cursor.row = self._get_previous_row_id(&changeset.table, *row, tx)?;
                 }
                 _ => (),
-            }
-        }
+            },
+            ChangeAction::Do => (),
+        };
 
         let statement =
             r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
@@ -915,10 +922,8 @@ impl Relatable {
             .await
     }
 
-    async fn _undo(&self, _user: &str, change_id: usize, changeset: &ChangeSet) -> Result<()> {
+    async fn _undo_or_redo(&self, change_id: usize, changeset: &ChangeSet) -> Result<()> {
         if let Some(change) = changeset.changes.first() {
-            let mut changeset = changeset.clone();
-            changeset.action = ChangeAction::Undo;
             if let Change::Update { .. } = change {
                 let conn = self.connection.reconnect()?;
                 self._set_values(conn, &changeset).await?;
@@ -1007,13 +1012,23 @@ impl Relatable {
             Some(changeset) => changeset,
         };
         changeset.action = ChangeAction::Undo;
-        self._undo(user, change_id, &changeset).await?;
+        self._undo_or_redo(change_id, &changeset).await?;
         self.commit_to_git().await?;
         Ok(Some(changeset))
     }
 
-    pub async fn redo(&self, _user: &str) -> Result<Option<ChangeSet>> {
-        todo!()
+    pub async fn redo(&self, user: &str) -> Result<Option<ChangeSet>> {
+        let (change_id, mut changeset) = match self.get_last_undo_for_user(user).await? {
+            None => {
+                tracing::warn!("Nothing to redo for '{user}'");
+                return Ok(None);
+            }
+            Some(changeset) => changeset,
+        };
+        changeset.action = ChangeAction::Redo;
+        self._undo_or_redo(change_id, &changeset).await?;
+        self.commit_to_git().await?;
+        Ok(Some(changeset))
     }
 
     async fn _set_values(
@@ -1047,8 +1062,8 @@ impl Relatable {
                     );
 
                     let value = match &changeset.action {
-                        ChangeAction::Undo => before.clone(),
-                        _ => after.clone(),
+                        ChangeAction::Undo | ChangeAction::Redo => before.clone(),
+                        ChangeAction::Do => after.clone(),
                     };
                     // TODO: Render JSON to SQL properly.
                     let params = json!([json_to_string(&value), row]);
@@ -1059,12 +1074,12 @@ impl Relatable {
                             row: *row,
                             column: column.clone(),
                             before: match &changeset.action {
-                                ChangeAction::Undo => after.clone(),
-                                _ => before.clone(),
+                                ChangeAction::Undo | ChangeAction::Redo => after.clone(),
+                                ChangeAction::Do => before.clone(),
                             },
                             after: match &changeset.action {
-                                ChangeAction::Undo => before.clone(),
-                                _ => after.clone(),
+                                ChangeAction::Undo | ChangeAction::Redo => before.clone(),
+                                ChangeAction::Do => after.clone(),
                             },
                         });
                     }
