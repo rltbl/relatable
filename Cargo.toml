@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+ansi_term = "0.12"
 anyhow = "1.0.94"
 async-std = { version = "1.13.0", features = ["attributes"] }
 axum = "0.8.1"

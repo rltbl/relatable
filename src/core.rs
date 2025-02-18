@@ -872,7 +872,6 @@ impl Relatable {
         user: &str,
         action: &ChangeAction,
     ) -> Result<Option<(usize, ChangeSet)>> {
-        // Begin a transaction:
         let sql = r#"SELECT "change_id", "user", "table", "description", "content"
                      FROM "change"
                      WHERE "user" = ? AND "action" = ?
@@ -1018,6 +1017,8 @@ impl Relatable {
             Some(changeset) => changeset,
         };
         changeset.action = ChangeAction::Undo;
+        // TODO: Return the applied changes and only commit to git if changes have actually been
+        // applied. Then return the acutally applied changes or None if none were.
         self._undo_or_redo(change_id, &changeset).await?;
         self.commit_to_git().await?;
         Ok(Some(changeset))
@@ -1032,6 +1033,8 @@ impl Relatable {
             Some(changeset) => changeset,
         };
         changeset.action = ChangeAction::Redo;
+        // TODO: Return the applied changes and only commit to git if changes have actually been
+        // applied. Then return the acutally applied changes or None if none were.
         self._undo_or_redo(change_id, &changeset).await?;
         self.commit_to_git().await?;
         Ok(Some(changeset))

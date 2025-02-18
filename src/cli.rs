@@ -9,6 +9,7 @@ use rltbl::{
     web::{serve, serve_cgi},
 };
 
+use ansi_term::Style;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
@@ -16,7 +17,7 @@ use promptly::prompt_default;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use regex::Regex;
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
-use std::{io, io::Write, path::Path};
+use std::{io, io::Write, path::Path, str::FromStr};
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";
@@ -99,6 +100,14 @@ pub enum Command {
 
     /// Redo changes to the database that have been undone
     Redo {},
+
+    /// Show recent changes to the database
+    History {
+        #[arg(long, value_name = "CONTEXT", action = ArgAction::Set,
+              help = "Number of lines of redo / undo context (0 = infinite)",
+              default_value_t = 5)]
+        context: usize,
+    },
 
     /// Load data into the datanase
     Load {
@@ -331,6 +340,140 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
             value => format!("{value}"),
         };
         println!("{text}");
+    }
+}
+
+pub async fn print_history(cli: &Cli, context: usize) {
+    tracing::debug!("print_history({cli:?}, {context})");
+
+    async fn get_history(rltbl: &Relatable, user: &str, context: usize) -> Vec<JsonRow> {
+        let sql = r#"SELECT "change_id", "user", "table", "description", "action"
+                     FROM "change"
+                     WHERE "user" = ?
+                     ORDER BY "change_id" DESC LIMIT ?"#;
+        let params = json!([user, context]);
+        rltbl
+            .connection
+            .query(&sql, Some(&params))
+            .await
+            .expect("Error querying db")
+    }
+
+    let user = get_username(&cli);
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+
+    let history = get_history(&rltbl, &user, context).await;
+    let mut undo_history = vec![];
+    let mut redo_history = vec![];
+
+    let last_change = match history.len() {
+        0 => return, // Nothing else to do in this case
+        _ => history[0].clone(),
+    };
+    let mut last_action =
+        ChangeAction::from_str(&last_change.get_string("action").expect("No action found"))
+            .expect("Could not parse action");
+
+    match last_action {
+        ChangeAction::Do | ChangeAction::Redo => {
+            undo_history.push(last_change);
+        }
+        ChangeAction::Undo => redo_history.push(last_change),
+    };
+
+    let mut skip: isize = -1;
+    for change in &history[1..] {
+        let action = ChangeAction::from_str(&change.get_string("action").expect("No action found"))
+            .expect("Could not parse action");
+        match last_action {
+            ChangeAction::Do | ChangeAction::Redo => match action {
+                ChangeAction::Do | ChangeAction::Redo => undo_history.push(change.clone()),
+                ChangeAction::Undo => break,
+            },
+            ChangeAction::Undo => match action {
+                ChangeAction::Undo => {
+                    // I think this is unreachable unless skip is already -1 so this may be
+                    // redundant:
+                    skip = -1;
+                    redo_history.push(change.clone());
+                }
+                ChangeAction::Redo => break,
+                ChangeAction::Do => {
+                    //println!(
+                    //    "SKIPPING {action} {change_id} {description} ...",
+                    //    action = action.to_string().to_uppercase(),
+                    //    change_id = change.get_unsigned("change_id").unwrap(),
+                    //    description = change.get_string("description").unwrap()
+                    //);
+
+                    if skip == -1 {
+                        skip = redo_history.len() as isize;
+                    }
+
+                    if skip > 0 {
+                        // print!("Skip value decremented from {skip} ");
+                        last_action = ChangeAction::Undo;
+                        skip -= 1;
+                        // println!("to {skip}");
+                    } else if skip == 0 {
+                        undo_history.push(change.clone());
+                        last_action = action;
+                    }
+                    continue;
+                }
+            },
+        };
+    }
+
+    //println!("Undo history {undo_history:#?}");
+    //println!("Redo history {redo_history:#?}");
+    //println!("");
+
+    let next_undo = match undo_history.len() {
+        0 => 0,
+        _ => undo_history[0]
+            .get_unsigned("change_id")
+            .expect("No change_id found"),
+    };
+    undo_history.reverse();
+    for undo in &undo_history {
+        let action = undo
+            .get_string("action")
+            .expect("No action found")
+            .to_uppercase();
+        let change_id = undo.get_unsigned("change_id").expect("No change_id found");
+        let description = undo
+            .get_string("description")
+            .expect("No description found");
+        if change_id == next_undo {
+            let line = format!("▲ {action:>4} {change_id} {description}");
+            println!("{}", Style::new().bold().paint(line));
+        } else {
+            println!("  {action:>4} {change_id} {description}");
+        }
+    }
+
+    let next_redo = match redo_history.len() {
+        0 => 0,
+        _ => redo_history[0]
+            .get_unsigned("change_id")
+            .expect("No change_id found"),
+    };
+    for redo in &redo_history {
+        let action = redo
+            .get_string("action")
+            .expect("No action found")
+            .to_uppercase();
+        let change_id = redo.get_unsigned("change_id").expect("No change_id found");
+        let description = redo
+            .get_string("description")
+            .expect("No description found");
+        if change_id == next_redo {
+            let line = format!("▼ {action:>4} {change_id} {description}");
+            println!("{}", Style::new().bold().paint(line));
+        } else {
+            println!("  {action:>4} {change_id} {description}");
+        }
     }
 }
 
@@ -629,6 +772,7 @@ pub async fn process_command() {
         },
         Command::Undo {} => undo(&cli).await,
         Command::Redo {} => redo(&cli).await,
+        Command::History { context } => print_history(&cli, *context).await,
         Command::Load { subcommand } => match subcommand {
             LoadSubcommand::Table { path } => load_table(&cli, path).await,
         },
