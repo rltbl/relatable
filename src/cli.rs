@@ -516,7 +516,9 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
             }],
         })
         .await
-        .unwrap();
+        .unwrap()
+        .changes
+        .len();
 
     if num_changes < 1 {
         std::process::exit(1);

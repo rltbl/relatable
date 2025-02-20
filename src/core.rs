@@ -925,87 +925,106 @@ impl Relatable {
             .await
     }
 
-    async fn _undo_or_redo(&self, change_id: usize, changeset: &ChangeSet) -> Result<()> {
-        if let Some(change) = changeset.changes.first() {
-            if let Change::Update { .. } = change {
-                let conn = self.connection.reconnect()?;
-                self._set_values(conn, &changeset).await?;
-            } else {
-                for change in changeset.changes.iter() {
+    async fn _undo_or_redo(
+        &self,
+        change_id: usize,
+        changeset: &ChangeSet,
+    ) -> Result<Option<ChangeSet>> {
+        match changeset.changes.first() {
+            None => Ok(None),
+            Some(change) => {
+                if let Change::Update { .. } = change {
                     let conn = self.connection.reconnect()?;
-                    match change {
-                        Change::Update {
-                            row: _,
-                            column: _,
-                            before: _,
-                            after: _,
-                        } => (), // Change::Update is already handled above.
-                        Change::Add { row, after: _ } => {
-                            self._delete_row(
-                                conn,
-                                &changeset.action,
-                                &changeset.table,
-                                &changeset.user,
-                                *row,
-                            )
-                            .await?;
-                        }
-                        Change::Move {
-                            row,
-                            from_after,
-                            to_after: _,
-                        } => {
-                            self._move_and_record_row(
-                                conn,
-                                &changeset.action,
-                                &changeset.table,
-                                &changeset.user,
-                                *row,
-                                *from_after,
-                            )
-                            .await?;
-                        }
-                        Change::Delete { row, after } => {
-                            // Get the row, as it was before it was deleted, from the history
-                            // table:
-                            let sql = r#"SELECT "before" FROM "history" WHERE "change_id" = ?"#;
-                            let params = json!([change_id]);
-                            let before = self
-                                .connection
-                                .query_one(&sql, Some(&params))
-                                .await?
-                                .ok_or(RelatableError::DataError(format!(
-                                    "No history row found with change_id {change_id}"
-                                )))?
-                                .get_string("before")?;
-                            let before = match serde_json::from_str::<JsonValue>(&before) {
-                                Err(err) => return Err(err.into()),
-                                Ok(JsonValue::Object(o)) => o,
-                                Ok(_) => {
-                                    return Err(RelatableError::InputError(
-                                        "The content parameter is not an object".to_string(),
+                    let actual_changes = self._set_values(conn, &changeset).await?;
+                    Ok(Some(actual_changes))
+                } else {
+                    let mut actual_changes = vec![];
+                    for change in changeset.changes.iter() {
+                        let conn = self.connection.reconnect()?;
+                        match change {
+                            Change::Update { .. } => (), // Change::Update already handled above.
+                            Change::Add { row, after: _ } => {
+                                let num_deleted = self
+                                    ._delete_row(
+                                        conn,
+                                        &changeset.action,
+                                        &changeset.table,
+                                        &changeset.user,
+                                        *row,
                                     )
-                                    .into());
+                                    .await?;
+                                if num_deleted > 0 {
+                                    actual_changes.push(change.clone());
                                 }
-                            };
-                            let before = JsonRow { content: before };
-                            // Re-add it to the data table:
-                            self._add_row(
-                                conn,
-                                &changeset.action,
-                                &changeset.table,
-                                &changeset.user,
-                                Some(*row),
-                                Some(*after),
-                                &before,
-                            )
-                            .await?;
-                        }
-                    };
+                            }
+                            Change::Move {
+                                row,
+                                from_after,
+                                to_after: _,
+                            } => {
+                                let new_order = self
+                                    ._move_and_record_row(
+                                        conn,
+                                        &changeset.action,
+                                        &changeset.table,
+                                        &changeset.user,
+                                        *row,
+                                        *from_after,
+                                    )
+                                    .await?;
+                                if new_order > 0 {
+                                    actual_changes.push(change.clone());
+                                }
+                            }
+                            Change::Delete { row, after } => {
+                                // Get the row, as it was before it was deleted, from the history
+                                // table:
+                                let sql = r#"SELECT "before" FROM "history" WHERE "change_id" = ?"#;
+                                let params = json!([change_id]);
+                                let before = self
+                                    .connection
+                                    .query_one(&sql, Some(&params))
+                                    .await?
+                                    .ok_or(RelatableError::DataError(format!(
+                                        "No history row found with change_id {change_id}"
+                                    )))?
+                                    .get_string("before")?;
+                                let before = match serde_json::from_str::<JsonValue>(&before) {
+                                    Err(err) => return Err(err.into()),
+                                    Ok(JsonValue::Object(o)) => o,
+                                    Ok(_) => {
+                                        return Err(RelatableError::InputError(
+                                            "The content parameter is not an object".to_string(),
+                                        )
+                                        .into());
+                                    }
+                                };
+                                let before = JsonRow { content: before };
+                                // Re-add it to the data table:
+                                self._add_row(
+                                    conn,
+                                    &changeset.action,
+                                    &changeset.table,
+                                    &changeset.user,
+                                    Some(*row),
+                                    Some(*after),
+                                    &before,
+                                )
+                                .await?;
+                                actual_changes.push(change.clone());
+                            }
+                        };
+                    }
+                    Ok(Some(ChangeSet {
+                        action: changeset.action.clone(),
+                        table: changeset.table.clone(),
+                        user: changeset.user.clone(),
+                        description: changeset.description.clone(),
+                        changes: actual_changes,
+                    }))
                 }
             }
         }
-        Ok(())
     }
 
     pub async fn undo(&self, user: &str) -> Result<Option<ChangeSet>> {
@@ -1017,11 +1036,11 @@ impl Relatable {
             Some(changeset) => changeset,
         };
         changeset.action = ChangeAction::Undo;
-        // TODO: Return the applied changes and only commit to git if changes have actually been
-        // applied. Then return the acutally applied changes or None if none were.
-        self._undo_or_redo(change_id, &changeset).await?;
-        self.commit_to_git().await?;
-        Ok(Some(changeset))
+        let changeset = self._undo_or_redo(change_id, &changeset).await?;
+        if let Some(_) = changeset {
+            self.commit_to_git().await?;
+        }
+        Ok(changeset)
     }
 
     pub async fn redo(&self, user: &str) -> Result<Option<ChangeSet>> {
@@ -1033,18 +1052,18 @@ impl Relatable {
             Some(changeset) => changeset,
         };
         changeset.action = ChangeAction::Redo;
-        // TODO: Return the applied changes and only commit to git if changes have actually been
-        // applied. Then return the acutally applied changes or None if none were.
-        self._undo_or_redo(change_id, &changeset).await?;
-        self.commit_to_git().await?;
-        Ok(Some(changeset))
+        let changeset = self._undo_or_redo(change_id, &changeset).await?;
+        if let Some(_) = changeset {
+            self.commit_to_git().await?;
+        }
+        Ok(changeset)
     }
 
     async fn _set_values(
         &self,
         mut conn: Option<DbActiveConnection>,
         changeset: &ChangeSet,
-    ) -> Result<usize> {
+    ) -> Result<ChangeSet> {
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
@@ -1105,33 +1124,31 @@ impl Relatable {
         }
 
         let num_changes = actual_changes.len();
+        let actual_changeset = ChangeSet {
+            action: changeset.action.clone(),
+            table: changeset.table.clone(),
+            user: changeset.user.clone(),
+            description: changeset.description.clone(),
+            changes: actual_changes,
+        };
         if num_changes > 0 {
             // Record the changes to the change and history tables:
-            self.record_changes(
-                &ChangeSet {
-                    action: changeset.action.clone(),
-                    table: changeset.table.clone(),
-                    user: changeset.user.clone(),
-                    description: changeset.description.clone(),
-                    changes: actual_changes,
-                },
-                &mut tx,
-            )?;
+            self.record_changes(&actual_changeset, &mut tx)?;
         }
 
         // Commit the transaction:
         tx.commit()?;
 
-        Ok(num_changes)
+        Ok(actual_changeset)
     }
 
-    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<usize> {
+    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<ChangeSet> {
         let conn = self.connection.reconnect()?;
-        let num_changes = self._set_values(conn, changeset).await?;
-        if num_changes > 0 {
+        let changeset = self._set_values(conn, changeset).await?;
+        if changeset.changes.len() > 0 {
             self.commit_to_git().await?;
         }
-        Ok(num_changes)
+        Ok(changeset)
     }
 
     async fn _add_row(
