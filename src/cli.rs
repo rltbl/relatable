@@ -17,7 +17,7 @@ use promptly::prompt_default;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use regex::Regex;
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
-use std::{io, io::Write, path::Path, str::FromStr};
+use std::{io, io::Write, path::Path};
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";
@@ -346,97 +346,21 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
 pub async fn print_history(cli: &Cli, context: usize) {
     tracing::debug!("print_history({cli:?}, {context})");
 
-    async fn get_history(rltbl: &Relatable, user: &str, context: usize) -> Vec<JsonRow> {
-        let sql = r#"SELECT "change_id", "user", "table", "description", "action"
-                     FROM "change"
-                     WHERE "user" = ?
-                     ORDER BY "change_id" DESC LIMIT ?"#;
-        let params = json!([user, context]);
-        rltbl
-            .connection
-            .query(&sql, Some(&params))
-            .await
-            .expect("Error querying db")
-    }
-
     let user = get_username(&cli);
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
 
-    let history = get_history(&rltbl, &user, context).await;
-    let mut undo_history = vec![];
-    let mut redo_history = vec![];
-
-    let last_change = match history.len() {
-        0 => return, // Nothing else to do in this case
-        _ => history[0].clone(),
-    };
-    let mut last_action =
-        ChangeAction::from_str(&last_change.get_string("action").expect("No action found"))
-            .expect("Could not parse action");
-
-    match last_action {
-        ChangeAction::Do | ChangeAction::Redo => {
-            undo_history.push(last_change);
-        }
-        ChangeAction::Undo => redo_history.push(last_change),
-    };
-
-    let mut skip: isize = -1;
-    for change in &history[1..] {
-        let action = ChangeAction::from_str(&change.get_string("action").expect("No action found"))
-            .expect("Could not parse action");
-        match last_action {
-            ChangeAction::Do | ChangeAction::Redo => match action {
-                ChangeAction::Do | ChangeAction::Redo => undo_history.push(change.clone()),
-                ChangeAction::Undo => break,
-            },
-            ChangeAction::Undo => match action {
-                ChangeAction::Undo => {
-                    // I think this is unreachable unless skip is already -1 so this may be
-                    // redundant:
-                    skip = -1;
-                    redo_history.push(change.clone());
-                }
-                ChangeAction::Redo => break,
-                ChangeAction::Do => {
-                    //println!(
-                    //    "SKIPPING {action} {change_id} {description} ...",
-                    //    action = action.to_string().to_uppercase(),
-                    //    change_id = change.get_unsigned("change_id").unwrap(),
-                    //    description = change.get_string("description").unwrap()
-                    //);
-
-                    if skip == -1 {
-                        skip = redo_history.len() as isize;
-                    }
-
-                    if skip > 0 {
-                        // print!("Skip value decremented from {skip} ");
-                        last_action = ChangeAction::Undo;
-                        skip -= 1;
-                        // println!("to {skip}");
-                    } else if skip == 0 {
-                        undo_history.push(change.clone());
-                        last_action = action;
-                    }
-                    continue;
-                }
-            },
-        };
-    }
-
-    //println!("Undo history {undo_history:#?}");
-    //println!("Redo history {redo_history:#?}");
-    //println!("");
-
-    let next_undo = match undo_history.len() {
+    let (mut undoable_changes, redoable_changes) = rltbl
+        .get_user_history(&user, Some(context))
+        .await
+        .expect("Could not get history");
+    let next_undo = match undoable_changes.len() {
         0 => 0,
-        _ => undo_history[0]
+        _ => undoable_changes[0]
             .get_unsigned("change_id")
             .expect("No change_id found"),
     };
-    undo_history.reverse();
-    for undo in &undo_history {
+    undoable_changes.reverse();
+    for undo in &undoable_changes {
         let action = undo
             .get_string("action")
             .expect("No action found")
@@ -452,14 +376,13 @@ pub async fn print_history(cli: &Cli, context: usize) {
             println!("  {action:>4} {change_id} {description}");
         }
     }
-
-    let next_redo = match redo_history.len() {
+    let next_redo = match redoable_changes.len() {
         0 => 0,
-        _ => redo_history[0]
+        _ => redoable_changes[0]
             .get_unsigned("change_id")
             .expect("No change_id found"),
     };
-    for redo in &redo_history {
+    for redo in &redoable_changes {
         let action = redo
             .get_string("action")
             .expect("No action found")

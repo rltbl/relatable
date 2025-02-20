@@ -496,6 +496,41 @@ impl Relatable {
         Ok(())
     }
 
+    fn _get_last_action_for_user(
+        &self,
+        tx: &mut DbTransaction<'_>,
+        user: &str,
+        action: &ChangeAction,
+    ) -> Result<Option<(usize, ChangeSet)>> {
+        let sql = r#"SELECT "change_id", "user", "table", "description", "content"
+                     FROM "change"
+                     WHERE "user" = ? AND "action" = ?
+                     ORDER BY "change_id" DESC LIMIT 1"#;
+        let params = json!([user, format!("{action}")]);
+        let records = tx.query(&sql, Some(&params))?;
+        match records.len() {
+            0 => Ok(None),
+            _ => {
+                let change_id = records[0].get_unsigned("change_id")?;
+                let user = records[0].get_string("user")?;
+                let table = records[0].get_string("table")?;
+                let description = records[0].get_string("description")?;
+                let content = records[0].get_string("content")?;
+                let changes = Change::many_from_str(&content)?;
+                Ok(Some((
+                    change_id,
+                    ChangeSet {
+                        action: *action,
+                        table: table,
+                        user: user,
+                        description: description,
+                        changes: changes,
+                    },
+                )))
+            }
+        }
+    }
+
     pub fn record_changes(&self, changeset: &ChangeSet, tx: &mut DbTransaction<'_>) -> Result<()> {
         let user = changeset.user.clone();
         let action = changeset.action.to_string();
@@ -866,34 +901,25 @@ impl Relatable {
         Ok(())
     }
 
-    fn _get_last_action_for_user(
-        &self,
-        tx: &mut DbTransaction<'_>,
-        user: &str,
-        action: &ChangeAction,
-    ) -> Result<Option<(usize, ChangeSet)>> {
-        let sql = r#"SELECT "change_id", "user", "table", "description", "content"
-                     FROM "change"
-                     WHERE "user" = ? AND "action" = ?
-                     ORDER BY "change_id" DESC LIMIT 1"#;
-        let params = json!([user, format!("{action}")]);
-        let records = tx.query(&sql, Some(&params))?;
-        match records.len() {
-            0 => Ok(None),
-            _ => {
-                let change_id = records[0].get_unsigned("change_id")?;
-                let user = records[0].get_string("user")?;
-                let table = records[0].get_string("table")?;
-                let description = records[0].get_string("description")?;
-                let content = records[0].get_string("content")?;
+    pub async fn get_last_undo_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
+        // TODO: This is not very efficient. Yet strictly speaking it isn't possible to know
+        // in advance how far back to go to get the last do. In principle the user could
+        // have done something any number of times before calling this function. That is
+        // why we pass None to get_user_history() here:
+        let (_, redoable_changes) = self.get_user_history(user, None).await?;
+        match redoable_changes.first() {
+            None => Ok(None),
+            Some(change) => {
+                let change_id = change.get_unsigned("change_id")?;
+                let content = change.get_string("content")?;
                 let changes = Change::many_from_str(&content)?;
                 Ok(Some((
                     change_id,
                     ChangeSet {
-                        action: action.clone(),
-                        table: table,
-                        user: user,
-                        description: description,
+                        action: ChangeAction::from_str(&change.get_string("action")?)?,
+                        table: change.get_string("table")?,
+                        user: change.get_string("user")?,
+                        description: change.get_string("user")?,
                         changes: changes,
                     },
                 )))
@@ -901,28 +927,146 @@ impl Relatable {
         }
     }
 
-    pub async fn get_last_action_for_user(
+    pub async fn get_last_do_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
+        // TODO: This is not very efficient. Yet strictly speaking it isn't possible to know
+        // in advance how far back to go to get the last do. In principle the user could
+        // have undone something any number of times before calling this function. That is
+        // why we pass None to get_user_history() here:
+        let (undoable_changes, _) = self.get_user_history(user, None).await?;
+        match undoable_changes.first() {
+            None => Ok(None),
+            Some(change) => {
+                let change_id = change.get_unsigned("change_id")?;
+                let content = change.get_string("content")?;
+                let changes = Change::many_from_str(&content)?;
+                Ok(Some((
+                    change_id,
+                    ChangeSet {
+                        action: ChangeAction::from_str(&change.get_string("action")?)?,
+                        table: change.get_string("table")?,
+                        user: change.get_string("user")?,
+                        description: change.get_string("user")?,
+                        changes: changes,
+                    },
+                )))
+            }
+        }
+    }
+
+    pub async fn get_user_history(
         &self,
         user: &str,
-        action: ChangeAction,
-    ) -> Result<Option<(usize, ChangeSet)>> {
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-        self._get_last_action_for_user(&mut tx, user, &action)
-    }
+        context: Option<usize>,
+    ) -> Result<(Vec<JsonRow>, Vec<JsonRow>)> {
+        let (limit, limit_clause) = match context {
+            None => (0, ""),
+            Some(limit) => (limit, " LIMIT ?"),
+        };
+        // Get the N last actions for this user where N = `context`:
+        let sql = format!(
+            r#"SELECT "change_id", "user", "table", "description", "action", "content"
+                 FROM "change"
+                WHERE "user" = ?
+                ORDER BY "change_id" DESC{limit_clause}"#
+        );
+        let params = if limit_clause.is_empty() {
+            json!([user])
+        } else {
+            json!([user, limit])
+        };
+        let history = self.connection.query(&sql, Some(&params)).await?;
 
-    pub async fn get_last_do_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
-        self.get_last_action_for_user(user, ChangeAction::Do).await
-    }
+        // Initialize the histories to be returned:
+        let mut undoable_changes = vec![];
+        let mut redoable_changes = vec![];
 
-    pub async fn get_last_undo_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
-        self.get_last_action_for_user(user, ChangeAction::Undo)
-            .await
-    }
+        // Push the first user action to the appropriate history:
+        let (first_change, first_action) = match history.first() {
+            None => return Ok((vec![], vec![])), // Nothing else to do in this case
+            Some(first_change) => {
+                let first_action = ChangeAction::from_str(&first_change.get_string("action")?)?;
+                (first_change, first_action)
+            }
+        };
+        match first_action {
+            ChangeAction::Do | ChangeAction::Redo => {
+                undoable_changes.push(first_change.clone());
+            }
+            ChangeAction::Undo => redoable_changes.push(first_change.clone()),
+        };
 
-    pub async fn get_last_redo_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
-        self.get_last_action_for_user(user, ChangeAction::Redo)
-            .await
+        // Do the same for the remaining actions:
+        let mut last_action = first_action;
+        let mut skip: isize = -1;
+        for change in &history[1..] {
+            let action = ChangeAction::from_str(&change.get_string("action")?)?;
+            match last_action {
+                ChangeAction::Do | ChangeAction::Redo => match action {
+                    ChangeAction::Do | ChangeAction::Redo => undoable_changes.push(change.clone()),
+                    ChangeAction::Undo => {
+                        //println!(
+                        //    "SKIPPING {action} {change_id} {description} ...",
+                        //    action = action.to_string().to_uppercase(),
+                        //    change_id = change.get_unsigned("change_id").unwrap(),
+                        //    description = change.get_string("description").unwrap()
+                        //);
+
+                        if skip == -1 {
+                            skip = undoable_changes.len() as isize;
+                        }
+
+                        if skip > 0 {
+                            // print!("Skip value decremented from {skip} ");
+                            last_action = ChangeAction::Redo;
+                            skip -= 1;
+                            // println!("to {skip}");
+                        } else if skip == 0 {
+                            redoable_changes.push(change.clone());
+                            last_action = action;
+                        }
+                        continue;
+                    }
+                },
+                ChangeAction::Undo => match action {
+                    ChangeAction::Undo => {
+                        // I think this is unreachable unless skip is already -1 so this may be
+                        // redundant:
+                        skip = -1;
+                        redoable_changes.push(change.clone());
+                    }
+                    ChangeAction::Redo => break,
+                    ChangeAction::Do => {
+                        //println!(
+                        //    "SKIPPING {action} {change_id} {description} ...",
+                        //    action = action.to_string().to_uppercase(),
+                        //    change_id = change.get_unsigned("change_id").unwrap(),
+                        //    description = change.get_string("description").unwrap()
+                        //);
+
+                        if skip == -1 {
+                            skip = redoable_changes.len() as isize;
+                        }
+
+                        if skip > 0 {
+                            // print!("Skip value decremented from {skip} ");
+                            last_action = ChangeAction::Undo;
+                            skip -= 1;
+                            // println!("to {skip}");
+                        } else if skip == 0 {
+                            undoable_changes.push(change.clone());
+                            last_action = action;
+                        }
+                        continue;
+                    }
+                },
+            };
+        }
+
+        //println!("Undo history {undoable_changes:#?}");
+        //println!("Redo history {redoable_changes:#?}");
+        //println!("");
+
+        Ok((undoable_changes, redoable_changes))
     }
 
     async fn _undo_or_redo(
@@ -1016,7 +1160,7 @@ impl Relatable {
                         };
                     }
                     Ok(Some(ChangeSet {
-                        action: changeset.action.clone(),
+                        action: changeset.action,
                         table: changeset.table.clone(),
                         user: changeset.user.clone(),
                         description: changeset.description.clone(),
@@ -1125,7 +1269,7 @@ impl Relatable {
 
         let num_changes = actual_changes.len();
         let actual_changeset = ChangeSet {
-            action: changeset.action.clone(),
+            action: changeset.action,
             table: changeset.table.clone(),
             user: changeset.user.clone(),
             description: changeset.description.clone(),
@@ -1200,7 +1344,7 @@ impl Relatable {
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with the new_row's id and position in the table:
         let changeset = ChangeSet {
-            action: action.clone(),
+            action: *action,
             table: table_name.to_string(),
             user: user.to_string(),
             description: "Add one row".to_string(),
@@ -1267,7 +1411,7 @@ impl Relatable {
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row with the given row number at the given table position has been deleted:
         let changeset = ChangeSet {
-            action: action.clone(),
+            action: *action,
             table: table_name.to_string(),
             user: user.to_string(),
             description: "Delete one row".to_string(),
@@ -1339,7 +1483,7 @@ impl Relatable {
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
         let changeset = ChangeSet {
-            action: action.clone(),
+            action: *action,
             table: table_name.to_string(),
             user: user.to_string(),
             description: "Move one row".to_string(),
@@ -1619,7 +1763,7 @@ impl ChangeSet {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum ChangeAction {
     Do,
     Undo,
