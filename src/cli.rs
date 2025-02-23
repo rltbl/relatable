@@ -4,7 +4,7 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Format, Relatable},
+    core::{Change, ChangeAction, ChangeSet, Format, Relatable, MOVE_INTERVAL},
     sql::{JsonRow, VecInto},
     web::{serve, serve_cgi},
 };
@@ -137,6 +137,11 @@ pub enum Command {
         /// Overwrite an existing database
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
+
+        #[arg(long, value_name = "SIZE", action = ArgAction::Set,
+              help = "Number of rows of demo data to generate",
+              default_value_t = 1000)]
+        size: usize,
     },
 }
 
@@ -590,7 +595,7 @@ pub async fn save_all(cli: &Cli) {
     rltbl.save_all().await.expect("Error saving all");
 }
 
-pub async fn build_demo(cli: &Cli, force: &bool) {
+pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     tracing::debug!("build_demo({cli:?}");
 
     let rltbl = Relatable::init(force, Some(&cli.database))
@@ -617,10 +622,9 @@ pub async fn build_demo(cli: &Cli, force: &bool) {
     // Populate the penguin table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
     let mut rng = StdRng::seed_from_u64(0);
-    let count = 1000;
-    for i in 1..=count {
+    for i in 1..=size {
         let id = i;
-        let order = i * 1000;
+        let order = i * MOVE_INTERVAL;
         let island = islands.iter().choose(&mut rng).unwrap();
         let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
@@ -706,6 +710,6 @@ pub async fn process_command() {
             .await
             .expect("Operation: 'serve' failed"),
         Command::Cgi {} => serve_cgi().await,
-        Command::Demo { force } => build_demo(&cli, force).await,
+        Command::Demo { force, size } => build_demo(&cli, force, *size).await,
     }
 }

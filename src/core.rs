@@ -65,7 +65,7 @@ impl std::fmt::Display for RelatableError {
     }
 }
 
-static MOVE_INTERVAL: usize = 1000;
+pub static MOVE_INTERVAL: usize = 1000;
 
 impl std::error::Error for RelatableError {}
 
