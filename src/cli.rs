@@ -354,8 +354,14 @@ pub async fn print_history(cli: &Cli, context: usize) {
     let user = get_username(&cli);
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
 
+    // TODO: Need to come up with a more efficient way of doing this. The trouble is
+    // that currently the get_user_history() function treats its context argument naively. To
+    // properly retrieve "the last N actions" we need to distinguish between undos and dos
+    // and only count the dos. Unfortunately this isn't straightforward because it needs to be
+    // done in SQL. For the time being we pass None here to get the entire history, and then
+    // stop after printing `context` records.
     let (mut undoable_changes, redoable_changes) = rltbl
-        .get_user_history(&user, Some(context))
+        .get_user_history(&user, None)
         .await
         .expect("Could not get history");
     let next_undo = match undoable_changes.len() {
@@ -365,20 +371,30 @@ pub async fn print_history(cli: &Cli, context: usize) {
             .expect("No change_id found"),
     };
     undoable_changes.reverse();
-    for undo in &undoable_changes {
-        let action = undo
-            .get_string("action")
-            .expect("No action found")
-            .to_uppercase();
+    for (i, undo) in undoable_changes.iter().enumerate() {
+        if i > context {
+            break;
+        }
+        let note = {
+            let action = undo
+                .get_string("action")
+                .expect("No action found")
+                .to_lowercase();
+            if action == "do" {
+                "".to_string()
+            } else {
+                format!(" ({action})")
+            }
+        };
         let change_id = undo.get_unsigned("change_id").expect("No change_id found");
         let description = undo
             .get_string("description")
             .expect("No description found");
         if change_id == next_undo {
-            let line = format!("▲ {action:>4} {change_id} {description}");
+            let line = format!("▲ {description}{note}");
             println!("{}", Style::new().bold().paint(line));
         } else {
-            println!("  {action:>4} {change_id} {description}");
+            println!("  {description}{note}");
         }
     }
     let next_redo = match redoable_changes.len() {
@@ -387,20 +403,30 @@ pub async fn print_history(cli: &Cli, context: usize) {
             .get_unsigned("change_id")
             .expect("No change_id found"),
     };
-    for redo in &redoable_changes {
-        let action = redo
-            .get_string("action")
-            .expect("No action found")
-            .to_uppercase();
+    for (i, redo) in redoable_changes.iter().enumerate() {
+        if i > context {
+            break;
+        }
+        let note = {
+            let action = redo
+                .get_string("action")
+                .expect("No action found")
+                .to_lowercase();
+            if action == "do" {
+                "".to_string()
+            } else {
+                format!(" ({action})")
+            }
+        };
         let change_id = redo.get_unsigned("change_id").expect("No change_id found");
         let description = redo
             .get_string("description")
             .expect("No description found");
         if change_id == next_redo {
-            let line = format!("▼ {action:>4} {change_id} {description}");
+            let line = format!("▼ {description}{note}");
             println!("{}", Style::new().bold().paint(line));
         } else {
-            println!("  {action:>4} {change_id} {description}");
+            println!("  {description}{note}");
         }
     }
 }

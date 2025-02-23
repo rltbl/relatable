@@ -902,10 +902,12 @@ impl Relatable {
     }
 
     pub async fn get_last_undo_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
-        // TODO: This is not very efficient. Yet strictly speaking it isn't possible to know
-        // in advance how far back to go to get the last do. In principle the user could
-        // have done something any number of times before calling this function. That is
-        // why we pass None to get_user_history() here:
+        // TODO: Need to come up with a more efficient way of doing this. The trouble is
+        // that currently the get_user_history() function treats its context argument naively. To
+        // properly retrieve "the last N actions" we need to distinguish between undos and dos
+        // and only count the dos. Unfortunately this isn't straightforward because it needs to be
+        // done in SQL. For the time being we pass None here to get the entire history, and then
+        // stop after printing `context` records.
         let (_, redoable_changes) = self.get_user_history(user, None).await?;
         match redoable_changes.first() {
             None => Ok(None),
@@ -928,10 +930,12 @@ impl Relatable {
     }
 
     pub async fn get_last_do_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
-        // TODO: This is not very efficient. Yet strictly speaking it isn't possible to know
-        // in advance how far back to go to get the last do. In principle the user could
-        // have undone something any number of times before calling this function. That is
-        // why we pass None to get_user_history() here:
+        // TODO: Need to come up with a more efficient way of doing this. The trouble is
+        // that currently the get_user_history() function treats its context argument naively. To
+        // properly retrieve "the last N actions" we need to distinguish between undos and dos
+        // and only count the dos. Unfortunately this isn't straightforward because it needs to be
+        // done in SQL. For the time being we pass None here to get the entire history, and then
+        // stop after printing `context` records.
         let (undoable_changes, _) = self.get_user_history(user, None).await?;
         match undoable_changes.first() {
             None => Ok(None),
@@ -962,7 +966,8 @@ impl Relatable {
             None => (0, ""),
             Some(limit) => (limit, " LIMIT ?"),
         };
-        // Get the N last actions for this user where N = `context`:
+        // Get the N last actions for this user where N = `context`. TODO: this is too naive.
+        // We need to only count the dos when determining the "last N actions", not the undos.
         let sql = format!(
             r#"SELECT "change_id", "user", "table", "description", "action", "content"
                  FROM "change"
@@ -1002,24 +1007,18 @@ impl Relatable {
             let action = ChangeAction::from_str(&change.get_string("action")?)?;
             match last_action {
                 ChangeAction::Do | ChangeAction::Redo => match action {
-                    ChangeAction::Do | ChangeAction::Redo => undoable_changes.push(change.clone()),
+                    ChangeAction::Do | ChangeAction::Redo => {
+                        last_action = action;
+                        undoable_changes.push(change.clone());
+                    }
                     ChangeAction::Undo => {
-                        //println!(
-                        //    "SKIPPING {action} {change_id} {description} ...",
-                        //    action = action.to_string().to_uppercase(),
-                        //    change_id = change.get_unsigned("change_id").unwrap(),
-                        //    description = change.get_string("description").unwrap()
-                        //);
-
                         if skip == -1 {
                             skip = undoable_changes.len() as isize;
                         }
 
                         if skip > 0 {
-                            // print!("Skip value decremented from {skip} ");
                             last_action = ChangeAction::Redo;
                             skip -= 1;
-                            // println!("to {skip}");
                         } else if skip == 0 {
                             redoable_changes.push(change.clone());
                             last_action = action;
@@ -1029,29 +1028,18 @@ impl Relatable {
                 },
                 ChangeAction::Undo => match action {
                     ChangeAction::Undo => {
-                        // I think this is unreachable unless skip is already -1 so this may be
-                        // redundant:
                         skip = -1;
+                        last_action = action;
                         redoable_changes.push(change.clone());
                     }
-                    ChangeAction::Redo => break,
-                    ChangeAction::Do => {
-                        //println!(
-                        //    "SKIPPING {action} {change_id} {description} ...",
-                        //    action = action.to_string().to_uppercase(),
-                        //    change_id = change.get_unsigned("change_id").unwrap(),
-                        //    description = change.get_string("description").unwrap()
-                        //);
-
+                    ChangeAction::Do | ChangeAction::Redo => {
                         if skip == -1 {
                             skip = redoable_changes.len() as isize;
                         }
 
                         if skip > 0 {
-                            // print!("Skip value decremented from {skip} ");
                             last_action = ChangeAction::Undo;
                             skip -= 1;
-                            // println!("to {skip}");
                         } else if skip == 0 {
                             undoable_changes.push(change.clone());
                             last_action = action;
@@ -1061,10 +1049,6 @@ impl Relatable {
                 },
             };
         }
-
-        //println!("Undo history {undoable_changes:#?}");
-        //println!("Redo history {redoable_changes:#?}");
-        //println!("");
 
         Ok((undoable_changes, redoable_changes))
     }
@@ -1763,7 +1747,7 @@ impl ChangeSet {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ChangeAction {
     Do,
     Undo,
