@@ -358,6 +358,16 @@ pub async fn print_history(cli: &Cli, context: usize) {
     let user = get_username(&cli);
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
 
+    fn get_content_as_string(change_json: &JsonRow) -> String {
+        let content = change_json.get_string("content").expect("No content found");
+        let content = Change::many_from_str(&content).expect("Could not parse content");
+        content
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     // TODO: Need to come up with a more efficient way of doing this. The trouble is
     // that currently the get_user_history() function treats its context argument naively. To
     // properly retrieve "the last N actions" we need to distinguish between undos and dos
@@ -379,26 +389,14 @@ pub async fn print_history(cli: &Cli, context: usize) {
         if i > context {
             break;
         }
-        let note = {
-            let action = undo
-                .get_string("action")
-                .expect("No action found")
-                .to_lowercase();
-            if action == "do" {
-                "".to_string()
-            } else {
-                format!(" ({action})")
-            }
-        };
         let change_id = undo.get_unsigned("change_id").expect("No change_id found");
-        let description = undo
-            .get_string("description")
-            .expect("No description found");
         if change_id == next_undo {
-            let line = format!("▲ {description}{note}");
+            let undo_content = get_content_as_string(undo);
+            let line = format!("▲ {undo_content}");
             println!("{}", Style::new().bold().paint(line));
         } else {
-            println!("  {description}{note}");
+            let undo_content = get_content_as_string(undo);
+            println!("  {undo_content}");
         }
     }
     let next_redo = match redoable_changes.len() {
@@ -411,26 +409,13 @@ pub async fn print_history(cli: &Cli, context: usize) {
         if i > context {
             break;
         }
-        let note = {
-            let action = redo
-                .get_string("action")
-                .expect("No action found")
-                .to_lowercase();
-            if action == "do" {
-                "".to_string()
-            } else {
-                format!(" ({action})")
-            }
-        };
         let change_id = redo.get_unsigned("change_id").expect("No change_id found");
-        let description = redo
-            .get_string("description")
-            .expect("No description found");
         if change_id == next_redo {
-            let line = format!("▼ {description}{note}");
-            println!("{}", Style::new().bold().paint(line));
+            let redo_content = get_content_as_string(redo);
+            println!("▼ {redo_content}");
         } else {
-            println!("  {description}{note}");
+            let redo_content = get_content_as_string(redo);
+            println!("  {redo_content}");
         }
     }
 }

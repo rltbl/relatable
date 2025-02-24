@@ -908,8 +908,8 @@ impl Relatable {
         // and only count the dos. Unfortunately this isn't straightforward because it needs to be
         // done in SQL. For the time being we pass None here to get the entire history, and then
         // stop after printing `context` records.
-        let (_, redoable_changes) = self.get_user_history(user, None).await?;
-        match redoable_changes.first() {
+        let (_, changes_undone) = self.get_user_history(user, None).await?;
+        match changes_undone.first() {
             None => Ok(None),
             Some(change) => {
                 let change_id = change.get_unsigned("change_id")?;
@@ -982,75 +982,89 @@ impl Relatable {
         let history = self.connection.query(&sql, Some(&params)).await?;
 
         // Initialize the histories to be returned:
-        let mut undoable_changes = vec![];
-        let mut redoable_changes = vec![];
+        let mut changes_done = vec![];
+        let mut changes_undone = vec![];
 
-        // Push the first user action to the appropriate history:
-        let (first_change, first_action) = match history.first() {
+        // Push the final user action to the appropriate history:
+        let (final_change, final_action) = match history.first() {
             None => return Ok((vec![], vec![])), // Nothing else to do in this case
-            Some(first_change) => {
-                let first_action = ChangeAction::from_str(&first_change.get_string("action")?)?;
-                (first_change, first_action)
+            Some(final_change) => {
+                let final_action = ChangeAction::from_str(&final_change.get_string("action")?)?;
+                (final_change, final_action)
             }
         };
-        match first_action {
-            ChangeAction::Do | ChangeAction::Redo => {
-                undoable_changes.push(first_change.clone());
-            }
-            ChangeAction::Undo => redoable_changes.push(first_change.clone()),
+        match final_action {
+            ChangeAction::Do => changes_done.push(final_change.clone()),
+            ChangeAction::Undo => changes_undone.push(final_change.clone()),
+            ChangeAction::Redo => (), // Handled below
         };
 
         // Do the same for the remaining actions:
-        let mut last_action = first_action;
+        let mut last_action = final_action;
         let mut skip: isize = -1;
         for change in &history[1..] {
             let action = ChangeAction::from_str(&change.get_string("action")?)?;
             match last_action {
                 ChangeAction::Do | ChangeAction::Redo => match action {
-                    ChangeAction::Do | ChangeAction::Redo => {
+                    ChangeAction::Do => {
                         last_action = action;
-                        undoable_changes.push(change.clone());
+                        changes_done.push(change.clone());
                     }
                     ChangeAction::Undo => {
                         if skip == -1 {
-                            skip = undoable_changes.len() as isize;
+                            skip = changes_done.len() as isize;
                         }
 
                         if skip > 0 {
                             last_action = ChangeAction::Redo;
                             skip -= 1;
                         } else if skip == 0 {
-                            redoable_changes.push(change.clone());
+                            changes_undone.push(change.clone());
                             last_action = action;
                         }
-                        continue;
+                    }
+                    ChangeAction::Redo => {
+                        last_action = action;
                     }
                 },
                 ChangeAction::Undo => match action {
                     ChangeAction::Undo => {
                         skip = -1;
                         last_action = action;
-                        redoable_changes.push(change.clone());
+                        changes_undone.push(change.clone());
                     }
                     ChangeAction::Do | ChangeAction::Redo => {
                         if skip == -1 {
-                            skip = redoable_changes.len() as isize;
+                            skip = changes_undone.len() as isize;
                         }
 
                         if skip > 0 {
                             last_action = ChangeAction::Undo;
                             skip -= 1;
                         } else if skip == 0 {
-                            undoable_changes.push(change.clone());
+                            changes_done.push(change.clone());
                             last_action = action;
                         }
-                        continue;
                     }
                 },
             };
         }
 
-        Ok((undoable_changes, redoable_changes))
+        match final_action {
+            ChangeAction::Do | ChangeAction::Undo => (), // Already handled above
+            ChangeAction::Redo => {
+                // When other dos have already been processed, this redo will be redundant. But
+                // we need to consider it otherwise.
+                if changes_done.is_empty() {
+                    println!("Adding final redo {final_change:?} to changes_done");
+                    changes_done.insert(0, final_change.clone());
+                } else {
+                    println!("Not adding final redo {final_change:?} to changes_done");
+                }
+            }
+        };
+
+        Ok((changes_done, changes_undone))
     }
 
     async fn _undo_or_redo(
@@ -1806,7 +1820,7 @@ pub enum Change {
 }
 
 impl Change {
-    fn many_from_str(content: &str) -> Result<Vec<Self>> {
+    pub fn many_from_str(content: &str) -> Result<Vec<Self>> {
         let json_content = match serde_json::from_str::<JsonValue>(content) {
             Err(err) => return Err(err.into()),
             Ok(JsonValue::Array(v)) => v,
@@ -1863,6 +1877,40 @@ impl Change {
             };
         }
         Ok(changes)
+    }
+}
+
+impl Display for Change {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Change::Update {
+                row,
+                column,
+                before,
+                after,
+            } => {
+                write!(
+                    f,
+                    "Update '{column}' in row {row} from {before} to {after}",
+                    before = json_to_string(before),
+                    after = json_to_string(after)
+                )
+            }
+            Change::Add { row, after } => {
+                write!(f, "Add row {row} after row {after}")
+            }
+            Change::Move {
+                row,
+                from_after,
+                to_after,
+            } => {
+                write!(
+                    f,
+                    "Move row {row} from after row {from_after} to after row {to_after}"
+                )
+            }
+            Change::Delete { row, after: _ } => write!(f, "Delete row {row}"),
+        }
     }
 }
 
