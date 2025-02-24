@@ -127,6 +127,10 @@ pub enum Command {
         /// Server port
         #[arg(long, default_value="0", action = ArgAction::Set)]
         port: u16,
+
+        /// Instruct the server to exit after this many seconds. Defaults to 0, i.e., no timeout.
+        #[arg(long, default_value="0", action = ArgAction::Set)]
+        timeout: usize,
     },
 
     /// Run Relatable as a CGI script
@@ -732,7 +736,11 @@ pub async fn process_command() {
             LoadSubcommand::Table { path } => load_table(&cli, path).await,
         },
         Command::Save {} => save_all(&cli).await,
-        Command::Serve { host, port } => serve(&cli, host, port)
+        Command::Serve {
+            host,
+            port,
+            timeout,
+        } => serve(&cli, host, port, timeout)
             .await
             .expect("Operation: 'serve' failed"),
         Command::Cgi {} => serve_cgi().await,

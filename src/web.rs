@@ -578,7 +578,7 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
 }
 
 #[tokio::main]
-pub async fn app(rltbl: Relatable, host: &str, port: &u16) -> Result<String> {
+pub async fn app(rltbl: Relatable, host: &str, port: &u16, timeout: &usize) -> Result<String> {
     let shared_state = Arc::new(rltbl);
 
     let app = build_app(shared_state).await;
@@ -590,26 +590,51 @@ pub async fn app(rltbl: Relatable, host: &str, port: &u16) -> Result<String> {
         "Running Relatable server at http://{}",
         listener.local_addr()?
     );
-    println!("Press Control-C to quit.");
 
     // Run the server with graceful shutdown
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .unwrap();
+    if *timeout == 0 {
+        println!("Press Control-C to quit.");
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_on_signal())
+            .await
+            .unwrap();
+    } else {
+        println!("Running server for {timeout}s.");
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_on_timeout(*timeout))
+            .await
+            .unwrap();
+    }
 
     Ok("Stopping Relatable server...".into())
 }
 
-pub async fn serve(_cli: &Cli, host: &str, port: &u16) -> Result<()> {
+pub async fn serve(_cli: &Cli, host: &str, port: &u16, timeout: &usize) -> Result<()> {
     tracing::debug!("serve({host}, {port})");
     let rltbl = Relatable::connect(None).await?;
-    app(rltbl, host, port)?;
+    app(rltbl, host, port, timeout)?;
     Ok(())
 }
 
+async fn shutdown_on_timeout(timeout: usize) {
+    std::thread::sleep(std::time::Duration::from_secs(timeout as u64));
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    let _ = terminate;
+}
+
 // From https://github.com/tokio-rs/axum/blob/main/examples/graceful-shutdown/src/main.rs
-async fn shutdown_signal() {
+async fn shutdown_on_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
