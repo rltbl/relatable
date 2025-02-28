@@ -65,6 +65,11 @@
         kind = "image";
       }
     }
+    if (table === "tree_table") {
+      if (column_name === "label") {
+        kind = "tree";
+      }
+    }
     window.rltbl.result.columns[i].kind = kind;
   }
 
@@ -136,5 +141,5 @@
     }
   });
 </script>
-<script defer="defer" src="/static/main.js"></script>
+<script defer="defer" src="{{site.root}}/static/main.js"></script>
 {% endblock %}
