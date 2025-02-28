@@ -985,6 +985,8 @@ impl Relatable {
         let mut changes_done = vec![];
         let mut changes_undone = vec![];
 
+        let mut consecutive_undos: usize = 0;
+
         // Push the final user action to the appropriate history:
         let (final_change, final_action) = match history.first() {
             None => return Ok((vec![], vec![])), // Nothing else to do in this case
@@ -993,76 +995,81 @@ impl Relatable {
                 (final_change, final_action)
             }
         };
+        println!("The final change was: {final_change:?}");
         match final_action {
-            ChangeAction::Do => changes_done.push(final_change.clone()),
-            ChangeAction::Undo => changes_undone.push(final_change.clone()),
-            ChangeAction::Redo => (), // Handled below
+            ChangeAction::Do | ChangeAction::Redo => {
+                println!("  Pushing final {final_action} {final_change:?} to changes_done");
+                changes_done.push(final_change.clone());
+            }
+            ChangeAction::Undo => {
+                println!("  Pushing final {final_action} {final_change:?} to changes_undone");
+                changes_undone.push(final_change.clone());
+                consecutive_undos += 1;
+            }
         };
 
         // Do the same for the remaining actions:
-        let mut last_action = final_action;
-        let mut skip: isize = -1;
-        for change in &history[1..] {
-            let action = ChangeAction::from_str(&change.get_string("action")?)?;
-            match last_action {
-                ChangeAction::Do | ChangeAction::Redo => match action {
-                    ChangeAction::Do => {
-                        last_action = action;
-                        changes_done.push(change.clone());
+        let mut next_action = final_action;
+        for this_change in &history[1..] {
+            println!("The change made prior to that one was {this_change:?}");
+            let this_action = ChangeAction::from_str(&this_change.get_string("action")?)?;
+            match next_action {
+                ChangeAction::Redo => {
+                    println!(
+                        "User history: Undoable: {changes_done:#?}, Redoable: \
+                              {changes_undone:#?}"
+                    );
+                    println!("--------------------");
+                    return Ok((changes_done, changes_undone));
+                }
+                ChangeAction::Do => match this_action {
+                    ChangeAction::Do | ChangeAction::Redo => {
+                        println!(
+                            "  Pushing {this_action} {this_change:?} to changes_done \
+                             (next: {next_action})"
+                        );
+                        consecutive_undos = 0;
+                        next_action = this_action;
+                        changes_done.push(this_change.clone());
                     }
                     ChangeAction::Undo => {
-                        if skip == -1 {
-                            skip = changes_done.len() as isize;
-                        }
-
-                        if skip > 0 {
-                            last_action = ChangeAction::Redo;
-                            skip -= 1;
-                        } else if skip == 0 {
-                            changes_undone.push(change.clone());
-                            last_action = action;
-                        }
-                    }
-                    ChangeAction::Redo => {
-                        last_action = action;
+                        println!(
+                            "  Pushing {this_action} {this_change:?} to changes_undone \
+                             (next: {next_action})"
+                        );
+                        consecutive_undos = 1;
+                        next_action = this_action;
+                        changes_undone.push(this_change.clone());
                     }
                 },
-                ChangeAction::Undo => match action {
+                ChangeAction::Undo => match this_action {
                     ChangeAction::Undo => {
-                        skip = -1;
-                        last_action = action;
-                        changes_undone.push(change.clone());
+                        println!(
+                            "  Pushing {this_action} {this_change:?} to changes_undone \
+                             (next: {next_action})"
+                        );
+                        consecutive_undos += 1;
+                        next_action = this_action;
+                        changes_undone.push(this_change.clone());
                     }
                     ChangeAction::Do | ChangeAction::Redo => {
-                        if skip == -1 {
-                            skip = changes_undone.len() as isize;
-                        }
-
-                        if skip > 0 {
-                            last_action = ChangeAction::Undo;
-                            skip -= 1;
-                        } else if skip == 0 {
-                            changes_done.push(change.clone());
-                            last_action = action;
+                        println!(
+                            "  Skipping {this_action} {this_change:?} to changes_undone \
+                             (next: {next_action})"
+                        );
+                        consecutive_undos -= 1;
+                        if consecutive_undos > 0 {
+                            next_action = ChangeAction::Undo;
+                        } else {
+                            next_action = this_action;
                         }
                     }
                 },
             };
         }
 
-        match final_action {
-            ChangeAction::Do | ChangeAction::Undo => (), // Already handled above
-            ChangeAction::Redo => {
-                // When other dos have already been processed, this redo will be redundant. But
-                // we need to consider it otherwise.
-                if changes_done.is_empty() {
-                    println!("Adding final redo {final_change:?} to changes_done");
-                    changes_done.insert(0, final_change.clone());
-                } else {
-                    println!("Not adding final redo {final_change:?} to changes_done");
-                }
-            }
-        };
+        println!("User history: Undoable: {changes_done:#?}, Redoable: {changes_undone:#?}");
+        println!("--------------------");
 
         Ok((changes_done, changes_undone))
     }
