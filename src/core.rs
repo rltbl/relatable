@@ -902,13 +902,7 @@ impl Relatable {
     }
 
     pub async fn get_last_undo_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
-        // TODO: Need to come up with a more efficient way of doing this. The trouble is
-        // that currently the get_user_history() function treats its context argument naively. To
-        // properly retrieve "the last N actions" we need to distinguish between undos and dos
-        // and only count the dos. Unfortunately this isn't straightforward because it needs to be
-        // done in SQL. For the time being we pass None here to get the entire history, and then
-        // stop after printing `context` records.
-        let (_, changes_undone) = self.get_user_history(user, None).await?;
+        let (_, changes_undone) = self.get_user_history(user, Some(1)).await?;
         match changes_undone.first() {
             None => Ok(None),
             Some(change) => {
@@ -930,13 +924,7 @@ impl Relatable {
     }
 
     pub async fn get_last_do_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
-        // TODO: Need to come up with a more efficient way of doing this. The trouble is
-        // that currently the get_user_history() function treats its context argument naively. To
-        // properly retrieve "the last N actions" we need to distinguish between undos and dos
-        // and only count the dos. Unfortunately this isn't straightforward because it needs to be
-        // done in SQL. For the time being we pass None here to get the entire history, and then
-        // stop after printing `context` records.
-        let (undoable_changes, _) = self.get_user_history(user, None).await?;
+        let (undoable_changes, _) = self.get_user_history(user, Some(1)).await?;
         match undoable_changes.first() {
             None => Ok(None),
             Some(change) => {
@@ -962,23 +950,15 @@ impl Relatable {
         user: &str,
         context: Option<usize>,
     ) -> Result<(Vec<JsonRow>, Vec<JsonRow>)> {
-        let (limit, limit_clause) = match context {
-            None => (0, ""),
-            Some(limit) => (limit, " LIMIT ?"),
-        };
         // Get the N last actions for this user where N = `context`. TODO: this is too naive.
         // We need to only count the dos when determining the "last N actions", not the undos.
         let sql = format!(
             r#"SELECT "change_id", "user", "table", "description", "action", "content"
                  FROM "change"
                 WHERE "user" = ?
-                ORDER BY "change_id" DESC{limit_clause}"#
+                ORDER BY "change_id" DESC"#
         );
-        let params = if limit_clause.is_empty() {
-            json!([user])
-        } else {
-            json!([user, limit])
-        };
+        let params = json!([user]);
         let history = self.connection.query(&sql, Some(&params)).await?;
 
         // Initialize the histories to be returned:
@@ -995,14 +975,14 @@ impl Relatable {
                 (final_change, final_action)
             }
         };
-        println!("The final change was: {final_change:?}");
+        tracing::info!("The final change was: {final_change:?}");
         match final_action {
             ChangeAction::Do | ChangeAction::Redo => {
-                println!("  Pushing final {final_action} {final_change:?} to changes_done");
+                tracing::info!("  Pushing final {final_action} {final_change:?} to changes_done");
                 changes_done.push(final_change.clone());
             }
             ChangeAction::Undo => {
-                println!("  Pushing final {final_action} {final_change:?} to changes_undone");
+                tracing::info!("  Pushing final {final_action} {final_change:?} to changes_undone");
                 changes_undone.push(final_change.clone());
                 consecutive_undos += 1;
             }
@@ -1011,20 +991,15 @@ impl Relatable {
         // Do the same for the remaining actions:
         let mut next_action = final_action;
         for this_change in &history[1..] {
-            println!("The change made prior to that one was {this_change:?}");
+            tracing::info!("The change made prior to that one was {this_change:?}");
             let this_action = ChangeAction::from_str(&this_change.get_string("action")?)?;
             match next_action {
                 ChangeAction::Redo => {
-                    println!(
-                        "User history: Undoable: {changes_done:#?}, Redoable: \
-                              {changes_undone:#?}"
-                    );
-                    println!("--------------------");
                     return Ok((changes_done, changes_undone));
                 }
                 ChangeAction::Do => match this_action {
                     ChangeAction::Do | ChangeAction::Redo => {
-                        println!(
+                        tracing::info!(
                             "  Pushing {this_action} {this_change:?} to changes_done \
                              (next: {next_action})"
                         );
@@ -1033,7 +1008,7 @@ impl Relatable {
                         changes_done.push(this_change.clone());
                     }
                     ChangeAction::Undo => {
-                        println!(
+                        tracing::info!(
                             "  Pushing {this_action} {this_change:?} to changes_undone \
                              (next: {next_action})"
                         );
@@ -1044,7 +1019,7 @@ impl Relatable {
                 },
                 ChangeAction::Undo => match this_action {
                     ChangeAction::Undo => {
-                        println!(
+                        tracing::info!(
                             "  Pushing {this_action} {this_change:?} to changes_undone \
                              (next: {next_action})"
                         );
@@ -1053,9 +1028,8 @@ impl Relatable {
                         changes_undone.push(this_change.clone());
                     }
                     ChangeAction::Do | ChangeAction::Redo => {
-                        println!(
-                            "  Skipping {this_action} {this_change:?} to changes_undone \
-                             (next: {next_action})"
+                        tracing::info!(
+                            "  Skipping {this_action} {this_change:?} (next: {next_action})"
                         );
                         consecutive_undos -= 1;
                         if consecutive_undos > 0 {
@@ -1066,12 +1040,30 @@ impl Relatable {
                     }
                 },
             };
+            if let Some(context) = context {
+                if changes_done.len() >= context && changes_undone.len() >= context {
+                    break;
+                }
+            }
         }
 
-        println!("User history: Undoable: {changes_done:#?}, Redoable: {changes_undone:#?}");
-        println!("--------------------");
-
-        Ok((changes_done, changes_undone))
+        match context {
+            None => Ok((changes_done, changes_undone)),
+            Some(context) => {
+                let mut done_len = changes_done.len();
+                if done_len > context {
+                    done_len = context;
+                }
+                let mut undone_len = changes_undone.len();
+                if undone_len > context {
+                    undone_len = context;
+                }
+                Ok((
+                    changes_done[..done_len].to_vec(),
+                    changes_undone[..undone_len].to_vec(),
+                ))
+            }
+        }
     }
 
     async fn _undo_or_redo(

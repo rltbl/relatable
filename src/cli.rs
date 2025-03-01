@@ -368,14 +368,8 @@ pub async fn print_history(cli: &Cli, context: usize) {
             .join(", ")
     }
 
-    // TODO: Need to come up with a more efficient way of doing this. The trouble is
-    // that currently the get_user_history() function treats its context argument naively. To
-    // properly retrieve "the last N actions" we need to distinguish between undos and dos
-    // and only count the dos. Unfortunately this isn't straightforward because it needs to be
-    // done in SQL. For the time being we pass None here to get the entire history, and then
-    // stop after printing `context` records.
     let (mut undoable_changes, redoable_changes) = rltbl
-        .get_user_history(&user, None)
+        .get_user_history(&user, Some(context))
         .await
         .expect("Could not get history");
     let next_undo = match undoable_changes.len() {
