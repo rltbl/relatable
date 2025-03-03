@@ -2004,9 +2004,20 @@ impl Display for Change {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Message {
+    /// The severity of the message.
+    pub level: String,
+    /// The rule violation that the message is about.
+    pub rule: String,
+    /// The contents of the message.
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cell {
     value: JsonValue,
     text: String,
+    messages: Vec<Message>,
 }
 
 impl From<&JsonValue> for Cell {
@@ -2017,6 +2028,7 @@ impl From<&JsonValue> for Cell {
                 JsonValue::String(value) => value.to_string(),
                 value => format!("{value}"),
             },
+            messages: vec![],
         }
     }
 }
