@@ -966,6 +966,8 @@ impl Relatable {
     ) -> Result<(Vec<JsonRow>, Vec<JsonRow>)> {
         // Get the N last actions for this user where N = `context`. TODO: this is too naive.
         // We need to only count the dos when determining the "last N actions", not the undos.
+
+        // TODO: Think about paging in the case where there are a lot of change records to go through.
         let sql = format!(
             r#"SELECT "change_id", "user", "table", "description", "action", "content"
                  FROM "change"
@@ -980,6 +982,7 @@ impl Relatable {
         let mut changes_undone = vec![];
 
         let mut consecutive_undos: usize = 0;
+        let mut consecutive_redos: usize = 0;
 
         // Push the final user action to the appropriate history:
         let (final_change, final_action) = match history.first() {
@@ -994,6 +997,7 @@ impl Relatable {
             ChangeAction::Do | ChangeAction::Redo => {
                 tracing::info!("  Pushing final {final_action} {final_change:?} to changes_done");
                 changes_done.push(final_change.clone());
+                consecutive_redos += 1;
             }
             ChangeAction::Undo => {
                 tracing::info!("  Pushing final {final_action} {final_change:?} to changes_undone");
@@ -1012,32 +1016,35 @@ impl Relatable {
                     // TODO: Combine any blocks that are identical:
                     ChangeAction::Do => {
                         consecutive_undos = 0;
+                        consecutive_redos = 0;
                         next_action = this_action;
                         changes_done.push(this_change.clone());
                         tracing::info!(
                             "  Pushed {this_action} {this_change:?}, which comes before a \
                              {next_action} action, to changes_done, with {consecutive_undos} \
-                             consecutive undos"
+                             consecutive undos, {consecutive_redos} consecutive redos"
                         );
                     }
                     ChangeAction::Redo => {
                         consecutive_undos = 0;
+                        consecutive_redos += 1; // = 1?
                         next_action = this_action;
                         changes_done.push(this_change.clone());
                         tracing::info!(
                             "  Pushed {this_action} {this_change:?}, which comes before a \
                              {next_action} action, to changes_done, with {consecutive_undos} \
-                             consecutive undos"
+                             consecutive undos, {consecutive_redos} consecutive redos"
                         );
                     }
                     ChangeAction::Undo => {
-                        consecutive_undos += 1;
+                        consecutive_undos += 1; // = 1?
+                        consecutive_redos = 0;
                         next_action = this_action;
                         changes_undone.push(this_change.clone());
                         tracing::info!(
                             "  Pushed {this_action} {this_change:?}, which comes before a \
                              {next_action} action, to changes_undone, with {consecutive_undos} \
-                             consecutive undos"
+                             consecutive undos, {consecutive_redos} consecutive redos"
                         );
                     }
                 },
@@ -1048,37 +1055,53 @@ impl Relatable {
                         // undone (and then redone by the last redo). So in this case we do not
                         // push the change.
                         consecutive_undos = 0;
+                        consecutive_redos = 0;
                         tracing::info!(
                             "  Skipping {this_action} {this_change:?} because it comes before a \
                              {next_action} (and therefore must have been undone before being \
-                             redone), with {consecutive_undos} consecutive undos"
+                             redone), with {consecutive_undos} consecutive undos, {consecutive_redos} \
+                             consecutive redos"
                         );
                         next_action = ChangeAction::Redo;
                     }
                     ChangeAction::Redo => {
                         // Ditto.
                         consecutive_undos = 0;
+                        consecutive_redos += 1;
                         tracing::info!(
                             "  Skipping {this_action} {this_change:?} because it comes before a \
                              {next_action} (and therefore must have been undone before being \
-                             redone), with {consecutive_undos} consecutive undos"
+                             redone), with {consecutive_undos} consecutive undos, {consecutive_redos} \
+                             consecutive redos"
                         );
                         next_action = ChangeAction::Redo;
                     }
                     ChangeAction::Undo => {
                         // This action has been cancelled by the redo.
-                        consecutive_undos = 0;
-                        tracing::info!(
-                            "  Skipping {this_action} {this_change:?} because it comes before a \
-                             {next_action} (and therefore has been reversed), \
-                             with {consecutive_undos} consecutive undos"
-                        );
-                        next_action = ChangeAction::Redo;
+                        if consecutive_redos > 0 {
+                            consecutive_redos -= 1;
+                            tracing::info!(
+                                "  Skipping {this_action} {this_change:?} because it comes before a \
+                                 {next_action} (and therefore has been reversed), \
+                                 with {consecutive_undos} consecutive undos, {consecutive_redos} \
+                                 consecutive redos"
+                            );
+                            next_action = ChangeAction::Redo;
+                        } else {
+                            changes_undone.push(this_change.clone());
+                            tracing::info!(
+                                "  Pushed {this_action} {this_change:?}, which comes before a \
+                                 {next_action} action, to changes_undone, with {consecutive_undos} \
+                                 consecutive undos, {consecutive_redos} consecutive redos"
+                            );
+                            next_action = this_action;
+                        }
                     }
                 },
                 ChangeAction::Undo => match this_action {
                     ChangeAction::Undo => {
                         consecutive_undos += 1;
+                        consecutive_redos = 0;
                         next_action = this_action;
                         changes_undone.push(this_change.clone());
                         tracing::info!(
@@ -1145,8 +1168,8 @@ impl Relatable {
                 }
                 // There can be only one redoable change by design. TODO: Allow for consecutive
                 let mut undone_len = changes_undone.len();
-                if undone_len > 1 {
-                    undone_len = 1;
+                if undone_len > context {
+                    undone_len = context;
                 }
                 Ok((
                     changes_done[..done_len].to_vec(),
