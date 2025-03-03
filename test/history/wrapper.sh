@@ -1,6 +1,6 @@
 #/bin/sh
 
-rltbl=target/debug/rltbl
+PATH="target/debug:$PATH"
 
 rltbl demo --size 10 --force
 test/history/mike.sh &
