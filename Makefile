@@ -63,3 +63,4 @@ test-docs: debug
 
 .PHONY: test
 test: src/resources/main.js src/resources/main.css test-code test-docs
+	test/history/wrapper.sh
