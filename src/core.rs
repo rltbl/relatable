@@ -994,47 +994,122 @@ impl Relatable {
             tracing::info!("The change made prior to that one was {this_change:?}");
             let this_action = ChangeAction::from_str(&this_change.get_string("action")?)?;
             match next_action {
-                ChangeAction::Redo => {
-                    return Ok((changes_done, changes_undone));
-                }
                 ChangeAction::Do => match this_action {
-                    ChangeAction::Do | ChangeAction::Redo => {
-                        tracing::info!(
-                            "  Pushing {this_action} {this_change:?} to changes_done \
-                             (next: {next_action})"
-                        );
+                    // TODO: Combine any blocks that are identical:
+                    ChangeAction::Do => {
                         consecutive_undos = 0;
                         next_action = this_action;
                         changes_done.push(this_change.clone());
+                        tracing::info!(
+                            "  Pushed {this_action} {this_change:?}, which comes before a \
+                             {next_action} action, to changes_done, with {consecutive_undos} \
+                             consecutive undos"
+                        );
+                    }
+                    ChangeAction::Redo => {
+                        consecutive_undos = 0;
+                        next_action = this_action;
+                        changes_done.push(this_change.clone());
+                        tracing::info!(
+                            "  Pushed {this_action} {this_change:?}, which comes before a \
+                             {next_action} action, to changes_done, with {consecutive_undos} \
+                             consecutive undos"
+                        );
                     }
                     ChangeAction::Undo => {
-                        tracing::info!(
-                            "  Pushing {this_action} {this_change:?} to changes_undone \
-                             (next: {next_action})"
-                        );
-                        consecutive_undos = 1;
+                        consecutive_undos += 1;
                         next_action = this_action;
                         changes_undone.push(this_change.clone());
+                        tracing::info!(
+                            "  Pushed {this_action} {this_change:?}, which comes before a \
+                             {next_action} action, to changes_undone, with {consecutive_undos} \
+                             consecutive undos"
+                        );
+                    }
+                },
+                ChangeAction::Redo => match this_action {
+                    // TODO: Combine any blocks that are identical:
+                    ChangeAction::Do => {
+                        // We will see a redo after a do in the case where that do has been
+                        // undone (and then redone by the last redo). So in this case we do not
+                        // push the change.
+                        consecutive_undos = 0;
+                        tracing::info!(
+                            "  Skipping {this_action} {this_change:?} because it comes before a \
+                             {next_action} (and therefore must have been undone before being \
+                             redone), with {consecutive_undos} consecutive undos"
+                        );
+                        next_action = ChangeAction::Redo;
+                    }
+                    ChangeAction::Redo => {
+                        // Ditto.
+                        consecutive_undos = 0;
+                        tracing::info!(
+                            "  Skipping {this_action} {this_change:?} because it comes before a \
+                             {next_action} (and therefore must have been undone before being \
+                             redone), with {consecutive_undos} consecutive undos"
+                        );
+                        next_action = ChangeAction::Redo;
+                    }
+                    ChangeAction::Undo => {
+                        // This action has been cancelled by the redo.
+                        consecutive_undos = 0;
+                        tracing::info!(
+                            "  Skipping {this_action} {this_change:?} because it comes before a \
+                             {next_action} (and therefore has been reversed), \
+                             with {consecutive_undos} consecutive undos"
+                        );
+                        next_action = ChangeAction::Redo;
                     }
                 },
                 ChangeAction::Undo => match this_action {
                     ChangeAction::Undo => {
-                        tracing::info!(
-                            "  Pushing {this_action} {this_change:?} to changes_undone \
-                             (next: {next_action})"
-                        );
                         consecutive_undos += 1;
                         next_action = this_action;
                         changes_undone.push(this_change.clone());
-                    }
-                    ChangeAction::Do | ChangeAction::Redo => {
                         tracing::info!(
-                            "  Skipping {this_action} {this_change:?} (next: {next_action})"
+                            "  Pushed {this_action} {this_change:?}, which comes before a \
+                             {next_action} action, to changes_undone \
+                             with {consecutive_undos} consecutive undos"
                         );
-                        consecutive_undos -= 1;
+                    }
+                    ChangeAction::Do => {
+                        let saved_next_for_log = next_action;
                         if consecutive_undos > 0 {
+                            consecutive_undos -= 1;
+                            tracing::info!(
+                                "  Skipping {this_action} {this_change:?} because it comes before \
+                                 a {saved_next_for_log} (and therefore has been reversed), \
+                                 with {consecutive_undos} consecutive undos"
+                            );
                             next_action = ChangeAction::Undo;
                         } else {
+                            changes_done.push(this_change.clone());
+                            tracing::info!(
+                                "  Pushed {this_action} {this_change:?}, which comes before a \
+                                 {next_action} action, to changes_done, with {consecutive_undos} \
+                                 consecutive undos"
+                            );
+                            next_action = this_action;
+                        }
+                    }
+                    ChangeAction::Redo => {
+                        let saved_next_for_log = next_action;
+                        if consecutive_undos > 0 {
+                            consecutive_undos -= 1;
+                            tracing::info!(
+                                "  Skipping {this_action} {this_change:?} because it comes before \
+                                 a {saved_next_for_log} (and therefore has been reversed), \
+                                 with {consecutive_undos} consecutive undos"
+                            );
+                            next_action = ChangeAction::Undo;
+                        } else {
+                            changes_done.push(this_change.clone());
+                            tracing::info!(
+                                "  Pushed {this_action} {this_change:?}, which comes before a \
+                                 {next_action} action, to changes_done, with {consecutive_undos} \
+                                 consecutive undos"
+                            );
                             next_action = this_action;
                         }
                     }
@@ -1054,9 +1129,10 @@ impl Relatable {
                 if done_len > context {
                     done_len = context;
                 }
+                // There can be only one redoable change by design. TODO: Allow for consecutive
                 let mut undone_len = changes_undone.len();
-                if undone_len > context {
-                    undone_len = context;
+                if undone_len > 1 {
+                    undone_len = 1;
                 }
                 Ok((
                     changes_done[..done_len].to_vec(),
