@@ -1,5 +1,7 @@
 #/bin/sh
 
+rltbl=target/debug/rltbl
+
 rltbl demo --size 10 --force
 test/history/mike.sh &
 test/history/barbara.sh &
