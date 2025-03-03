@@ -61,6 +61,16 @@ test-code: debug
 test-docs: debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
-.PHONY: test
-test: src/resources/main.js src/resources/main.css test-code test-docs
+# TODO: Add these to the tesh history tests and then remove this target
+.PHONY: examples
+examples:
+	bash test/example_commands.sh
+
+# TODO: Replace with a randomly operation sequence generator:
+.PHONY: random
+random:
 	test/history/wrapper.sh
+
+# TODO: Re-enable the random test once we've settled on the output format.
+.PHONY: test
+test: src/resources/main.js src/resources/main.css test-code test-docs examples # random

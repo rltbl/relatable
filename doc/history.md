@@ -28,7 +28,15 @@ FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9   
 FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
 $ rltbl history
-▼ Delete row 11
+History {
+    changes_done_stack: [],
+    changes_undone_stack: [
+        {"change_id": "10", "user": "mike", "table": "penguin", "description": "Delete one row", "action": "undo", "content": "[{\"type\":\"Delete\",\"row\":11,\"after\":10}]"},
+        {"change_id": "9", "user": "mike", "table": "penguin", "description": "Add one row", "action": "undo", "content": "[{\"type\":\"Add\",\"row\":6,\"after\":5}]"},
+        {"change_id": "8", "user": "mike", "table": "penguin", "description": "mike", "action": "undo", "content": "[{\"type\":\"Update\",\"row\":4,\"column\":\"island\",\"before\":\"Enderby\",\"after\":\"Torgersen\"}]"},
+        {"change_id": "7", "user": "mike", "table": "penguin", "description": "Move one row", "action": "undo", "content": "[{\"type\":\"Move\",\"row\":1,\"from_after\":8,\"to_after\":0}]"},
+    ],
+}
 ```
 
 TODO: Add more text here.
@@ -59,7 +67,14 @@ FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9   
 FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
 $ rltbl history
-▼ Delete row 11
+History {
+    changes_done_stack: [],
+    changes_undone_stack: [
+        {"change_id": "10", "user": "mike", "table": "penguin", "description": "Delete one row", "action": "undo", "content": "[{\"type\":\"Delete\",\"row\":11,\"after\":10}]"},
+        {"change_id": "9", "user": "mike", "table": "penguin", "description": "Delete one row", "action": "undo", "content": "[{\"type\":\"Delete\",\"row\":12,\"after\":11}]"},
+        {"change_id": "8", "user": "mike", "table": "penguin", "description": "Delete one row", "action": "undo", "content": "[{\"type\":\"Delete\",\"row\":13,\"after\":12}]"},
+    ],
+}
 ```
 
 TODO: Add more text here.
@@ -90,7 +105,13 @@ FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9   
 FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
 $ rltbl history
-▼ Delete row 11
+History {
+    changes_done_stack: [],
+    changes_undone_stack: [
+        {"change_id": "10", "user": "mike", "table": "penguin", "description": "Delete one row", "action": "undo", "content": "[{\"type\":\"Delete\",\"row\":11,\"after\":10}]"},
+        {"change_id": "9", "user": "mike", "table": "penguin", "description": "Delete one row", "action": "undo", "content": "[{\"type\":\"Delete\",\"row\":12,\"after\":11}]"},
+    ],
+}
 ```
 
 TODO: Add more text here.
@@ -121,5 +142,11 @@ FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9   
 FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
 $ rltbl history
-▼ Move row 4 from after row 9 to after row 3
+History {
+    changes_done_stack: [],
+    changes_undone_stack: [
+        {"change_id": "10", "user": "mike", "table": "penguin", "description": "Move one row", "action": "undo", "content": "[{\"type\":\"Move\",\"row\":4,\"from_after\":9,\"to_after\":3}]"},
+        {"change_id": "9", "user": "mike", "table": "penguin", "description": "Move one row", "action": "undo", "content": "[{\"type\":\"Move\",\"row\":3,\"from_after\":1,\"to_after\":2}]"},
+    ],
+}
 ```

@@ -915,57 +915,110 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn get_last_undo_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
-        let (_, changes_undone) = self.get_user_history(user, Some(1)).await?;
-        match changes_undone.first() {
-            None => Ok(None),
-            Some(change) => {
-                let change_id = change.get_unsigned("change_id")?;
-                let content = change.get_string("content")?;
-                let changes = Change::many_from_str(&content)?;
-                Ok(Some((
-                    change_id,
-                    ChangeSet {
-                        action: ChangeAction::from_str(&change.get_string("action")?)?,
-                        table: change.get_string("table")?,
-                        user: change.get_string("user")?,
-                        description: change.get_string("user")?,
-                        changes: changes,
-                    },
-                )))
-            }
-        }
-    }
-
-    pub async fn get_last_do_for_user(&self, user: &str) -> Result<Option<(usize, ChangeSet)>> {
-        let (undoable_changes, _) = self.get_user_history(user, Some(1)).await?;
-        match undoable_changes.first() {
-            None => Ok(None),
-            Some(change) => {
-                let change_id = change.get_unsigned("change_id")?;
-                let content = change.get_string("content")?;
-                let changes = Change::many_from_str(&content)?;
-                Ok(Some((
-                    change_id,
-                    ChangeSet {
-                        action: ChangeAction::from_str(&change.get_string("action")?)?,
-                        table: change.get_string("table")?,
-                        user: change.get_string("user")?,
-                        description: change.get_string("user")?,
-                        changes: changes,
-                    },
-                )))
-            }
-        }
-    }
-
-    pub async fn get_user_history(
+    pub async fn get_last_redoable_action_for_user(
         &self,
         user: &str,
-        context: Option<usize>,
-    ) -> Result<(Vec<JsonRow>, Vec<JsonRow>)> {
-        // Get the N last actions for this user where N = `context`. TODO: this is too naive.
-        // We need to only count the dos when determining the "last N actions", not the undos.
+    ) -> Result<Option<(usize, ChangeSet)>> {
+        let history = self.get_user_history(user, Some(1)).await?;
+        match history.changes_undone_stack.first() {
+            None => Ok(None),
+            Some(change) => {
+                let change_id = change.get_unsigned("change_id")?;
+                let content = change.get_string("content")?;
+                let changes = Change::many_from_str(&content)?;
+                Ok(Some((
+                    change_id,
+                    ChangeSet {
+                        action: ChangeAction::from_str(&change.get_string("action")?)?,
+                        table: change.get_string("table")?,
+                        user: change.get_string("user")?,
+                        description: change.get_string("user")?,
+                        changes: changes,
+                    },
+                )))
+            }
+        }
+    }
+
+    pub async fn get_last_undoable_action_for_user(
+        &self,
+        user: &str,
+    ) -> Result<Option<(usize, ChangeSet)>> {
+        let history = self.get_user_history(user, Some(1)).await?;
+        match history.changes_done_stack.first() {
+            None => Ok(None),
+            Some(change) => {
+                let change_id = change.get_unsigned("change_id")?;
+                let content = change.get_string("content")?;
+                let changes = Change::many_from_str(&content)?;
+                Ok(Some((
+                    change_id,
+                    ChangeSet {
+                        action: ChangeAction::from_str(&change.get_string("action")?)?,
+                        table: change.get_string("table")?,
+                        user: change.get_string("user")?,
+                        description: change.get_string("user")?,
+                        changes: changes,
+                    },
+                )))
+            }
+        }
+    }
+
+    pub async fn get_user_history(&self, user: &str, context: Option<usize>) -> Result<History> {
+        fn prune_stacks(
+            changes_done_stack: &Vec<JsonRow>,
+            changes_undone_stack: &Vec<JsonRow>,
+        ) -> (Vec<JsonRow>, Vec<JsonRow>) {
+            pub fn on_the_same_target(change1: &JsonRow, change2: &JsonRow) -> Result<bool> {
+                tracing::debug!(
+                    "Entering on_the_same_target(change1: {change1:?}, change2: {change2:?})"
+                );
+                let change1 = serde_json::from_str::<JsonValue>(&change1.get_string("content")?)?;
+                let change1 = change1.as_array().unwrap().first().unwrap();
+                let change1 = change1.as_object().unwrap();
+                let change1 = JsonRow {
+                    content: change1.clone(),
+                };
+                let change2 = serde_json::from_str::<JsonValue>(&change2.get_string("content")?)?;
+                let change2 = change2.as_array().unwrap().first().unwrap();
+                let change2 = change2.as_object().unwrap();
+                let change2 = JsonRow {
+                    content: change2.clone(),
+                };
+                let row1 = change1.get_unsigned("row")?;
+                let row2 = change2.get_unsigned("row")?;
+                if row1 != row2 {
+                    return Ok(false);
+                }
+                if let Ok(column1) = change1.get_string("column") {
+                    if let Ok(column2) = change2.get_string("column") {
+                        return Ok(column1 == column2);
+                    }
+                }
+                Ok(true)
+            }
+
+            let mut pruned_dones = vec![];
+            let mut pruned_undones = vec![];
+            for change in changes_done_stack.iter() {
+                if !pruned_dones.iter().any(|done: &JsonRow| {
+                    // TODO: remove unwraps
+                    on_the_same_target(&done, &change).unwrap()
+                }) {
+                    pruned_dones.push(change.clone());
+                }
+            }
+            for change in changes_undone_stack.iter() {
+                if !pruned_undones.iter().any(|undone: &JsonRow| {
+                    // TODO: remove unwraps
+                    on_the_same_target(&undone, &change).unwrap()
+                }) {
+                    pruned_undones.push(change.clone());
+                }
+            }
+            (pruned_dones, pruned_undones)
+        }
 
         // TODO: Think about paging in the case where there are a lot of change records to go through.
         let sql = format!(
@@ -978,205 +1031,266 @@ impl Relatable {
         let history = self.connection.query(&sql, Some(&params)).await?;
 
         // Initialize the histories to be returned:
-        let mut changes_done = vec![];
-        let mut changes_undone = vec![];
+        let mut changes_done_stack = vec![];
+        let mut changes_undone_stack = vec![];
 
-        let mut consecutive_undos: usize = 0;
-        let mut consecutive_redos: usize = 0;
-
-        // Push the final user action to the appropriate history:
         let (final_change, final_action) = match history.first() {
-            None => return Ok((vec![], vec![])), // Nothing else to do in this case
+            None => return Ok(History::default()), // Nothing else to do in this case
             Some(final_change) => {
                 let final_action = ChangeAction::from_str(&final_change.get_string("action")?)?;
                 (final_change, final_action)
             }
         };
-        tracing::info!("The final change was: {final_change:?}");
+
+        let mut do_redo_count: usize;
+        let mut undo_count: usize;
         match final_action {
             ChangeAction::Do | ChangeAction::Redo => {
-                tracing::info!("  Pushing final {final_action} {final_change:?} to changes_done");
-                changes_done.push(final_change.clone());
-                consecutive_redos += 1;
+                do_redo_count = 1;
+                undo_count = 0;
             }
             ChangeAction::Undo => {
-                tracing::info!("  Pushing final {final_action} {final_change:?} to changes_undone");
-                changes_undone.push(final_change.clone());
-                consecutive_undos += 1;
+                do_redo_count = 0;
+                undo_count = 1;
             }
         };
+        let mut change_to_push = final_change;
+        let mut action_to_push = final_action;
+        tracing::info!("Setting the change to push ({action_to_push}) to: {change_to_push:?}");
+        tracing::info!(
+            "The do/redo count is now {do_redo_count}, and the undo count is \
+             {undo_count}."
+        );
 
-        // Do the same for the remaining actions:
-        let mut next_action = final_action;
-        for this_change in &history[1..] {
-            tracing::info!("The change made prior to that one was {this_change:?}");
-            let this_action = ChangeAction::from_str(&this_change.get_string("action")?)?;
-            match next_action {
-                ChangeAction::Do => match this_action {
-                    // TODO: Combine any blocks that are identical:
-                    ChangeAction::Do => {
-                        consecutive_undos = 0;
-                        consecutive_redos = 0;
-                        next_action = this_action;
-                        changes_done.push(this_change.clone());
+        for prior_change in &history[1..] {
+            let prior_action = ChangeAction::from_str(&prior_change.get_string("action")?)?;
+            tracing::info!("The change prior to it is a {prior_action}: {prior_change:?}.");
+            match action_to_push {
+                ChangeAction::Do => match prior_action {
+                    ChangeAction::Do | ChangeAction::Redo => {
                         tracing::info!(
-                            "  Pushed {this_action} {this_change:?}, which comes before a \
-                             {next_action} action, to changes_done, with {consecutive_undos} \
-                             consecutive undos, {consecutive_redos} consecutive redos"
+                            "Pushing change {cid} to changes_done",
+                            cid = change_to_push.get_string("change_id")?
                         );
-                    }
-                    ChangeAction::Redo => {
-                        consecutive_undos = 0;
-                        consecutive_redos += 1; // = 1?
-                        next_action = this_action;
-                        changes_done.push(this_change.clone());
+                        changes_done_stack.push(change_to_push.clone());
+                        change_to_push = prior_change;
+                        action_to_push =
+                            ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                        do_redo_count = 1;
+                        undo_count = 0;
                         tracing::info!(
-                            "  Pushed {this_action} {this_change:?}, which comes before a \
-                             {next_action} action, to changes_done, with {consecutive_undos} \
-                             consecutive undos, {consecutive_redos} consecutive redos"
+                            "The next change to push is a {action_to_push}: {change_to_push:?}"
+                        );
+                        tracing::info!(
+                            "Updated the do/redo count to {do_redo_count}, and the undo count to \
+                             {undo_count}."
                         );
                     }
                     ChangeAction::Undo => {
-                        consecutive_undos += 1; // = 1?
-                        consecutive_redos = 0;
-                        next_action = this_action;
-                        changes_undone.push(this_change.clone());
                         tracing::info!(
-                            "  Pushed {this_action} {this_change:?}, which comes before a \
-                             {next_action} action, to changes_undone, with {consecutive_undos} \
-                             consecutive undos, {consecutive_redos} consecutive redos"
+                            "Pushing change {cid} to changes_done",
+                            cid = change_to_push.get_string("change_id")?
+                        );
+                        changes_done_stack.push(change_to_push.clone());
+                        change_to_push = prior_change;
+                        action_to_push =
+                            ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                        do_redo_count = 0;
+                        undo_count = 1;
+                        tracing::info!(
+                            "The next change to push is a {action_to_push}: {change_to_push:?}"
+                        );
+                        tracing::info!(
+                            "Updated the do/redo count to {do_redo_count}, and the undo count to \
+                             {undo_count}."
                         );
                     }
                 },
-                ChangeAction::Redo => match this_action {
-                    // TODO: Combine any blocks that are identical:
-                    ChangeAction::Do => {
-                        // We will see a redo after a do in the case where that do has been
-                        // undone (and then redone by the last redo). So in this case we do not
-                        // push the change.
-                        consecutive_undos = 0;
-                        consecutive_redos = 0;
-                        tracing::info!(
-                            "  Skipping {this_action} {this_change:?} because it comes before a \
-                             {next_action} (and therefore must have been undone before being \
-                             redone), with {consecutive_undos} consecutive undos, {consecutive_redos} \
-                             consecutive redos"
-                        );
-                        next_action = ChangeAction::Redo;
-                    }
-                    ChangeAction::Redo => {
-                        // Ditto.
-                        consecutive_undos = 0;
-                        consecutive_redos += 1;
-                        tracing::info!(
-                            "  Skipping {this_action} {this_change:?} because it comes before a \
-                             {next_action} (and therefore must have been undone before being \
-                             redone), with {consecutive_undos} consecutive undos, {consecutive_redos} \
-                             consecutive redos"
-                        );
-                        next_action = ChangeAction::Redo;
-                    }
+                ChangeAction::Undo => match prior_action {
                     ChangeAction::Undo => {
-                        // This action has been cancelled by the redo.
-                        if consecutive_redos > 0 {
-                            consecutive_redos -= 1;
+                        if do_redo_count == 0 {
                             tracing::info!(
-                                "  Skipping {this_action} {this_change:?} because it comes before a \
-                                 {next_action} (and therefore has been reversed), \
-                                 with {consecutive_undos} consecutive undos, {consecutive_redos} \
-                                 consecutive redos"
+                                "Pushing change {cid} to changes_undone",
+                                cid = change_to_push.get_string("change_id")?
                             );
-                            next_action = ChangeAction::Redo;
+                            changes_undone_stack.push(change_to_push.clone());
+                            change_to_push = prior_change;
+                            action_to_push =
+                                ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                            tracing::info!(
+                                "The next change to push is a {action_to_push}: {change_to_push:?}"
+                            );
+                            undo_count += 1;
                         } else {
-                            changes_undone.push(this_change.clone());
-                            tracing::info!(
-                                "  Pushed {this_action} {this_change:?}, which comes before a \
-                                 {next_action} action, to changes_undone, with {consecutive_undos} \
-                                 consecutive undos, {consecutive_redos} consecutive redos"
-                            );
-                            next_action = this_action;
+                            do_redo_count -= 1;
+                            undo_count += 1;
                         }
+                        tracing::info!(
+                            "Updated the do/redo count to {do_redo_count}, and the undo count to \
+                             {undo_count}."
+                        );
+                    }
+                    ChangeAction::Do | ChangeAction::Redo => {
+                        if undo_count == 0 {
+                            tracing::info!(
+                                "Pushing change {cid} to changes_undone",
+                                cid = change_to_push.get_string("change_id")?
+                            );
+                            changes_undone_stack.push(change_to_push.clone());
+                            change_to_push = prior_change;
+                            action_to_push =
+                                ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                            do_redo_count = 1;
+                            tracing::info!(
+                                "The next change to push is a {action_to_push}: {change_to_push:?}"
+                            );
+                        } else {
+                            do_redo_count += 1;
+                            undo_count -= 1;
+                        }
+                        tracing::info!(
+                            "Updated the do/redo count to {do_redo_count}, and the undo count to \
+                             {undo_count}."
+                        );
                     }
                 },
-                ChangeAction::Undo => match this_action {
-                    ChangeAction::Undo => {
-                        consecutive_undos += 1;
-                        consecutive_redos = 0;
-                        next_action = this_action;
-                        changes_undone.push(this_change.clone());
+                ChangeAction::Redo => match prior_action {
+                    ChangeAction::Redo => {
+                        if undo_count == 0 {
+                            tracing::info!(
+                                "Pushing change {cid} to changes_done",
+                                cid = change_to_push.get_string("change_id")?
+                            );
+                            changes_done_stack.push(change_to_push.clone());
+                            change_to_push = prior_change;
+                            action_to_push =
+                                ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                            tracing::info!(
+                                "The next change to push is a {action_to_push}: {change_to_push:?}"
+                            );
+                            do_redo_count += 1;
+                        } else {
+                            do_redo_count += 1;
+                            undo_count -= 1;
+                        }
                         tracing::info!(
-                            "  Pushed {this_action} {this_change:?}, which comes before a \
-                             {next_action} action, to changes_undone \
-                             with {consecutive_undos} consecutive undos"
+                            "Updated the do/redo count to {do_redo_count}, and the undo count to \
+                             {undo_count}."
                         );
                     }
                     ChangeAction::Do => {
-                        let saved_next_for_log = next_action;
-                        if consecutive_undos > 0 {
-                            consecutive_undos -= 1;
+                        if undo_count == 0 {
                             tracing::info!(
-                                "  Skipping {this_action} {this_change:?} because it comes before \
-                                 a {saved_next_for_log} (and therefore has been reversed), \
-                                 with {consecutive_undos} consecutive undos"
+                                "Pushing change {cid} to changes_done",
+                                cid = change_to_push.get_string("change_id")?
                             );
-                            next_action = ChangeAction::Undo;
+                            changes_done_stack.push(change_to_push.clone());
+                            change_to_push = prior_change;
+                            action_to_push =
+                                ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                            tracing::info!(
+                                "The next change to push is a {action_to_push}: {change_to_push:?}"
+                            );
+                            // Dos begin anew.
+                            do_redo_count = 1;
                         } else {
-                            changes_done.push(this_change.clone());
-                            tracing::info!(
-                                "  Pushed {this_action} {this_change:?}, which comes before a \
-                                 {next_action} action, to changes_done, with {consecutive_undos} \
-                                 consecutive undos"
-                            );
-                            next_action = this_action;
+                            do_redo_count += 1;
+                            undo_count -= 1;
                         }
+                        tracing::info!(
+                            "Updated the do/redo count to {do_redo_count}, and the undo count to \
+                             {undo_count}."
+                        );
                     }
-                    ChangeAction::Redo => {
-                        let saved_next_for_log = next_action;
-                        if consecutive_undos > 0 {
-                            consecutive_undos -= 1;
+                    ChangeAction::Undo => {
+                        if do_redo_count == 0 {
                             tracing::info!(
-                                "  Skipping {this_action} {this_change:?} because it comes before \
-                                 a {saved_next_for_log} (and therefore has been reversed), \
-                                 with {consecutive_undos} consecutive undos"
+                                "Pushing change {cid} to changes_done",
+                                cid = change_to_push.get_string("change_id")?
                             );
-                            next_action = ChangeAction::Undo;
+                            changes_done_stack.push(change_to_push.clone());
+                            change_to_push = prior_change;
+                            action_to_push =
+                                ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                            tracing::info!(
+                                "The next change to push is a {action_to_push}: {change_to_push:?}"
+                            );
+                            undo_count = 1;
                         } else {
-                            changes_done.push(this_change.clone());
-                            tracing::info!(
-                                "  Pushed {this_action} {this_change:?}, which comes before a \
-                                 {next_action} action, to changes_done, with {consecutive_undos} \
-                                 consecutive undos"
-                            );
-                            next_action = this_action;
+                            do_redo_count -= 1;
+                            undo_count += 1;
                         }
+                        tracing::info!(
+                            "Updated the do/redo count to {do_redo_count}, and the undo count to \
+                             {undo_count}."
+                        );
                     }
                 },
             };
+
+            (changes_done_stack, changes_undone_stack) =
+                prune_stacks(&changes_done_stack, &changes_undone_stack);
+
             if let Some(context) = context {
-                if changes_done.len() >= context && changes_undone.len() >= context {
+                let mut done_len = changes_done_stack.len();
+                let mut undone_len = changes_undone_stack.len();
+                match action_to_push {
+                    ChangeAction::Do | ChangeAction::Redo => done_len += 1,
+                    ChangeAction::Undo => undone_len += 1,
+                };
+                if done_len >= context && undone_len >= context {
                     break;
                 }
             }
         }
 
-        match context {
-            None => Ok((changes_done, changes_undone)),
+        // Make sure to push the last change that was set to be pushed:
+        match action_to_push {
+            ChangeAction::Do | ChangeAction::Redo => {
+                tracing::info!("Pushing the last change to changes_done: {change_to_push:?}");
+                changes_done_stack.push(change_to_push.clone());
+            }
+            ChangeAction::Undo => {
+                tracing::info!("Pushing the last change to changes_undone: {change_to_push:?}");
+                changes_undone_stack.push(change_to_push.clone());
+            }
+        };
+
+        // Prune the stacks one last time:
+        (changes_done_stack, changes_undone_stack) =
+            prune_stacks(&changes_done_stack, &changes_undone_stack);
+
+        // Don't return the undone changes if the last change was not a do:
+        let changes_undone_stack = match final_action {
+            ChangeAction::Do => vec![],
+            _ => changes_undone_stack,
+        };
+
+        let history = match context {
+            None => History {
+                changes_done_stack,
+                changes_undone_stack,
+            },
             Some(context) => {
-                let mut done_len = changes_done.len();
+                let mut done_len = changes_done_stack.len();
                 if done_len > context {
                     done_len = context;
                 }
-                // There can be only one redoable change by design. TODO: Allow for consecutive
-                let mut undone_len = changes_undone.len();
+                let changes_done_stack = changes_done_stack[..done_len].to_vec();
+
+                let mut undone_len = changes_undone_stack.len();
                 if undone_len > context {
                     undone_len = context;
                 }
-                Ok((
-                    changes_done[..done_len].to_vec(),
-                    changes_undone[..undone_len].to_vec(),
-                ))
+                let changes_undone_stack = changes_undone_stack[..undone_len].to_vec();
+                History {
+                    changes_done_stack,
+                    changes_undone_stack,
+                }
             }
-        }
+        };
+        tracing::debug!("Returning history: {history:#?}");
+        Ok(history)
     }
 
     async fn _undo_or_redo(
@@ -1282,7 +1396,7 @@ impl Relatable {
     }
 
     pub async fn undo(&self, user: &str) -> Result<Option<ChangeSet>> {
-        let (change_id, mut changeset) = match self.get_last_do_for_user(user).await? {
+        let (change_id, mut changeset) = match self.get_last_undoable_action_for_user(user).await? {
             None => {
                 tracing::warn!("Nothing to undo for '{user}'");
                 return Ok(None);
@@ -1298,7 +1412,7 @@ impl Relatable {
     }
 
     pub async fn redo(&self, user: &str) -> Result<Option<ChangeSet>> {
-        let (change_id, mut changeset) = match self.get_last_undo_for_user(user).await? {
+        let (change_id, mut changeset) = match self.get_last_redoable_action_for_user(user).await? {
             None => {
                 tracing::warn!("Nothing to redo for '{user}'");
                 return Ok(None);
@@ -1932,6 +2046,20 @@ pub enum Change {
 }
 
 impl Change {
+    pub fn from_str(content: &str) -> Result<Self> {
+        let changes = Self::many_from_str(content)?;
+        let change = match changes.first() {
+            None => {
+                return Err(RelatableError::InputError("No change found".to_string()).into());
+            }
+            Some(change) => change.clone(),
+        };
+        if changes.len() > 1 {
+            tracing::warn!("More than one change given. Returning the first.");
+        }
+        Ok(change)
+    }
+
     pub fn many_from_str(content: &str) -> Result<Vec<Self>> {
         let json_content = match serde_json::from_str::<JsonValue>(content) {
             Err(err) => return Err(err.into()),
@@ -1990,6 +2118,42 @@ impl Change {
         }
         Ok(changes)
     }
+
+    pub fn from_json_row(json_row: &JsonRow) -> Result<Self> {
+        match json_row.get_string("type")?.as_str() {
+            "Update" => Ok(Self::Update {
+                row: json_row.get_unsigned("row")?,
+                column: json_row.get_string("column")?,
+                before: json_row.get_value("before")?,
+                after: json_row.get_value("after")?,
+            }),
+            "Add" => Ok(Self::Add {
+                row: json_row.get_unsigned("row")?,
+                after: json_row.get_unsigned("after")?,
+            }),
+            "Move" => Ok(Self::Move {
+                row: json_row.get_unsigned("row")?,
+                from_after: json_row.get_unsigned("from_after")?,
+                to_after: json_row.get_unsigned("to_after")?,
+            }),
+            "Delete" => Ok(Self::Delete {
+                row: json_row.get_unsigned("row")?,
+                after: json_row.get_unsigned("after")?,
+            }),
+            _ => {
+                return Err(RelatableError::InputError(format!(
+                    "Unrecognized action type for change {json_row}"
+                ))
+                .into());
+            }
+        }
+    }
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub struct History {
+    pub changes_done_stack: Vec<JsonRow>,
+    pub changes_undone_stack: Vec<JsonRow>,
 }
 
 impl Display for Change {

@@ -9,7 +9,7 @@ use rltbl::{
     web::{serve, serve_cgi},
 };
 
-use ansi_term::Style;
+// use ansi_term::Style;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
@@ -358,7 +358,7 @@ pub async fn print_history(cli: &Cli, context: usize) {
     let user = get_username(&cli);
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
 
-    fn get_content_as_string(change_json: &JsonRow) -> String {
+    fn _get_content_as_string(change_json: &JsonRow) -> String {
         let content = change_json.get_string("content").expect("No content found");
         let content = Change::many_from_str(&content).expect("Could not parse content");
         content
@@ -368,50 +368,74 @@ pub async fn print_history(cli: &Cli, context: usize) {
             .join(", ")
     }
 
-    let (mut undoable_changes, redoable_changes) = rltbl
-        .get_user_history(&user, Some(context))
+    let history = rltbl
+        .get_user_history(
+            &user,
+            match context {
+                0 => None,
+                _ => Some(context),
+            },
+        )
         .await
         .expect("Could not get history");
-    let next_undo = match undoable_changes.len() {
-        0 => 0,
-        _ => undoable_changes[0]
-            .get_unsigned("change_id")
-            .expect("No change_id found"),
-    };
-    undoable_changes.reverse();
-    for (i, undo) in undoable_changes.iter().enumerate() {
-        if i > context {
-            break;
-        }
-        let change_id = undo.get_unsigned("change_id").expect("No change_id found");
-        if change_id == next_undo {
-            let undo_content = get_content_as_string(undo);
-            let line = format!("▲ {undo_content}");
-            println!("{}", Style::new().bold().paint(line));
-        } else {
-            let undo_content = get_content_as_string(undo);
-            println!("  {undo_content}");
-        }
-    }
-    let next_redo = match redoable_changes.len() {
-        0 => 0,
-        _ => redoable_changes[0]
-            .get_unsigned("change_id")
-            .expect("No change_id found"),
-    };
-    for (i, redo) in redoable_changes.iter().enumerate() {
-        if i > context {
-            break;
-        }
-        let change_id = redo.get_unsigned("change_id").expect("No change_id found");
-        if change_id == next_redo {
-            let redo_content = get_content_as_string(redo);
-            println!("▼ {redo_content}");
-        } else {
-            let redo_content = get_content_as_string(redo);
-            println!("  {redo_content}");
-        }
-    }
+
+    println!("{history:#?}");
+
+    // let (mut undoable_changes, redoable_changes) = (
+    //     history.changes_done_stack.clone(),
+    //     history.changes_undone_stack.clone(),
+    // );
+
+    // let next_undo = match undoable_changes.len() {
+    //     0 => 0,
+    //     _ => undoable_changes[0]
+    //         .get_unsigned("change_id")
+    //         .expect("No change_id found"),
+    // };
+    // undoable_changes.reverse();
+    // for (i, change) in undoable_changes.iter().enumerate() {
+    //     if i > context {
+    //         break;
+    //     }
+    //     let change_id = change
+    //         .get_unsigned("change_id")
+    //         .expect("No change_id found");
+    //     let action = change.get_string("action").expect("No action found");
+    //     if change_id == next_undo {
+    //         let change_content = get_content_as_string(change);
+    //         let line = format!("▲ {change_content} (action {change_id}, {action})");
+    //         println!("{}", Style::new().bold().paint(line));
+    //     } else {
+    //         let change_content = get_content_as_string(change);
+    //         println!("  {change_content} (action {change_id}, {action})");
+    //     }
+    // }
+    // let next_redo = match redoable_changes.len() {
+    //     0 => 0,
+    //     _ => redoable_changes[0]
+    //         .get_unsigned("change_id")
+    //         .expect("No change_id found"),
+    // };
+    // for (i, change) in redoable_changes.iter().enumerate() {
+    //     if i > context {
+    //         break;
+    //     }
+    //     let change_id = change
+    //         .get_unsigned("change_id")
+    //         .expect("No change_id found");
+    //     let action = change.get_string("action").expect("No action found");
+    //     if change_id == next_redo {
+    //         let change_content = get_content_as_string(change);
+    //         println!("▼ {change_content} (action {change_id}, {action})");
+    //     } else {
+    //         let change_content = get_content_as_string(change);
+    //         println!("  {change_content} (action {change_id}, {action})");
+    //     }
+    // }
+
+    // TODO: Remove this later. It is only here to verify that logging is working during DEV, in case
+    // it is disabled by mistake.
+    //tracing::warn!("There is the history you asked for.");
 }
 
 // Get the user from the CLI, RLTBL_USER environment variable,
