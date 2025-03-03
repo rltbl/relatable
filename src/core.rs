@@ -195,6 +195,20 @@ impl Relatable {
         )"#;
         rltbl.connection.query(sql, None).await.unwrap();
 
+        // Create the message table
+        let sql = r#"CREATE TABLE "message" (
+          "message_id" INTEGER PRIMARY KEY,
+          "table" TEXT NOT NULL,
+          "row" INTEGER NOT NULL,
+          "column" TEXT NOT NULL,
+          "value" TEXT,
+          "level" TEXT,
+          "rule" TEXT,
+          "message" TEXT,
+          FOREIGN KEY ("table") REFERENCES "table"("table")
+        )"#;
+        rltbl.connection.query(sql, None).await.unwrap();
+
         Ok(rltbl)
     }
 
