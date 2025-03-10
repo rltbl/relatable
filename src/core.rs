@@ -967,6 +967,8 @@ impl Relatable {
         }
     }
 
+    // TODO: Do not make the context limitless when None is passed. Make it something big like 1000
+    // when None is passed.
     pub async fn get_user_history(&self, user: &str, context: Option<usize>) -> Result<History> {
         fn content_to_json_row(content: &str) -> Result<JsonRow> {
             tracing::debug!("Entering content_to_json_row(content: {content})");
@@ -2982,6 +2984,7 @@ impl Select {
         self
     }
 
+    // TODO: Allow dashes so as to permit date comparisons.
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
         let like = Regex::new(r#"^(\w+)\s*~=\s*"?(\w+)"?$"#).unwrap();
         let eq = Regex::new(r#"^(\w+)\s*=\s*"?(\w+)"?$"#).unwrap();

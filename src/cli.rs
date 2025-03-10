@@ -9,7 +9,7 @@ use rltbl::{
     web::{serve, serve_cgi},
 };
 
-// use ansi_term::Style;
+use ansi_term::Style;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
@@ -227,6 +227,22 @@ pub enum AddSubcommand {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
     },
+
+    /// Read a JSON-formatted string representing a row (of the form: { "table": TABLE_NAME,
+    /// "row": ROW_NUMBER, "column": COLUMN_NAME, "value": VALUE, "level": LEVEL,
+    /// "rule": RULE, "message": MESSAGE}) from STDIN and add it to the message table. Note
+    /// that if any of the "table", "row", or "column" fields are ommitted from the input JSON
+    /// then they must be specified as positional parameters.
+    Message {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: Option<String>,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: Option<usize>,
+
+        #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
+        column: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -358,7 +374,7 @@ pub async fn print_history(cli: &Cli, context: usize) {
     let user = get_username(&cli);
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
 
-    fn _get_content_as_string(change_json: &JsonRow) -> String {
+    fn get_content_as_string(change_json: &JsonRow) -> String {
         let content = change_json.get_string("content").expect("No content found");
         let content = Change::many_from_str(&content).expect("Could not parse content");
         content
@@ -379,59 +395,57 @@ pub async fn print_history(cli: &Cli, context: usize) {
         .await
         .expect("Could not get history");
 
-    println!("{history:#?}");
+    let (undoable_changes, mut redoable_changes) = (
+        history.changes_done_stack.clone(),
+        history.changes_undone_stack.clone(),
+    );
 
-    // let (mut undoable_changes, redoable_changes) = (
-    //     history.changes_done_stack.clone(),
-    //     history.changes_undone_stack.clone(),
-    // );
-
-    // let next_undo = match undoable_changes.len() {
-    //     0 => 0,
-    //     _ => undoable_changes[0]
-    //         .get_unsigned("change_id")
-    //         .expect("No change_id found"),
-    // };
-    // undoable_changes.reverse();
-    // for (i, change) in undoable_changes.iter().enumerate() {
-    //     if i > context {
-    //         break;
-    //     }
-    //     let change_id = change
-    //         .get_unsigned("change_id")
-    //         .expect("No change_id found");
-    //     let action = change.get_string("action").expect("No action found");
-    //     if change_id == next_undo {
-    //         let change_content = get_content_as_string(change);
-    //         let line = format!("▲ {change_content} (action {change_id}, {action})");
-    //         println!("{}", Style::new().bold().paint(line));
-    //     } else {
-    //         let change_content = get_content_as_string(change);
-    //         println!("  {change_content} (action {change_id}, {action})");
-    //     }
-    // }
-    // let next_redo = match redoable_changes.len() {
-    //     0 => 0,
-    //     _ => redoable_changes[0]
-    //         .get_unsigned("change_id")
-    //         .expect("No change_id found"),
-    // };
-    // for (i, change) in redoable_changes.iter().enumerate() {
-    //     if i > context {
-    //         break;
-    //     }
-    //     let change_id = change
-    //         .get_unsigned("change_id")
-    //         .expect("No change_id found");
-    //     let action = change.get_string("action").expect("No action found");
-    //     if change_id == next_redo {
-    //         let change_content = get_content_as_string(change);
-    //         println!("▼ {change_content} (action {change_id}, {action})");
-    //     } else {
-    //         let change_content = get_content_as_string(change);
-    //         println!("  {change_content} (action {change_id}, {action})");
-    //     }
-    // }
+    let next_redo = match redoable_changes.len() {
+        0 => 0,
+        _ => redoable_changes[0]
+            .get_unsigned("change_id")
+            .expect("No change_id found"),
+    };
+    redoable_changes.reverse();
+    for (i, change) in redoable_changes.iter().enumerate() {
+        if i > context {
+            break;
+        }
+        let change_id = change
+            .get_unsigned("change_id")
+            .expect("No change_id found");
+        let action = change.get_string("action").expect("No action found");
+        if change_id == next_redo {
+            let change_content = get_content_as_string(change);
+            println!("▲ {change_content} (action {change_id}, {action})");
+        } else {
+            let change_content = get_content_as_string(change);
+            println!("  {change_content} (action {change_id}, {action})");
+        }
+    }
+    let next_undo = match undoable_changes.len() {
+        0 => 0,
+        _ => undoable_changes[0]
+            .get_unsigned("change_id")
+            .expect("No change_id found"),
+    };
+    for (i, change) in undoable_changes.iter().enumerate() {
+        if i > context {
+            break;
+        }
+        let change_id = change
+            .get_unsigned("change_id")
+            .expect("No change_id found");
+        let action = change.get_string("action").expect("No action found");
+        if change_id == next_undo {
+            let change_content = get_content_as_string(change);
+            let line = format!("▼ {change_content} (action {change_id}, {action})");
+            println!("{}", Style::new().bold().paint(line));
+        } else {
+            let change_content = get_content_as_string(change);
+            println!("  {change_content} (action {change_id}, {action})");
+        }
+    }
 
     // TODO: Remove this later. It is only here to verify that logging is working during DEV, in case
     // it is disabled by mistake.
@@ -499,6 +513,60 @@ pub fn input_json_row() -> JsonRow {
     JsonRow { content: json_row }
 }
 
+pub async fn prompt_for_json_message(
+    rltbl: &Relatable,
+    table: Option<&str>,
+    row: Option<usize>,
+    column: Option<&str>,
+) -> Result<JsonRow> {
+    let columns = rltbl
+        .fetch_columns("message")
+        .await?
+        .iter()
+        .filter(|c| c.name != "message_id")
+        .map(|c| c.name.to_string())
+        .collect::<Vec<_>>();
+    let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
+    let mut json_row = JsonRow::from_strings(&columns);
+
+    // TODO: Do not prompt for the value (since it is fixed).
+
+    if let Some(table) = table {
+        json_row.content.insert("table".to_string(), json!(table));
+    }
+    if let Some(row) = row {
+        json_row.content.insert("row".to_string(), json!(row));
+    }
+    if let Some(column) = column {
+        json_row.content.insert("column".to_string(), json!(column));
+    }
+
+    tracing::debug!("Received json row from user input: {json_row:?}");
+
+    let prompt_for_column_value = |col_to_prompt: &str| -> JsonValue {
+        let column_prompt = match col_to_prompt {
+            "value" => match column {
+                Some(column) => format!("value for {column}"),
+                None => "value for the column".to_string(),
+            },
+            _ => col_to_prompt.to_string(),
+        };
+        let value: String = prompt_default(format!("Enter a {column_prompt}:"), "".to_string())
+            .expect("Error getting column value from user input");
+        json!(value)
+    };
+
+    for column in columns {
+        if let Some(JsonValue::Null) = json_row.content.get(column) {
+            json_row
+                .content
+                .insert(column.to_string(), prompt_for_column_value(&column));
+        }
+    }
+
+    Ok(json_row)
+}
+
 pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonRow> {
     let columns = rltbl
         .fetch_columns(table)
@@ -523,6 +591,37 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonR
     }
 
     Ok(json_row)
+}
+
+/// Use Relatable, in conformity with the given command-line parameters, to add a message to the
+/// message table. The details of the message are read from STDIN. Note that if any of the
+/// parameters, `table`, `row`, or `column` have not been specified, they must be provided in the
+/// input.
+pub async fn add_message(
+    cli: &Cli,
+    table: &Option<String>,
+    row: &Option<usize>,
+    column: &Option<String>,
+) {
+    tracing::debug!("add_row({cli:?}, {table:?}, {row:?}, {column:?})");
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    let json_row = match &cli.input {
+        Some(s) if s == "JSON" => input_json_row(),
+        Some(s) => panic!("Unsupported input type '{s}'"),
+        None => prompt_for_json_message(&rltbl, table.as_deref(), *row, column.as_deref())
+            .await
+            .expect("Error getting user input"),
+    };
+
+    if json_row.content.is_empty() {
+        panic!("Cannot insert an empty row to the database");
+    }
+
+    println!("JSON ROW: {json_row:?}");
+
+    let _user = get_username(&cli);
+
+    todo!()
 }
 
 pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
@@ -725,6 +824,9 @@ pub async fn process_command() {
         },
         Command::Add { subcommand } => match subcommand {
             AddSubcommand::Row { table, after_id } => add_row(&cli, table, *after_id).await,
+            AddSubcommand::Message { table, row, column } => {
+                add_message(&cli, table, row, column).await
+            }
         },
         Command::Move { subcommand } => match subcommand {
             MoveSubcommand::Row { table, row, after } => move_row(&cli, table, *row, *after).await,
