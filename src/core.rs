@@ -282,10 +282,12 @@ impl Relatable {
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        let table = self.get_table(select.table_name.as_str()).await?;
+        tracing::debug!("SELECT: {select:?}");
+        let mut table = self.get_table(select.table_name.as_str()).await?;
+        let columns = self.fetch_columns(&table.name).await?;
+        table.create_view(self, &columns).await?;
         let mut select = select.clone();
         select.view_name = table.view.clone();
-        let columns = self.fetch_columns(&table.view).await?;
         let (statement, params) = select.to_sqlite()?;
         tracing::debug!("SQL {statement}");
         let params = json!(params);
@@ -2333,29 +2335,34 @@ impl From<Row> for Vec<String> {
 
 impl From<JsonRow> for Row {
     fn from(row: JsonRow) -> Self {
+        let id = row
+            .content
+            .get("_id")
+            .and_then(|i| i.as_u64())
+            .unwrap_or_default() as usize;
+        let order = row
+            .content
+            .get("_order")
+            .and_then(|i| i.as_u64())
+            .unwrap_or_default() as usize;
+        let change_id = row
+            .content
+            .get("_change_id")
+            .and_then(|i| i.as_u64())
+            .unwrap_or_default() as usize;
+        let cells = row
+            .content
+            .iter()
+            // Ignore columns that start with "_"
+            .filter(|(k, _)| !k.starts_with("_"))
+            .map(|(k, v)| (k.clone(), v.into()))
+            .collect();
+
         Self {
-            id: row
-                .content
-                .get("_id")
-                .and_then(|i| i.as_u64())
-                .unwrap_or_default() as usize,
-            order: row
-                .content
-                .get("_order")
-                .and_then(|i| i.as_u64())
-                .unwrap_or_default() as usize,
-            change_id: row
-                .content
-                .get("_change_id")
-                .and_then(|i| i.as_u64())
-                .unwrap_or_default() as usize,
-            cells: row
-                .content
-                .iter()
-                // Ignore columns that start with "_"
-                .filter(|(k, _)| !k.starts_with("_"))
-                .map(|(k, v)| (k.clone(), v.into()))
-                .collect(),
+            id,
+            order,
+            change_id,
+            cells,
         }
     }
 }
@@ -2384,6 +2391,64 @@ impl Default for Table {
             change_id: usize::default(),
             editable: true,
         }
+    }
+}
+
+impl Table {
+    async fn create_view(&mut self, rltbl: &Relatable, columns: &Vec<Column>) -> Result<()> {
+        self.view = format!("{}_view", self.name);
+        let id_col = match columns.iter().any(|c| c.name == "_id") {
+            true => r#"ROWID"#,
+            false => r#"_id"#,
+        };
+        let order_col = match columns.iter().any(|c| c.name == "_order") {
+            true => r#"ROWID"#,
+            false => r#"_order"#,
+        };
+
+        // Note that '?' parameters are not allowed in views so we must hard code them:
+        let sql = format!(
+            r#"CREATE VIEW IF NOT EXISTS "{view}" AS
+                 SELECT {id_col} AS _id,
+                        {order_col} AS _order,
+                        (SELECT MAX(change_id) FROM history
+                          WHERE "table" = '{table}'
+                            AND "row" = _id
+                        ) AS _change_id,
+                        (SELECT '[' || GROUP_CONCAT("after") || ']'
+                           FROM (
+                             SELECT "after"
+                             FROM "history"
+                             WHERE "table" = '{table}'
+                             AND "after" IS NOT NULL
+                             AND "row" = _id
+                             ORDER BY "history_id"
+                          )
+                        ) AS "_history",
+                        (SELECT NULLIF(
+                           JSON_GROUP_ARRAY(
+                             JSON_OBJECT(
+                               'column', "column",
+                               'value', "value",
+                               'level', "level",
+                               'rule', "rule",
+                               'message', "message"
+                             )
+                           ),
+                           '[]'
+                         ) AS "_message"
+                         FROM "message"
+                         WHERE "table" = '{table}'
+                         AND "row" = _id
+                         ORDER BY "column", "message_id"
+                        ) AS "_message",
+                        *
+                 FROM "{table}""#,
+            table = self.name,
+            view = self.view,
+        );
+        rltbl.connection.query(&sql, None).await?;
+        Ok(())
     }
 }
 
@@ -3159,15 +3224,22 @@ impl Select {
         tracing::debug!("to_sqlite: {self:?}");
         let table = &self.view_name;
         let mut lines = Vec::new();
+        let mut params = Vec::new();
+
         lines.push("SELECT *,".to_string());
         // WARN: The _total count should probably be optional.
-        lines.push("  COUNT(1) OVER() AS _total,".to_string());
-        lines.push(format!(
-            r#"  (SELECT MAX(change_id) FROM history
-                   WHERE "table" = ?
-                     AND "row" = _id
-                 ) AS _change_id"#
-        ));
+        lines.push("  COUNT(1) OVER() AS _total".to_string());
+        // If this is a view, then the change_id column is already defined and needn't be defined
+        // again here:
+        if self.view_name == self.table_name {
+            lines.push(format!(
+                r#", (SELECT MAX(change_id) FROM history
+                       WHERE "table" = ?
+                         AND "row" = _id
+                     ) AS _change_id"#
+            ));
+            params.push(json!(table));
+        }
         lines.push(format!(r#"FROM "{}""#, table));
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
@@ -3185,7 +3257,7 @@ impl Select {
         if self.offset > 0 {
             lines.push(format!("OFFSET {}", self.offset));
         }
-        Ok((lines.join("\n"), vec![json!(table)]))
+        Ok((lines.join("\n"), params))
     }
 
     pub fn to_params(&self) -> Result<JsonMap<String, JsonValue>> {
