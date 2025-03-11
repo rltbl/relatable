@@ -235,13 +235,13 @@ pub enum AddSubcommand {
     /// then they must be specified as positional parameters.
     Message {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
-        table: Option<String>,
+        table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: Option<usize>,
+        row: usize,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
-        column: Option<String>,
+        column: String,
     },
 }
 
@@ -515,43 +515,28 @@ pub fn input_json_row() -> JsonRow {
 
 pub async fn prompt_for_json_message(
     rltbl: &Relatable,
-    table: Option<&str>,
-    row: Option<usize>,
-    column: Option<&str>,
+    table: &str,
+    row: usize,
+    column: &str,
 ) -> Result<JsonRow> {
     let columns = rltbl
         .fetch_columns("message")
         .await?
         .iter()
-        .filter(|c| c.name != "message_id")
+        .filter(|c| !["message_id", "added_by", "value"].contains(&c.name.as_str()))
         .map(|c| c.name.to_string())
         .collect::<Vec<_>>();
     let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
     let mut json_row = JsonRow::from_strings(&columns);
 
-    // TODO: Do not prompt for the value (since it is fixed).
-
-    if let Some(table) = table {
-        json_row.content.insert("table".to_string(), json!(table));
-    }
-    if let Some(row) = row {
-        json_row.content.insert("row".to_string(), json!(row));
-    }
-    if let Some(column) = column {
-        json_row.content.insert("column".to_string(), json!(column));
-    }
+    json_row.content.insert("table".to_string(), json!(table));
+    json_row.content.insert("row".to_string(), json!(row));
+    json_row.content.insert("column".to_string(), json!(column));
 
     tracing::debug!("Received json row from user input: {json_row:?}");
 
     let prompt_for_column_value = |col_to_prompt: &str| -> JsonValue {
-        let column_prompt = match col_to_prompt {
-            "value" => match column {
-                Some(column) => format!("value for {column}"),
-                None => "value for the column".to_string(),
-            },
-            _ => col_to_prompt.to_string(),
-        };
-        let value: String = prompt_default(format!("Enter a {column_prompt}:"), "".to_string())
+        let value: String = prompt_default(format!("Enter a {col_to_prompt}:"), "".to_string())
             .expect("Error getting column value from user input");
         json!(value)
     };
@@ -593,35 +578,60 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonR
     Ok(json_row)
 }
 
-/// Use Relatable, in conformity with the given command-line parameters, to add a message to the
-/// message table. The details of the message are read from STDIN. Note that if any of the
-/// parameters, `table`, `row`, or `column` have not been specified, they must be provided in the
-/// input.
-pub async fn add_message(
-    cli: &Cli,
-    table: &Option<String>,
-    row: &Option<usize>,
-    column: &Option<String>,
-) {
-    tracing::debug!("add_row({cli:?}, {table:?}, {row:?}, {column:?})");
+/// Use Relatable, in conformity with the given command-line parameters, to add a row representing
+/// a message to the message table. The details of the message are read from STDIN. Note that if
+/// any of the parameters, `table`, `row`, or `column` have not been specified, they must be
+/// provided in the input.
+pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
+    tracing::debug!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
-    let json_row = match &cli.input {
+    let json_message = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
-        None => prompt_for_json_message(&rltbl, table.as_deref(), *row, column.as_deref())
+        None => prompt_for_json_message(&rltbl, table, row, column)
             .await
             .expect("Error getting user input"),
     };
 
-    if json_row.content.is_empty() {
-        panic!("Cannot insert an empty row to the database");
+    if json_message.content.is_empty() {
+        panic!("Refusing to insert an empty message to the database");
     }
 
-    println!("JSON ROW: {json_row:?}");
+    let level = json_message
+        .content
+        .get("level")
+        .and_then(|l| l.as_str())
+        .expect("A level is required and it should be a string.");
+    let rule = json_message
+        .content
+        .get("rule")
+        .and_then(|l| l.as_str())
+        .expect("A rule is required and it should be a string.");
+    let message = json_message
+        .content
+        .get("message")
+        .and_then(|l| l.as_str())
+        .expect("A message is required and it should be a string.");
 
-    let _user = get_username(&cli);
+    let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
+    let params = json!([row]);
+    let value = match rltbl
+        .connection
+        .query_value(&sql, Some(&params))
+        .await
+        .expect("Error getting value for column")
+    {
+        Some(JsonValue::String(s)) => s.as_str().to_string(),
+        Some(JsonValue::Null) | None => "".to_string(),
+        Some(value) => value.to_string(),
+    };
 
-    todo!()
+    let user = get_username(&cli);
+    let message = rltbl
+        .add_message(&user, table, row, column, &value, &level, &rule, &message)
+        .await
+        .expect("Error adding row");
+    tracing::info!("Added message {}", message.id);
 }
 
 pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
@@ -825,7 +835,7 @@ pub async fn process_command() {
         Command::Add { subcommand } => match subcommand {
             AddSubcommand::Row { table, after_id } => add_row(&cli, table, *after_id).await,
             AddSubcommand::Message { table, row, column } => {
-                add_message(&cli, table, row, column).await
+                add_message(&cli, table, *row, column).await
             }
         },
         Command::Move { subcommand } => match subcommand {

@@ -198,6 +198,7 @@ impl Relatable {
         // Create the message table
         let sql = r#"CREATE TABLE "message" (
           "message_id" INTEGER PRIMARY KEY,
+          "added_by" TEXT,
           "table" TEXT NOT NULL,
           "row" INTEGER NOT NULL,
           "column" TEXT NOT NULL,
@@ -1526,6 +1527,40 @@ impl Relatable {
         Ok(changeset)
     }
 
+    pub async fn add_message(
+        &self,
+        user: &str,
+        table_name: &str,
+        row: usize,
+        column: &str,
+        value: &str,
+        level: &str,
+        rule: &str,
+        message: &str,
+    ) -> Result<Message> {
+        let sql = r#"INSERT INTO "message"
+                     ("added_by", "table", "row", "column", "value", "level", "rule", "message")
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     RETURNING "message_id""#;
+        let params = json!([user, table_name, row, column, value, level, rule, message]);
+        let message_id = self
+            .connection
+            .query_one(&sql, Some(&params))
+            .await?
+            .ok_or(RelatableError::DataError(
+                "Error inserting message".to_string(),
+            ))?
+            .get_unsigned("message_id")?;
+
+        self.commit_to_git().await?;
+        Ok(Message {
+            id: message_id,
+            level: level.to_string(),
+            rule: rule.to_string(),
+            message: message.to_string(),
+        })
+    }
+
     async fn _add_row(
         &self,
         mut conn: Option<DbActiveConnection>,
@@ -2199,6 +2234,8 @@ impl Display for Change {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
+    /// The message ID
+    pub id: usize,
     /// The severity of the message.
     pub level: String,
     /// The rule violation that the message is about.
@@ -2413,10 +2450,6 @@ impl Table {
             r#"CREATE VIEW IF NOT EXISTS "{view}" AS
                  SELECT {id_col} AS _id,
                         {order_col} AS _order,
-                        (SELECT MAX(change_id) FROM history
-                          WHERE "table" = '{table}'
-                            AND "row" = _id
-                        ) AS _change_id,
                         (SELECT '[' || GROUP_CONCAT("after") || ']'
                            FROM (
                              SELECT "after"
@@ -3232,17 +3265,14 @@ impl Select {
         lines.push("SELECT *,".to_string());
         // WARN: The _total count should probably be optional.
         lines.push("  COUNT(1) OVER() AS _total".to_string());
-        // If this is a view, then the change_id column is already defined and needn't be defined
-        // again here:
-        if self.view_name == self.table_name {
-            lines.push(format!(
-                r#", (SELECT MAX(change_id) FROM history
-                       WHERE "table" = ?
-                         AND "row" = _id
-                     ) AS _change_id"#
-            ));
-            params.push(json!(table));
-        }
+        lines.push(format!(
+            r#", (SELECT MAX(change_id) FROM history
+                    WHERE "table" = ?
+                      AND "row" = _id
+                 ) AS _change_id"#
+        ));
+        params.push(json!(table));
+
         lines.push(format!(r#"FROM "{}""#, table));
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };

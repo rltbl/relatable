@@ -16,8 +16,6 @@ exit_with_error () {
 fail_action='ask_what_to_do'
 # fail_action='exit_with_error'
 
-echo ${fail_action}
-
 {
     echo "----- Running TC 1 -----"
     make && ${rltbl} demo --size 10 --force || ${fail_action}
