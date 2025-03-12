@@ -2490,12 +2490,12 @@ impl Table {
     ) -> Result<()> {
         self.view = format!("{}_view", self.name);
         let id_col = match columns.iter().any(|c| c.name == "_id") {
-            true => r#"ROWID"#,
-            false => r#"_id"#,
+            false => r#"rowid"#, // This *must* be lowercase.
+            true => r#"_id"#,
         };
         let order_col = match columns.iter().any(|c| c.name == "_order") {
-            true => r#"ROWID"#,
-            false => r#"_order"#,
+            false => r#"rowid"#, // This *must* be lowercase.
+            true => r#"_order"#,
         };
         let columns = columns
             .iter()
@@ -2515,7 +2515,7 @@ impl Table {
                         FROM "history"
                         WHERE "table" = '{table}'
                         AND "after" IS NOT NULL
-                        AND "row" = _id
+                        AND "row" = {id_col}
                         ORDER BY "history_id"
                      )
                    ) AS "_history",
@@ -2533,7 +2533,7 @@ impl Table {
                     ) AS "_message"
                       FROM "message"
                       WHERE "table" = '{table}'
-                      AND "row" = _id
+                      AND "row" = {id_col}
                       ORDER BY "column", "message_id"
                    ) AS "_message",
                    {columns}
