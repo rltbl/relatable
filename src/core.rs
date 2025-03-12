@@ -286,15 +286,21 @@ impl Relatable {
         tracing::debug!("SELECT: {select:?}");
         let mut table = self.get_table(select.table_name.as_str()).await?;
         let columns = self.fetch_columns(&table.name).await?;
-        table.create_view(self, &columns).await?;
+        table.ensure_view_created(self, &columns).await?;
         let mut select = select.clone();
         select.view_name = table.view.clone();
         let (statement, params) = select.to_sqlite()?;
         tracing::debug!("SQL {statement}");
         let params = json!(params);
         let json_rows = self.connection.query(&statement, Some(&params)).await?;
-
         let count = json_rows.len();
+        tracing::info!("Received {count} rows.");
+        if count > 4 {
+            tracing::debug!("The first 5 are: {:#?}", json_rows[..4].to_vec());
+        } else if count > 0 {
+            tracing::debug!("They are: {:#?}", json_rows[..count].to_vec());
+        }
+
         let total = match json_rows.get(0) {
             Some(row) => row
                 .content
@@ -1533,11 +1539,18 @@ impl Relatable {
         table_name: &str,
         row: usize,
         column: &str,
-        value: &str,
         level: &str,
         rule: &str,
         message: &str,
-    ) -> Result<Message> {
+    ) -> Result<(usize, Message)> {
+        let sql = format!(r#"SELECT "{column}" FROM "{table_name}" WHERE _id = ?"#);
+        let params = json!([row]);
+        let value = match self.connection.query_value(&sql, Some(&params)).await? {
+            Some(JsonValue::String(s)) => s.as_str().to_string(),
+            Some(JsonValue::Null) | None => "".to_string(),
+            Some(value) => value.to_string(),
+        };
+
         let sql = r#"INSERT INTO "message"
                      ("added_by", "table", "row", "column", "value", "level", "rule", "message")
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1552,13 +1565,14 @@ impl Relatable {
             ))?
             .get_unsigned("message_id")?;
 
-        self.commit_to_git().await?;
-        Ok(Message {
-            id: message_id,
-            level: level.to_string(),
-            rule: rule.to_string(),
-            message: message.to_string(),
-        })
+        Ok((
+            message_id,
+            Message {
+                level: level.to_string(),
+                rule: rule.to_string(),
+                message: message.to_string(),
+            },
+        ))
     }
 
     async fn _add_row(
@@ -1723,6 +1737,43 @@ impl Relatable {
         if num_deleted > 0 {
             self.commit_to_git().await?;
         }
+        Ok(num_deleted)
+    }
+
+    pub async fn delete_message(
+        &self,
+        table: &str,
+        row: Option<usize>,
+        column: Option<&str>,
+        target_rule: Option<&str>,
+        target_user: Option<&str>,
+    ) -> Result<usize> {
+        let mut sql = r#"DELETE FROM "message" WHERE "table" = ?"#.to_string();
+        let mut params = vec![json!(table)];
+
+        if let Some(row) = row {
+            sql.push_str(r#" AND "row" = ?"#);
+            params.push(json!(row));
+        }
+        if let Some(column) = column {
+            sql.push_str(r#" AND "column" = ?"#);
+            params.push(json!(column));
+        }
+        if let Some(target_rule) = target_rule {
+            sql.push_str(r#" AND "rule" LIKE ?"#);
+            params.push(json!(target_rule));
+        }
+        if let Some(target_user) = target_user {
+            sql.push_str(r#" AND "added_by" = ?"#);
+            params.push(json!(target_user));
+        }
+
+        sql.push_str(r#" RETURNING 1 AS "deleted""#);
+        let num_deleted = self
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await?
+            .len();
         Ok(num_deleted)
     }
 
@@ -2234,8 +2285,6 @@ impl Display for Change {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
-    /// The message ID
-    pub id: usize,
     /// The severity of the message.
     pub level: String,
     /// The rule violation that the message is about.
@@ -2434,7 +2483,11 @@ impl Default for Table {
 }
 
 impl Table {
-    async fn create_view(&mut self, rltbl: &Relatable, columns: &Vec<Column>) -> Result<()> {
+    async fn ensure_view_created(
+        &mut self,
+        rltbl: &Relatable,
+        columns: &Vec<Column>,
+    ) -> Result<()> {
         self.view = format!("{}_view", self.name);
         let id_col = match columns.iter().any(|c| c.name == "_id") {
             true => r#"ROWID"#,
@@ -2444,43 +2497,50 @@ impl Table {
             true => r#"ROWID"#,
             false => r#"_order"#,
         };
+        let columns = columns
+            .iter()
+            .filter(|c| c.name != "_id" && c.name != "_order")
+            .map(|c| c.name.to_string())
+            .collect::<Vec<_>>();
 
         // Note that '?' parameters are not allowed in views so we must hard code them:
         let sql = format!(
             r#"CREATE VIEW IF NOT EXISTS "{view}" AS
-                 SELECT {id_col} AS _id,
-                        {order_col} AS _order,
-                        (SELECT '[' || GROUP_CONCAT("after") || ']'
-                           FROM (
-                             SELECT "after"
-                             FROM "history"
-                             WHERE "table" = '{table}'
-                             AND "after" IS NOT NULL
-                             AND "row" = _id
-                             ORDER BY "history_id"
-                          )
-                        ) AS "_history",
-                        (SELECT NULLIF(
-                           JSON_GROUP_ARRAY(
-                             JSON_OBJECT(
-                               'column', "column",
-                               'value', "value",
-                               'level', "level",
-                               'rule', "rule",
-                               'message', "message"
-                             )
-                           ),
-                           '[]'
-                         ) AS "_message"
-                         FROM "message"
-                         WHERE "table" = '{table}'
-                         AND "row" = _id
-                         ORDER BY "column", "message_id"
-                        ) AS "_message",
-                        *
+                 SELECT
+                   {id_col} AS _id,
+                   {order_col} AS _order,
+                   (SELECT '[' || GROUP_CONCAT("after") || ']'
+                      FROM (
+                        SELECT "after"
+                        FROM "history"
+                        WHERE "table" = '{table}'
+                        AND "after" IS NOT NULL
+                        AND "row" = _id
+                        ORDER BY "history_id"
+                     )
+                   ) AS "_history",
+                   (SELECT NULLIF(
+                      JSON_GROUP_ARRAY(
+                        JSON_OBJECT(
+                          'column', "column",
+                          'value', "value",
+                          'level', "level",
+                          'rule', "rule",
+                          'message', "message"
+                        )
+                      ),
+                      '[]'
+                    ) AS "_message"
+                      FROM "message"
+                      WHERE "table" = '{table}'
+                      AND "row" = _id
+                      ORDER BY "column", "message_id"
+                   ) AS "_message",
+                   {columns}
                  FROM "{table}""#,
             table = self.name,
             view = self.view,
+            columns = columns.join(", "),
         );
         rltbl.connection.query(&sql, None).await?;
         Ok(())

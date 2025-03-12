@@ -269,6 +269,30 @@ pub enum DeleteSubcommand {
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
         row: usize,
     },
+
+    Message {
+        #[arg(long,
+              value_name = "RULE",
+              action = ArgAction::Set,
+              help = "Only delete messages from the given row or column whose rule matches RULE, \
+                      which may contain SQL-style wildcards.")]
+        rule: Option<String>,
+
+        #[arg(long,
+              value_name = "USER",
+              action = ArgAction::Set,
+              help = "Only delete messages from the given row or column that were added by USER.")]
+        user: Option<String>,
+
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: Option<usize>,
+
+        #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
+        column: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -535,8 +559,8 @@ pub async fn prompt_for_json_message(
 
     tracing::debug!("Received json row from user input: {json_row:?}");
 
-    let prompt_for_column_value = |col_to_prompt: &str| -> JsonValue {
-        let value: String = prompt_default(format!("Enter a {col_to_prompt}:"), "".to_string())
+    let prompt_for_column_value = |column: &str| -> JsonValue {
+        let value: String = prompt_default(format!("Enter a {column}:"), "".to_string())
             .expect("Error getting column value from user input");
         json!(value)
     };
@@ -579,9 +603,8 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonR
 }
 
 /// Use Relatable, in conformity with the given command-line parameters, to add a row representing
-/// a message to the message table. The details of the message are read from STDIN. Note that if
-/// any of the parameters, `table`, `row`, or `column` have not been specified, they must be
-/// provided in the input.
+/// a [Message](rltbl::core::Message) to the message table. The details of the message are read
+/// from STDIN, either interactively or in JSON format.
 pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::debug!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
@@ -601,37 +624,24 @@ pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
         .content
         .get("level")
         .and_then(|l| l.as_str())
-        .expect("A level is required and it should be a string.");
+        .expect("The field 'level' (type: string) is required.");
     let rule = json_message
         .content
         .get("rule")
-        .and_then(|l| l.as_str())
-        .expect("A rule is required and it should be a string.");
+        .and_then(|r| r.as_str())
+        .expect("The field 'rule' (type: string) is required.");
     let message = json_message
         .content
         .get("message")
-        .and_then(|l| l.as_str())
-        .expect("A message is required and it should be a string.");
-
-    let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
-    let params = json!([row]);
-    let value = match rltbl
-        .connection
-        .query_value(&sql, Some(&params))
-        .await
-        .expect("Error getting value for column")
-    {
-        Some(JsonValue::String(s)) => s.as_str().to_string(),
-        Some(JsonValue::Null) | None => "".to_string(),
-        Some(value) => value.to_string(),
-    };
+        .and_then(|m| m.as_str())
+        .expect("The field 'message' (type: string) is required.");
 
     let user = get_username(&cli);
-    let message = rltbl
-        .add_message(&user, table, row, column, &value, &level, &rule, &message)
+    let (mid, message) = rltbl
+        .add_message(&user, table, row, column, &level, &rule, &message)
         .await
         .expect("Error adding row");
-    tracing::info!("Added message {}", message.id);
+    tracing::info!("Added message (ID: {mid}) {message:?}");
 }
 
 pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
@@ -682,6 +692,29 @@ pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
         .expect("Failed to delete row");
     if num_deleted > 0 {
         tracing::info!("Deleted row {row}");
+    } else {
+        std::process::exit(1);
+    }
+}
+
+pub async fn delete_message(
+    cli: &Cli,
+    target_rule: Option<&str>,
+    target_user: Option<&str>,
+    table: &str,
+    row: Option<usize>,
+    column: Option<&str>,
+) {
+    tracing::debug!(
+        "delete_message({cli:?}, {target_rule:?}, {target_user:?}, {table}, {row:?}, {column:?})"
+    );
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    let num_deleted = rltbl
+        .delete_message(table, row, column, target_rule, target_user)
+        .await
+        .expect("Failed to delete message");
+    if num_deleted > 0 {
+        tracing::info!("Deleted {num_deleted} message(s)");
     } else {
         std::process::exit(1);
     }
@@ -843,6 +876,23 @@ pub async fn process_command() {
         },
         Command::Delete { subcommand } => match subcommand {
             DeleteSubcommand::Row { table, row } => delete_row(&cli, table, *row).await,
+            DeleteSubcommand::Message {
+                rule,
+                user,
+                table,
+                row,
+                column,
+            } => {
+                delete_message(
+                    &cli,
+                    rule.as_deref(),
+                    user.as_deref(),
+                    table,
+                    *row,
+                    column.as_deref(),
+                )
+                .await
+            }
         },
         Command::Undo {} => undo(&cli).await,
         Command::Redo {} => redo(&cli).await,
