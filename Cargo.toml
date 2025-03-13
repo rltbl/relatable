@@ -3,6 +3,14 @@ name = "rltbl"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "rltbl"
+path = "src/main.rs"
+
+[[bin]]
+name = "rltbl_test"
+path = "src/test.rs"
+
 [dependencies]
 ansi_term = "0.12"
 anyhow = "1.0.94"

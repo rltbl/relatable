@@ -2488,6 +2488,7 @@ impl Table {
         rltbl: &Relatable,
         columns: &Vec<Column>,
     ) -> Result<()> {
+        tracing::debug!("Entering ensure_view_created({rltbl:?}, {columns:?})");
         self.view = format!("{}_view", self.name);
         let id_col = match columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
