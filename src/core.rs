@@ -258,35 +258,34 @@ impl Relatable {
         }
     }
 
-    pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
+    pub async fn fetch_all_columns(&self, table_name: &str) -> Result<(Vec<Column>, Vec<Column>)> {
         // WARN: SQLite only!
         let statement =
             format!(r#"SELECT "name" FROM pragma_table_info("{table_name}") ORDER BY "cid""#);
-        let columns = {
-            let columns = self.connection.query(&statement, None).await?;
-            if columns.is_empty() {
-                return Err(RelatableError::DataError(format!(
-                    "No defined columns for: {table_name}"
-                ))
-                .into());
-            }
-            columns
-                .iter()
-                .map(|c| c.get_string("name").expect("No 'name' found"))
-                .filter(|c| !c.starts_with("_"))
-                .map(|c| Column {
-                    name: c.to_string(),
-                })
-                .collect()
-        };
-        Ok(columns)
+        let mut columns = vec![];
+        let mut meta_columns = vec![];
+        for column in self.connection.query(&statement, None).await? {
+            match column.get_string("name")? {
+                name if name.starts_with("_") => meta_columns.push(Column { name }),
+                name => columns.push(Column { name }),
+            };
+        }
+        if columns.is_empty() && meta_columns.is_empty() {
+            return Err(
+                RelatableError::DataError(format!("No defined columns for: {table_name}")).into(),
+            );
+        }
+        Ok((columns, meta_columns))
+    }
+
+    pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
+        Ok(self.fetch_all_columns(table_name).await?.0)
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
         tracing::debug!("SELECT: {select:?}");
         let mut table = self.get_table(select.table_name.as_str()).await?;
-        let columns = self.fetch_columns(&table.name).await?;
-        table.ensure_view_created(self, &columns).await?;
+        let columns = table.ensure_view_created(self).await?;
         let mut select = select.clone();
         select.view_name = table.view.clone();
         let (statement, params) = select.to_sqlite()?;
@@ -2483,26 +2482,19 @@ impl Default for Table {
 }
 
 impl Table {
-    async fn ensure_view_created(
-        &mut self,
-        rltbl: &Relatable,
-        columns: &Vec<Column>,
-    ) -> Result<()> {
-        tracing::debug!("Entering ensure_view_created({rltbl:?}, {columns:?})");
+    async fn ensure_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
+        tracing::debug!("Entering ensure_view_created({rltbl:?})");
+        let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
+
         self.view = format!("{}_view", self.name);
-        let id_col = match columns.iter().any(|c| c.name == "_id") {
+        let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
             true => r#"_id"#,
         };
-        let order_col = match columns.iter().any(|c| c.name == "_order") {
+        let order_col = match meta_columns.iter().any(|c| c.name == "_order") {
             false => r#"rowid"#, // This *must* be lowercase.
             true => r#"_order"#,
         };
-        let columns = columns
-            .iter()
-            .filter(|c| c.name != "_id" && c.name != "_order")
-            .map(|c| c.name.to_string())
-            .collect::<Vec<_>>();
 
         // Note that '?' parameters are not allowed in views so we must hard code them:
         let sql = format!(
@@ -2541,10 +2533,14 @@ impl Table {
                  FROM "{table}""#,
             table = self.name,
             view = self.view,
-            columns = columns.join(", "),
+            columns = columns
+                .iter()
+                .map(|c| c.name.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
         );
         rltbl.connection.query(&sql, None).await?;
-        Ok(())
+        Ok(columns)
     }
 }
 
