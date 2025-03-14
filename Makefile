@@ -67,4 +67,4 @@ random:
 
 # TODO: Re-enable the random test once we've implemented random.sh
 .PHONY: test
-test: src/resources/main.js src/resources/main.css test-code test-docs # random
+test: src/resources/main.js src/resources/main.css test-code test-docs random

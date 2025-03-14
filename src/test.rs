@@ -27,6 +27,9 @@ pub struct Cli {
     #[command(flatten)]
     verbose: Verbosity,
 
+    #[arg(long, action = ArgAction::SetTrue)]
+    vertical: bool,
+
     #[arg(long, action = ArgAction::Set)]
     seed: Option<u64>,
 
@@ -191,7 +194,7 @@ async fn generate_operation_sequence(
         // Add the undo to the list of further operations to perform:
         further_operations.push(DbOperation::Undo);
         consecutive_undos += 1;
-        // Randomly add a number of redos as well:
+        // Randomly add a number of redos as well, and then undo them all:
         if random_between(0, 2, &mut seed) == 0 {
             let mut num_to_redo = random_between(1, consecutive_undos + 1, &mut seed);
             tracing::debug!("Redoing {num_to_redo} of {consecutive_undos} undos");
@@ -201,18 +204,9 @@ async fn generate_operation_sequence(
                 num_to_redo -= 1;
                 num_to_undo += 1;
             }
-            // Randomly either add that many undos either immediately after the redos, or to the
-            // undo_stack:
-            if random_between(0, 2, &mut seed) == 0 {
-                while num_to_undo > 0 {
-                    further_operations.push(DbOperation::Undo);
-                    num_to_undo -= 1;
-                }
-            } else {
-                while num_to_undo > 0 {
-                    further_undo_stack.push(DbOperation::Undo);
-                    num_to_undo -= 1;
-                }
+            while num_to_undo > 0 {
+                further_operations.push(DbOperation::Undo);
+                num_to_undo -= 1;
             }
             consecutive_undos = 0;
         }
@@ -229,7 +223,10 @@ async fn generate_operation_sequence(
             .iter()
             .map(|o| o.to_string())
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(match cli.vertical {
+                true => "\n",
+                false => " ",
+            })
     );
 }
 
