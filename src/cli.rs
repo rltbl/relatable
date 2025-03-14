@@ -441,10 +441,10 @@ pub async fn print_history(cli: &Cli, context: usize) {
         let action = change.get_string("action").expect("No action found");
         if change_id == next_redo {
             let change_content = get_content_as_string(change);
-            println!("▲ {change_content} (action {change_id}, {action})");
+            println!("▲ {change_content} (action #{change_id}, {action})");
         } else {
             let change_content = get_content_as_string(change);
-            println!("  {change_content} (action {change_id}, {action})");
+            println!("  {change_content} (action #{change_id}, {action})");
         }
     }
     let next_undo = match undoable_changes.len() {
@@ -463,11 +463,11 @@ pub async fn print_history(cli: &Cli, context: usize) {
         let action = change.get_string("action").expect("No action found");
         if change_id == next_undo {
             let change_content = get_content_as_string(change);
-            let line = format!("▼ {change_content} (action {change_id}, {action})");
+            let line = format!("▼ {change_content} (action #{change_id}, {action})");
             println!("{}", Style::new().bold().paint(line));
         } else {
             let change_content = get_content_as_string(change);
-            println!("  {change_content} (action {change_id}, {action})");
+            println!("  {change_content} (action #{change_id}, {action})");
         }
     }
 

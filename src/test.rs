@@ -43,10 +43,10 @@ pub enum Command {
         #[arg(action = ArgAction::Set)]
         table: String,
 
-        #[arg(long, default_value = "25", action = ArgAction::Set)]
+        #[arg(long, default_value = "10", action = ArgAction::Set)]
         min_length: usize,
 
-        #[arg(long, default_value = "50", action = ArgAction::Set)]
+        #[arg(long, default_value = "15", action = ArgAction::Set)]
         max_length: usize,
     },
 }
