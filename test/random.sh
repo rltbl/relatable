@@ -31,7 +31,7 @@ act_randomly () {
                 ${RLTBL} delete row penguin ${row}
                 ;;
             "update")
-                value=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 13)
+                value=$(tr -dc A-Za-z0-9 </dev/urandom | tail -n +1 | head -c 13)
                 echo "User ${RLTBL_USER}: Updating species in row ${row} to ${value}"
                 ${RLTBL} set value penguin ${row} species ${value}
                 ;;
