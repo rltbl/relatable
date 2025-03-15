@@ -782,7 +782,7 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
 
     // Create the penguin table.
     let sql = r#"CREATE TABLE penguin (
-      _id INTEGER UNIQUE,
+      _id INTEGER PRIMARY KEY AUTOINCREMENT,
       _order INTEGER UNIQUE,
       study_name TEXT,
       sample_number TEXT,

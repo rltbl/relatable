@@ -139,7 +139,7 @@ impl Relatable {
 
         // Create and populate the table table
         let sql = r#"CREATE TABLE "table" (
-          _id INTEGER PRIMARY KEY,
+          _id INTEGER PRIMARY KEY AUTOINCREMENT,
           _order INTEGER UNIQUE,
           "table" TEXT UNIQUE,
           "path" TEXT
@@ -172,7 +172,7 @@ impl Relatable {
 
         // Create the change and history tables
         let sql = r#"CREATE TABLE "change" (
-          change_id INTEGER PRIMARY KEY,
+          change_id INTEGER PRIMARY KEY AUTOINCREMENT,
           "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           "user" TEXT NOT NULL,
           "action" TEXT NOT NULL,
@@ -184,7 +184,7 @@ impl Relatable {
         rltbl.connection.query(sql, None).await.unwrap();
 
         let sql = r#"CREATE TABLE "history" (
-          history_id INTEGER PRIMARY KEY,
+          history_id INTEGER PRIMARY KEY AUTOINCREMENT,
           change_id INTEGER NOT NULL,
           "table" TEXT NOT NULL,
           "row" INTEGER NOT NULL,
@@ -197,7 +197,7 @@ impl Relatable {
 
         // Create the message table
         let sql = r#"CREATE TABLE "message" (
-          "message_id" INTEGER PRIMARY KEY,
+          "message_id" INTEGER PRIMARY KEY AUTOINCREMENT,
           "added_by" TEXT,
           "table" TEXT NOT NULL,
           "row" INTEGER NOT NULL,
@@ -375,7 +375,8 @@ impl Relatable {
 
         let sql = format!(
             r#"CREATE TABLE IF NOT EXISTS "{table}" (
-                 _id INTEGER PRIMARY KEY, _order INTEGER UNIQUE, {other_column_defs}
+                 _id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 _order INTEGER UNIQUE, {other_column_defs}
             )"#,
             other_column_defs = headers
                 .iter()
@@ -1597,12 +1598,14 @@ impl Relatable {
 
         // Prepare a new row to be inserted:
         let mut new_row = Row::prepare_new(&table, Some(row), &mut tx)?;
+
         // A new_row_id will have been passed if the row is being added as part of an undo/redo.
-        // In that case an after_id must have been passed as well but we assign the default
-        // row order for now:
+        // In that case an after_id must have been passed as well but we leave the row order as
+        // is for now, since we are not assured that the old row order is actually still free in
+        // the table (recall that there is a unique constraint on _order). However the row_order
+        // currently assigned is at the end of the table so there should not be any conflicts.
         if let Some(new_row_id) = new_row_id {
             new_row.id = new_row_id;
-            new_row.order = new_row.id * MOVE_INTERVAL;
         }
 
         // Add the row to the table:
@@ -1862,7 +1865,20 @@ impl Relatable {
         // Get the order, (A), of `after_id`:
         let order_prev = {
             if after_id > 0 {
-                get_row_order(tx, table, after_id)?
+                let mut id_to_try = after_id;
+                let mut result = get_row_order(tx, table, id_to_try);
+                // This handles the case in which the after row has been deleted for some reason
+                // (this might happen if we are redoing).
+                while let Err(_) = result {
+                    if id_to_try == 0 {
+                        break;
+                    }
+                    tracing::debug!("Could not obtain _order for row {id_to_try}");
+                    id_to_try -= 1;
+                    tracing::debug!("Trying to find the _order of row {id_to_try}");
+                    result = get_row_order(tx, table, id_to_try);
+                }
+                result?
             } else {
                 // It is not possible for a row to be assigned a order of zero. We allow it as a
                 // possible value of `after_id`, however, which is used as a special value that we
@@ -2322,8 +2338,9 @@ pub struct Row {
 
 impl Row {
     fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
-        let sql = format!(r#"SELECT MAX("_id") FROM "{}""#, table);
-        let current_row_id = match tx.query_value(&sql, None)? {
+        let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
+        let params = json!([table]);
+        let current_row_id = match tx.query_value(&sql, Some(&params))? {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };

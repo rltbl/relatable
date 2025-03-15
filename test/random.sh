@@ -3,120 +3,112 @@
 PATH="target/debug:$PATH"
 RLTBL='rltbl -v'
 RLTBL_DB=.relatable/relatable.db
-SQLITE="sqlite3 $RLTBL_DB"
-
-MIN_SLEEP=0
-MAX_SLEEP=2
-NUM_RETRIES=10
-
-retry_and_fail () {
-    command=$1
-
-    more_tries=${NUM_RETRIES}
-    eval "${command}"
-    while [[ $? -ne 0 && $more_tries -gt 0 ]]
-    do
-        sleep_val=$(($MIN_SLEEP + $RANDOM % $MAX_SLEEP))
-        echo "Retrying in ${sleep_val}s ..."
-        sleep ${sleep_val}
-        more_tries=`expr ${more_tries} - 1`
-        eval "${command}"
-    done
-    if [[ $more_tries -eq 0 ]]
-    then
-        echo "**************************** Giving up ****************************"
-        exit 1
-    fi
-}
+SQLITE="sqlite3 -init <(echo .timeout 1000) $RLTBL_DB"
 
 act_randomly () {
-    min_row=$1
-    max_row=$2
+    user=$1
+    min_row=$2
+    max_row=$3
 
-    for action in $(rltbl_test generate-seq penguin)
+    for action in $(rltbl_test generate-seq --min-length 5 --max-length 10 penguin)
     do
+        skip=$((0 + $RANDOM % 4))
+        if [[ $skip -eq 0 ]]
+        then
+            echo "${user} is taking a break"
+            sleep 1
+        fi
+
         row=$(($min_row + $RANDOM % $(expr $max_row - $min_row + 1)))
         case $action in
             # We treat "add" and "delete" as synonyms for update here, since adding and deleting
             # rows in a random test like this introduces complications that are not really
             # relevant to what we are trying to test here.
-            "add" | "delete" | "update")
-                echo "User ${RLTBL_USER}: Updating value of row ${row} to ${value}"
+            "add")
+                command="echo '{\"species\": \"FOO\"}' | RLTBL_USER=${user} ${RLTBL} --input JSON add row penguin"
+                echo "${command}"
+                eval "$command"
+                ;;
+            # We treat "delete" and "update" as synonyms for update here, since the precise
+            # operation performed is not really what we are testing in this test, and deleting
+            # rows introduces complications with multiple users that are not really relevant.
+            "delete" | "update")
                 value=$(tr -dc A-Za-z0-9 </dev/urandom | tail -n +1 | head -c 13)
-                retry_and_fail '${RLTBL} set value penguin ${row} species ${value}'
+                command="RLTBL_USER=${user} ${RLTBL} set value penguin ${row} species ${value}"
+                echo "${command}"
+                eval "$command"
                 ;;
             "move")
                 row_to_move=$row
-                more_tries=${NUM_RETRIES}
                 where_to_move_after=$(($min_row + $RANDOM % $(expr $max_row - $min_row + 1)))
-                echo "User ${RLTBL_USER}: Moving ${row_to_move} to after row ${where_to_move_after}"
-                ${RLTBL} move row penguin ${row_to_move} ${where_to_move_after}
-                while [[ $? -ne 0 && $more_tries -gt 0 ]]
+                while [[ ${where_to_move_after} == ${row_to_move} ]]
                 do
                     where_to_move_after=$(($min_row + $RANDOM % $(expr $max_row - $min_row + 1)))
-                    sleep_val=$(($MIN_SLEEP + $RANDOM % $MAX_SLEEP))
-                    echo "Retrying in ${sleep_val}s ..."
-                    sleep ${sleep_val}
-                    more_tries=`expr ${more_tries} - 1`
-                    echo "User ${RLTBL_USER}: This time moving to after row ${where_to_move_after}"
-                    ${RLTBL} move row penguin ${row_to_move} ${where_to_move_after}
                 done
-                if [[ $more_tries -eq 0 ]]
-                then
-                    echo "**************************** Giving up ****************************"
-                    exit 1
-                fi
+                command="RLTBL_USER=${user} ${RLTBL} move row penguin ${row_to_move} ${where_to_move_after}"
+                echo "${command}"
+                eval "$command"
                 ;;
             "undo")
-                echo "User ${RLTBL_USER}: Undoing"
-                retry_and_fail '${RLTBL} undo'
+                command="RLTBL_USER=${user} ${RLTBL} undo"
+                echo "${command}"
+                eval "$command"
                 ;;
             "redo")
-                echo "User ${RLTBL_USER}: Redoing"
-                retry_and_fail '${RLTBL} redo'
+                command="RLTBL_USER=${user} ${RLTBL} redo"
+                echo "${command}"
+                eval "$command"
                 ;;
-            *) echo "Unrecognized action ${action}"
+            *) echo "Unrecognized action ${action} for ${user}"
                exit 1
                ;;
         esac
-        sleep $(($MIN_SLEEP + $RANDOM % $MAX_SLEEP))
+        if [[ $? -ne 0 ]]
+        then
+            echo "${user} encountered an error and is giving up"
+            exit 1
+        fi
+        sleep 1
     done
 }
 
 
 ### Execution begins here
 
-${RLTBL} demo --size 20 --force
+command="${RLTBL} demo --size 20 --force"
+echo $command
+eval "$command"
 
 (
-    export RLTBL_USER=mike;
-    act_randomly 1 5
-    echo "$RLTBL_USER is done"
+    act_randomly mike 1 5
+    echo "mike is done"
 ) &
+
+sleep 0.25
 
 (
-    export RLTBL_USER=barbara;
-    act_randomly 6 10
-    echo "$RLTBL_USER is done"
+    act_randomly barbara 6 10
+    echo "barbara is done"
 ) &
+
+sleep 0.25
 
 (
-    export RLTBL_USER=ahmed;
-    act_randomly 11 15
-    echo "$RLTBL_USER is done"
+    act_randomly ahmed 11 15
+    echo "ahmed is done"
 ) &
+
+sleep 0.25
 
 (
-   export RLTBL_USER=afreen;
-   act_randomly 16 20
-   echo "$RLTBL_USER is done"
+    act_randomly afreen 16 20
+    echo "afreen is done"
 ) &
 
-wait
+wait || exit 1
 
-
-rltbl get table penguin | tee /var/tmp/table.$$
-diff /var/tmp/table.$$ - <<EOF
+rltbl get table penguin > /var/tmp/table.$$
+diff --ignore-trailing-space --suppress-blank-empty --strip-trailing-cr /var/tmp/table.$$ - <<EOF
 Rows 1-20 of 20
 study_name  sample_number  species             island     individual_id  culmen_length  body_mass
 FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.6           3221
@@ -143,4 +135,11 @@ EOF
 
 status=$?
 rm -f /var/tmp/table.$$ /var/tmp/table.$$
+if [[ $status -eq 0 ]]
+then
+    echo "Test successful"
+else
+    echo "Exiting with error"
+fi
+
 exit $status
