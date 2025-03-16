@@ -108,7 +108,7 @@ sleep 0.25
 wait || exit 1
 
 rltbl get table penguin > /var/tmp/table.$$
-diff --ignore-space-change --suppress-blank-empty --strip-trailing-cr /var/tmp/table.$$ - <<EOF
+diff /var/tmp/table.$$ - <<EOF
 Rows 1-20 of 20
 study_name  sample_number  species             island     individual_id  culmen_length  body_mass
 FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.6           3221
