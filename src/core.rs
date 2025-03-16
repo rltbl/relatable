@@ -1046,7 +1046,7 @@ impl Relatable {
             (pruned_dones, pruned_undones)
         }
 
-        // TODO: Think about paging in the case where there are a lot of change records to go through.
+        // TODO: Think about paging when there are a lot of change records to go through.
         let sql = format!(
             r#"SELECT "change_id", "user", "table", "description", "action", "content"
                  FROM "change"

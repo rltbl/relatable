@@ -343,11 +343,11 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Utilities for dealing with JSON representations of rows. The reason thses
+// Utilities for dealing with JSON representations of rows. The reason these
 // are located here instead of in core.rs is because the implementation of
 // JsonRow is dependent, in part, on whether the sqlx or rusqlite crate feature
 // is enabled. Encapsulating the handling of that crate feature from the rest of
-// the API the other purpose of this module.
+// the API is the other purpose of this module.
 ///////////////////////////////////////////////////////////////////////////////
 
 // WARN: This needs to be thought through.
