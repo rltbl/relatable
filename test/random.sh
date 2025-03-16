@@ -107,6 +107,13 @@ sleep 0.25
 
 wait || exit 1
 
+# Here is a scenario in which the test will fail. 1) mike moves row 15. 2) barbara moves row 16.
+# 3) Mike undos. 4) Barbara undos. The problem is that the initial row that 16 comes after in
+# step 2 is determined dynamically. So from barbara's point of view the row goes from being after
+# row 14 to somewhere else, and then back again. It should have come back to being after 15, but
+# is prevented by mike's actions. This scenario is uncommon, though, and it isn't clear how to
+# guard against it.
+
 rltbl get table penguin > /var/tmp/table.$$
 diff /var/tmp/table.$$ - <<EOF
 Rows 1-20 of 20
