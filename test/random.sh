@@ -2,26 +2,55 @@
 
 PATH="target/debug:$PATH"
 RLTBL='rltbl -v'
-RLTBL_DB=.relatable/relatable.db
-SQLITE="sqlite3 -init <(echo .timeout 1000) $RLTBL_DB"
 
 MIN_SLEEP=1
 MAX_SLEEP=4
 NUM_RETRIES=5
 
+varying_rate=0
+case $1 in
+    "--varying-rate")
+        varying_rate=1
+        shift
+        ;;
+    "")
+        shift
+        ;;
+    "-help"|"--help"|-h)
+        echo "Usage: `basename $0` [ --varying-rate ]"
+        exit 0
+        ;;
+    *)
+        echo "Usage: `basename $0` [ --varying-rate ]"
+        exit 1
+        ;;
+esac
+
+custom_sleep () {
+    if [[ ${varying_rate} -eq 0 ]]
+    then
+        sleep 1
+    else
+        sleep_val=$(printf '%s\n' $(echo "scale=10; $RANDOM/32768 * 2" | bc ))
+        sleep ${sleep_val}
+    fi
+}
+
+
 retry_and_fail () {
     command=$1
+    user=$2
 
     more_tries=${NUM_RETRIES}
-    eval "${command}"
+    eval "${command}" 2>&1
     while [[ $? -ne 0 && $more_tries -gt 0 ]]
     do
         sleep_val=$(($MIN_SLEEP + $RANDOM % $MAX_SLEEP))
-        echo "Retrying in ${sleep_val}s ..."
+        echo "${user} will retry in ${sleep_val}s ..."
         sleep ${sleep_val}
         more_tries=`expr ${more_tries} - 1`
-        echp "${command}"
-        eval "${command}"
+        echo "${command}"
+        eval "${command}" 2>&1
     done
     if [[ $more_tries -eq 0 ]]
     then
@@ -41,18 +70,15 @@ act_randomly () {
         if [[ $skip -eq 0 ]]
         then
             echo "${user} is taking a break"
-            sleep 1
+            custom_sleep
         fi
 
         row=$(($min_row + $RANDOM % $(expr $max_row - $min_row + 1)))
         case $action in
-            # We treat "add" and "delete" as synonyms for update here, since adding and deleting
-            # rows in a random test like this introduces complications that are not really
-            # relevant to what we are trying to test here.
             "add")
                 command="echo '{\"species\": \"FOO\"}' | RLTBL_USER=${user} ${RLTBL} --input JSON add row penguin"
                 echo "${command}"
-                retry_and_fail "${command}"
+                retry_and_fail "${command}" ${user}
                 ;;
             # We treat "delete" and "update" as synonyms for update here, since the precise
             # operation performed is not really what we are testing in this test, and deleting
@@ -61,7 +87,7 @@ act_randomly () {
                 value=$(tr -dc A-Za-z0-9 </dev/urandom | tail -n +1 | head -c 13)
                 command="RLTBL_USER=${user} ${RLTBL} set value penguin ${row} species ${value}"
                 echo "${command}"
-                retry_and_fail "${command}"
+                retry_and_fail "${command}" ${user}
                 ;;
             "move")
                 row_to_move=$row
@@ -72,17 +98,17 @@ act_randomly () {
                 done
                 command="RLTBL_USER=${user} ${RLTBL} move row penguin ${row_to_move} ${where_to_move_after}"
                 echo "${command}"
-                retry_and_fail "${command}"
+                retry_and_fail "${command}" ${user}
                 ;;
             "undo")
                 command="RLTBL_USER=${user} ${RLTBL} undo"
                 echo "${command}"
-                retry_and_fail "${command}"
+                retry_and_fail "${command}" ${user}
                 ;;
             "redo")
                 command="RLTBL_USER=${user} ${RLTBL} redo"
                 echo "${command}"
-                retry_and_fail "${command}"
+                retry_and_fail "${command}" ${user}
                 ;;
             *) echo "Unrecognized action ${action} for ${user}"
                exit 1
@@ -93,7 +119,7 @@ act_randomly () {
             echo "${user} encountered an error and is giving up"
             exit 1
         fi
-        sleep 1
+        custom_sleep
     done
 }
 
@@ -132,12 +158,15 @@ sleep 0.25
 
 wait || exit 1
 
-# Here is a scenario in which the test will fail. 1) mike moves row 15. 2) barbara moves row 16.
+# Here is a scenario in which this test will fail. 1) mike moves row 15. 2) barbara moves row 16.
 # 3) Mike undos. 4) Barbara undos. The problem is that the initial row that 16 comes after in
-# step 2 is determined dynamically. So from barbara's point of view the row goes from being after
-# row 14 to somewhere else, and then back again. It should have come back to being after 15, but
-# is prevented by mike's actions. This scenario is uncommon, though, and it isn't clear how to
-# guard against it.
+# step 2 is determined dynamically. So from barbara's point of view, the row she moves (16) goes
+# from being after 14 (because mike has moved 15) to somewhere else, and then back to after 14
+# again. From the global perspective, it should have come back to being after 15, but mike's
+# action erases the information about row 16's initially coming after 15. Given the current design
+# there does not appear to be anything that we can do about this, since we do not store the initial
+# "after row" in the database. We could change the design. However the scenario appears to be
+# uncommon. When this test is run repeatedly, it passes roughly 9 times out of 10.
 
 rltbl get table penguin > /var/tmp/table.$$
 diff /var/tmp/table.$$ - <<EOF

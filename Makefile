@@ -63,7 +63,7 @@ test-docs: debug
 
 .PHONY: random
 random:
-	test/random.sh
+	test/random.sh --varying-rate
 
 # TODO: Re-enable the random test once we've implemented random.sh
 .PHONY: test
