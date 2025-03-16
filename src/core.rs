@@ -66,6 +66,7 @@ impl std::fmt::Display for RelatableError {
 }
 
 pub static MOVE_INTERVAL: usize = 1000;
+pub static MAX_CONTEXT: usize = 1000;
 
 impl std::error::Error for RelatableError {}
 
@@ -974,8 +975,6 @@ impl Relatable {
         }
     }
 
-    // TODO: Do not make the context limitless when None is passed. Make it something big like 1000
-    // when None is passed.
     pub async fn get_user_history(&self, user: &str, context: Option<usize>) -> Result<History> {
         fn content_to_json_row(content: &str) -> Result<JsonRow> {
             tracing::debug!("Entering content_to_json_row(content: {content})");
@@ -1239,17 +1238,20 @@ impl Relatable {
             (changes_done_stack, changes_undone_stack) =
                 prune_stacks(&changes_done_stack, &changes_undone_stack);
 
-            // Check if we have exceeded the context, and if so, stop looking for more actions:
+            // Check if we have exceeded the (max) context, and if so, stop looking for more
+            // actions:
+            let mut done_len = changes_done_stack.len();
+            let mut undone_len = changes_undone_stack.len();
+            match action_to_push {
+                ChangeAction::Do | ChangeAction::Redo => done_len += 1,
+                ChangeAction::Undo => undone_len += 1,
+            };
             if let Some(context) = context {
-                let mut done_len = changes_done_stack.len();
-                let mut undone_len = changes_undone_stack.len();
-                match action_to_push {
-                    ChangeAction::Do | ChangeAction::Redo => done_len += 1,
-                    ChangeAction::Undo => undone_len += 1,
-                };
                 if done_len >= context && undone_len >= context {
                     break;
                 }
+            } else if done_len >= MAX_CONTEXT || undone_len >= MAX_CONTEXT {
+                break;
             }
         }
 

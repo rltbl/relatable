@@ -228,11 +228,8 @@ pub enum AddSubcommand {
         table: String,
     },
 
-    /// Read a JSON-formatted string representing a row (of the form: { "table": TABLE_NAME,
-    /// "row": ROW_NUMBER, "column": COLUMN_NAME, "value": VALUE, "level": LEVEL,
-    /// "rule": RULE, "message": MESSAGE}) from STDIN and add it to the message table. Note
-    /// that if any of the "table", "row", or "column" fields are ommitted from the input JSON
-    /// then they must be specified as positional parameters.
+    /// Read a JSON-formatted string representing a row (of the form: { "level": LEVEL,
+    /// "rule": RULE, "message": MESSAGE}) from STDIN and add it to the message table.
     Message {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
@@ -395,9 +392,6 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
 pub async fn print_history(cli: &Cli, context: usize) {
     tracing::debug!("print_history({cli:?}, {context})");
 
-    let user = get_username(&cli);
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
-
     fn get_content_as_string(change_json: &JsonRow) -> String {
         let content = change_json.get_string("content").expect("No content found");
         let content = Change::many_from_str(&content).expect("Could not parse content");
@@ -408,6 +402,8 @@ pub async fn print_history(cli: &Cli, context: usize) {
             .join(", ")
     }
 
+    let user = get_username(&cli);
+    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
     let history = rltbl
         .get_user_history(
             &user,
@@ -470,10 +466,6 @@ pub async fn print_history(cli: &Cli, context: usize) {
             println!("  {change_content} (action #{change_id}, {action})");
         }
     }
-
-    // TODO: Remove this later. It is only here to verify that logging is working during DEV, in case
-    // it is disabled by mistake.
-    //tracing::warn!("There is the history you asked for.");
 }
 
 // Get the user from the CLI, RLTBL_USER environment variable,
