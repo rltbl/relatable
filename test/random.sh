@@ -5,6 +5,31 @@ RLTBL='rltbl -v'
 RLTBL_DB=.relatable/relatable.db
 SQLITE="sqlite3 -init <(echo .timeout 1000) $RLTBL_DB"
 
+MIN_SLEEP=1
+MAX_SLEEP=4
+NUM_RETRIES=5
+
+retry_and_fail () {
+    command=$1
+
+    more_tries=${NUM_RETRIES}
+    eval "${command}"
+    while [[ $? -ne 0 && $more_tries -gt 0 ]]
+    do
+        sleep_val=$(($MIN_SLEEP + $RANDOM % $MAX_SLEEP))
+        echo "Retrying in ${sleep_val}s ..."
+        sleep ${sleep_val}
+        more_tries=`expr ${more_tries} - 1`
+        echp "${command}"
+        eval "${command}"
+    done
+    if [[ $more_tries -eq 0 ]]
+    then
+        echo "Giving up"
+        exit 1
+    fi
+}
+
 act_randomly () {
     user=$1
     min_row=$2
@@ -27,7 +52,7 @@ act_randomly () {
             "add")
                 command="echo '{\"species\": \"FOO\"}' | RLTBL_USER=${user} ${RLTBL} --input JSON add row penguin"
                 echo "${command}"
-                eval "$command"
+                retry_and_fail "${command}"
                 ;;
             # We treat "delete" and "update" as synonyms for update here, since the precise
             # operation performed is not really what we are testing in this test, and deleting
@@ -36,7 +61,7 @@ act_randomly () {
                 value=$(tr -dc A-Za-z0-9 </dev/urandom | tail -n +1 | head -c 13)
                 command="RLTBL_USER=${user} ${RLTBL} set value penguin ${row} species ${value}"
                 echo "${command}"
-                eval "$command"
+                retry_and_fail "${command}"
                 ;;
             "move")
                 row_to_move=$row
@@ -47,17 +72,17 @@ act_randomly () {
                 done
                 command="RLTBL_USER=${user} ${RLTBL} move row penguin ${row_to_move} ${where_to_move_after}"
                 echo "${command}"
-                eval "$command"
+                retry_and_fail "${command}"
                 ;;
             "undo")
                 command="RLTBL_USER=${user} ${RLTBL} undo"
                 echo "${command}"
-                eval "$command"
+                retry_and_fail "${command}"
                 ;;
             "redo")
                 command="RLTBL_USER=${user} ${RLTBL} redo"
                 echo "${command}"
-                eval "$command"
+                retry_and_fail "${command}"
                 ;;
             *) echo "Unrecognized action ${action} for ${user}"
                exit 1
