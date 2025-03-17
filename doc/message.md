@@ -1,6 +1,6 @@
 # Message
 
-**rltbl** can be used to directly add and delete messages to and from the message table. Let's begin by adding two messages to penguin:
+**rltbl** can be used to directly add and delete messages to and from the message table. Let's begin by adding two messages to penguin. We specify the current user via the environment variable, `RLTBL_USER`.
 
 ```console tesh-session="message"
 $ rltbl demo --size 10 --force
@@ -52,7 +52,7 @@ $ sqlite3 -header .relatable/relatable.db 'select * from message'
 
 ```
 
-Let's add a few more messages to the message table. Two of them will be by the user **mike** and the rest by the user **afreen**. The user can be specified via the environment variable, `RLTBL_USER`.
+Let's add a few more messages to the message table. Two of them will be by the user **mike** and the rest by the user **afreen**.
 
 ```console tesh-session="message"
 $ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species

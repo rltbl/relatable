@@ -1,21 +1,22 @@
 # History
 
-To add rows to a table on the command line, one uses `rltbl add row TABLE`. **rltbl** normally adds rows interactively by asking the user to supply a value for every column in the table in turn. Alternatively, the option `--input JSON` may be specified to accept the row to be added in the form a JSON-formatted string. For instance:
+To add rows to a table on the command line, one uses `rltbl add row TABLE`. **rltbl** normally adds rows interactively by asking the user to supply a value for every column in the table in turn. Alternatively, the option `--input JSON` may be specified to accept the row to be added in the form a JSON-formatted string.
 
 ```console tesh-session="history"
 $ rltbl -v demo --size 10 --force
-$ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
+$ echo '{"species": "FOO"}' | RLTBL_USER=mike rltbl -v --input JSON add row penguin
 ```
+Note the use of the environment variable, `RLTBL_USER`, to specify the user associated with this particular action. This can be done on a per-command basis, as we have done here, or alternately (the usual setup) one can set the environment variable in one's shell initialization script (e.g., `~/.bashrc`). Because the examples below depend sensitively on which actions are owned by which user, we have been careful to be explicit about the user of each command below for which it is relevant.
 
 **rltbl** can undo and redo previous actions, and display the history of previous actions for this user.
 
 ```console tesh-session="history"
-$ rltbl -v undo
-$ rltbl -v redo
-$ rltbl -v delete row penguin 6
-$ rltbl -v set value penguin 4 island Enderby
-$ rltbl -v move row penguin 1 8
-$ rltbl -v undo
+$ RLTBL_USER=mike rltbl -v undo
+$ RLTBL_USER=mike rltbl -v redo
+$ RLTBL_USER=mike rltbl -v delete row penguin 6
+$ RLTBL_USER=mike rltbl -v set value penguin 4 island Enderby
+$ RLTBL_USER=mike rltbl -v move row penguin 1 8
+$ RLTBL_USER=mike rltbl -v undo
 ```
 
 The contents of the penguin table are now:
@@ -41,7 +42,7 @@ The line prefixed with a down-arrow, as well as those below it, can be undone. T
 undone changes that can  be redone.
 
 ```console tesh-session="history"
-$ rltbl -v history
+$ RLTBL_USER=mike rltbl -v history
 ▲ Move row 1 from after row 8 to after row 0 (action #7, undo)
 ▼ Update 'island' in row 4 from Torgersen to Enderby (action #5, do)
   Delete row 6 (action #4, do)
@@ -51,10 +52,10 @@ $ rltbl -v history
 To restore the original state of the table we can finally do:
 
 ```console tesh-session="history"
-$ rltbl -v undo # Undo set value
-$ rltbl -v undo # Undo delete row
-$ rltbl -v undo # Undo add row
-$ rltbl -v get table penguin
+$ RLTBL_USER=mike rltbl -v undo # Undo set value
+$ RLTBL_USER=mike rltbl -v undo # Undo delete row
+$ RLTBL_USER=mike rltbl -v undo # Undo add row
+$ RLTBL_USER=mike rltbl -v get table penguin
 Rows 1-10 of 10
 study_name  sample_number  species             island     individual_id  culmen_length  body_mass
 FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.6           3221
@@ -69,10 +70,10 @@ FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6   
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
 ```
 
-**rltbl** supports multiple users, and multiple user histories. The user associated with a particular command may be specified using the environment variable, `RLTBL_USER`. Although **mike**'s history (the default user on my system, which is why it was unspecified above) looks like the following:
+As already mentioned, **rltbl** supports multiple users. It also supports and keeps track of multiple user histories. Although **mike**'s history currently looks like the following:
 
 ```console tesh-session="history"
-$ rltbl -v history
+$ RLTBL_USER=mike rltbl -v history
   Move row 1 from after row 8 to after row 0 (action #7, undo)
   Update 'island' in row 4 from Enderby to Torgersen (action #8, undo)
   Add row 6 after row 5 (action #9, undo)
