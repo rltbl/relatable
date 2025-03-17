@@ -3334,22 +3334,19 @@ impl Select {
 
     pub fn to_sqlite(&self) -> Result<(String, Vec<JsonValue>)> {
         tracing::debug!("to_sqlite: {self:?}");
-        let table = &self.view_name;
         let mut lines = Vec::new();
         let mut params = Vec::new();
-
         lines.push("SELECT *,".to_string());
         // WARN: The _total count should probably be optional.
-        lines.push("  COUNT(1) OVER() AS _total".to_string());
+        lines.push("  COUNT(1) OVER() AS _total, ".to_string());
         lines.push(format!(
-            r#", (SELECT MAX(change_id) FROM history
-                    WHERE "table" = ?
-                      AND "row" = _id
-                 ) AS _change_id"#
+            r#"(SELECT MAX(change_id) FROM history
+                  WHERE "table" = ?
+                    AND "row" = _id
+               ) AS _change_id"#
         ));
-        params.push(json!(table));
-
-        lines.push(format!(r#"FROM "{}""#, table));
+        params.push(json!(self.table_name)); // the real table name
+        lines.push(format!(r#"FROM "{}""#, self.view_name)); // the view name, which may differ
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             lines.push(format!("{keyword} {filter}", filter = filter.to_sqlite()?));
