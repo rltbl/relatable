@@ -1,16 +1,11 @@
-# Web
+# Web tests
 
-TODO: Add some introductory documentation here.
+Test case 1
 
 ```bash tesh-session="web"
 $ rltbl demo --size 10
 $ rltbl serve --port 9000 --timeout 5 &
 ...
-```
-
-Blah blah blah
-
-```console tesh-session="web"
 $ curl http://0.0.0.0:9000/table/penguin
 ...
 <p class="range">Rows 1-10 of 10</p>
@@ -219,12 +214,6 @@ $ curl http://0.0.0.0:9000/table/penguin
   </tbody>
 </table>
 ...
-```
-
-Blah blah blah
-
-```console tesh-session="web"
 $ wait
 ...
 ```
-
