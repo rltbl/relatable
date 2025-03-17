@@ -14,7 +14,7 @@ The messages are not normally visible when viewing the table's contents on the c
 $ rltbl -vvv get table penguin
 ...
 ... INFO rltbl::core: Received 10 rows.
-... DEBUG rltbl::core: The first 5 are: [
+... DEBUG rltbl::core: The first 4 are: [
     {"_id": "1", "_order": "1000", "_history": "", "_message": "", "study_name": "FAKE123", "sample_number": "1", "species": "Pygoscelis adeliae", "island": "Torgersen", "individual_id": "N1", "culmen_length": "44.6", "body_mass": "3221", "_total": "10", "_change_id": ""},
     {"_id": "2", "_order": "2000", "_history": "", "_message": "", "study_name": "FAKE123", "sample_number": "2", "species": "Pygoscelis adeliae", "island": "Torgersen", "individual_id": "N2", "culmen_length": "30.5", "body_mass": "3685", "_total": "10", "_change_id": ""},
     {"_id": "3", "_order": "3000", "_history": "", "_message": "[{\"column\":\"species\",\"value\":\"Pygoscelis adeliae\",\"level\":\"error\",\"rule\":\"custom-a\",\"message\":\"this is not a good species\"}]", "study_name": "FAKE123", "sample_number": "3", "species": "Pygoscelis adeliae", "island": "Torgersen", "individual_id": "N3", "culmen_length": "35.2", "body_mass": "1491", "_total": "10", "_change_id": ""},

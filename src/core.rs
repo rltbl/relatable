@@ -296,7 +296,7 @@ impl Relatable {
         let count = json_rows.len();
         tracing::info!("Received {count} rows.");
         if count > 4 {
-            tracing::debug!("The first 5 are: {:#?}", json_rows[..4].to_vec());
+            tracing::debug!("The first 4 are: {:#?}", json_rows[..4].to_vec());
         } else if count > 0 {
             tracing::debug!("They are: {:#?}", json_rows[..count].to_vec());
         }
