@@ -1,6 +1,6 @@
 # Message
 
-*rltbl* can be used to directly add and delete messages to and from the message table. Let's begin by adding two messages to penguin:
+**rltbl** can be used to directly add and delete messages to and from the message table. Let's begin by adding two messages to penguin:
 
 ```console tesh-session="message"
 $ rltbl demo --size 10 --force
@@ -8,7 +8,7 @@ $ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good sp
 $ echo '{"level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 4 species
 ```
 
-The messages are not normally visible when viewing the table's contents on the command line, but by increasing *rltbl*'s verbosity level we can see more detail about the first few rows returned from a `get table` command:
+The messages are not normally visible when viewing the table's contents on the command line, but by increasing **rltbl**'s verbosity level we can see more detail about the first few rows returned from a `get table` command:
 
 ```console tesh-session="message"
 $ rltbl -vvv get table penguin
@@ -52,7 +52,7 @@ $ sqlite3 -header .relatable/relatable.db 'select * from message'
 
 ```
 
-Let's add a few more messages to the message table. Note that two of them have been added by *mike* and the rest by the user *afreen*. The user can be specified via the environment variable, `RLTBL_USER`.
+Let's add a few more messages to the message table. Note that two of them have been added by **mike** and the rest by the user **afreen**. The user can be specified via the environment variable, `RLTBL_USER`.
 
 ```console tesh-session="message"
 $ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
@@ -71,7 +71,7 @@ message_id|added_by|table|row|column|value|level|rule|message
 8|afreen|penguin|7|study_name|FAKE123|error|custom-c|this is an inappropriate study_name
 ```
 
-Let's now delete all the messages added to the table by *mike* using the `--user` flag (which does not allow wildcards):
+Let's now delete all the messages added to the table by **mike** using the `--user` flag (which does not allow wildcards):
 
 ```console tesh-session="message"
 $ rltbl delete message penguin --user mike
@@ -83,7 +83,7 @@ message_id|added_by|table|row|column|value|level|rule|message
 8|afreen|penguin|7|study_name|FAKE123|error|custom-c|this is an inappropriate study_name
 ```
 
-Now delete all messages associated with the column *species* in row 6:
+Now delete all messages associated with the column **species** in row 6:
 
 ```console tesh-session="message"
 $ rltbl delete message penguin 6 species
