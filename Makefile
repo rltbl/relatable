@@ -61,5 +61,14 @@ test-code: debug
 test-docs: debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
+.PHONY: test-tesh
+test-tesh: debug
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test
+
+
+.PHONY: random
+random:
+	test/random.sh --varying-rate
+
 .PHONY: test
-test: src/resources/main.js src/resources/main.css test-code test-docs
+test: src/resources/main.js src/resources/main.css test-code test-docs test-tesh random

@@ -23,13 +23,13 @@ $ git config core.pager cat
 Now we set up Relatable and make a first commit:
 
 ```console tesh-session="git"
-$ rltbl demo
+$ rltbl demo --size 1
 $ rltbl save
 $ echo '.relatable/' > .gitignore
 $ git add .gitignore penguin.tsv
 $ git commit --message 'Initial commit'
 [master (root-commit) ...] Initial commit
- 2 files changed, 1002 insertions(+)
+ 2 files changed, 3 insertions(+)
  create mode 100644 .gitignore
  create mode 100644 penguin.tsv
 $ git log

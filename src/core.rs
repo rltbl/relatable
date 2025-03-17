@@ -19,8 +19,10 @@ use minijinja::{path_loader, Environment};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, to_value, Map as JsonMap, Value as JsonValue};
-use std::{env, fmt::Display, fs::File, io::Write, path::Path as FilePath};
+use std::{env, fmt::Display, fs::File, io::Write, path::Path as FilePath, str::FromStr};
 use tabwriter::TabWriter;
+
+pub static RLTBL_DEFAULT_DB: &str = ".relatable/relatable.db";
 
 #[derive(Debug)]
 pub enum RelatableError {
@@ -63,7 +65,8 @@ impl std::fmt::Display for RelatableError {
     }
 }
 
-static MOVE_INTERVAL: usize = 1000;
+pub static MOVE_INTERVAL: usize = 1000;
+pub static MAX_CONTEXT: usize = 1000;
 
 impl std::error::Error for RelatableError {}
 
@@ -86,7 +89,7 @@ impl Relatable {
             _ => false,
         };
         let path = match path {
-            None => ".relatable/relatable.db",
+            None => RLTBL_DEFAULT_DB,
             Some(path) => path,
         };
         let file = FilePath::new(path);
@@ -107,8 +110,11 @@ impl Relatable {
         })
     }
 
-    pub async fn init(force: &bool) -> Result<Self> {
-        let path = ".relatable/relatable.db";
+    pub async fn init(force: &bool, path: Option<&str>) -> Result<Self> {
+        let path = match path {
+            None => RLTBL_DEFAULT_DB,
+            Some(path) => path,
+        };
         let dir = FilePath::new(path)
             .parent()
             .expect("parent should be defined");
@@ -134,7 +140,7 @@ impl Relatable {
 
         // Create and populate the table table
         let sql = r#"CREATE TABLE "table" (
-          _id INTEGER PRIMARY KEY,
+          _id INTEGER PRIMARY KEY AUTOINCREMENT,
           _order INTEGER UNIQUE,
           "table" TEXT UNIQUE,
           "path" TEXT
@@ -167,7 +173,7 @@ impl Relatable {
 
         // Create the change and history tables
         let sql = r#"CREATE TABLE "change" (
-          change_id INTEGER PRIMARY KEY,
+          change_id INTEGER PRIMARY KEY AUTOINCREMENT,
           "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           "user" TEXT NOT NULL,
           "action" TEXT NOT NULL,
@@ -179,13 +185,28 @@ impl Relatable {
         rltbl.connection.query(sql, None).await.unwrap();
 
         let sql = r#"CREATE TABLE "history" (
-          history_id INTEGER PRIMARY KEY,
+          history_id INTEGER PRIMARY KEY AUTOINCREMENT,
           change_id INTEGER NOT NULL,
           "table" TEXT NOT NULL,
           "row" INTEGER NOT NULL,
           "before" TEXT,
           "after" TEXT,
           FOREIGN KEY ("change_id") REFERENCES change("change_id"),
+          FOREIGN KEY ("table") REFERENCES "table"("table")
+        )"#;
+        rltbl.connection.query(sql, None).await.unwrap();
+
+        // Create the message table
+        let sql = r#"CREATE TABLE "message" (
+          "message_id" INTEGER PRIMARY KEY AUTOINCREMENT,
+          "added_by" TEXT,
+          "table" TEXT NOT NULL,
+          "row" INTEGER NOT NULL,
+          "column" TEXT NOT NULL,
+          "value" TEXT,
+          "level" TEXT,
+          "rule" TEXT,
+          "message" TEXT,
           FOREIGN KEY ("table") REFERENCES "table"("table")
         )"#;
         rltbl.connection.query(sql, None).await.unwrap();
@@ -229,68 +250,6 @@ impl Relatable {
             .map_err(|e| e.into())
     }
 
-    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
-        let statement = r#"SELECT "table" FROM 'table' WHERE "table" = ?"#;
-        let params = json!([table_name]);
-        match self
-            .connection
-            .query_value(&statement, Some(&params))
-            .await?
-        {
-            Some(_) => (),
-            None => {
-                return Err(RelatableError::TableError(format!(
-                    "Table '{table_name}' is not in the 'table' table"
-                ))
-                .into())
-            }
-        }
-
-        let statement = r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#;
-        let mut view = format!("{table_name}_default_view");
-        let params = json!([view]);
-        let result = self
-            .connection
-            .query_value(&statement, Some(&params))
-            .await?;
-        if result.is_none() {
-            view = String::from(table_name);
-        }
-        // tracing::warn!("FIND THE VIEW {view}");
-
-        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
-        let params = json!([table_name]);
-        let change_id = match self
-            .connection
-            .query_value(&statement, Some(&params))
-            .await?
-        {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
-        };
-        let name = table_name.to_string();
-        Ok(Table {
-            name,
-            view,
-            change_id,
-            ..Default::default()
-        })
-    }
-
-    fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
-        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
-        let params = json!([table_name]);
-        let change_id = match tx.query_value(&statement, Some(&params))? {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
-        };
-        Ok(Table {
-            name: table_name.to_string(),
-            change_id,
-            ..Default::default()
-        })
-    }
-
     pub fn from(&self, table_name: &str) -> Select {
         Select {
             table_name: table_name.to_string(),
@@ -300,41 +259,48 @@ impl Relatable {
         }
     }
 
-    pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
+    pub async fn fetch_all_columns(&self, table_name: &str) -> Result<(Vec<Column>, Vec<Column>)> {
         // WARN: SQLite only!
         let statement =
-            format!(r#"SELECT "name" FROM pragma_table_info("{table_name}") ORDER BY "cid";"#);
-        let columns = {
-            let columns = self.connection.query(&statement, None).await?;
-            if columns.is_empty() {
-                return Err(RelatableError::DataError(format!(
-                    "No defined columns for: {table_name}"
-                ))
-                .into());
-            }
-            columns
-                .iter()
-                .map(|c| c.get_string("name"))
-                .filter(|c| !c.starts_with("_"))
-                .map(|c| Column {
-                    name: c.to_string(),
-                })
-                .collect()
-        };
-        Ok(columns)
+            format!(r#"SELECT "name" FROM pragma_table_info("{table_name}") ORDER BY "cid""#);
+        let mut columns = vec![];
+        let mut meta_columns = vec![];
+        for column in self.connection.query(&statement, None).await? {
+            match column.get_string("name")? {
+                name if name.starts_with("_") => meta_columns.push(Column { name }),
+                name => columns.push(Column { name }),
+            };
+        }
+        if columns.is_empty() && meta_columns.is_empty() {
+            return Err(
+                RelatableError::DataError(format!("No defined columns for: {table_name}")).into(),
+            );
+        }
+        Ok((columns, meta_columns))
+    }
+
+    pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
+        Ok(self.fetch_all_columns(table_name).await?.0)
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        let table = self.get_table(select.table_name.as_str()).await?;
+        tracing::debug!("SELECT: {select:?}");
+        let mut table = self.get_table(select.table_name.as_str()).await?;
+        let columns = table.ensure_view_created(self).await?;
         let mut select = select.clone();
         select.view_name = table.view.clone();
-        let columns = self.fetch_columns(&table.view).await?;
         let (statement, params) = select.to_sqlite()?;
         tracing::debug!("SQL {statement}");
         let params = json!(params);
         let json_rows = self.connection.query(&statement, Some(&params)).await?;
-
         let count = json_rows.len();
+        tracing::info!("Received {count} rows.");
+        if count > 4 {
+            tracing::debug!("The first 4 are: {:#?}", json_rows[..4].to_vec());
+        } else if count > 0 {
+            tracing::debug!("They are: {:#?}", json_rows[..count].to_vec());
+        }
+
         let total = match json_rows.get(0) {
             Some(row) => row
                 .content
@@ -410,7 +376,8 @@ impl Relatable {
 
         let sql = format!(
             r#"CREATE TABLE IF NOT EXISTS "{table}" (
-                 _id INTEGER PRIMARY KEY, _order INTEGER UNIQUE, {other_column_defs}
+                 _id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 _order INTEGER UNIQUE, {other_column_defs}
             )"#,
             other_column_defs = headers
                 .iter()
@@ -455,8 +422,8 @@ impl Relatable {
         let sql = r#"SELECT "table", "path" FROM "table" WHERE "path" IS NOT NULL"#;
         let table_rows = self.connection.query(&sql, None).await?;
         for table_row in table_rows {
-            let table = table_row.get_string("table");
-            let path = table_row.get_string("path");
+            let table = table_row.get_string("table")?;
+            let path = table_row.get_string("path")?;
             let mut writer = WriterBuilder::new()
                 .delimiter(b'\t')
                 .quote_style(QuoteStyle::Never)
@@ -544,7 +511,7 @@ impl Relatable {
             .query(&sql, None)
             .await?
             .iter()
-            .map(|row| row.get_string("path"))
+            .map(|row| row.get_string("path").expect("No 'path' found"))
             .collect::<Vec<_>>();
         git::add(&paths)?;
 
@@ -553,12 +520,70 @@ impl Relatable {
         Ok(())
     }
 
+    fn _get_last_action_for_user(
+        &self,
+        tx: &mut DbTransaction<'_>,
+        user: &str,
+        action: &ChangeAction,
+    ) -> Result<Option<(usize, ChangeSet)>> {
+        let sql = r#"SELECT "change_id", "user", "table", "description", "content"
+                     FROM "change"
+                     WHERE "user" = ? AND "action" = ?
+                     ORDER BY "change_id" DESC LIMIT 1"#;
+        let params = json!([user, format!("{action}")]);
+        let records = tx.query(&sql, Some(&params))?;
+        match records.len() {
+            0 => Ok(None),
+            _ => {
+                let change_id = records[0].get_unsigned("change_id")?;
+                let user = records[0].get_string("user")?;
+                let table = records[0].get_string("table")?;
+                let description = records[0].get_string("description")?;
+                let content = records[0].get_string("content")?;
+                let changes = Change::many_from_str(&content)?;
+                Ok(Some((
+                    change_id,
+                    ChangeSet {
+                        action: *action,
+                        table: table,
+                        user: user,
+                        description: description,
+                        changes: changes,
+                    },
+                )))
+            }
+        }
+    }
+
     pub fn record_changes(&self, changeset: &ChangeSet, tx: &mut DbTransaction<'_>) -> Result<()> {
         let user = changeset.user.clone();
         let action = changeset.action.to_string();
         let table = changeset.table.clone();
         let description = changeset.description.clone();
 
+        // Begin by getting the current last change_id for this user, which we may need to look
+        // up previous values of the row's columns in the history table later:
+        let old_change_id = match &changeset.action {
+            ChangeAction::Undo => {
+                let (change_id, _) = self
+                    ._get_last_action_for_user(tx, &changeset.user, &ChangeAction::Do)?
+                    .ok_or(RelatableError::DataError(
+                        "No action for user found".to_string(),
+                    ))?;
+                Some(change_id)
+            }
+            ChangeAction::Redo => {
+                let (change_id, _) = self
+                    ._get_last_action_for_user(tx, &changeset.user, &ChangeAction::Undo)?
+                    .ok_or(RelatableError::DataError(
+                        "No undo for user found".to_string(),
+                    ))?;
+                Some(change_id)
+            }
+            ChangeAction::Do => None,
+        };
+
+        // Now write the current change, which will generate a new last change_id:
         let statement = r#"INSERT INTO change("user", "action", "table", "description", "content")
                            VALUES (?, ?, ?, ?, ?)
                            RETURNING change_id"#;
@@ -566,125 +591,124 @@ impl Relatable {
         let params = json!([user, action, table, description, content]);
         let change_id = tx.query_value(&statement, Some(&params))?;
         let change_id = change_id
-            .expect("a change_id")
+            .ok_or(RelatableError::DataError(
+                "Expected a change_id".to_string(),
+            ))?
             .as_u64()
-            .expect("an integer");
+            .ok_or(RelatableError::DataError("Expected an integer".to_string()))?;
 
         for change in &changeset.changes {
             match change {
                 Change::Update {
                     row,
-                    column: _,
-                    value: _,
-                }
-                | Change::Add { row } => {
+                    column,
+                    before,
+                    after,
+                } => {
                     let sql = r#"INSERT INTO "history"
                                  ("change_id", "table", "row", "before", "after")
-                                 VALUES (?, ?, ?, 'TODO', 'TODO')
+                                 VALUES (?, ?, ?, ?, ?)
+                                 RETURNING "history_id""#;
+                    let before = json!({column: before}).to_string();
+                    let after = json!({column: after}).to_string();
+                    let params = json!([change_id, table, row, before, after]);
+                    tx.query_value(&sql, Some(&params))?;
+                }
+                Change::Add { row, after: _ } => {
+                    // If the row has just been newly added, it will be found in the table,
+                    // otherwise we will use the old_change_id to look for it in the history
+                    // table:
+                    let json_row = match self._get_row(&table, *row, tx)? {
+                        Some(json_row) => json_row,
+                        None => match old_change_id {
+                            Some(change_id) => {
+                                let sql = r#"SELECT "before" FROM "history" WHERE "change_id" = ?"#;
+                                let params = json!([change_id]);
+                                let before = tx
+                                    .query_one(&sql, Some(&params))?
+                                    .ok_or(RelatableError::DataError(format!(
+                                        "No history row found with change_id {change_id}"
+                                    )))?
+                                    .get_string("before")?;
+                                let before = match serde_json::from_str::<JsonValue>(&before) {
+                                    Err(err) => return Err(err.into()),
+                                    Ok(JsonValue::Object(o)) => o,
+                                    Ok(_) => {
+                                        return Err(RelatableError::InputError(
+                                            "The content parameter is not an object".to_string(),
+                                        )
+                                        .into());
+                                    }
+                                };
+                                JsonRow { content: before }
+                            }
+                            None => {
+                                return Err(RelatableError::DataError(format!(
+                                    "Row {row} not found"
+                                ))
+                                .into())
+                            }
+                        },
+                    };
+                    let sql = format!(
+                        r#"INSERT INTO "history"
+                           ("change_id", "table", "row", "after")
+                           VALUES (?, ?, ?, ?)
+                           RETURNING "history_id""#
+                    );
+                    let json_row_str = json!(json_row.content).to_string();
+                    let params = json!([change_id, table, row, json_row_str]);
+                    tx.query_value(&sql, Some(&params))?;
+                }
+                Change::Move {
+                    row,
+                    from_after: _,
+                    to_after: _,
+                } => {
+                    let sql = r#"INSERT INTO "history"
+                                 ("change_id", "table", "row")
+                                 VALUES (?, ?, ?)
                                  RETURNING "history_id""#;
                     let params = json!([change_id, table, row]);
                     tx.query_value(&sql, Some(&params))?;
                 }
-                Change::Move { row, after } => {
-                    let sql = r#"INSERT INTO "history"
-                                 ("change_id", "table", "row", "before", "after")
-                                 VALUES (?, ?, ?, 'TODO', ?)
-                                 RETURNING "history_id""#;
-                    let params = json!([change_id, table, row, after]);
-                    tx.query_value(&sql, Some(&params))?;
-                }
-                Change::Delete { row } => {
-                    let sql = r#"INSERT INTO "history"
-                                 ("change_id", "table", "row", "before", "after")
-                                 VALUES (?, ?, ?, 'TODO', 'TODO')
-                                 RETURNING "history_id""#;
-                    let params = json!([change_id, table, row]);
+                Change::Delete { row, after: _ } => {
+                    let json_row = match self._get_row(&table, *row, tx)? {
+                        Some(json_row) => json_row,
+                        None => {
+                            // It must be there since we supposedly just added it, so if it is
+                            // not found return an error.
+                            return Err(
+                                RelatableError::DataError(format!("Row {row} not found")).into()
+                            );
+                        }
+                    };
+                    let sql = format!(
+                        r#"INSERT INTO "history"
+                           ("change_id", "table", "row", "before")
+                           VALUES (?, ?, ?, ?)
+                           RETURNING "history_id""#
+                    );
+                    let json_row_str = json!(json_row.content).to_string();
+                    let params = json!([change_id, table, row, json_row_str]);
                     tx.query_value(&sql, Some(&params))?;
                 }
             };
         }
-        Ok(())
-    }
-
-    pub fn prepare_user_cursor(
-        &self,
-        changeset: &ChangeSet,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<()> {
-        // Make sure the user is present in the user table
-        let user = changeset.user.clone();
-        let color = random_color::RandomColor::new().to_hex();
-        let statement = r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#;
-        let params = json!([user, color]);
-        tx.query(&statement, Some(&params))?;
-
-        // Update the user's cursor position.
-        let cursor = changeset.to_cursor()?;
-        let statement =
-            r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
-        let params = json!([to_value(cursor).unwrap_or_default(), user]);
-        tx.query_value(&statement, Some(&params))?;
-
-        Ok(())
-    }
-
-    async fn _set_values(
-        &self,
-        mut conn: Option<DbActiveConnection>,
-        changeset: &ChangeSet,
-    ) -> Result<()> {
-        // Get the connection and begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
-
-        // Update the user cursor
-        self.prepare_user_cursor(changeset, &mut tx)?;
-
-        // Actually make the changes:
-        let table = changeset.table.clone();
-        for change in &changeset.changes {
-            tracing::debug!("CHANGE {change:?}");
-            match change {
-                Change::Update { row, column, value } => {
-                    // WARN: This just sets text!
-                    let sql = format!(r#"UPDATE "{table}" SET "{column}" = ? WHERE _id = ?"#,);
-                    // TODO: Render JSON to SQL properly.
-                    let value = json_to_string(value);
-                    let params = json!([value, row]);
-                    tx.query(&sql, Some(&params))?;
-                }
-                _ => {
-                    return Err(RelatableError::InputError(format!(
-                        "Don't know how to apply set_values() to a change set like {changeset:?}"
-                    ))
-                    .into());
-                }
-            };
-        }
-
-        // Record the changes to the change and history tables:
-        self.record_changes(changeset, &mut tx)?;
-
-        // Commit the transaction:
-        tx.commit()?;
-
-        Ok(())
-    }
-
-    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<()> {
-        let conn = self.connection.reconnect()?;
-        self._set_values(conn, changeset).await?;
-        self.commit_to_git().await?;
         Ok(())
     }
 
     pub async fn get_user(&self, username: &str) -> Account {
-        let statement = format!(r#"SELECT * FROM user WHERE name = '{username}' LIMIT 1"#);
+        let statement = format!(
+            r#"SELECT "name", "color", "cursor", "datetime"
+               FROM user WHERE name = '{username}' LIMIT 1"#
+        );
         let user = self.connection.query_one(&statement, None).await;
         if let Ok(user) = user {
             if let Some(user) = user {
                 return Account {
                     name: username.to_string(),
-                    color: user.get_string("color"),
+                    color: user.get_string("color").expect("No 'color' found"),
                 };
             }
         }
@@ -696,13 +720,15 @@ impl Relatable {
     pub async fn get_users(&self) -> Result<IndexMap<String, UserCursor>> {
         let mut users = IndexMap::new();
         // let statement = format!(
-        //     r#"SELECT * FROM user WHERE cursor IS NOT NULL
+        //     r#"SELECT "name", color", "cursor", "datetime" FROM user WHERE cursor IS NOT NULL
         //        AND "datetime" >= DATETIME('now', '-10 minutes')"#
         // );
-        let statement = format!(r#"SELECT * FROM user WHERE cursor IS NOT NULL"#);
+        let statement = format!(
+            r#"SELECT "name", "color", "cursor", "datetime" FROM user WHERE cursor IS NOT NULL"#
+        );
         let rows = self.connection.query(&statement, None).await?;
         for row in rows {
-            let name = row.get_string("name");
+            let name = row.get_string("name")?;
             if name.trim() == "" {
                 continue;
             }
@@ -710,19 +736,81 @@ impl Relatable {
                 name.clone(),
                 UserCursor {
                     name: name.clone(),
-                    color: row.get_string("color"),
-                    cursor: from_str(&row.get_string("cursor"))?,
-                    datetime: row.get_string("datetime"),
+                    color: row.get_string("color")?,
+                    cursor: from_str(&row.get_string("cursor")?)?,
+                    datetime: row.get_string("datetime")?,
                 },
             );
         }
         Ok(users)
     }
 
+    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
+        let statement = r#"SELECT "table" FROM 'table' WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        match self
+            .connection
+            .query_value(&statement, Some(&params))
+            .await?
+        {
+            Some(_) => (),
+            None => {
+                return Err(RelatableError::TableError(format!(
+                    "Table '{table_name}' is not in the 'table' table"
+                ))
+                .into())
+            }
+        }
+
+        let statement = r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#;
+        let mut view = format!("{table_name}_default_view");
+        let params = json!([view]);
+        let result = self
+            .connection
+            .query_value(&statement, Some(&params))
+            .await?;
+        if result.is_none() {
+            view = String::from(table_name);
+        }
+        // tracing::warn!("FIND THE VIEW {view}");
+
+        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        let change_id = match self
+            .connection
+            .query_value(&statement, Some(&params))
+            .await?
+        {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        let name = table_name.to_string();
+        Ok(Table {
+            name,
+            view,
+            change_id,
+            ..Default::default()
+        })
+    }
+
+    fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
+        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
+        let params = json!([table_name]);
+        let change_id = match tx.query_value(&statement, Some(&params))? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(Table {
+            name: table_name.to_string(),
+            change_id,
+            ..Default::default()
+        })
+    }
+
     pub async fn get_tables(&self) -> Result<IndexMap<String, Table>> {
         let mut tables = IndexMap::new();
         let statement = format!(
-            r#"SELECT *,
+            r#"SELECT "_id", "_order", "table", "path",
                  (SELECT max(change_id)
                   FROM history
                   WHERE history."table" = "table"."table"
@@ -732,7 +820,7 @@ impl Relatable {
 
         let rows = self.connection.query(&statement, None).await?;
         for row in rows {
-            let name = row.get_string("table");
+            let name = row.get_string("table")?;
             tables.insert(
                 name.clone(),
                 Table {
@@ -749,6 +837,49 @@ impl Relatable {
         Ok(tables)
     }
 
+    fn _get_row_order(&self, table: &str, row: usize, tx: &mut DbTransaction<'_>) -> Result<usize> {
+        let sql = format!(r#"SELECT "_order" FROM "{table}" WHERE "_id" = ?"#,);
+        let params = json!([row]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            return Err(
+                RelatableError::InputError(format!("No row {row} in table '{table}'")).into(),
+            );
+        }
+        Ok(rows[0].get_unsigned("_order")?)
+    }
+
+    fn _get_previous_row_id(
+        &self,
+        table: &str,
+        row: usize,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<usize> {
+        let curr_row_order = self._get_row_order(table, row, tx)?;
+        let sql = format!(
+            r#"SELECT "_id" FROM "{table}" WHERE "_order" < ?
+               ORDER BY "_order" DESC LIMIT 1"#,
+        );
+        let params = json!([curr_row_order]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            Ok(0)
+        } else {
+            rows[0].get_unsigned("_id")
+        }
+    }
+
+    fn _get_row(
+        &self,
+        table: &str,
+        row: usize,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Option<JsonRow>> {
+        let sql = format!(r#"SELECT * FROM "{table}" WHERE "_id" = ?"#);
+        let params = json!([row]);
+        tx.query_one(&sql, Some(&params))
+    }
+
     pub async fn get_site(&self, username: &str) -> Site {
         let mut users = self.get_users().await.unwrap_or_default();
         users.shift_remove(username);
@@ -762,15 +893,701 @@ impl Relatable {
         }
     }
 
+    pub fn prepare_user_cursor(
+        &self,
+        changeset: &ChangeSet,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        // Make sure the user is present in the user table
+        let user = changeset.user.clone();
+        let color = random_color::RandomColor::new().to_hex();
+        let statement = r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#;
+        let params = json!([user, color]);
+        tx.query(&statement, Some(&params))?;
+
+        // Update the user's cursor position.
+        let mut cursor = changeset.to_cursor()?;
+        match changeset.action {
+            ChangeAction::Undo | ChangeAction::Redo => match changeset.changes.first() {
+                Some(Change::Delete { row, after: _ }) => {
+                    cursor.row = self._get_previous_row_id(&changeset.table, *row, tx)?;
+                }
+                _ => (),
+            },
+            ChangeAction::Do => (),
+        };
+
+        let statement =
+            r#"UPDATE user SET "cursor" = ?, "datetime" = CURRENT_TIMESTAMP WHERE "name" = ?"#;
+        let params = json!([to_value(cursor).unwrap_or_default(), user]);
+        tx.query_value(&statement, Some(&params))?;
+
+        Ok(())
+    }
+
+    pub async fn get_last_redoable_action_for_user(
+        &self,
+        user: &str,
+    ) -> Result<Option<(usize, ChangeSet)>> {
+        let history = self.get_user_history(user, Some(1)).await?;
+        match history.changes_undone_stack.first() {
+            None => Ok(None),
+            Some(change) => {
+                let change_id = change.get_unsigned("change_id")?;
+                let content = change.get_string("content")?;
+                let changes = Change::many_from_str(&content)?;
+                Ok(Some((
+                    change_id,
+                    ChangeSet {
+                        action: ChangeAction::from_str(&change.get_string("action")?)?,
+                        table: change.get_string("table")?,
+                        user: change.get_string("user")?,
+                        description: change.get_string("user")?,
+                        changes: changes,
+                    },
+                )))
+            }
+        }
+    }
+
+    pub async fn get_last_undoable_action_for_user(
+        &self,
+        user: &str,
+    ) -> Result<Option<(usize, ChangeSet)>> {
+        let history = self.get_user_history(user, Some(1)).await?;
+        match history.changes_done_stack.first() {
+            None => Ok(None),
+            Some(change) => {
+                let change_id = change.get_unsigned("change_id")?;
+                let content = change.get_string("content")?;
+                let changes = Change::many_from_str(&content)?;
+                Ok(Some((
+                    change_id,
+                    ChangeSet {
+                        action: ChangeAction::from_str(&change.get_string("action")?)?,
+                        table: change.get_string("table")?,
+                        user: change.get_string("user")?,
+                        description: change.get_string("user")?,
+                        changes: changes,
+                    },
+                )))
+            }
+        }
+    }
+
+    pub async fn get_user_history(&self, user: &str, context: Option<usize>) -> Result<History> {
+        fn content_to_json_row(content: &str) -> Result<JsonRow> {
+            tracing::debug!("Entering content_to_json_row(content: {content})");
+            match serde_json::from_str::<JsonValue>(content) {
+                Ok(content) => match content
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|o| o.as_object())
+                {
+                    Some(object) => Ok(JsonRow {
+                        content: object.clone(),
+                    }),
+                    None => {
+                        return Err(RelatableError::InputError(format!(
+                            "Received invalid or empty content: {content}. Expected a non-empty \
+                             object array."
+                        ))
+                        .into())
+                    }
+                },
+                Err(err) => {
+                    return Err(
+                        RelatableError::InputError(format!("Error reading content: {err}")).into(),
+                    )
+                }
+            }
+        }
+
+        fn on_the_same_target(change1: &JsonRow, change2: &JsonRow) -> Result<bool> {
+            tracing::debug!(
+                "Entering on_the_same_target(change1: {change1:?}, change2: {change2:?})"
+            );
+            let change1 = content_to_json_row(&change1.get_string("content")?)?;
+            let change2 = content_to_json_row(&change2.get_string("content")?)?;
+            let row1 = change1.get_unsigned("row")?;
+            let row2 = change2.get_unsigned("row")?;
+            if row1 != row2 {
+                return Ok(false);
+            }
+            if let Ok(column1) = change1.get_string("column") {
+                if let Ok(column2) = change2.get_string("column") {
+                    return Ok(column1 == column2);
+                }
+            }
+            Ok(true)
+        }
+
+        fn prune_stacks(
+            changes_done_stack: &Vec<JsonRow>,
+            changes_undone_stack: &Vec<JsonRow>,
+        ) -> (Vec<JsonRow>, Vec<JsonRow>) {
+            let mut pruned_dones = vec![];
+            let mut pruned_undones = vec![];
+            for change in changes_done_stack.iter() {
+                if !pruned_dones.iter().any(|done: &JsonRow| {
+                    on_the_same_target(&done, &change).expect("Error looking for a common target")
+                }) {
+                    pruned_dones.push(change.clone());
+                }
+            }
+            for change in changes_undone_stack.iter() {
+                if !pruned_undones.iter().any(|undone: &JsonRow| {
+                    on_the_same_target(&undone, &change).expect("Error looking for a common target")
+                }) {
+                    pruned_undones.push(change.clone());
+                }
+            }
+            (pruned_dones, pruned_undones)
+        }
+
+        // TODO: Think about paging when there are a lot of change records to go through.
+        let sql = format!(
+            r#"SELECT "change_id", "user", "table", "description", "action", "content"
+                 FROM "change"
+                WHERE "user" = ?
+                ORDER BY "change_id" DESC"#
+        );
+        let params = json!([user]);
+        let history = self.connection.query(&sql, Some(&params)).await?;
+
+        // Initialize the stacks to be returned and counters:
+        let mut changes_done_stack = vec![];
+        let mut changes_undone_stack = vec![];
+        let mut do_redo_count: usize;
+        let mut undo_count: usize;
+
+        // Begin with the last change that was made:
+        let (final_change, final_action) = match history.first() {
+            None => return Ok(History::default()),
+            Some(final_change) => {
+                let final_action = ChangeAction::from_str(&final_change.get_string("action")?)?;
+                (final_change, final_action)
+            }
+        };
+        match final_action {
+            ChangeAction::Do | ChangeAction::Redo => {
+                do_redo_count = 1;
+                undo_count = 0;
+            }
+            ChangeAction::Undo => {
+                do_redo_count = 0;
+                undo_count = 1;
+            }
+        };
+        let mut change_to_push = final_change;
+        let mut action_to_push = final_action;
+        tracing::debug!("Setting the change to push ({action_to_push}) to: {change_to_push:?}");
+        tracing::debug!(
+            "The do/redo count is now {do_redo_count}, and the undo count is \
+             {undo_count}."
+        );
+
+        // For each action, find the point where it began, and then place it onto changes_done_stack
+        // or changes_undone_stack, as appropriate:
+        for prior_change in &history[1..] {
+            let prior_action = ChangeAction::from_str(&prior_change.get_string("action")?)?;
+            tracing::debug!("The change prior to it is a {prior_action}: {prior_change:?}.");
+            match action_to_push {
+                ChangeAction::Do => match prior_action {
+                    ChangeAction::Do | ChangeAction::Redo => {
+                        tracing::debug!(
+                            "Pushing change {cid} to changes_done",
+                            cid = change_to_push.get_string("change_id")?
+                        );
+                        changes_done_stack.push(change_to_push.clone());
+                        change_to_push = prior_change;
+                        action_to_push =
+                            ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                        do_redo_count = 1;
+                        undo_count = 0;
+                        tracing::debug!(
+                            "The next change to push is a {action_to_push}: {change_to_push:?}"
+                        );
+                    }
+                    ChangeAction::Undo => {
+                        tracing::debug!(
+                            "Pushing change {cid} to changes_done",
+                            cid = change_to_push.get_string("change_id")?
+                        );
+                        changes_done_stack.push(change_to_push.clone());
+                        change_to_push = prior_change;
+                        action_to_push =
+                            ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                        do_redo_count = 0;
+                        undo_count = 1;
+                        tracing::debug!(
+                            "The next change to push is a {action_to_push}: {change_to_push:?}"
+                        );
+                    }
+                },
+                ChangeAction::Undo => match prior_action {
+                    ChangeAction::Undo => {
+                        if do_redo_count == 0 {
+                            tracing::debug!(
+                                "Pushing change {cid} to changes_undone",
+                                cid = change_to_push.get_string("change_id")?
+                            );
+                            changes_undone_stack.push(change_to_push.clone());
+                            change_to_push = prior_change;
+                            action_to_push =
+                                ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                            tracing::debug!(
+                                "The next change to push is a {action_to_push}: {change_to_push:?}"
+                            );
+                            undo_count += 1;
+                        } else {
+                            do_redo_count -= 1;
+                            undo_count += 1;
+                        }
+                    }
+                    ChangeAction::Do | ChangeAction::Redo => {
+                        if undo_count == 0 {
+                            tracing::debug!(
+                                "Pushing change {cid} to changes_undone",
+                                cid = change_to_push.get_string("change_id")?
+                            );
+                            changes_undone_stack.push(change_to_push.clone());
+                            change_to_push = prior_change;
+                            action_to_push =
+                                ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                            do_redo_count = 1;
+                            tracing::debug!(
+                                "The next change to push is a {action_to_push}: {change_to_push:?}"
+                            );
+                        } else {
+                            do_redo_count += 1;
+                            undo_count -= 1;
+                        }
+                    }
+                },
+                ChangeAction::Redo => match prior_action {
+                    ChangeAction::Redo => {
+                        if undo_count == 0 {
+                            tracing::debug!(
+                                "Pushing change {cid} to changes_done",
+                                cid = change_to_push.get_string("change_id")?
+                            );
+                            changes_done_stack.push(change_to_push.clone());
+                            change_to_push = prior_change;
+                            action_to_push =
+                                ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                            tracing::debug!(
+                                "The next change to push is a {action_to_push}: {change_to_push:?}"
+                            );
+                            do_redo_count += 1;
+                        } else {
+                            do_redo_count += 1;
+                            undo_count -= 1;
+                        }
+                    }
+                    ChangeAction::Do => {
+                        if undo_count == 0 {
+                            tracing::debug!(
+                                "Pushing change {cid} to changes_done",
+                                cid = change_to_push.get_string("change_id")?
+                            );
+                            changes_done_stack.push(change_to_push.clone());
+                            change_to_push = prior_change;
+                            action_to_push =
+                                ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                            tracing::debug!(
+                                "The next change to push is a {action_to_push}: {change_to_push:?}"
+                            );
+                            // Dos begin anew.
+                            do_redo_count = 1;
+                        } else {
+                            do_redo_count += 1;
+                            undo_count -= 1;
+                        }
+                    }
+                    ChangeAction::Undo => {
+                        if do_redo_count == 0 {
+                            tracing::debug!(
+                                "Pushing change {cid} to changes_done",
+                                cid = change_to_push.get_string("change_id")?
+                            );
+                            changes_done_stack.push(change_to_push.clone());
+                            change_to_push = prior_change;
+                            action_to_push =
+                                ChangeAction::from_str(&change_to_push.get_string("action")?)?;
+                            tracing::debug!(
+                                "The next change to push is a {action_to_push}: {change_to_push:?}"
+                            );
+                            undo_count = 1;
+                        } else {
+                            do_redo_count -= 1;
+                            undo_count += 1;
+                        }
+                    }
+                },
+            };
+
+            tracing::debug!(
+                "Updated the do/redo count to {do_redo_count}, and the undo count to \
+                 {undo_count}."
+            );
+
+            // Remove duplicate entries from the stacks. These can result when a row is repeatedly
+            // undone and redone. These are harmless, logically speaking, but they may potentially
+            // confuse the user if they are included in the output.
+            (changes_done_stack, changes_undone_stack) =
+                prune_stacks(&changes_done_stack, &changes_undone_stack);
+
+            // Check if we have exceeded the (max) context, and if so, stop looking for more
+            // actions:
+            let mut done_len = changes_done_stack.len();
+            let mut undone_len = changes_undone_stack.len();
+            match action_to_push {
+                ChangeAction::Do | ChangeAction::Redo => done_len += 1,
+                ChangeAction::Undo => undone_len += 1,
+            };
+            if let Some(context) = context {
+                if done_len >= context && undone_len >= context {
+                    break;
+                }
+            } else if done_len >= MAX_CONTEXT || undone_len >= MAX_CONTEXT {
+                break;
+            }
+        }
+
+        // Once we have finished iterating, there will be one action left over to push, which we
+        // do now:
+        match action_to_push {
+            ChangeAction::Do | ChangeAction::Redo => {
+                tracing::debug!("Pushing the last change to changes_done: {change_to_push:?}");
+                changes_done_stack.push(change_to_push.clone());
+            }
+            ChangeAction::Undo => {
+                tracing::debug!("Pushing the last change to changes_undone: {change_to_push:?}");
+                changes_undone_stack.push(change_to_push.clone());
+            }
+        };
+
+        // Don't return the contents of changes_undone if the last change was a do. Dos can never be
+        // redone. If the last change was an undo or a redo, the logic will take care of itself and
+        // it should never be possible to undo or redo inappropriately.
+        let mut changes_undone_stack = match final_action {
+            ChangeAction::Do => vec![],
+            _ => changes_undone_stack,
+        };
+
+        // Prune the stacks one last time, in case by adding the final action we created a situation
+        // in which one of the stacks contains duplicates:
+        (changes_done_stack, changes_undone_stack) =
+            prune_stacks(&changes_done_stack, &changes_undone_stack);
+
+        // Similarly, crop for context one last time if a context has been defined:
+        let history = match context {
+            None => History {
+                changes_done_stack,
+                changes_undone_stack,
+            },
+            Some(context) => {
+                let mut done_len = changes_done_stack.len();
+                if done_len > context {
+                    done_len = context;
+                }
+                let changes_done_stack = changes_done_stack[..done_len].to_vec();
+
+                let mut undone_len = changes_undone_stack.len();
+                if undone_len > context {
+                    undone_len = context;
+                }
+                let changes_undone_stack = changes_undone_stack[..undone_len].to_vec();
+                History {
+                    changes_done_stack,
+                    changes_undone_stack,
+                }
+            }
+        };
+        tracing::debug!("Returning history: {history:#?}");
+        Ok(history)
+    }
+
+    async fn _undo_or_redo(
+        &self,
+        change_id: usize,
+        changeset: &ChangeSet,
+    ) -> Result<Option<ChangeSet>> {
+        match changeset.changes.first() {
+            None => Ok(None),
+            Some(change) => {
+                if let Change::Update { .. } = change {
+                    let conn = self.connection.reconnect()?;
+                    let actual_changes = self._set_values(conn, &changeset).await?;
+                    Ok(Some(actual_changes))
+                } else {
+                    let mut actual_changes = vec![];
+                    for change in changeset.changes.iter() {
+                        let conn = self.connection.reconnect()?;
+                        match change {
+                            Change::Update { .. } => (), // Change::Update already handled above.
+                            Change::Add { row, after: _ } => {
+                                let num_deleted = self
+                                    ._delete_row(
+                                        conn,
+                                        &changeset.action,
+                                        &changeset.table,
+                                        &changeset.user,
+                                        *row,
+                                    )
+                                    .await?;
+                                if num_deleted > 0 {
+                                    actual_changes.push(change.clone());
+                                }
+                            }
+                            Change::Move {
+                                row,
+                                from_after,
+                                to_after: _,
+                            } => {
+                                let new_order = self
+                                    ._move_and_record_row(
+                                        conn,
+                                        &changeset.action,
+                                        &changeset.table,
+                                        &changeset.user,
+                                        *row,
+                                        *from_after,
+                                    )
+                                    .await?;
+                                if new_order > 0 {
+                                    actual_changes.push(change.clone());
+                                }
+                            }
+                            Change::Delete { row, after } => {
+                                // Get the row, as it was before it was deleted, from the history
+                                // table:
+                                let sql = r#"SELECT "before" FROM "history" WHERE "change_id" = ?"#;
+                                let params = json!([change_id]);
+                                let before = self
+                                    .connection
+                                    .query_one(&sql, Some(&params))
+                                    .await?
+                                    .ok_or(RelatableError::DataError(format!(
+                                        "No history row found with change_id {change_id}"
+                                    )))?
+                                    .get_string("before")?;
+                                let before = match serde_json::from_str::<JsonValue>(&before) {
+                                    Err(err) => return Err(err.into()),
+                                    Ok(JsonValue::Object(o)) => o,
+                                    Ok(_) => {
+                                        return Err(RelatableError::InputError(
+                                            "The content parameter is not an object".to_string(),
+                                        )
+                                        .into());
+                                    }
+                                };
+                                let before = JsonRow { content: before };
+                                // Re-add it to the data table:
+                                self._add_row(
+                                    conn,
+                                    &changeset.action,
+                                    &changeset.table,
+                                    &changeset.user,
+                                    Some(*row),
+                                    Some(*after),
+                                    &before,
+                                )
+                                .await?;
+                                actual_changes.push(change.clone());
+                            }
+                        };
+                    }
+                    Ok(Some(ChangeSet {
+                        action: changeset.action,
+                        table: changeset.table.clone(),
+                        user: changeset.user.clone(),
+                        description: changeset.description.clone(),
+                        changes: actual_changes,
+                    }))
+                }
+            }
+        }
+    }
+
+    pub async fn undo(&self, user: &str) -> Result<Option<ChangeSet>> {
+        let (change_id, mut changeset) = match self.get_last_undoable_action_for_user(user).await? {
+            None => {
+                tracing::warn!("Nothing to undo for '{user}'");
+                return Ok(None);
+            }
+            Some(changeset) => changeset,
+        };
+        changeset.action = ChangeAction::Undo;
+        let changeset = self._undo_or_redo(change_id, &changeset).await?;
+        if let Some(_) = changeset {
+            self.commit_to_git().await?;
+        }
+        Ok(changeset)
+    }
+
+    pub async fn redo(&self, user: &str) -> Result<Option<ChangeSet>> {
+        let (change_id, mut changeset) = match self.get_last_redoable_action_for_user(user).await? {
+            None => {
+                tracing::warn!("Nothing to redo for '{user}'");
+                return Ok(None);
+            }
+            Some(changeset) => changeset,
+        };
+        changeset.action = ChangeAction::Redo;
+        let changeset = self._undo_or_redo(change_id, &changeset).await?;
+        if let Some(_) = changeset {
+            self.commit_to_git().await?;
+        }
+        Ok(changeset)
+    }
+
+    async fn _set_values(
+        &self,
+        mut conn: Option<DbActiveConnection>,
+        changeset: &ChangeSet,
+    ) -> Result<ChangeSet> {
+        // Begin a transaction:
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        // Update the user cursor
+        self.prepare_user_cursor(changeset, &mut tx)?;
+
+        // Actually make the changes:
+        let table = changeset.table.clone();
+        let mut actual_changes = vec![];
+        for change in &changeset.changes {
+            match change {
+                Change::Update {
+                    row,
+                    column,
+                    before,
+                    after,
+                } => {
+                    // WARN: This just sets text!
+                    let sql = format!(
+                        r#"UPDATE "{table}"
+                              SET "{column}" = ?
+                            WHERE _id = ?
+                           RETURNING 1 AS "updated""#,
+                    );
+
+                    // Depending on whether this is an undo/redo or an original action, the
+                    // new value will be taken from either `before` or `after`.
+                    let value = match &changeset.action {
+                        ChangeAction::Undo | ChangeAction::Redo => before,
+                        ChangeAction::Do => after,
+                    };
+                    // TODO: Render JSON to SQL properly.
+                    let params = json!([json_to_string(&value), row]);
+                    if tx.query(&sql, Some(&params))?.len() < 1 {
+                        tracing::warn!("No row with _id {row} found to update");
+                    } else {
+                        actual_changes.push(Change::Update {
+                            row: *row,
+                            column: column.clone(),
+                            before: match &changeset.action {
+                                ChangeAction::Undo | ChangeAction::Redo => after.clone(),
+                                ChangeAction::Do => before.clone(),
+                            },
+                            after: match &changeset.action {
+                                ChangeAction::Undo | ChangeAction::Redo => before.clone(),
+                                ChangeAction::Do => after.clone(),
+                            },
+                        });
+                    }
+                }
+                _ => {
+                    return Err(RelatableError::InputError(format!(
+                        "Invalid change in changeset argument to set_values(): {change:?}"
+                    ))
+                    .into());
+                }
+            };
+        }
+
+        let num_changes = actual_changes.len();
+        let actual_changeset = ChangeSet {
+            action: changeset.action,
+            table: changeset.table.clone(),
+            user: changeset.user.clone(),
+            description: changeset.description.clone(),
+            changes: actual_changes,
+        };
+        if num_changes > 0 {
+            // Record the changes to the change and history tables:
+            self.record_changes(&actual_changeset, &mut tx)?;
+        }
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(actual_changeset)
+    }
+
+    pub async fn set_values(&self, changeset: &ChangeSet) -> Result<ChangeSet> {
+        let conn = self.connection.reconnect()?;
+        let changeset = self._set_values(conn, changeset).await?;
+        if changeset.changes.len() > 0 {
+            self.commit_to_git().await?;
+        }
+        Ok(changeset)
+    }
+
+    pub async fn add_message(
+        &self,
+        user: &str,
+        table_name: &str,
+        row: usize,
+        column: &str,
+        level: &str,
+        rule: &str,
+        message: &str,
+    ) -> Result<(usize, Message)> {
+        let sql = format!(r#"SELECT "{column}" FROM "{table_name}" WHERE _id = ?"#);
+        let params = json!([row]);
+        let value = match self.connection.query_value(&sql, Some(&params)).await? {
+            Some(JsonValue::String(s)) => s.as_str().to_string(),
+            Some(JsonValue::Null) | None => "".to_string(),
+            Some(value) => value.to_string(),
+        };
+
+        let sql = r#"INSERT INTO "message"
+                     ("added_by", "table", "row", "column", "value", "level", "rule", "message")
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     RETURNING "message_id""#;
+        let params = json!([user, table_name, row, column, value, level, rule, message]);
+        let message_id = self
+            .connection
+            .query_one(&sql, Some(&params))
+            .await?
+            .ok_or(RelatableError::DataError(
+                "Error inserting message".to_string(),
+            ))?
+            .get_unsigned("message_id")?;
+
+        Ok((
+            message_id,
+            Message {
+                level: level.to_string(),
+                rule: rule.to_string(),
+                message: message.to_string(),
+            },
+        ))
+    }
+
     async fn _add_row(
         &self,
         mut conn: Option<DbActiveConnection>,
+        action: &ChangeAction,
         table_name: &str,
         user: &str,
+        new_row_id: Option<usize>,
         after_id: Option<usize>,
         row: &JsonRow,
     ) -> Result<Row> {
-        // Get the connection and begin a transaction:
+        // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
@@ -784,31 +1601,47 @@ impl Relatable {
         // Prepare a new row to be inserted:
         let mut new_row = Row::prepare_new(&table, Some(row), &mut tx)?;
 
+        // A new_row_id will have been passed if the row is being added as part of an undo/redo.
+        // In that case an after_id must have been passed as well but we leave the row order as
+        // is for now, since we are not assured that the old row order is actually still free in
+        // the table (recall that there is a unique constraint on _order). However the row_order
+        // currently assigned is at the end of the table so there should not be any conflicts.
+        if let Some(new_row_id) = new_row_id {
+            new_row.id = new_row_id;
+        }
+
+        // Add the row to the table:
+        let (sql, params) = new_row.as_insert(&table.name);
+        tracing::info!("_add_row {sql} {params:?}");
+        tx.query(&sql, Some(&params))?;
+
+        let after_id = match after_id {
+            None => self._get_previous_row_id(table_name, new_row.id, &mut tx)?,
+            Some(after_id) => {
+                // Move the row to its assigned spot within the table:
+                let new_order = self._move_row(&mut tx, &table, new_row.id, after_id)?;
+                new_row.order = new_order;
+                after_id
+            }
+        };
+
         // Prepare a changeset to be recorded, consisting of a single change record indicating
-        // the addition of one new row with new_row's id:
+        // the addition of one new row with the new_row's id and position in the table:
         let changeset = ChangeSet {
-            action: ChangeAction::Do,
+            action: *action,
             table: table_name.to_string(),
             user: user.to_string(),
             description: "Add one row".to_string(),
-            changes: vec![Change::Add { row: new_row.id }],
+            changes: vec![Change::Add {
+                row: new_row.id,
+                after: after_id,
+            }],
         };
 
         // Use the changeset to prepare the user cursor:
         self.prepare_user_cursor(&changeset, &mut tx)?;
 
-        // Add the row to the table
-        let (sql, params) = new_row.as_insert(&table.name);
-        tracing::info!("_add_row {sql} {params:?}");
-        tx.query(&sql, Some(&params))?;
-
-        if let Some(after_id) = after_id {
-            // Move the row to its assigned spot within the table:
-            let new_order = self._move_row(&mut tx, &table, new_row.id, after_id)?;
-            new_row.order = new_order;
-        }
-
-        // Record the change to the history table:
+        // Record the changes to the history table:
         self.record_changes(&changeset, &mut tx)?;
 
         // Commit the transaction:
@@ -825,7 +1658,17 @@ impl Relatable {
         row: &JsonRow,
     ) -> Result<Row> {
         let conn = self.connection.reconnect()?;
-        let new_row = self._add_row(conn, table_name, user, after_id, row).await?;
+        let new_row = self
+            ._add_row(
+                conn,
+                &ChangeAction::Do,
+                table_name,
+                user,
+                None,
+                after_id,
+                row,
+            )
+            .await?;
         self.commit_to_git().await?;
         Ok(new_row)
     }
@@ -833,11 +1676,12 @@ impl Relatable {
     async fn _delete_row(
         &self,
         mut conn: Option<DbActiveConnection>,
+        action: &ChangeAction,
         table_name: &str,
         user: &str,
         row: usize,
-    ) -> Result<()> {
-        // Get the connection and begin a transaction:
+    ) -> Result<usize> {
+        // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
@@ -849,48 +1693,104 @@ impl Relatable {
         }
 
         // Prepare a changeset to be recorded, consisting of a single change record indicating
-        // that a row has been displaced from somewhere to somewhere else.
+        // that a row with the given row number at the given table position has been deleted:
         let changeset = ChangeSet {
-            action: ChangeAction::Do,
+            action: *action,
             table: table_name.to_string(),
             user: user.to_string(),
             description: "Delete one row".to_string(),
-            changes: vec![Change::Delete { row: row }],
+            changes: vec![Change::Delete {
+                row: row,
+                after: self._get_previous_row_id(table_name, row, &mut tx)?,
+            }],
         };
 
         // Use the changeset to prepare the user cursor:
         self.prepare_user_cursor(&changeset, &mut tx)?;
 
-        // Move the row within the table:
-        let sql = format!(r#"DELETE FROM "{}" WHERE "_id" = ?"#, table.name);
+        // Delete the row:
+        let sql = format!(
+            r#"DELETE FROM "{}" WHERE "_id" = ? RETURNING 1 AS "deleted""#,
+            table.name
+        );
         let params = json!([row]);
-        tx.query(&sql, Some(&params))?;
 
         // Record the change to the history table:
         self.record_changes(&changeset, &mut tx)?;
 
-        // Commit the transaction:
-        tx.commit()?;
+        let num_deleted = tx.query(&sql, Some(&params))?.len();
+        if num_deleted < 1 {
+            tracing::warn!("No row found with _id {row} to delete");
+            // Roll back the changes to the history and change table. The reason we made these
+            // prior to the actual delete was so that we could record the row's position in the
+            // table before it was deleted.
+            tx.rollback()?;
+        } else {
+            // Commit the transaction:
+            tx.commit()?;
+        }
 
-        Ok(())
+        Ok(num_deleted)
     }
 
-    pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<()> {
+    pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<usize> {
         let conn = self.connection.reconnect()?;
-        self._delete_row(conn, table_name, user, row).await?;
-        self.commit_to_git().await?;
-        Ok(())
+        let num_deleted = self
+            ._delete_row(conn, &ChangeAction::Do, table_name, user, row)
+            .await?;
+        if num_deleted > 0 {
+            self.commit_to_git().await?;
+        }
+        Ok(num_deleted)
+    }
+
+    pub async fn delete_message(
+        &self,
+        table: &str,
+        row: Option<usize>,
+        column: Option<&str>,
+        target_rule: Option<&str>,
+        target_user: Option<&str>,
+    ) -> Result<usize> {
+        let mut sql = r#"DELETE FROM "message" WHERE "table" = ?"#.to_string();
+        let mut params = vec![json!(table)];
+
+        if let Some(row) = row {
+            sql.push_str(r#" AND "row" = ?"#);
+            params.push(json!(row));
+        }
+        if let Some(column) = column {
+            sql.push_str(r#" AND "column" = ?"#);
+            params.push(json!(column));
+        }
+        if let Some(target_rule) = target_rule {
+            sql.push_str(r#" AND "rule" LIKE ?"#);
+            params.push(json!(target_rule));
+        }
+        if let Some(target_user) = target_user {
+            sql.push_str(r#" AND "added_by" = ?"#);
+            params.push(json!(target_user));
+        }
+
+        sql.push_str(r#" RETURNING 1 AS "deleted""#);
+        let num_deleted = self
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await?
+            .len();
+        Ok(num_deleted)
     }
 
     async fn _move_and_record_row(
         &self,
         mut conn: Option<DbActiveConnection>,
+        action: &ChangeAction,
         table_name: &str,
         user: &str,
         id: usize,
         after_id: usize,
     ) -> Result<usize> {
-        // Get the connection and begin a transaction:
+        // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
@@ -904,13 +1804,14 @@ impl Relatable {
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
         let changeset = ChangeSet {
-            action: ChangeAction::Do,
+            action: *action,
             table: table_name.to_string(),
             user: user.to_string(),
             description: "Move one row".to_string(),
             changes: vec![Change::Move {
                 row: id,
-                after: after_id,
+                from_after: self._get_previous_row_id(table_name, id, &mut tx)?,
+                to_after: after_id,
             }],
         };
 
@@ -920,8 +1821,10 @@ impl Relatable {
         // Move the row within the table:
         let new_order = self._move_row(&mut tx, &table, id, after_id)?;
 
-        // Record the change to the history table:
-        self.record_changes(&changeset, &mut tx)?;
+        if new_order != 0 {
+            // Record the change to the history table:
+            self.record_changes(&changeset, &mut tx)?;
+        }
 
         // Commit the transaction:
         tx.commit()?;
@@ -964,7 +1867,20 @@ impl Relatable {
         // Get the order, (A), of `after_id`:
         let order_prev = {
             if after_id > 0 {
-                get_row_order(tx, table, after_id)?
+                let mut id_to_try = after_id;
+                let mut result = get_row_order(tx, table, id_to_try);
+                // This handles the case in which the after row has been deleted for some reason
+                // (this might happen if we are redoing).
+                while let Err(_) = result {
+                    if id_to_try == 0 {
+                        break;
+                    }
+                    tracing::debug!("Could not obtain _order for row {id_to_try}");
+                    id_to_try -= 1;
+                    tracing::debug!("Trying to find the _order of row {id_to_try}");
+                    result = get_row_order(tx, table, id_to_try);
+                }
+                result?
             } else {
                 // It is not possible for a row to be assigned a order of zero. We allow it as a
                 // possible value of `after_id`, however, which is used as a special value that we
@@ -1011,7 +1927,7 @@ impl Relatable {
             }
         };
 
-        let new_order = {
+        let mut new_order = {
             if order_prev + 1 < order_next {
                 // If the next order is not occupied just use it:
                 order_prev + 1
@@ -1080,13 +1996,38 @@ impl Relatable {
         };
 
         let sql = format!(
-            r#"UPDATE "{}" SET "_order" = ? WHERE "_id" = ?"#,
+            r#"UPDATE "{}" SET "_order" = ? WHERE "_id" = ? RETURNING 1 AS "moved""#,
             table.name
         );
         let params = json!([new_order, id]);
-        tx.query(&sql, Some(&params))?;
-
+        if tx.query(&sql, Some(&params))?.len() < 1 {
+            tracing::warn!("Now row with _id {id} found to move");
+            // It is not possible for a row to have an order of zero. It is used here to
+            // represent the case where no row was actually moved to the caller.
+            new_order = 0;
+        }
         Ok(new_order)
+    }
+
+    fn _change_row_id(
+        &self,
+        tx: &mut DbTransaction<'_>,
+        table: &Table,
+        id: usize,
+        new_id: usize,
+    ) -> Result<()> {
+        let sql = format!(
+            r#"UPDATE "{table}"
+                  SET "_id" = ?, "_order" = ?
+                WHERE "_id" = ?
+            RETURNING "_id" AS "_id""#,
+            table = table.name,
+        );
+        let params = json!([new_id, id, id * MOVE_INTERVAL]);
+        tx.query_one(&sql, Some(&params))?
+            .ok_or(RelatableError::DataError(format!("No row with _id = {id}")))?
+            .get_unsigned("_id")?;
+        Ok(())
     }
 
     pub async fn move_row(
@@ -1098,9 +2039,11 @@ impl Relatable {
     ) -> Result<usize> {
         let conn = self.connection.reconnect()?;
         let new_order = self
-            ._move_and_record_row(conn, table_name, user, id, after_id)
+            ._move_and_record_row(conn, &ChangeAction::Do, table_name, user, id, after_id)
             .await?;
-        self.commit_to_git().await?;
+        if new_order != 0 {
+            self.commit_to_git().await?;
+        }
         Ok(new_order)
     }
 }
@@ -1122,23 +2065,28 @@ impl ChangeSet {
                 Change::Update {
                     row,
                     column,
-                    value: _,
+                    before: _,
+                    after: _,
                 } => Ok(Cursor {
                     table,
                     row: *row,
                     column: column.to_string(),
                 }),
-                Change::Add { row } => Ok(Cursor {
+                Change::Add { row, after: _ } => Ok(Cursor {
                     table,
                     row: *row,
                     column: "".to_string(),
                 }),
-                Change::Move { row, after: _ } => Ok(Cursor {
+                Change::Move {
+                    row,
+                    from_after: _,
+                    to_after: _,
+                } => Ok(Cursor {
                     table,
                     row: *row,
                     column: "".to_string(),
                 }),
-                Change::Delete { row } => Ok(Cursor {
+                Change::Delete { row, after: _ } => Ok(Cursor {
                     table,
                     row: *row,
                     column: "".to_string(),
@@ -1149,11 +2097,28 @@ impl ChangeSet {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ChangeAction {
     Do,
     Undo,
     Redo,
+}
+
+impl FromStr for ChangeAction {
+    type Err = anyhow::Error;
+
+    fn from_str(action: &str) -> Result<Self> {
+        match action.to_lowercase().as_str() {
+            "do" => Ok(Self::Do),
+            "undo" => Ok(Self::Undo),
+            "redo" => Ok(Self::Redo),
+            _ => {
+                return Err(
+                    RelatableError::InputError(format!("Unrecognized action: {action}")).into(),
+                );
+            }
+        }
+    }
 }
 
 impl Display for ChangeAction {
@@ -1172,24 +2137,184 @@ pub enum Change {
     Update {
         row: usize,
         column: String,
-        value: JsonValue,
+        before: JsonValue,
+        after: JsonValue,
     },
     Add {
         row: usize,
+        after: usize,
     },
     Move {
         row: usize,
-        after: usize,
+        from_after: usize,
+        to_after: usize,
     },
     Delete {
         row: usize,
+        after: usize,
     },
+}
+
+impl Change {
+    pub fn from_str(content: &str) -> Result<Self> {
+        let changes = Self::many_from_str(content)?;
+        let change = match changes.first() {
+            None => {
+                return Err(RelatableError::InputError("No change found".to_string()).into());
+            }
+            Some(change) => change.clone(),
+        };
+        if changes.len() > 1 {
+            tracing::warn!("More than one change given. Returning the first.");
+        }
+        Ok(change)
+    }
+
+    pub fn many_from_str(content: &str) -> Result<Vec<Self>> {
+        let json_content = match serde_json::from_str::<JsonValue>(content) {
+            Err(err) => return Err(err.into()),
+            Ok(JsonValue::Array(v)) => v,
+            Ok(_) => {
+                return Err(RelatableError::InputError(
+                    "The content parameter is not an array".to_string(),
+                )
+                .into());
+            }
+        };
+
+        let mut changes = vec![];
+        for change_json in json_content.iter() {
+            let change_json = match change_json.as_object() {
+                Some(change_object) => JsonRow {
+                    content: change_object.clone(),
+                },
+                None => {
+                    return Err(RelatableError::InputError(format!(
+                        "Not an object: {change_json}"
+                    ))
+                    .into());
+                }
+            };
+
+            let change_type = change_json.get_string("type")?;
+            let row = change_json.get_unsigned("row")?;
+            match change_type.as_str() {
+                "Update" => changes.push(Change::Update {
+                    row: row,
+                    column: change_json.get_string("column")?,
+                    before: change_json.get_value("before")?,
+                    after: change_json.get_value("after")?,
+                }),
+                "Add" => changes.push(Change::Add {
+                    row: row,
+                    after: change_json.get_unsigned("after")?,
+                }),
+                "Delete" => changes.push(Change::Delete {
+                    row: row,
+                    after: change_json.get_unsigned("after")?,
+                }),
+                "Move" => changes.push(Change::Move {
+                    row: row,
+                    from_after: change_json.get_unsigned("from_after")?,
+                    to_after: change_json.get_unsigned("to_after")?,
+                }),
+                _ => {
+                    return Err(RelatableError::InputError(format!(
+                        "Unrecognized change type for change: {change_json}"
+                    ))
+                    .into());
+                }
+            };
+        }
+        Ok(changes)
+    }
+
+    pub fn from_json_row(json_row: &JsonRow) -> Result<Self> {
+        match json_row.get_string("type")?.as_str() {
+            "Update" => Ok(Self::Update {
+                row: json_row.get_unsigned("row")?,
+                column: json_row.get_string("column")?,
+                before: json_row.get_value("before")?,
+                after: json_row.get_value("after")?,
+            }),
+            "Add" => Ok(Self::Add {
+                row: json_row.get_unsigned("row")?,
+                after: json_row.get_unsigned("after")?,
+            }),
+            "Move" => Ok(Self::Move {
+                row: json_row.get_unsigned("row")?,
+                from_after: json_row.get_unsigned("from_after")?,
+                to_after: json_row.get_unsigned("to_after")?,
+            }),
+            "Delete" => Ok(Self::Delete {
+                row: json_row.get_unsigned("row")?,
+                after: json_row.get_unsigned("after")?,
+            }),
+            _ => {
+                return Err(RelatableError::InputError(format!(
+                    "Unrecognized action type for change {json_row}"
+                ))
+                .into());
+            }
+        }
+    }
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub struct History {
+    pub changes_done_stack: Vec<JsonRow>,
+    pub changes_undone_stack: Vec<JsonRow>,
+}
+
+impl Display for Change {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Change::Update {
+                row,
+                column,
+                before,
+                after,
+            } => {
+                write!(
+                    f,
+                    "Update '{column}' in row {row} from {before} to {after}",
+                    before = json_to_string(before),
+                    after = json_to_string(after)
+                )
+            }
+            Change::Add { row, after } => {
+                write!(f, "Add row {row} after row {after}")
+            }
+            Change::Move {
+                row,
+                from_after,
+                to_after,
+            } => {
+                write!(
+                    f,
+                    "Move row {row} from after row {from_after} to after row {to_after}"
+                )
+            }
+            Change::Delete { row, after: _ } => write!(f, "Delete row {row}"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Message {
+    /// The severity of the message.
+    pub level: String,
+    /// The rule violation that the message is about.
+    pub rule: String,
+    /// The contents of the message.
+    pub message: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cell {
     value: JsonValue,
     text: String,
+    messages: Vec<Message>,
 }
 
 impl From<&JsonValue> for Cell {
@@ -1200,6 +2325,7 @@ impl From<&JsonValue> for Cell {
                 JsonValue::String(value) => value.to_string(),
                 value => format!("{value}"),
             },
+            messages: vec![],
         }
     }
 }
@@ -1214,8 +2340,9 @@ pub struct Row {
 
 impl Row {
     fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
-        let sql = format!(r#"SELECT MAX("_id") FROM "{}""#, table);
-        let current_row_id = match tx.query_value(&sql, None)? {
+        let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
+        let params = json!([table]);
+        let current_row_id = match tx.query_value(&sql, Some(&params))? {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
@@ -1228,7 +2355,30 @@ impl Row {
         tx: &mut DbTransaction<'_>,
     ) -> Result<Self> {
         let json_row = match json_row {
-            None => JsonRow::new(),
+            None => {
+                // WARN: SQLite only!
+                let statement = format!(
+                    r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#,
+                    table = table.name
+                );
+                let columns = {
+                    let columns = tx.query(&statement, None)?;
+                    if columns.is_empty() {
+                        return Err(RelatableError::DataError(format!(
+                            "No defined columns for: {table}",
+                            table = table.name
+                        ))
+                        .into());
+                    }
+                    columns
+                        .iter()
+                        .map(|c| c.get_string("name").expect("No 'name' found"))
+                        .filter(|n| !n.starts_with("_"))
+                        .collect::<Vec<_>>()
+                };
+                let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
+                JsonRow::from_strings(&columns)
+            }
             Some(json_row) => json_row.clone(),
         };
         let mut row = Row::from(json_row);
@@ -1291,29 +2441,34 @@ impl From<Row> for Vec<String> {
 
 impl From<JsonRow> for Row {
     fn from(row: JsonRow) -> Self {
+        let id = row
+            .content
+            .get("_id")
+            .and_then(|i| i.as_u64())
+            .unwrap_or_default() as usize;
+        let order = row
+            .content
+            .get("_order")
+            .and_then(|i| i.as_u64())
+            .unwrap_or_default() as usize;
+        let change_id = row
+            .content
+            .get("_change_id")
+            .and_then(|i| i.as_u64())
+            .unwrap_or_default() as usize;
+        let cells = row
+            .content
+            .iter()
+            // Ignore columns that start with "_"
+            .filter(|(k, _)| !k.starts_with("_"))
+            .map(|(k, v)| (k.clone(), v.into()))
+            .collect();
+
         Self {
-            id: row
-                .content
-                .get("_id")
-                .and_then(|i| i.as_u64())
-                .unwrap_or_default() as usize,
-            order: row
-                .content
-                .get("_order")
-                .and_then(|i| i.as_u64())
-                .unwrap_or_default() as usize,
-            change_id: row
-                .content
-                .get("_change_id")
-                .and_then(|i| i.as_u64())
-                .unwrap_or_default() as usize,
-            cells: row
-                .content
-                .iter()
-                // Ignore columns that start with "_"
-                .filter(|(k, _)| !k.starts_with("_"))
-                .map(|(k, v)| (k.clone(), v.into()))
-                .collect(),
+            id,
+            order,
+            change_id,
+            cells,
         }
     }
 }
@@ -1342,6 +2497,69 @@ impl Default for Table {
             change_id: usize::default(),
             editable: true,
         }
+    }
+}
+
+impl Table {
+    async fn ensure_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
+        tracing::debug!("Entering ensure_view_created({rltbl:?})");
+        let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
+
+        self.view = format!("{}_view", self.name);
+        let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
+            false => r#"rowid"#, // This *must* be lowercase.
+            true => r#"_id"#,
+        };
+        let order_col = match meta_columns.iter().any(|c| c.name == "_order") {
+            false => r#"rowid"#, // This *must* be lowercase.
+            true => r#"_order"#,
+        };
+
+        // Note that '?' parameters are not allowed in views so we must hard code them:
+        let sql = format!(
+            r#"CREATE VIEW IF NOT EXISTS "{view}" AS
+                 SELECT
+                   {id_col} AS _id,
+                   {order_col} AS _order,
+                   (SELECT '[' || GROUP_CONCAT("after") || ']'
+                      FROM (
+                        SELECT "after"
+                        FROM "history"
+                        WHERE "table" = '{table}'
+                        AND "after" IS NOT NULL
+                        AND "row" = {id_col}
+                        ORDER BY "history_id"
+                     )
+                   ) AS "_history",
+                   (SELECT NULLIF(
+                      JSON_GROUP_ARRAY(
+                        JSON_OBJECT(
+                          'column', "column",
+                          'value', "value",
+                          'level', "level",
+                          'rule', "rule",
+                          'message', "message"
+                        )
+                      ),
+                      '[]'
+                    ) AS "_message"
+                      FROM "message"
+                      WHERE "table" = '{table}'
+                      AND "row" = {id_col}
+                      ORDER BY "column", "message_id"
+                   ) AS "_message",
+                   {columns}
+                 FROM "{table}""#,
+            table = self.name,
+            view = self.view,
+            columns = columns
+                .iter()
+                .map(|c| c.name.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        rltbl.connection.query(&sql, None).await?;
+        Ok(columns)
     }
 }
 
@@ -1875,6 +3093,7 @@ impl Select {
         self
     }
 
+    // TODO: Allow dashes so as to permit date comparisons.
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
         let like = Regex::new(r#"^(\w+)\s*~=\s*"?(\w+)"?$"#).unwrap();
         let eq = Regex::new(r#"^(\w+)\s*=\s*"?(\w+)"?$"#).unwrap();
@@ -2119,12 +3338,12 @@ impl Select {
         let mut params = Vec::new();
         lines.push("SELECT *,".to_string());
         // WARN: The _total count should probably be optional.
-        lines.push("  COUNT(1) OVER() AS _total,".to_string());
+        lines.push("  COUNT(1) OVER() AS _total, ".to_string());
         lines.push(format!(
-            r#"  (SELECT MAX(change_id) FROM history
-                   WHERE "table" = ?
-                     AND "row" = _id
-                 ) AS _change_id"#
+            r#"(SELECT MAX(change_id) FROM history
+                  WHERE "table" = ?
+                    AND "row" = _id
+               ) AS _change_id"#
         ));
         params.push(json!(self.table_name)); // the real table name
         lines.push(format!(r#"FROM "{}""#, self.view_name)); // the view name, which may differ

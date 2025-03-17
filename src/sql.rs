@@ -181,6 +181,16 @@ impl DbTransaction<'_> {
         Ok(())
     }
 
+    pub fn rollback(self) -> Result<()> {
+        match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(tx) => block_on(tx.rollback())?,
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(tx) => tx.rollback()?,
+        };
+        Ok(())
+    }
+
     // Given a connection and a SQL string, return a vector of JsonRows.
     // This is intended as a low-level function that abstracts over the SQL engine,
     // and whatever result types it returns.
@@ -333,11 +343,11 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Utilities for dealing with JSON representations of rows. The reason thses
+// Utilities for dealing with JSON representations of rows. The reason these
 // are located here instead of in core.rs is because the implementation of
 // JsonRow is dependent, in part, on whether the sqlx or rusqlite crate feature
 // is enabled. Encapsulating the handling of that crate feature from the rest of
-// the API the other purpose of this module.
+// the API is the other purpose of this module.
 ///////////////////////////////////////////////////////////////////////////////
 
 // WARN: This needs to be thought through.
@@ -349,6 +359,32 @@ pub fn json_to_string(value: &JsonValue) -> String {
         JsonValue::String(value) => value.to_string(),
         JsonValue::Array(value) => format!("{value:?}"),
         JsonValue::Object(value) => format!("{value:?}"),
+    }
+}
+
+pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
+    match value {
+        JsonValue::Bool(flag) => match flag {
+            true => Ok(1),
+            false => Ok(0),
+        },
+        JsonValue::Number(value) => match value.as_u64() {
+            Some(unsigned) => Ok(unsigned as usize),
+            None => Err(
+                RelatableError::InputError(format!("{value} is not an unsigned integer")).into(),
+            ),
+        },
+        JsonValue::String(value_str) => match value_str.parse::<usize>() {
+            Ok(unsigned) => Ok(unsigned),
+            Err(err) => Err(RelatableError::InputError(format!(
+                "{value} could not be parsed as an unsigned integer: {err}"
+            ))
+            .into()),
+        },
+        _ => Err(RelatableError::InputError(format!(
+            "{value} could not be parsed as an unsigned integer"
+        ))
+        .into()),
     }
 }
 
@@ -378,18 +414,44 @@ impl JsonRow {
         }
     }
 
-    pub fn get_string(&self, column_name: &str) -> String {
+    pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
         let value = self.content.get(column_name);
         match value {
-            Some(value) => json_to_string(&value),
-            None => unimplemented!("missing value"),
+            Some(value) => Ok(value.clone()),
+            None => Err(RelatableError::DataError("missing value".to_string()).into()),
         }
+    }
+
+    pub fn get_string(&self, column_name: &str) -> Result<String> {
+        let value = self.content.get(column_name);
+        match value {
+            Some(value) => Ok(json_to_string(&value)),
+            None => Err(RelatableError::DataError("missing value".to_string()).into()),
+        }
+    }
+
+    pub fn get_unsigned(&self, column_name: &str) -> Result<usize> {
+        let value = self.content.get(column_name);
+        match value {
+            Some(value) => json_to_unsigned(&value),
+            None => Err(RelatableError::DataError("missing value".to_string()).into()),
+        }
+    }
+
+    pub fn from_strings(strings: &Vec<&str>) -> Self {
+        let mut json_row = Self::new();
+        for string in strings {
+            json_row.content.insert(string.to_string(), JsonValue::Null);
+        }
+        json_row
     }
 
     fn to_strings(&self) -> Vec<String> {
         let mut result = vec![];
         for column_name in self.content.keys() {
-            result.push(self.get_string(column_name));
+            // The logic of this implies that this should not fail, so an expect() is
+            // appropriate here.
+            result.push(self.get_string(column_name).expect("Column not found"));
         }
         result
     }
@@ -397,7 +459,10 @@ impl JsonRow {
     fn to_string_map(&self) -> IndexMap<String, String> {
         let mut result = IndexMap::new();
         for column_name in self.content.keys() {
-            result.insert(column_name.clone(), self.get_string(column_name));
+            result.insert(
+                column_name.clone(),
+                self.get_string(column_name).expect("Column not found"),
+            );
         }
         result
     }
