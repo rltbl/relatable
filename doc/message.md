@@ -44,7 +44,7 @@ message_id|added_by|table|row|column|value|level|rule|message
 2|mike|penguin|4|species|Pygoscelis adeliae|error|custom-b|this is a terrible species
 ```
 
-We delete messages using `rltbl delete message TABLE [ROW] [COLUMN]`. If row is unspecified, all messages in the given table are deleted. If column is unspecified, all messages in the given row are deleted. You can also use the `--rule` flag to delete messages whose name matches a given string, which may contain SQL wildcards. In the current circumstances, `custom%` matches all messages:
+We delete messages using `rltbl delete message TABLE [ROW] [COLUMN]`. If row is unspecified, all messages in the given table are deleted. If column is unspecified, all messages in the given row are deleted. You can also use the `--rule RULE` flag to further filter the messsages to be deleted so that only those whose rule matches the given string are actually deleted, as opposed to all of the messages in the given table, column, or row. Note that SQL wildcard characters are allowed. In the current example, the string `custom%` happens to match all of the rules input thus far:
 
 ```console tesh-session="message"
 $ rltbl delete message penguin --rule custom%
@@ -52,7 +52,7 @@ $ sqlite3 -header .relatable/relatable.db 'select * from message'
 
 ```
 
-Let's add a few more messages to the message table. Note that two of them have been added by **mike** and the rest by the user **afreen**. The user can be specified via the environment variable, `RLTBL_USER`.
+Let's add a few more messages to the message table. Two of them will be by the user **mike** and the rest by the user **afreen**. The user can be specified via the environment variable, `RLTBL_USER`.
 
 ```console tesh-session="message"
 $ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
@@ -71,7 +71,7 @@ message_id|added_by|table|row|column|value|level|rule|message
 8|afreen|penguin|7|study_name|FAKE123|error|custom-c|this is an inappropriate study_name
 ```
 
-Let's now delete all the messages added to the table by **mike** using the `--user` flag (which does not allow wildcards):
+Let's now delete all the messages added to the table by **mike** using the `--user USER` option (which does not permit wildcards):
 
 ```console tesh-session="message"
 $ rltbl delete message penguin --user mike
