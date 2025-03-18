@@ -13,7 +13,7 @@ use ansi_term::Style;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
-use promptly::prompt_default;
+use promptly::prompt;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use regex::Regex;
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
@@ -552,7 +552,7 @@ pub async fn prompt_for_json_message(
     tracing::debug!("Received json row from user input: {json_row:?}");
 
     let prompt_for_column_value = |column: &str| -> JsonValue {
-        let value: String = prompt_default(format!("Enter a {column}:"), "".to_string())
+        let value: String = prompt(format!("Enter a {column}"))
             .expect("Error getting column value from user input");
         json!(value)
     };
@@ -579,9 +579,8 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonR
     let mut json_row = JsonRow::from_strings(&columns);
 
     let prompt_for_column_value = |column: &str| -> JsonValue {
-        let value: String =
-            prompt_default(format!("Enter the value for '{column}':"), "".to_string())
-                .expect("Error getting column value from user input");
+        let value: String = prompt(format!("Enter the value for '{column}'"))
+            .expect("Error getting column value from user input");
         json!(value)
     };
 
