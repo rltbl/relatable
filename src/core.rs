@@ -2312,9 +2312,9 @@ pub struct Message {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cell {
-    value: JsonValue,
-    text: String,
-    messages: Vec<Message>,
+    pub value: JsonValue,
+    pub text: String,
+    pub messages: Vec<Message>,
 }
 
 impl From<&JsonValue> for Cell {
@@ -2579,11 +2579,11 @@ impl std::fmt::Display for Range {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ResultSet {
-    select: Select,
-    range: Range,
-    table: Table,
-    columns: Vec<Column>,
-    rows: Vec<Row>,
+    pub select: Select,
+    pub range: Range,
+    pub table: Table,
+    pub columns: Vec<Column>,
+    pub rows: Vec<Row>,
 }
 
 impl std::fmt::Display for ResultSet {

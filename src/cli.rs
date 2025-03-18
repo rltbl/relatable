@@ -160,7 +160,7 @@ pub enum GetSubcommand {
         #[arg(value_name = "FILTERS", action = ArgAction::Set)]
         filters: Vec<String>,
 
-        /// Output format: text, JSON, TSV
+        /// Output format: text, vertical, JSON, TSV
         #[arg(long, default_value="", action = ArgAction::Set)]
         format: String,
 
@@ -347,6 +347,14 @@ pub async fn print_table(
         "json" => {
             let json = json!(rltbl.fetch(&select).await.unwrap());
             print!("{}", to_string_pretty(&json).unwrap());
+        }
+        "vertical" => {
+            for row in rltbl.fetch(&select).await.unwrap().rows {
+                println!("Table: {table_name}\n-----");
+                for (column, value) in row.cells.iter() {
+                    println!("{column}: {value}", value = value.text);
+                }
+            }
         }
         "text" | "" => {
             print!("{}", rltbl.fetch(&select).await.unwrap().to_string());
