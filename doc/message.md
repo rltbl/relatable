@@ -1,6 +1,6 @@
-# Message
+# Adding and removing messages
 
-**rltbl** can be used to directly add and delete messages to and from the message table. Let's begin by adding two messages to penguin. We specify the current user via the environment variable, `RLTBL_USER`.
+**rltbl** can be used to directly add and delete messages to and from the message table. The purpose of a message is to provide information about some problem, or something else of note, about a particular value of a particular column of a particular row in some table. Each message, in addition, must specify a **level**, a **rule**, and the **message** text and is associated with a particular user, which may be specified via the environment variable, `RLTBL_USER`.  Let's begin by adding two messages to the penguin table.
 
 ```console tesh-session="message"
 $ rltbl demo --size 10 --force

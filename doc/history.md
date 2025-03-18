@@ -1,4 +1,4 @@
-# History
+# Editing your data
 
 To add rows to a table on the command line, one uses `rltbl add row TABLE`. **rltbl** normally adds rows interactively by asking the user to supply a value for every column in the table in turn. Alternatively, the option `--input JSON` may be specified to accept the row to be added in the form a JSON-formatted string.
 
