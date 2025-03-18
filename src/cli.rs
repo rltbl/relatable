@@ -350,7 +350,7 @@ pub async fn print_table(
         }
         "vertical" => {
             for row in rltbl.fetch(&select).await.unwrap().rows {
-                println!("Table: {table_name}\n-----");
+                println!("{table_name}\n-----");
                 for (column, value) in row.cells.iter() {
                     println!("{column}: {value}", value = value.text);
                 }
