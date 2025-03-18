@@ -24,6 +24,12 @@ Run `rltbl help` to get a full list of commands and options. For example:
 - `rltbl get table <TABLE>` prints the named table
 - `rltbl get value <TABLE> <ROW> <COLUMN>` prints a single value
 
+### Further reading:
+
+- [Editing your data](doc/history.md)
+- [Adding and removing messages](doc/message.md)
+- [Tracking **rltbl** changes using Git](doc/git.md)
+
 ## Contributing
 
 Contributions, issues, and feature requests are welcome!
