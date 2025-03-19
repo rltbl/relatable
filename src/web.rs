@@ -69,13 +69,13 @@ async fn get_root(State(rltbl): State<Arc<Relatable>>) -> impl IntoResponse {
 async fn main_js() -> impl IntoResponse {
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, "text/javascript".parse().unwrap());
-    (headers, include_str!("../../../resources/main.js"))
+    (headers, include_str!("resources/main.js"))
 }
 
 async fn main_css() -> impl IntoResponse {
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, "text/css".parse().unwrap());
-    (headers, include_str!("../../../resources/main.css"))
+    (headers, include_str!("resources/main.css"))
 }
 
 async fn render_html(rltbl: &Relatable, username: &str, result: &ResultSet) -> Result<String> {
