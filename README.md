@@ -26,9 +26,9 @@ Run `rltbl help` to get a full list of commands and options. For example:
 
 ### Further reading:
 
-- [Editing your data (command line)](doc/history.md)
-- [Adding and removing messages (command line)](doc/message.md)
-- [Tracking **rltbl** changes using Git (command line)](doc/git.md)
+- [Editing your data](doc/history.md)
+- [Adding and removing messages](doc/message.md)
+- [Tracking **rltbl** changes using Git](doc/git.md)
 
 ## Contributing
 
