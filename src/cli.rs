@@ -349,11 +349,12 @@ pub async fn print_table(
             print!("{}", to_string_pretty(&json).unwrap());
         }
         "vertical" => {
+            println!("{table_name}\n-----");
             for row in rltbl.fetch(&select).await.unwrap().rows {
-                println!("{table_name}\n-----");
                 for (column, value) in row.cells.iter() {
                     println!("{column}: {value}", value = value.text);
                 }
+                println!("-----");
             }
         }
         "text" | "" => {
