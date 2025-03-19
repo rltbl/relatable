@@ -225,35 +225,35 @@ impl Relatable {
                 "page.html",
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/src/templates/page.html"
+                    "/../src/templates/page.html"
                 )),
             ),
             (
                 "table.html",
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/src/templates/table.html"
+                    "/../src/templates/table.html"
                 )),
             ),
             (
                 "row_menu.html",
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/src/templates/row_menu.html"
+                    "/../src/templates/row_menu.html"
                 )),
             ),
             (
                 "column_menu.html",
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/src/templates/column_menu.html"
+                    "/../src/templates/column_menu.html"
                 )),
             ),
             (
                 "cell_menu.html",
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/src/templates/cell_menu.html"
+                    "/../src/templates/cell_menu.html"
                 )),
             ),
         ]);
