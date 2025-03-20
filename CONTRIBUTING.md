@@ -19,7 +19,7 @@ We'll do our best to reply to issues and pull requests, but please understand th
   - [`superhtml`](https://github.com/kristoff-it/superhtml) for HTML
   - [`shellcheck`](https://github.com/koalaman/shellcheck) for shell scripts
 
-# Creating a new release using [Cargo-dist](https://opensource.axo.dev/cargo-dist/book/)
+## Creating a new release using [Cargo-dist](https://opensource.axo.dev/cargo-dist/book/)
 
 1. Add (if it isn't already present) a value for **repository** in the **[package]** section of
    your `Cargo.toml` file:
