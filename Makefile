@@ -76,8 +76,8 @@ test-tesh-misc: debug
 test-random:
 	test/random.sh --varying-rate
 
-perf_test_timeout = 30
-perf_test_size = 1000
+perf_test_timeout = 5
+perf_test_size = 100000
 
 test/perf/tsv/penguin.tsv:
 	rltbl demo --size $(perf_test_size) --force

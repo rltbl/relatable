@@ -7,7 +7,7 @@ use rltbl::{
     git,
     sql::{
         is_simple, json_to_string, DbActiveConnection, DbConnection, DbTransaction, JsonRow,
-        VecInto,
+        VecInto, MAX_PARAMS,
     },
 };
 
@@ -375,7 +375,7 @@ impl Relatable {
         self.connection.query(&sql, Some(&params)).await?;
         tracing::debug!("Table {table} (path: {path}) added to table table");
 
-        // We drop the trigger on the _order column first as a performance optimization:
+        // Drop the trigger on the _order column first as a (small) performance optimization:
         let sql = format!(r#"DROP TRIGGER IF EXISTS "{table}_order""#);
         self.connection.query(&sql, None).await?;
         tracing::debug!("Dropped trigger on column {table}._order");
@@ -408,20 +408,41 @@ impl Relatable {
         let placeholders = placeholders.join(", ");
         let mut id = 1;
         let mut order = id * MOVE_INTERVAL;
+        let sql_first_part = format!(r#"INSERT INTO "{table}" ({columns}) VALUES "#);
+        let mut sql_value_parts = vec![];
+        let mut params = vec![];
         while let Some(row) = records.next() {
             let row = row.expect("Error processing row");
-            let sql = format!(r#"INSERT INTO "{table}" ({columns}) VALUES ({placeholders})"#,);
-            let values = row.iter().collect::<Vec<_>>();
-
-            let mut params = vec![json!(id), json!(order)];
-            for value in values {
-                params.push(json!(value))
+            // We add 2 here because of _id and _order:
+            if (params.len() + row.len() + 2) >= MAX_PARAMS {
+                let sql = format!(
+                    "{sql_first_part} {sql_value_part}",
+                    sql_value_part = sql_value_parts.join(", ")
+                );
+                let params_so_far = json!(params);
+                self.connection.query(&sql, Some(&params_so_far)).await?;
+                tracing::info!("{num_rows} rows loaded to table {table}", num_rows = id - 1);
+                params.clear();
+                sql_value_parts.clear();
             }
-            let params = json!(params);
-            self.connection.query(&sql, Some(&params)).await?;
+            sql_value_parts.push(format!("({placeholders})"));
+            params.push(json!(id));
+            params.push(json!(order));
+            for value in row.iter() {
+                params.push(json!(value));
+            }
             id += 1;
             order += MOVE_INTERVAL;
         }
+        if params.len() > 0 {
+            let sql = format!(
+                "{sql_first_part} {sql_value_part}",
+                sql_value_part = sql_value_parts.join(", ")
+            );
+            let params = json!(params);
+            self.connection.query(&sql, Some(&params)).await?;
+        }
+
         tracing::info!("{num_rows} rows loaded to table {table}", num_rows = id - 1);
 
         // (Re)create the trigger on the _oder column:
