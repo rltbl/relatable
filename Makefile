@@ -79,7 +79,10 @@ test-random: debug
 perf_test_timeout = 5
 perf_test_size = 100000
 
-test/perf/tsv/penguin.tsv: debug
+test/perf/tsv:
+	mkdir -p $@
+
+test/perf/tsv/penguin.tsv: debug | test/perf/tsv
 	target/debug/rltbl demo --size $(perf_test_size) --force
 	target/debug/rltbl save test/perf/tsv/
 
@@ -95,4 +98,4 @@ test: src/resources/main.js src/resources/main.css test-code test-tesh-doc test-
 
 .PHONY: clean-test
 clean-test:
-	rm -f test/perf/tsv/*.tsv
+	rm -Rf test/perf
