@@ -118,7 +118,7 @@ pub enum Command {
     /// Save the data
     Save {
         /// The directory to which to save the table .TSVs (defaults to the value of "path" from
-        /// the table table entry for each table when unset)
+        /// the table table entry for each table when not set)
         #[arg(value_name = "SAVE_DIR", action = ArgAction::Set)]
         save_dir: Option<String>,
     },
