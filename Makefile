@@ -80,14 +80,14 @@ perf_test_timeout = 5
 perf_test_size = 100000
 
 test/perf/tsv/penguin.tsv: debug
-	rltbl demo --size $(perf_test_size) --force
-	rltbl save test/perf/tsv/
+	target/debug/rltbl demo --size $(perf_test_size) --force
+	target/debug/rltbl save test/perf/tsv/
 
 .PHONY: test-perf
 test-perf: test/perf/tsv/penguin.tsv
-	rltbl init --force
-	@echo "rltbl load table $<"
-	@timeout $(perf_test_timeout) time -p rltbl -vvv load table $< || \
+	target/debug/rltbl init --force
+	@echo "target/debug/rltbl load table $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vvv load table $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 .PHONY: test
