@@ -298,7 +298,7 @@ impl Relatable {
         if count > 4 {
             tracing::debug!("The first 4 are: {:#?}", json_rows[..4].to_vec());
         } else if count > 0 {
-            tracing::debug!("They are: {:#?}", json_rows[..count].to_vec());
+            tracing::debug!("They are: {json_rows:#?}");
         }
 
         let total = match json_rows.get(0) {
@@ -2312,9 +2312,9 @@ pub struct Message {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cell {
-    value: JsonValue,
-    text: String,
-    messages: Vec<Message>,
+    pub value: JsonValue,
+    pub text: String,
+    pub messages: Vec<Message>,
 }
 
 impl From<&JsonValue> for Cell {
@@ -2579,11 +2579,11 @@ impl std::fmt::Display for Range {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ResultSet {
-    select: Select,
-    range: Range,
-    table: Table,
-    columns: Vec<Column>,
-    rows: Vec<Row>,
+    pub select: Select,
+    pub range: Range,
+    pub table: Table,
+    pub columns: Vec<Column>,
+    pub rows: Vec<Row>,
 }
 
 impl std::fmt::Display for ResultSet {
@@ -3093,20 +3093,35 @@ impl Select {
         self
     }
 
-    // TODO: Allow dashes so as to permit date comparisons.
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
-        let like = Regex::new(r#"^(\w+)\s*~=\s*"?(\w+)"?$"#).unwrap();
-        let eq = Regex::new(r#"^(\w+)\s*=\s*"?(\w+)"?$"#).unwrap();
-        let not_eq = Regex::new(r#"^(\w+)\s*!=\s*"?(\w+)"?$"#).unwrap();
-        let gt = Regex::new(r"^(\w+)\s*>\s*(\w+)$").unwrap();
-        let gte = Regex::new(r"^(\w+)\s*>=\s*(\w+)$").unwrap();
-        let lt = Regex::new(r"^(\w+)\s*<\s*(\w+)$").unwrap();
-        let lte = Regex::new(r"^(\w+)\s*<=\s*(\w+)$").unwrap();
-        let is = Regex::new(r#"^(\w+)\s+(IS|is)\s+"?(\w+)"?$"#).unwrap();
-        let is_not = Regex::new(r#"^(\w+)\s+(IS NOT|is not)\s+"?(\w+)"?$"#).unwrap();
-        let is_in = Regex::new(r#"^(\w+)\s+(IN|in)\s+\((\w+(,\s*\w+)*)\)$"#).unwrap();
-        let is_not_in = Regex::new(r#"^(\w+)\s+(NOT IN|not in)\s+\((\w+(,\s*\w+)*)\)$"#).unwrap();
-        // Used for text types:
+        let basic = r"[\w\-]";
+        let wildcarded = r"[\w\-%]";
+
+        // Symbolic operators:
+        let like = Regex::new(&format!(r#"^({basic}+)\s*~=\s*"?({wildcarded}+)"?$"#)).unwrap();
+        let eq = Regex::new(&format!(r#"^({basic}+)\s*=\s*"?({basic}+)"?$"#)).unwrap();
+        let not_eq = Regex::new(&format!(r#"^({basic}+)\s*!=\s*"?({basic}+)"?$"#)).unwrap();
+        let gt = Regex::new(&format!(r"^({basic}+)\s*>\s*({basic}+)$")).unwrap();
+        let gte = Regex::new(&format!(r"^({basic}+)\s*>=\s*({basic}+)$")).unwrap();
+        let lt = Regex::new(&format!(r"^({basic}+)\s*<\s*({basic}+)$")).unwrap();
+        let lte = Regex::new(&format!(r"^({basic}+)\s*<=\s*({basic}+)$")).unwrap();
+
+        // Word-like operators:
+        let is = Regex::new(&format!(r#"^({basic}+)\s+(IS|is)\s+"?({basic}+)"?$"#)).unwrap();
+        let is_not = Regex::new(&format!(
+            r#"^({basic}+)\s+(IS NOT|is not)\s+"?({basic}+)"?$"#
+        ))
+        .unwrap();
+        let is_in = Regex::new(&format!(
+            r#"^({basic}+)\s+(IN|in)\s+\(({basic}+(,\s*{basic}+)*)\)$"#
+        ))
+        .unwrap();
+        let is_not_in = Regex::new(&format!(
+            r#"^({basic}+)\s+(NOT IN|not in)\s+\(({basic}+(,\s*{basic}+)*)\)$"#
+        ))
+        .unwrap();
+
+        // Closure used for text types:
         let maybe_quote_value = |value: &str| -> Result<JsonValue> {
             if value.starts_with("\"") {
                 let value = serde_json::from_str(&value)?;
@@ -3117,8 +3132,9 @@ impl Select {
             }
         };
         for filter in filters {
+            tracing::debug!("Applying filter: {filter}");
             if like.is_match(&filter) {
-                let captures = eq.captures(&filter).unwrap();
+                let captures = like.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = maybe_quote_value(&value)?;
@@ -3139,26 +3155,26 @@ impl Select {
                 let captures = gt.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = serde_json::from_str(&value)?;
+                let value = maybe_quote_value(&value)?;
                 self.filters.push(Filter::GreaterThan { column, value });
             } else if gte.is_match(&filter) {
                 let captures = gte.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = serde_json::from_str(&value)?;
+                let value = maybe_quote_value(value)?;
                 self.filters
                     .push(Filter::GreaterThanOrEqual { column, value });
             } else if lt.is_match(&filter) {
                 let captures = lt.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = serde_json::from_str(&value)?;
+                let value = maybe_quote_value(&value)?;
                 self.filters.push(Filter::LessThan { column, value });
             } else if lte.is_match(&filter) {
                 let captures = lte.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = serde_json::from_str(&value)?;
+                let value = maybe_quote_value(&value)?;
                 self.filters.push(Filter::LessThanOrEqual { column, value });
             } else if is.is_match(&filter) {
                 let captures = is.captures(&filter).unwrap();

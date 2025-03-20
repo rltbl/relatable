@@ -13,7 +13,7 @@ use ansi_term::Style;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
-use promptly::prompt_default;
+use promptly::prompt;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use regex::Regex;
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
@@ -160,7 +160,7 @@ pub enum GetSubcommand {
         #[arg(value_name = "FILTERS", action = ArgAction::Set)]
         filters: Vec<String>,
 
-        /// Output format: text, JSON, TSV
+        /// Output format: text, vertical, JSON, TSV
         #[arg(long, default_value="", action = ArgAction::Set)]
         format: String,
 
@@ -347,6 +347,15 @@ pub async fn print_table(
         "json" => {
             let json = json!(rltbl.fetch(&select).await.unwrap());
             print!("{}", to_string_pretty(&json).unwrap());
+        }
+        "vertical" => {
+            println!("{table_name}\n-----");
+            for row in rltbl.fetch(&select).await.unwrap().rows {
+                for (column, value) in row.cells.iter() {
+                    println!("{column}: {value}", value = value.text);
+                }
+                println!("-----");
+            }
         }
         "text" | "" => {
             print!("{}", rltbl.fetch(&select).await.unwrap().to_string());
@@ -552,7 +561,7 @@ pub async fn prompt_for_json_message(
     tracing::debug!("Received json row from user input: {json_row:?}");
 
     let prompt_for_column_value = |column: &str| -> JsonValue {
-        let value: String = prompt_default(format!("Enter a {column}:"), "".to_string())
+        let value: String = prompt(format!("Enter a {column}"))
             .expect("Error getting column value from user input");
         json!(value)
     };
@@ -579,9 +588,8 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonR
     let mut json_row = JsonRow::from_strings(&columns);
 
     let prompt_for_column_value = |column: &str| -> JsonValue {
-        let value: String =
-            prompt_default(format!("Enter the value for '{column}':"), "".to_string())
-                .expect("Error getting column value from user input");
+        let value: String = prompt(format!("Enter the value for '{column}'"))
+            .expect("Error getting column value from user input");
         json!(value)
     };
 
