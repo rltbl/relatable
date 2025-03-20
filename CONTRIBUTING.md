@@ -22,7 +22,7 @@ We'll do our best to reply to issues and pull requests, but please understand th
 ## Creating a new release using [Cargo-dist](https://opensource.axo.dev/cargo-dist/book/)
 
 1. Add (if it isn't already present) a value for **repository** in the **[package]** section of
-   your `Cargo.toml` file:
+   `Cargo.toml`:
 
         [package]
         name = "rltbl"
@@ -31,11 +31,11 @@ We'll do our best to reply to issues and pull requests, but please understand th
 
 2. Install dist if it isn't already installed (see the [install guide](https://opensource.axo.dev/cargo-dist/book/install.html))
 
-3. Verify that the configuration is (still) correct.
+3. Verify that the dist configuration is (still) correct.
 
         dist init
 
-    The effect of running `dist init` is to (re)generate the GitHub workflow file
+    Note that the effect of running `dist init` is to (re)generate the GitHub workflow file
     `.github/workflows/release.yml`, which should therefore not normally be manually edited.
 
 4. Add a new tag to the last commit:
