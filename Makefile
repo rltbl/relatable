@@ -87,7 +87,7 @@ test/perf/tsv/penguin.tsv:
 test-perf: test/perf/tsv/penguin.tsv
 	rltbl init --force
 	@echo "rltbl load table $<"
-	@timeout $(perf_test_timeout) time -p rltbl load table $< || \
+	@timeout $(perf_test_timeout) time -p rltbl -vvv load table $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 .PHONY: test

@@ -332,7 +332,7 @@ impl Relatable {
     }
 
     pub async fn load_table(&self, table: &str, path: &str) -> Result<()> {
-        // Read the records from the given path:
+        // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
             .delimiter(b'\t')
@@ -341,8 +341,8 @@ impl Relatable {
             })?);
         let mut records = rdr.records();
 
-        // Extract the headers from the first line of the file, which we will need for the create
-        // table statement:
+        // Extract the headers from the first line of the file, which we will need for the CREATE
+        // TABLE statement:
         let headers = {
             let headers = match records.next() {
                 None => {
@@ -369,11 +369,18 @@ impl Relatable {
             headers
         };
 
-        // Create the table and its associated _order trigger:
+        // Add an entry corresponding to the table being loaded to the table table:
         let sql = r#"INSERT INTO "table" ("table", "path") VALUES (?, ?)"#;
         let params = json!([table, path]);
         self.connection.query(&sql, Some(&params)).await?;
+        tracing::debug!("Table {table} (path: {path}) added to table table");
 
+        // We drop the trigger on the _order column first as a performance optimization:
+        let sql = format!(r#"DROP TRIGGER IF EXISTS "{table}_order""#);
+        self.connection.query(&sql, None).await?;
+        tracing::debug!("Dropped trigger on column {table}._order");
+
+        // If the table doesn't already exist, create it now:
         let sql = format!(
             r#"CREATE TABLE IF NOT EXISTS "{table}" (
                  _id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -386,9 +393,40 @@ impl Relatable {
                 .join(", ")
         );
         self.connection.query(&sql, None).await?;
+        tracing::debug!("Table {table} (re)created");
 
+        // Insert the data into the table:
+        let mut columns = vec!["_id".to_string(), "_order".to_string()];
+        columns.append(
+            &mut headers
+                .iter()
+                .map(|k| format!(r#""{k}""#))
+                .collect::<Vec<_>>(),
+        );
+        let placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>();
+        let columns = columns.join(", ");
+        let placeholders = placeholders.join(", ");
+        let mut id = 1;
+        let mut order = id * MOVE_INTERVAL;
+        while let Some(row) = records.next() {
+            let row = row.expect("Error processing row");
+            let sql = format!(r#"INSERT INTO "{table}" ({columns}) VALUES ({placeholders})"#,);
+            let values = row.iter().collect::<Vec<_>>();
+
+            let mut params = vec![json!(id), json!(order)];
+            for value in values {
+                params.push(json!(value))
+            }
+            let params = json!(params);
+            self.connection.query(&sql, Some(&params)).await?;
+            id += 1;
+            order += MOVE_INTERVAL;
+        }
+        tracing::info!("{num_rows} rows loaded to table {table}", num_rows = id - 1);
+
+        // (Re)create the trigger on the _oder column:
         let sql = format!(
-            r#"CREATE TRIGGER IF NOT EXISTS "{table}_order"
+            r#"CREATE TRIGGER "{table}_order"
                  AFTER INSERT ON "{table}"
                  WHEN NEW._order IS NULL
                  BEGIN
@@ -397,22 +435,7 @@ impl Relatable {
                  END"#
         );
         self.connection.query(&sql, None).await?;
-
-        // Insert the data into the table:
-        let columns = headers
-            .iter()
-            .map(|k| format!(r#""{k}""#))
-            .collect::<Vec<_>>();
-        let placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>();
-        let columns = columns.join(", ");
-        let placeholders = placeholders.join(", ");
-        while let Some(row) = records.next() {
-            let row = row.expect("Error processing row");
-            let sql = format!(r#"INSERT INTO "{table}" ({columns}) VALUES ({placeholders})"#,);
-            let values = row.iter().collect::<Vec<_>>();
-            let params = json!(values);
-            self.connection.query(&sql, Some(&params)).await?;
-        }
+        tracing::debug!("Trigger (re)created on table {table}");
 
         self.commit_to_git().await?;
         Ok(())
