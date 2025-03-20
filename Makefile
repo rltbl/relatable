@@ -73,13 +73,13 @@ test-tesh-misc: debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test
 
 .PHONY: test-random
-test-random:
+test-random: debug
 	test/random.sh --varying-rate
 
 perf_test_timeout = 5
 perf_test_size = 100000
 
-test/perf/tsv/penguin.tsv:
+test/perf/tsv/penguin.tsv: debug
 	rltbl demo --size $(perf_test_size) --force
 	rltbl save test/perf/tsv/
 
