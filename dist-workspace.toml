@@ -1,3 +1,5 @@
+# See CONTRIBUTING.md for instructions on creating a new release.
+
 [workspace]
 members = ["cargo:."]
 

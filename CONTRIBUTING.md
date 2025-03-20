@@ -18,3 +18,32 @@ We'll do our best to reply to issues and pull requests, but please understand th
   - [`ruff`](https://github.com/astral-sh/ruff) for Python
   - [`superhtml`](https://github.com/kristoff-it/superhtml) for HTML
   - [`shellcheck`](https://github.com/koalaman/shellcheck) for shell scripts
+
+# Creating a new release using [Cargo-dist](https://opensource.axo.dev/cargo-dist/book/)
+
+1. Add (if it isn't already present) a value for **repository** in the **[package]** section of
+   your `Cargo.toml` file:
+
+        [package]
+        name = "rltbl"
+        repository = "https://github.com/rltbl/relatable"
+        ...
+
+2. Install dist if it isn't already installed (see the [install guide](https://opensource.axo.dev/cargo-dist/book/install.html))
+
+3. Verify that the configuration is (still) correct.
+
+        dist init
+
+    The effect of running `dist init` is to (re)generate the GitHub workflow file
+    `.github/workflows/release.yml`, which should therefore not normally be manually edited.
+
+4. Add a new tag to the last commit:
+
+        git tag v0.1.0
+
+5. Push the tag.
+
+        git push --tags
+
+6. Observe on GitHub that the workflow creates a new release corresponding to the tag in your repository.
