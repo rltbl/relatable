@@ -418,12 +418,15 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn save_all(&self) -> Result<()> {
+    pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
         let sql = r#"SELECT "table", "path" FROM "table" WHERE "path" IS NOT NULL"#;
         let table_rows = self.connection.query(&sql, None).await?;
         for table_row in table_rows {
             let table = table_row.get_string("table")?;
-            let path = table_row.get_string("path")?;
+            let path = match save_dir {
+                Some(save_dir) => format!("{save_dir}/{table}.tsv"),
+                None => table_row.get_string("path")?,
+            };
             let mut writer = WriterBuilder::new()
                 .delimiter(b'\t')
                 .quote_style(QuoteStyle::Never)
@@ -488,7 +491,7 @@ impl Relatable {
         tracing::info!("Committing to git on behalf of RLTBL_GIT_AUTHOR: '{author}'");
 
         // Save all the tables:
-        self.save_all().await?;
+        self.save_all(None).await?;
 
         // Get the git status:
         let status = git::get_status()?;

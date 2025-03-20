@@ -116,7 +116,12 @@ pub enum Command {
     },
 
     /// Save the data
-    Save {},
+    Save {
+        /// The directory to which to save the table .TSVs (defaults to the value of "path" from
+        /// the table table entry for each table when unset)
+        #[arg(value_name = "SAVE_DIR", action = ArgAction::Set)]
+        save_dir: Option<String>,
+    },
 
     /// Run a Relatable server
     Serve {
@@ -764,10 +769,10 @@ pub async fn load_table(cli: &Cli, path: &str) {
     tracing::info!("Loaded table '{table}'");
 }
 
-pub async fn save_all(cli: &Cli) {
+pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
     tracing::debug!("save_all({cli:?})");
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
-    rltbl.save_all().await.expect("Error saving all");
+    rltbl.save_all(save_dir).await.expect("Error saving all");
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
@@ -900,7 +905,7 @@ pub async fn process_command() {
         Command::Load { subcommand } => match subcommand {
             LoadSubcommand::Table { path } => load_table(&cli, path).await,
         },
-        Command::Save {} => save_all(&cli).await,
+        Command::Save { save_dir } => save_all(&cli, save_dir.as_deref()).await,
         Command::Serve {
             host,
             port,
