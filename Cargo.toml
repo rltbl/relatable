@@ -1,9 +1,19 @@
 [package]
 name = "rltbl"
+repository = "https://github.com/rltbl/relatable"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "rltbl"
+path = "src/main.rs"
+
+[[bin]]
+name = "rltbl_test"
+path = "src/test.rs"
+
 [dependencies]
+ansi_term = "0.12"
 anyhow = "1.0.94"
 async-std = { version = "1.13.0", features = ["attributes"] }
 axum = "0.8.1"
@@ -37,3 +47,8 @@ whoami = "1.5.2"
 default = ["rusqlite"]
 rusqlite = ["dep:rusqlite"]
 sqlx = ["dep:sqlx", "dep:sqlx", "dep:sqlx-core"]
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
