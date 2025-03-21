@@ -50,6 +50,13 @@ rltbl-frontend/build/main.js: rltbl-frontend/package.* rltbl-frontend/src/*
 
 rltbl-frontend/build/main.css: rltbl-frontend/build/main.js
 
+.PHONY: clean
+clean: clean-test
+
+.PHONY: cleanall
+cleanall: clean
+	cargo clean
+
 ### Tests
 
 .PHONY: test-code
@@ -57,18 +64,38 @@ test-code: debug
 	cargo fmt --check
 	cargo test
 
-.PHONY: test-docs
-test-docs: debug
+.PHONY: test-tesh-doc
+test-tesh-doc: debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
-.PHONY: test-tesh
-test-tesh: debug
+.PHONY: test-tesh-misc
+test-tesh-misc: debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test
 
-
-.PHONY: random
-random:
+.PHONY: test-random
+test-random: debug
 	test/random.sh --varying-rate
 
+perf_test_timeout = 5
+perf_test_size = 100000
+
+test/perf/tsv:
+	mkdir -p $@
+
+test/perf/tsv/penguin.tsv: debug | test/perf/tsv
+	target/debug/rltbl demo --size $(perf_test_size) --force
+	target/debug/rltbl save test/perf/tsv/
+
+.PHONY: test-perf
+test-perf: test/perf/tsv/penguin.tsv
+	target/debug/rltbl init --force
+	@echo "target/debug/rltbl -vvv load table $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vvv load table $< || \
+		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
+
 .PHONY: test
-test: src/resources/main.js src/resources/main.css test-code test-docs test-tesh random
+test: src/resources/main.js src/resources/main.css test-code test-tesh-doc test-tesh-misc test-random test-perf
+
+.PHONY: clean-test
+clean-test:
+	rm -Rf test/perf

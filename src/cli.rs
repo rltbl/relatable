@@ -5,7 +5,7 @@
 use crate as rltbl;
 use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Format, Relatable, MOVE_INTERVAL},
-    sql::{JsonRow, VecInto},
+    sql::{JsonRow, VecInto, MAX_PARAMS},
     web::{serve, serve_cgi},
 };
 
@@ -116,7 +116,12 @@ pub enum Command {
     },
 
     /// Save the data
-    Save {},
+    Save {
+        /// The directory to which to save the table .TSVs (defaults to the value of "path" from
+        /// the table table entry for each table when not set)
+        #[arg(value_name = "SAVE_DIR", action = ArgAction::Set)]
+        save_dir: Option<String>,
+    },
 
     /// Run a Relatable server
     Serve {
@@ -764,10 +769,10 @@ pub async fn load_table(cli: &Cli, path: &str) {
     tracing::info!("Loaded table '{table}'");
 }
 
-pub async fn save_all(cli: &Cli) {
+pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
     tracing::debug!("save_all({cli:?})");
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
-    rltbl.save_all().await.expect("Error saving all");
+    rltbl.save_all(save_dir).await.expect("Error saving all");
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
@@ -797,23 +802,46 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     // Populate the penguin table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
     let mut rng = StdRng::seed_from_u64(0);
+    let sql_first_part = r#"INSERT INTO "penguin" VALUES "#;
+    let mut sql_value_parts = vec![];
+    let mut params = vec![];
     for i in 1..=size {
+        if (params.len() + 7) >= MAX_PARAMS {
+            let sql = format!(
+                "{sql_first_part} {sql_value_part}",
+                sql_value_part = sql_value_parts.join(", ")
+            );
+            let params_so_far = json!(params);
+            rltbl
+                .connection
+                .query(&sql, Some(&params_so_far))
+                .await
+                .unwrap();
+            tracing::info!("{num_rows} rows loaded to table penguin", num_rows = i - 1);
+            params.clear();
+            sql_value_parts.clear();
+        }
+
         let id = i;
         let order = i * MOVE_INTERVAL;
         let island = islands.iter().choose(&mut rng).unwrap();
         let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
-        let sql = r#"INSERT INTO "penguin"
-                     VALUES (?, ?, 'FAKE123', ?, 'Pygoscelis adeliae', ?, ?, ?, ?)"#;
-        let params = json!([
-            id,
-            order,
-            id,
-            island,
-            format!("N{id}"),
-            culmen_length,
-            body_mass,
-        ]);
+        sql_value_parts.push("(?, ?, 'FAKE123', ?, 'Pygoscelis adeliae', ?, ?, ?, ?)");
+        params.push(json!(id));
+        params.push(json!(order));
+        params.push(json!(id));
+        params.push(json!(island));
+        params.push(json!(format!("N{id}")));
+        params.push(json!(culmen_length));
+        params.push(json!(body_mass));
+    }
+    if params.len() > 0 {
+        let sql = format!(
+            "{sql_first_part} {sql_value_part}",
+            sql_value_part = sql_value_parts.join(", ")
+        );
+        let params = json!(params);
         rltbl.connection.query(&sql, Some(&params)).await.unwrap();
     }
 }
@@ -900,7 +928,7 @@ pub async fn process_command() {
         Command::Load { subcommand } => match subcommand {
             LoadSubcommand::Table { path } => load_table(&cli, path).await,
         },
-        Command::Save {} => save_all(&cli).await,
+        Command::Save { save_dir } => save_all(&cli, save_dir.as_deref()).await,
         Command::Serve {
             host,
             port,

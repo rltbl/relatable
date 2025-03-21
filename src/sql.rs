@@ -324,7 +324,11 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
 ///////////////////////////////////////////////////////////////////////////////
 
 /// Represents a 'simple' database name
-pub const DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
+pub static DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
+
+/// The [maximum number of parameters](https://www.sqlite.org/limits.html#max_variable_number)
+/// that can be bound to a SQLite query
+pub static MAX_PARAMS: usize = 32766;
 
 /// Helper function to determine whether the given name is 'simple', as defined by
 /// [DB_OBJECT_MATCH_STR]

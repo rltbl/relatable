@@ -7,7 +7,7 @@ use rltbl::{
     git,
     sql::{
         is_simple, json_to_string, DbActiveConnection, DbConnection, DbTransaction, JsonRow,
-        VecInto,
+        VecInto, MAX_PARAMS,
     },
 };
 
@@ -332,7 +332,7 @@ impl Relatable {
     }
 
     pub async fn load_table(&self, table: &str, path: &str) -> Result<()> {
-        // Read the records from the given path:
+        // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
             .delimiter(b'\t')
@@ -341,8 +341,8 @@ impl Relatable {
             })?);
         let mut records = rdr.records();
 
-        // Extract the headers from the first line of the file, which we will need for the create
-        // table statement:
+        // Extract the headers from the first line of the file, which we will need for the CREATE
+        // TABLE statement:
         let headers = {
             let headers = match records.next() {
                 None => {
@@ -369,11 +369,18 @@ impl Relatable {
             headers
         };
 
-        // Create the table and its associated _order trigger:
+        // Add an entry corresponding to the table being loaded to the table table:
         let sql = r#"INSERT INTO "table" ("table", "path") VALUES (?, ?)"#;
         let params = json!([table, path]);
         self.connection.query(&sql, Some(&params)).await?;
+        tracing::debug!("Table {table} (path: {path}) added to table table");
 
+        // Drop the trigger on the _order column first as a (small) performance optimization:
+        let sql = format!(r#"DROP TRIGGER IF EXISTS "{table}_order""#);
+        self.connection.query(&sql, None).await?;
+        tracing::debug!("Dropped trigger on column {table}._order");
+
+        // If the table doesn't already exist, create it now:
         let sql = format!(
             r#"CREATE TABLE IF NOT EXISTS "{table}" (
                  _id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -386,9 +393,61 @@ impl Relatable {
                 .join(", ")
         );
         self.connection.query(&sql, None).await?;
+        tracing::debug!("Table {table} (re)created");
 
+        // Insert the data into the table:
+        let mut columns = vec!["_id".to_string(), "_order".to_string()];
+        columns.append(
+            &mut headers
+                .iter()
+                .map(|k| format!(r#""{k}""#))
+                .collect::<Vec<_>>(),
+        );
+        let placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>();
+        let columns = columns.join(", ");
+        let placeholders = placeholders.join(", ");
+        let mut id = 1;
+        let mut order = id * MOVE_INTERVAL;
+        let sql_first_part = format!(r#"INSERT INTO "{table}" ({columns}) VALUES "#);
+        let mut sql_value_parts = vec![];
+        let mut params = vec![];
+        while let Some(row) = records.next() {
+            let row = row.expect("Error processing row");
+            // We add 2 here because of _id and _order:
+            if (params.len() + row.len() + 2) >= MAX_PARAMS {
+                let sql = format!(
+                    "{sql_first_part} {sql_value_part}",
+                    sql_value_part = sql_value_parts.join(", ")
+                );
+                let params_so_far = json!(params);
+                self.connection.query(&sql, Some(&params_so_far)).await?;
+                tracing::info!("{num_rows} rows loaded to table {table}", num_rows = id - 1);
+                params.clear();
+                sql_value_parts.clear();
+            }
+            sql_value_parts.push(format!("({placeholders})"));
+            params.push(json!(id));
+            params.push(json!(order));
+            for value in row.iter() {
+                params.push(json!(value));
+            }
+            id += 1;
+            order += MOVE_INTERVAL;
+        }
+        if params.len() > 0 {
+            let sql = format!(
+                "{sql_first_part} {sql_value_part}",
+                sql_value_part = sql_value_parts.join(", ")
+            );
+            let params = json!(params);
+            self.connection.query(&sql, Some(&params)).await?;
+        }
+
+        tracing::info!("{num_rows} rows loaded to table {table}", num_rows = id - 1);
+
+        // (Re)create the trigger on the _oder column:
         let sql = format!(
-            r#"CREATE TRIGGER IF NOT EXISTS "{table}_order"
+            r#"CREATE TRIGGER "{table}_order"
                  AFTER INSERT ON "{table}"
                  WHEN NEW._order IS NULL
                  BEGIN
@@ -397,33 +456,21 @@ impl Relatable {
                  END"#
         );
         self.connection.query(&sql, None).await?;
-
-        // Insert the data into the table:
-        let columns = headers
-            .iter()
-            .map(|k| format!(r#""{k}""#))
-            .collect::<Vec<_>>();
-        let placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>();
-        let columns = columns.join(", ");
-        let placeholders = placeholders.join(", ");
-        while let Some(row) = records.next() {
-            let row = row.expect("Error processing row");
-            let sql = format!(r#"INSERT INTO "{table}" ({columns}) VALUES ({placeholders})"#,);
-            let values = row.iter().collect::<Vec<_>>();
-            let params = json!(values);
-            self.connection.query(&sql, Some(&params)).await?;
-        }
+        tracing::debug!("Trigger (re)created on table {table}");
 
         self.commit_to_git().await?;
         Ok(())
     }
 
-    pub async fn save_all(&self) -> Result<()> {
+    pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
         let sql = r#"SELECT "table", "path" FROM "table" WHERE "path" IS NOT NULL"#;
         let table_rows = self.connection.query(&sql, None).await?;
         for table_row in table_rows {
             let table = table_row.get_string("table")?;
-            let path = table_row.get_string("path")?;
+            let path = match save_dir {
+                Some(save_dir) => format!("{save_dir}/{table}.tsv"),
+                None => table_row.get_string("path")?,
+            };
             let mut writer = WriterBuilder::new()
                 .delimiter(b'\t')
                 .quote_style(QuoteStyle::Never)
@@ -488,7 +535,7 @@ impl Relatable {
         tracing::info!("Committing to git on behalf of RLTBL_GIT_AUTHOR: '{author}'");
 
         // Save all the tables:
-        self.save_all().await?;
+        self.save_all(None).await?;
 
         // Get the git status:
         let status = git::get_status()?;
