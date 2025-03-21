@@ -6,7 +6,7 @@
 {% set rows = result.rows %}
 
 {% block styles %}
-<link href="/static/main.css" rel="stylesheet">
+<link href="{{site.root}}/static/main.css" rel="stylesheet">
 {% endblock %}
 
 {% block content %}
@@ -63,6 +63,11 @@
         kind = "dropdown";
       } else if (column_name === "review") {
         kind = "image";
+      }
+    }
+    if (table === "tree_table") {
+      if (column_name === "label") {
+        kind = "tree";
       }
     }
     window.rltbl.result.columns[i].kind = kind;
@@ -136,5 +141,5 @@
     }
   });
 </script>
-<script defer="defer" src="/static/main.js"></script>
+<script defer="defer" src="{{site.root}}/static/main.js"></script>
 {% endblock %}

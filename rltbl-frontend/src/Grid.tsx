@@ -275,8 +275,10 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       }
       const data = await response.json();
       change_id.current = data["result"]["table"]["change_id"];
-      setNumRows(data["result"]["range"]["total"]);
       const rows = data["result"]["rows"];
+      if (rows.length > 0) {
+        setNumRows(data["result"]["range"]["total"]);
+      }
       var i = first;
       for (const row of rows) {
         idRowRef.current[row.id] = i;
