@@ -2601,7 +2601,7 @@ impl Table {
             view = self.view,
             columns = columns
                 .iter()
-                .map(|c| c.name.to_string())
+                .map(|c| format!(r#""{}""#, c.name))
                 .collect::<Vec<_>>()
                 .join(", "),
         );
