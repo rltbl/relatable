@@ -19,7 +19,10 @@ use minijinja::{path_loader, Environment};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, json, to_value, Map as JsonMap, Value as JsonValue};
-use std::{env, fmt::Display, fs::File, io::Write, path::Path as FilePath, str::FromStr};
+use std::{
+    collections::HashMap, env, fmt::Display, fs::File, io::Write, path::Path as FilePath,
+    str::FromStr,
+};
 use tabwriter::TabWriter;
 
 pub static RLTBL_DEFAULT_DB: &str = ".relatable/relatable.db";
@@ -138,7 +141,7 @@ impl Relatable {
 
         let rltbl = Relatable::connect(None).await?;
 
-        // Create and populate the table table
+        // Create the internal rltbl tables:
         let sql = r#"CREATE TABLE "table" (
           _id INTEGER PRIMARY KEY AUTOINCREMENT,
           _order INTEGER UNIQUE,
@@ -158,11 +161,6 @@ impl Relatable {
         );
         rltbl.connection.query(&sql, None).await.unwrap();
 
-        // TODO: Decide whether to include the 'table' table by default.
-        // let sql = "INSERT INTO 'table' ('table') VALUES ('table')";
-        // query(&rltbl.connection, sql, None).await.unwrap();
-
-        // Create the change and history tables
         let sql = r#"CREATE TABLE "user" (
           "name" TEXT PRIMARY KEY,
           "color" TEXT,
@@ -171,7 +169,6 @@ impl Relatable {
         )"#;
         rltbl.connection.query(sql, None).await.unwrap();
 
-        // Create the change and history tables
         let sql = r#"CREATE TABLE "change" (
           change_id INTEGER PRIMARY KEY AUTOINCREMENT,
           "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -196,7 +193,6 @@ impl Relatable {
         )"#;
         rltbl.connection.query(sql, None).await.unwrap();
 
-        // Create the message table
         let sql = r#"CREATE TABLE "message" (
           "message_id" INTEGER PRIMARY KEY AUTOINCREMENT,
           "added_by" TEXT,
@@ -259,23 +255,64 @@ impl Relatable {
         }
     }
 
-    pub async fn fetch_all_columns(&self, table_name: &str) -> Result<(Vec<Column>, Vec<Column>)> {
+    pub async fn fetch_all_columns(&self, table: &str) -> Result<(Vec<Column>, Vec<Column>)> {
+        // Begin by converting the contents of the column table to a HashMap. In case the
+        // (optional) column table does not exist in the db, return an empty map.
+        let sql = r#"SELECT * FROM "column" WHERE "table" = ?"#;
+        let params = json!([table]);
+        let mut columns_config = HashMap::new();
+        for json_col in self
+            .connection
+            .query(&sql, Some(&params))
+            .await
+            .unwrap_or(vec![])
+        {
+            columns_config.insert(json_col.get_string("column")?, json_col);
+        }
+
+        // Declare a closure to retrieve a particular column attribute from `columns_config`:
+        let get_column_attribute = |column: &str, attribute: &str| -> Option<String> {
+            columns_config
+                .get(column)
+                .and_then(|col| match col.get_string(attribute).ok() {
+                    None => None,
+                    Some(attribute) if attribute == "" => None,
+                    Some(attribute) => Some(attribute),
+                })
+        };
+
+        // Fetch the columns corresponding to `table` from the database's metadata:
         // WARN: SQLite only!
-        let statement =
-            format!(r#"SELECT "name" FROM pragma_table_info("{table_name}") ORDER BY "cid""#);
+        let sql = format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
         let mut columns = vec![];
         let mut meta_columns = vec![];
-        for column in self.connection.query(&statement, None).await? {
+        for column in self.connection.query(&sql, None).await? {
+            // Decorate the column using the information from the column table that we collected
+            // above:
             match column.get_string("name")? {
-                name if name.starts_with("_") => meta_columns.push(Column { name }),
-                name => columns.push(Column { name }),
+                name if name.starts_with("_") => meta_columns.push(Column {
+                    name,
+                    table: table.to_string(),
+                    label: None,
+                    description: None,
+                }),
+                name => columns.push(Column {
+                    label: get_column_attribute(&name.as_str(), "label"),
+                    description: get_column_attribute(&name.as_str(), "description"),
+                    name,
+                    table: table.to_string(),
+                }),
             };
         }
         if columns.is_empty() && meta_columns.is_empty() {
             return Err(
-                RelatableError::DataError(format!("No defined columns for: {table_name}")).into(),
+                RelatableError::DataError(format!("No db columns found for: {table}")).into(),
             );
         }
+        tracing::debug!(
+            "Returning (columns: {columns:?}, meta_columns: {meta_columns:?} from \
+             fetch_all_columns()"
+        );
         Ok((columns, meta_columns))
     }
 
@@ -2523,7 +2560,9 @@ impl From<JsonRow> for Row {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
-    // sqltype: String,
+    pub table: String,
+    pub label: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2551,7 +2590,6 @@ impl Table {
     async fn ensure_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
         tracing::debug!("Entering ensure_view_created({rltbl:?})");
         let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
-
         self.view = format!("{}_view", self.name);
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
@@ -2601,7 +2639,7 @@ impl Table {
             view = self.view,
             columns = columns
                 .iter()
-                .map(|c| c.name.to_string())
+                .map(|c| format!(r#""{}""#, c.name))
                 .collect::<Vec<_>>()
                 .join(", "),
         );
