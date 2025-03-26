@@ -13,7 +13,7 @@ use ansi_term::Style;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
-use promptly::prompt;
+use promptly::prompt_opt;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use regex::Regex;
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
@@ -543,6 +543,12 @@ pub fn input_json_row() -> JsonRow {
     JsonRow { content: json_row }
 }
 
+pub fn prompt_for_column_value(column: &str) -> JsonValue {
+    let value: Option<String> = prompt_opt(format!("Enter a {column}"))
+        .expect("Error getting column value from user input");
+    json!(value)
+}
+
 pub async fn prompt_for_json_message(
     rltbl: &Relatable,
     table: &str,
@@ -562,14 +568,7 @@ pub async fn prompt_for_json_message(
     json_row.content.insert("table".to_string(), json!(table));
     json_row.content.insert("row".to_string(), json!(row));
     json_row.content.insert("column".to_string(), json!(column));
-
     tracing::debug!("Received json row from user input: {json_row:?}");
-
-    let prompt_for_column_value = |column: &str| -> JsonValue {
-        let value: String = prompt(format!("Enter a {column}"))
-            .expect("Error getting column value from user input");
-        json!(value)
-    };
 
     for column in columns {
         if let Some(JsonValue::Null) = json_row.content.get(column) {
@@ -582,9 +581,9 @@ pub async fn prompt_for_json_message(
     Ok(json_row)
 }
 
-pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonRow> {
+pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<JsonRow> {
     let columns = rltbl
-        .fetch_columns(table)
+        .fetch_columns(table_name)
         .await?
         .iter()
         .map(|c| c.name.to_string())
@@ -592,16 +591,17 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonR
     let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
     let mut json_row = JsonRow::from_strings(&columns);
 
-    let prompt_for_column_value = |column: &str| -> JsonValue {
-        let value: String = prompt(format!("Enter the value for '{column}'"))
-            .expect("Error getting column value from user input");
-        json!(value)
-    };
-
-    for column in columns {
-        json_row
-            .content
-            .insert(column.to_string(), prompt_for_column_value(&column));
+    let table = rltbl.get_table(table_name).await?;
+    for column in &columns {
+        let nulltype = table
+            .get_column_attribute(&column, "nulltype")
+            .unwrap_or("".to_string());
+        let value = match prompt_for_column_value(&column) {
+            JsonValue::Null if nulltype == "empty" => JsonValue::Null,
+            JsonValue::Null => json!(""),
+            value => value,
+        };
+        json_row.content.insert(column.to_string(), value);
     }
 
     Ok(json_row)
