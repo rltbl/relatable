@@ -295,10 +295,16 @@ impl Relatable {
                     table: table.to_string(),
                     label: None,
                     description: None,
+                    nulltype: None,
                 }),
                 name => columns.push(Column {
+                    // The fields are assigned in this particular order to satisfy the constraints
+                    // of rust's ownership model. Because `name` is a String and not a reference,
+                    // we cannot assign it and then afterwards borrow it to use as an argument
+                    // to a function. But doing that in the opposite order is fine.
                     label: get_column_attribute(&name.as_str(), "label"),
                     description: get_column_attribute(&name.as_str(), "description"),
+                    nulltype: get_column_attribute(&name.as_str(), "nulltype"),
                     name,
                     table: table.to_string(),
                 }),
@@ -2563,6 +2569,7 @@ pub struct Column {
     pub table: String,
     pub label: Option<String>,
     pub description: Option<String>,
+    pub nulltype: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

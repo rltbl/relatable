@@ -806,6 +806,18 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     )"#;
     rltbl.connection.query(sql, None).await.unwrap();
 
+    // TODO: Uncomment this code and then add a couple of test cases related to the column table:
+    // let sql = r#"CREATE TABLE "column" (
+    //   _id INTEGER PRIMARY KEY AUTOINCREMENT,
+    //   _order INTEGER UNIQUE,
+    //   "table" TEXT NOT NULL,
+    //   "column" TEXT NOT NULL,
+    //   "label" TEXT,
+    //   "description" TEXT,
+    //   "nulltype" TEXT
+    // )"#;
+    // rltbl.connection.query(sql, None).await.unwrap();
+
     // Populate the penguin table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
     let mut rng = StdRng::seed_from_u64(0);
