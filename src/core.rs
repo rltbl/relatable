@@ -521,6 +521,7 @@ impl Relatable {
         Ok(())
     }
 
+    // TODO: Take 'empty' nulltypes into consideration.
     pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
         let sql = r#"SELECT "table", "path" FROM "table" WHERE "path" IS NOT NULL"#;
         let table_rows = self.connection.query(&sql, None).await?;
