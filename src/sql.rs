@@ -419,6 +419,7 @@ impl JsonRow {
     }
 
     pub fn nullified(row: &Self, table: &Table) -> Self {
+        tracing::debug!("nullified({row:?}, {table:?})");
         let mut nullified_row = Self::new();
         for (column, value) in row.content.iter() {
             let nulltype = table
@@ -437,6 +438,7 @@ impl JsonRow {
                 }
             };
         }
+        tracing::debug!("Nullified row: {nullified_row:?}");
         nullified_row
     }
 
