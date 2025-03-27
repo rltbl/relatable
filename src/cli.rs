@@ -549,7 +549,10 @@ pub fn input_json_row() -> JsonRow {
 pub fn prompt_for_column_value(column: &str) -> JsonValue {
     let value: Option<String> = prompt_opt(format!("Enter a {column}"))
         .expect("Error getting column value from user input");
-    json!(value)
+    match value {
+        Some(value) => json!(value),
+        None => json!(""),
+    }
 }
 
 pub async fn prompt_for_json_message(
@@ -594,17 +597,10 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
     let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
     let mut json_row = JsonRow::from_strings(&columns);
 
-    let table = rltbl.get_table(table_name).await?;
     for column in &columns {
-        let nulltype = table
-            .get_column_attribute(&column, "nulltype")
-            .unwrap_or("".to_string());
-        let value = match prompt_for_column_value(&column) {
-            JsonValue::Null if nulltype == "empty" => JsonValue::Null,
-            JsonValue::Null => json!(""),
-            value => value,
-        };
-        json_row.content.insert(column.to_string(), value);
+        json_row
+            .content
+            .insert(column.to_string(), prompt_for_column_value(&column));
     }
 
     Ok(json_row)

@@ -6,7 +6,7 @@
 //! any elements of the API that are database-specific.
 
 use crate as rltbl;
-use rltbl::core::RelatableError;
+use rltbl::core::{RelatableError, Table};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -418,6 +418,28 @@ impl JsonRow {
         }
     }
 
+    pub fn nullified(row: &Self, table: &Table) -> Self {
+        let mut nullified_row = Self::new();
+        for (column, value) in row.content.iter() {
+            let nulltype = table
+                .get_column_attribute(&column, "nulltype")
+                .unwrap_or("".to_string());
+            match value {
+                JsonValue::String(s) if s == "" && nulltype == "empty" => {
+                    nullified_row
+                        .content
+                        .insert(column.to_string(), JsonValue::Null);
+                }
+                value => {
+                    nullified_row
+                        .content
+                        .insert(column.to_string(), value.clone());
+                }
+            };
+        }
+        nullified_row
+    }
+
     pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
         let value = self.content.get(column_name);
         match value {
@@ -450,7 +472,7 @@ impl JsonRow {
         json_row
     }
 
-    fn to_strings(&self) -> Vec<String> {
+    pub fn to_strings(&self) -> Vec<String> {
         let mut result = vec![];
         for column_name in self.content.keys() {
             // The logic of this implies that this should not fail, so an expect() is
@@ -460,7 +482,7 @@ impl JsonRow {
         result
     }
 
-    fn to_string_map(&self) -> IndexMap<String, String> {
+    pub fn to_string_map(&self) -> IndexMap<String, String> {
         let mut result = IndexMap::new();
         for column_name in self.content.keys() {
             result.insert(

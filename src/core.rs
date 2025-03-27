@@ -1735,8 +1735,11 @@ impl Relatable {
             );
         }
 
-        // Prepare a new row to be inserted:
-        let mut new_row = Row::prepare_new(&table, Some(row), &mut tx)?;
+        // Begin by nullifying any column values whose content matches the column's nulltype:
+        let row = JsonRow::nullified(row, &table);
+
+        // Prepare a new row to be inserted using the JSON row as a base:
+        let mut new_row = Row::prepare_new(&table, Some(&row), &mut tx)?;
 
         // A new_row_id will have been passed if the row is being added as part of an undo/redo.
         // In that case an after_id must have been passed as well but we leave the row order as
