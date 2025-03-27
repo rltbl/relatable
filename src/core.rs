@@ -531,7 +531,6 @@ impl Relatable {
         Ok(())
     }
 
-    // TODO: Take 'empty' nulltypes into consideration.
     pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
         let sql = r#"SELECT "table", "path" FROM "table" WHERE "path" IS NOT NULL"#;
         let table_rows = self.connection.query(&sql, None).await?;
@@ -565,16 +564,30 @@ impl Relatable {
             let data_rows = self.connection.query(&sql, None).await?;
             for data_row in data_rows {
                 let values = {
-                    let json_values = data_row.content.values();
                     let mut str_values = vec![];
-                    for value in json_values {
-                        match value.as_str() {
-                            None => {
-                                return Err(
-                                    RelatableError::DataError("Not a string".to_string()).into()
-                                );
+                    for (column, value) in data_row.content.iter() {
+                        match value {
+                            JsonValue::String(s) => str_values.push(s.to_string()),
+                            JsonValue::Null => {
+                                let table = self.get_table(&table).await?;
+                                let nulltype = {
+                                    table
+                                        .get_column_attribute(column, "nulltype")
+                                        .unwrap_or("".to_string())
+                                };
+                                match nulltype.as_str() {
+                                    // Note that the behaviour for the 'empty' nulltype happens
+                                    // to be the same as that for no nulltype, but in general
+                                    // that won't be true for every nulltype.
+                                    "empty" | _ => str_values.push("".to_string()),
+                                };
                             }
-                            Some(s) => str_values.push(s),
+                            _ => {
+                                return Err(RelatableError::DataError(
+                                    "Not a string or a NULL".to_string(),
+                                )
+                                .into());
+                            }
                         }
                     }
                     str_values
