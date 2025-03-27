@@ -425,13 +425,11 @@ impl Relatable {
                 .map(|k| format!(r#"{k}"#))
                 .collect::<Vec<_>>(),
         );
-        let placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>();
         let columns_line = columns
             .iter()
             .map(|k| format!(r#""{k}""#))
             .collect::<Vec<_>>()
             .join(", ");
-        let placeholders = placeholders.join(", ");
         let mut id = 1;
         let mut order = id * MOVE_INTERVAL;
         let sql_first_part = format!(r#"INSERT INTO "{table_name}" ({columns_line}) VALUES "#);
@@ -454,39 +452,51 @@ impl Relatable {
                 params.clear();
                 sql_value_parts.clear();
             }
-            sql_value_parts.push(format!("({placeholders})"));
+
             params.push(json!(id));
             params.push(json!(order));
-            for (i, value) in row.iter().enumerate() {
-                let nulltype = {
-                    if value == "" {
-                        // We add 2 here because of _id and _order:
-                        match columns.get(i + 2) {
-                            Some(column) => {
-                                let table = self.get_table(table_name).await?;
-                                Some(
-                                    table
-                                        .get_column_attribute(column, "nulltype")
-                                        .unwrap_or("".to_string()),
-                                )
+            let placeholders = {
+                let mut placeholders = vec![];
+                for (i, value) in row.iter().enumerate() {
+                    let nulltype = {
+                        if value == "" {
+                            // We add 2 here because of _id and _order:
+                            match columns.get(i + 2) {
+                                Some(column) => {
+                                    let table = self.get_table(table_name).await?;
+                                    Some(
+                                        table
+                                            .get_column_attribute(column, "nulltype")
+                                            .unwrap_or("".to_string()),
+                                    )
+                                }
+                                None => {
+                                    return Err(RelatableError::DataError(format!(
+                                        "Unable to retrieve column {}",
+                                        i + 2
+                                    ))
+                                    .into())
+                                }
                             }
-                            None => {
-                                return Err(RelatableError::DataError(format!(
-                                    "Unable to retrieve column {}",
-                                    i + 2
-                                ))
-                                .into())
-                            }
+                        } else {
+                            None
                         }
-                    } else {
-                        None
-                    }
-                };
-                match nulltype {
-                    Some(nulltype) if nulltype == "empty" => params.push(JsonValue::Null),
-                    _ => params.push(json!(value)),
+                    };
+                    match nulltype {
+                        Some(nulltype) if nulltype == "empty" => {
+                            placeholders.push("NULL");
+                        }
+                        _ => {
+                            placeholders.push("?");
+                            params.push(json!(value))
+                        }
+                    };
                 }
-            }
+                placeholders
+            };
+            // Add two extra ? for _id and _order:
+            let placeholders = format!("?, ?, {}", placeholders.join(", "));
+            sql_value_parts.push(format!("({placeholders})"));
             id += 1;
             order += MOVE_INTERVAL;
         }
@@ -1591,8 +1601,26 @@ impl Relatable {
         // Update the user cursor
         self.prepare_user_cursor(changeset, &mut tx)?;
 
+        let table = self._get_table(&changeset.table, &mut tx)?;
+        let nullify_value = |column: &str, value: &JsonValue| -> Result<JsonValue> {
+            match value {
+                JsonValue::String(s) if s == "" => {
+                    let nulltype = {
+                        table
+                            .get_column_attribute(column, "nulltype")
+                            .unwrap_or("".to_string())
+                    };
+                    if nulltype == "empty" {
+                        Ok(JsonValue::Null)
+                    } else {
+                        Ok(value.clone())
+                    }
+                }
+                _ => Ok(value.clone()),
+            }
+        };
+
         // Actually make the changes:
-        let table = changeset.table.clone();
         let mut actual_changes = vec![];
         for change in &changeset.changes {
             match change {
@@ -1602,22 +1630,31 @@ impl Relatable {
                     before,
                     after,
                 } => {
-                    // WARN: This just sets text!
-                    let sql = format!(
-                        r#"UPDATE "{table}"
-                              SET "{column}" = ?
-                            WHERE _id = ?
-                           RETURNING 1 AS "updated""#,
-                    );
-
                     // Depending on whether this is an undo/redo or an original action, the
                     // new value will be taken from either `before` or `after`.
                     let value = match &changeset.action {
-                        ChangeAction::Undo | ChangeAction::Redo => before,
-                        ChangeAction::Do => after,
+                        ChangeAction::Undo | ChangeAction::Redo => nullify_value(column, before)?,
+                        ChangeAction::Do => nullify_value(column, after)?,
                     };
-                    // TODO: Render JSON to SQL properly.
-                    let params = json!([json_to_string(&value), row]);
+                    let (sql, params) = {
+                        let sql = format!(
+                            r#"UPDATE "{table}"
+                               SET "{column}" = {value}
+                               WHERE _id = ?
+                               RETURNING 1 AS "updated""#,
+                            table = changeset.table,
+                            value = match value {
+                                JsonValue::Null => "NULL",
+                                _ => "?",
+                            }
+                        );
+                        let params = match value {
+                            JsonValue::Null => json!([row]),
+                            _ => json!([json_to_string(&value), row]),
+                        };
+                        (sql, params)
+                    };
+
                     if tx.query(&sql, Some(&params))?.len() < 1 {
                         tracing::warn!("No row with _id {row} found to update");
                     } else {
@@ -1735,7 +1772,8 @@ impl Relatable {
             );
         }
 
-        // Begin by nullifying any column values whose content matches the column's nulltype:
+        // Nullify the JSON row by setting any column values whose content matches the column's
+        // nulltype to Null:
         let row = JsonRow::nullified(row, &table);
 
         // Prepare a new row to be inserted using the JSON row as a base:
@@ -2535,26 +2573,27 @@ impl Row {
     fn as_insert(&self, table: &str) -> (String, JsonValue) {
         let id = self.id;
         let order = self.order;
-        let columns = self
+        let quoted_column_names = self
             .cells
             .keys()
             .map(|k| format!(r#""{k}""#))
             .collect::<Vec<_>>();
-        let column_placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>();
 
-        let params = {
+        let (value_placeholders, params) = {
+            let mut value_placeholders = vec![];
             let mut params = vec![json!(id), json!(order)];
-            params.append(
-                &mut self
-                    .to_strings()
-                    .iter()
-                    .map(|s| json!(s))
-                    .collect::<Vec<_>>(),
-            );
-            params
+            for cell in self.cells.values() {
+                if cell.value == JsonValue::Null {
+                    value_placeholders.push("NULL");
+                } else {
+                    value_placeholders.push("?");
+                    params.push(cell.value.clone());
+                }
+            }
+            (value_placeholders, params)
         };
 
-        let sql = if columns.len() == 0 {
+        let sql = if quoted_column_names.len() == 0 {
             format!(
                 r#"INSERT INTO "{table}"
                    ("_id", "_order")
@@ -2563,10 +2602,10 @@ impl Row {
         } else {
             format!(
                 r#"INSERT INTO "{table}"
-                   ("_id", "_order", {column_names})
+                   ("_id", "_order", {quoted_column_names})
                    VALUES (?, ?, {column_values})"#,
-                column_names = columns.join(", "),
-                column_values = column_placeholders.join(", "),
+                quoted_column_names = quoted_column_names.join(", "),
+                column_values = value_placeholders.join(", "),
             )
         };
         (sql, json!(params))

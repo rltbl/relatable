@@ -496,9 +496,6 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
     tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
 
-    // TODO: If the value is an empty string, check the nulltype for the column
-    // and do the appropriate thing.
-
     // Fetch the current value from the db:
     let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = ?"#);
     let params = json!([row]);
