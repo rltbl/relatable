@@ -13,7 +13,7 @@ use ansi_term::Style;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
-use promptly::prompt;
+use promptly::prompt_opt;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use regex::Regex;
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
@@ -543,6 +543,15 @@ pub fn input_json_row() -> JsonRow {
     JsonRow { content: json_row }
 }
 
+pub fn prompt_for_column_value(column: &str) -> JsonValue {
+    let value: Option<String> = prompt_opt(format!("Enter a {column}"))
+        .expect("Error getting column value from user input");
+    match value {
+        Some(value) => json!(value),
+        None => json!(""),
+    }
+}
+
 pub async fn prompt_for_json_message(
     rltbl: &Relatable,
     table: &str,
@@ -562,14 +571,7 @@ pub async fn prompt_for_json_message(
     json_row.content.insert("table".to_string(), json!(table));
     json_row.content.insert("row".to_string(), json!(row));
     json_row.content.insert("column".to_string(), json!(column));
-
     tracing::debug!("Received json row from user input: {json_row:?}");
-
-    let prompt_for_column_value = |column: &str| -> JsonValue {
-        let value: String = prompt(format!("Enter a {column}"))
-            .expect("Error getting column value from user input");
-        json!(value)
-    };
 
     for column in columns {
         if let Some(JsonValue::Null) = json_row.content.get(column) {
@@ -582,9 +584,9 @@ pub async fn prompt_for_json_message(
     Ok(json_row)
 }
 
-pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonRow> {
+pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<JsonRow> {
     let columns = rltbl
-        .fetch_columns(table)
+        .fetch_columns(table_name)
         .await?
         .iter()
         .map(|c| c.name.to_string())
@@ -592,13 +594,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table: &str) -> Result<JsonR
     let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
     let mut json_row = JsonRow::from_strings(&columns);
 
-    let prompt_for_column_value = |column: &str| -> JsonValue {
-        let value: String = prompt(format!("Enter the value for '{column}'"))
-            .expect("Error getting column value from user input");
-        json!(value)
-    };
-
-    for column in columns {
+    for column in &columns {
         json_row
             .content
             .insert(column.to_string(), prompt_for_column_value(&column));
@@ -769,10 +765,7 @@ pub async fn load_table(cli: &Cli, path: &str) {
     let table = table.trim_end_matches("_");
     let table = table.trim_start_matches("_");
 
-    rltbl
-        .load_table(&table, path)
-        .await
-        .expect("Error loading table");
+    rltbl.load_table(&table, path).await;
     tracing::info!("Loaded table '{table}'");
 }
 
@@ -804,6 +797,25 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
       culmen_length TEXT,
       body_mass TEXT
     )"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    let sql = r#"CREATE TABLE "column" (
+      _id INTEGER PRIMARY KEY AUTOINCREMENT,
+      _order INTEGER UNIQUE,
+      "table" TEXT NOT NULL,
+      "column" TEXT NOT NULL,
+      "label" TEXT,
+      "description" TEXT,
+      "nulltype" TEXT
+    )"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    let sql = r#"INSERT INTO "column"
+                        ("table",   "column",        "label",      "description", "nulltype")
+                 VALUES ('penguin', 'study_name',    'muddy_name', NULL,              NULL),
+                        ('penguin', 'sample_number', NULL,         'a sample number', NULL),
+                        ('penguin', 'maple_syrup',   'maple syrup', NULL,             NULL),
+                        ('penguin', 'species',       NULL,          NULL,             'empty')"#;
     rltbl.connection.query(sql, None).await.unwrap();
 
     // Populate the penguin table with random data.
