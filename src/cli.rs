@@ -765,10 +765,7 @@ pub async fn load_table(cli: &Cli, path: &str) {
     let table = table.trim_end_matches("_");
     let table = table.trim_start_matches("_");
 
-    rltbl
-        .load_table(&table, path)
-        .await
-        .expect("Error loading table");
+    rltbl.load_table(&table, path).await;
     tracing::info!("Loaded table '{table}'");
 }
 

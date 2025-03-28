@@ -353,39 +353,28 @@ impl Relatable {
         self.connection.query(&statement, Some(&params)).await
     }
 
-    pub async fn load_table(&self, table_name: &str, path: &str) -> Result<()> {
+    /// Note that this function may panic.
+    pub async fn load_table(&self, table_name: &str, path: &str) {
         // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
             .delimiter(b'\t')
-            .from_reader(File::open(path).map_err(|err| {
-                RelatableError::InputError(format!("Unable to open '{path}': {err}"))
-            })?);
+            .from_reader(File::open(path).expect(&format!("Unable to open '{path}'")));
         let mut records = rdr.records();
 
         // Extract the headers from the first line of the file, which we will need for the CREATE
         // TABLE statement:
         let headers = {
             let headers = match records.next() {
-                None => {
-                    return Err(RelatableError::InputError(format!("'{path}' is empty")).into());
-                }
+                None => panic!("'{path}' is empty"),
                 Some(record) => match record {
-                    Err(err) => {
-                        return Err(RelatableError::InputError(format!(
-                            "Error reading from '{path}': {err}"
-                        ))
-                        .into());
-                    }
+                    Err(err) => panic!("Error reading from '{path}': {err}"),
                     Ok(headers) => headers.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                 },
             };
             for header in &headers {
                 if header.trim().is_empty() {
-                    return Err(RelatableError::InputError(format!(
-                        "One or more of the header fields is empty for table '{table_name}'"
-                    ))
-                    .into());
+                    panic!("One or more of the header fields is empty for table '{table_name}'");
                 }
             }
             headers
@@ -394,12 +383,18 @@ impl Relatable {
         // Add an entry corresponding to the table being loaded to the table table:
         let sql = r#"INSERT INTO "table" ("table", "path") VALUES (?, ?)"#;
         let params = json!([table_name, path]);
-        self.connection.query(&sql, Some(&params)).await?;
+        self.connection
+            .query(&sql, Some(&params))
+            .await
+            .expect("Error inserting to table table");
         tracing::debug!("Table {table_name} (path: {path}) added to table table");
 
         // Drop the trigger on the _order column first as a (small) performance optimization:
         let sql = format!(r#"DROP TRIGGER IF EXISTS "{table_name}_order""#);
-        self.connection.query(&sql, None).await?;
+        self.connection
+            .query(&sql, None)
+            .await
+            .expect(&format!("Error dropping trigger \"{table_name}_order\""));
         tracing::debug!("Dropped trigger on column {table_name}._order");
 
         // If the table doesn't already exist, create it now:
@@ -414,10 +409,17 @@ impl Relatable {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        self.connection.query(&sql, None).await?;
+        self.connection
+            .query(&sql, None)
+            .await
+            .expect(&format!("Error creating {table_name}"));
         tracing::debug!("Table {table_name} (re)created");
 
         // Insert the data into the table:
+        let table = self
+            .get_table(table_name)
+            .await
+            .expect(&format!("Error getting info for {table_name}"));
         let mut columns = vec!["_id".to_string(), "_order".to_string()];
         columns.append(
             &mut headers
@@ -444,7 +446,10 @@ impl Relatable {
                     sql_value_part = sql_value_parts.join(", ")
                 );
                 let params_so_far = json!(params);
-                self.connection.query(&sql, Some(&params_so_far)).await?;
+                self.connection
+                    .query(&sql, Some(&params_so_far))
+                    .await
+                    .expect("Error inserting to table");
                 tracing::info!(
                     "{num_rows} rows loaded to table {table_name}",
                     num_rows = id - 1
@@ -462,21 +467,12 @@ impl Relatable {
                         if value == "" {
                             // We add 2 here because of _id and _order:
                             match columns.get(i + 2) {
-                                Some(column) => {
-                                    let table = self.get_table(table_name).await?;
-                                    Some(
-                                        table
-                                            .get_column_attribute(column, "nulltype")
-                                            .unwrap_or("".to_string()),
-                                    )
-                                }
-                                None => {
-                                    return Err(RelatableError::DataError(format!(
-                                        "Unable to retrieve column {}",
-                                        i + 2
-                                    ))
-                                    .into())
-                                }
+                                Some(column) => Some(
+                                    table
+                                        .get_column_attribute(column, "nulltype")
+                                        .unwrap_or("".to_string()),
+                                ),
+                                None => panic!("Unable to retrieve column {}", i + 2),
                             }
                         } else {
                             None
@@ -506,15 +502,17 @@ impl Relatable {
                 sql_value_part = sql_value_parts.join(", ")
             );
             let params = json!(params);
-            self.connection.query(&sql, Some(&params)).await?;
+            self.connection
+                .query(&sql, Some(&params))
+                .await
+                .expect(&format!("Error inserting to {table_name}"));
+            tracing::info!(
+                "{num_rows} rows loaded to table {table_name}",
+                num_rows = id - 1
+            );
         }
 
-        tracing::info!(
-            "{num_rows} rows loaded to table {table_name}",
-            num_rows = id - 1
-        );
-
-        // (Re)create the trigger on the _oder column:
+        // (Re)create the trigger on the _order column:
         let sql = format!(
             r#"CREATE TRIGGER "{table_name}_order"
                  AFTER INSERT ON "{table_name}"
@@ -524,20 +522,22 @@ impl Relatable {
                    WHERE _id = NEW._id;
                  END"#
         );
-        self.connection.query(&sql, None).await?;
+        self.connection
+            .query(&sql, None)
+            .await
+            .expect(&format!("Error creating trigger \"{table_name}_order\""));
         tracing::debug!("Trigger (re)created on table {table_name}");
 
-        self.commit_to_git().await?;
-        Ok(())
+        self.commit_to_git().await.expect("Error committing to git");
     }
 
     pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
         let sql = r#"SELECT "table", "path" FROM "table" WHERE "path" IS NOT NULL"#;
         let table_rows = self.connection.query(&sql, None).await?;
         for table_row in table_rows {
-            let table = table_row.get_string("table")?;
+            let table_name = table_row.get_string("table")?;
             let path = match save_dir {
-                Some(save_dir) => format!("{save_dir}/{table}.tsv"),
+                Some(save_dir) => format!("{save_dir}/{table_name}.tsv"),
                 None => table_row.get_string("path")?,
             };
             let mut writer = WriterBuilder::new()
@@ -546,7 +546,7 @@ impl Relatable {
                 .from_path(path)?;
 
             let header_row = self
-                .fetch_columns(&table)
+                .fetch_columns(&table_name)
                 .await?
                 .iter()
                 .map(|c| c.name.to_string())
@@ -554,7 +554,7 @@ impl Relatable {
             writer.write_record(header_row.clone())?;
 
             let sql = format!(
-                r#"SELECT {columns} FROM "{table}" ORDER BY "_order""#,
+                r#"SELECT {columns} FROM "{table_name}" ORDER BY "_order""#,
                 columns = header_row
                     .iter()
                     .map(|c| format!(r#""{c}""#))
@@ -562,6 +562,7 @@ impl Relatable {
                     .join(", ")
             );
             let data_rows = self.connection.query(&sql, None).await?;
+            let table = self.get_table(&table_name).await?;
             for data_row in data_rows {
                 let values = {
                     let mut str_values = vec![];
@@ -569,7 +570,6 @@ impl Relatable {
                         match value {
                             JsonValue::String(s) => str_values.push(s.to_string()),
                             JsonValue::Null => {
-                                let table = self.get_table(&table).await?;
                                 let nulltype = {
                                     table
                                         .get_column_attribute(column, "nulltype")
@@ -875,7 +875,7 @@ impl Relatable {
         Ok(users)
     }
 
-    fn json_to_columns_map(&self, json_cols: &Vec<JsonRow>) -> Result<HashMap<String, Column>> {
+    fn json_to_columns_map(json_cols: &Vec<JsonRow>) -> Result<HashMap<String, Column>> {
         let mut columns = HashMap::new();
         for json_col in json_cols {
             columns.insert(
@@ -900,18 +900,17 @@ impl Relatable {
             .query(&sql, Some(&params))
             .await
             .unwrap_or(vec![]);
-        self.json_to_columns_map(&json_columns)
+        Self::json_to_columns_map(&json_columns)
     }
 
-    pub fn _get_columns_map(
-        &self,
+    fn _get_columns_map(
         table_name: &str,
         tx: &mut DbTransaction<'_>,
     ) -> Result<HashMap<String, Column>> {
         let sql = r#"SELECT * FROM "column" WHERE "table" = ?"#;
         let params = json!([table_name]);
         let json_columns = tx.query(&sql, Some(&params)).unwrap_or(vec![]);
-        self.json_to_columns_map(&json_columns)
+        Self::json_to_columns_map(&json_columns)
     }
 
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
@@ -960,7 +959,7 @@ impl Relatable {
             name,
             view,
             change_id,
-            columns: self._get_columns_map(table_name, tx)?,
+            columns: Self::_get_columns_map(table_name, tx)?,
             editable: true,
         })
     }
@@ -1645,9 +1644,11 @@ impl Relatable {
                 } => {
                     // Depending on whether this is an undo/redo or an original action, the
                     // new value will be taken from either `before` or `after`.
+                    let before = nullify_value(column, before)?;
+                    let after = nullify_value(column, after)?;
                     let value = match &changeset.action {
-                        ChangeAction::Undo | ChangeAction::Redo => nullify_value(column, before)?,
-                        ChangeAction::Do => nullify_value(column, after)?,
+                        ChangeAction::Undo | ChangeAction::Redo => before.clone(),
+                        ChangeAction::Do => after.clone(),
                     };
                     let (sql, params) = {
                         let sql = format!(
@@ -2681,6 +2682,8 @@ pub struct Table {
     pub view: String,
     // The history_id of the most recent update to this table.
     pub change_id: usize,
+    // We may eventually want to turn `columns` into a special-purpose struct, but for now a
+    // simple HashMap suffices.
     pub columns: HashMap<String, Column>,
     pub editable: bool,
 }
