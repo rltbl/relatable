@@ -6,8 +6,8 @@ use crate as rltbl;
 use rltbl::{
     git,
     sql::{
-        is_simple, json_to_string, DbActiveConnection, DbConnection, DbTransaction, JsonRow,
-        VecInto, MAX_PARAMS,
+        is_simple, json_to_string, DbActiveConnection, DbConnection, DbKind, DbTransaction,
+        JsonRow, VecInto, MAX_PARAMS,
     },
 };
 
@@ -258,7 +258,10 @@ impl Relatable {
     pub async fn fetch_all_columns(&self, table: &str) -> Result<(Vec<Column>, Vec<Column>)> {
         // Begin by converting the contents of the column table to a HashMap. In case the
         // (optional) column table does not exist in the db, return an empty map.
-        let sql = r#"SELECT * FROM "column" WHERE "table" = ?"#;
+        let sql = match self.connection.kind() {
+            DbKind::Postgres => r#"SELECT * FROM "column" WHERE "table" = $1"#,
+            DbKind::Sqlite => r#"SELECT * FROM "column" WHERE "table" = ?"#,
+        };
         let params = json!([table]);
         let mut columns_config = HashMap::new();
         for json_col in self
@@ -282,8 +285,14 @@ impl Relatable {
         };
 
         // Fetch the columns corresponding to `table` from the database's metadata:
-        // WARN: SQLite only!
-        let sql = format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
+        let sql = match self.connection.kind() {
+            DbKind::Postgres => format!(
+                r#"SELECT column_name AS name FROM information_schema.columns WHERE table_name = '{table}' ORDER BY ordinal_position"#
+            ),
+            DbKind::Sqlite => {
+                format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#)
+            }
+        };
         let mut columns = vec![];
         let mut meta_columns = vec![];
         for column in self.connection.query(&sql, None).await? {
@@ -830,7 +839,10 @@ impl Relatable {
     }
 
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
-        let statement = r#"SELECT "table" FROM 'table' WHERE "table" = ?"#;
+        let statement = match self.connection.kind() {
+            DbKind::Postgres => r#"SELECT "table" FROM "table" WHERE "table" = $1"#,
+            DbKind::Sqlite => r#"SELECT "table" FROM "table" WHERE "table" = ?"#,
+        };
         let params = json!([table_name]);
         match self
             .connection
@@ -846,7 +858,12 @@ impl Relatable {
             }
         }
 
-        let statement = r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#;
+        let statement = match self.connection.kind() {
+            DbKind::Postgres => {
+                r#"SELECT table_name FROM information_schema.views WHERE table_name = $1"#
+            }
+            DbKind::Sqlite => r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#,
+        };
         let mut view = format!("{table_name}_default_view");
         let params = json!([view]);
         let result = self
@@ -858,15 +875,17 @@ impl Relatable {
         }
         // tracing::warn!("FIND THE VIEW {view}");
 
-        let statement = r#"SELECT max(change_id) FROM history WHERE "table" = ?"#;
+        let statement = match self.connection.kind() {
+            DbKind::Postgres => r#"SELECT max(change_id) FROM history WHERE "table" = $1"#,
+            DbKind::Sqlite => r#"SELECT max(change_id) FROM history WHERE "table" = ?"#,
+        };
         let params = json!([table_name]);
-        let change_id = match self
-            .connection
-            .query_value(&statement, Some(&params))
-            .await?
-        {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
+        let change_id = match self.connection.query_value(&statement, Some(&params)).await {
+            Ok(value) => match value {
+                Some(value) => value.as_u64().unwrap_or_default() as usize,
+                None => 0,
+            },
+            Err(_) => 0,
         };
         let name = table_name.to_string();
         Ok(Table {
@@ -2592,18 +2611,40 @@ impl Table {
         let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
         self.view = format!("{}_view", self.name);
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
-            false => r#"rowid"#, // This *must* be lowercase.
+            false => match rltbl.connection.kind() {
+                DbKind::Postgres => "ROW_NUMBER()",
+                DbKind::Sqlite => r#"rowid"#, // This *must* be lowercase.
+            },
             true => r#"_id"#,
         };
         let order_col = match meta_columns.iter().any(|c| c.name == "_order") {
-            false => r#"rowid"#, // This *must* be lowercase.
+            false => match rltbl.connection.kind() {
+                DbKind::Postgres => "ROW_NUMBER()",
+                DbKind::Sqlite => r#"rowid"#, // This *must* be lowercase.
+            },
             true => r#"_order"#,
         };
 
         // Note that '?' parameters are not allowed in views so we must hard code them:
-        let sql = format!(
-            r#"CREATE VIEW IF NOT EXISTS "{view}" AS
-                 SELECT
+        let sql = match rltbl.connection.kind() {
+            DbKind::Postgres => format!(
+                r#"CREATE OR REPLACE VIEW "{view}" AS SELECT
+                  {id_col} AS _id,
+                  {order_col} AS _order,
+                  NULL AS _history,
+                  NULL AS _message,
+                  {columns}
+                  FROM "{table}""#,
+                table = self.name,
+                view = self.view,
+                columns = columns
+                    .iter()
+                    .map(|c| format!(r#""{}""#, c.name))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            DbKind::Sqlite => format!(
+                r#"CREATE VIEW IF NOT EXISTS "{view}" AS SELECT
                    {id_col} AS _id,
                    {order_col} AS _order,
                    (SELECT '[' || GROUP_CONCAT("after") || ']'
@@ -2635,14 +2676,15 @@ impl Table {
                    ) AS "_message",
                    {columns}
                  FROM "{table}""#,
-            table = self.name,
-            view = self.view,
-            columns = columns
-                .iter()
-                .map(|c| format!(r#""{}""#, c.name))
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+                table = self.name,
+                view = self.view,
+                columns = columns
+                    .iter()
+                    .map(|c| format!(r#""{}""#, c.name))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        };
         rltbl.connection.query(&sql, None).await?;
         Ok(columns)
     }
@@ -3440,9 +3482,10 @@ impl Select {
         lines.push("SELECT *,".to_string());
         // WARN: The _total count should probably be optional.
         lines.push("  COUNT(1) OVER() AS _total, ".to_string());
+        // WARN: Postgres only!
         lines.push(format!(
             r#"(SELECT MAX(change_id) FROM history
-                  WHERE "table" = ?
+                  WHERE "table" = $1
                     AND "row" = _id
                ) AS _change_id"#
         ));
