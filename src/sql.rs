@@ -38,6 +38,13 @@ pub enum DbConnection {
     Rusqlite(String),
 }
 
+/// Represents the kind of database being managed
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DbKind {
+    Postgres,
+    Sqlite,
+}
+
 impl DbConnection {
     pub async fn connect(path: &str) -> Result<(Self, Option<DbActiveConnection>)> {
         // We suppress warnings for unused variables for this particular variable because the
@@ -54,7 +61,11 @@ impl DbConnection {
 
         #[cfg(feature = "sqlx")]
         let tuple = {
-            let url = format!("sqlite://{path}?mode=rwc");
+            let url = match std::env::var_os("RLTBL_CONNECTION").and_then(|p| Some(p.into_string()))
+            {
+                Some(Ok(s)) => s,
+                _ => format!("sqlite://{path}?mode=rwc"),
+            };
             sqlx::any::install_default_drivers();
             let connection = Self::Sqlx(sqlx::AnyPool::connect(&url).await?);
             (connection, None)
@@ -71,6 +82,30 @@ impl DbConnection {
             Self::Rusqlite(path) => Ok(Some(DbActiveConnection::Rusqlite(
                 rusqlite::Connection::open(path)?,
             ))),
+        }
+    }
+
+    pub fn kind(&self) -> DbKind {
+        match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(_) => {
+                // WARN: This is very fragile!
+                let url = match std::env::var_os("RLTBL_CONNECTION")
+                    .and_then(|p| Some(p.into_string()))
+                {
+                    Some(Ok(s)) => s,
+                    _ => return DbKind::Sqlite,
+                };
+                if url.starts_with("postgres:") {
+                    return DbKind::Postgres;
+                } else if url.starts_with("sqlite:") {
+                    return DbKind::Sqlite;
+                } else {
+                    panic!("Unsupported database type: {:?}", url);
+                }
+            }
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(path) => DbKind::Postgres,
         }
     }
 
