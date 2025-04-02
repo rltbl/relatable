@@ -93,17 +93,22 @@ impl Relatable {
             _ => false,
         };
         let path = match path {
-            None => RLTBL_DEFAULT_DB,
-            Some(path) => path,
+            Some(path) => path.to_string(),
+            None => {
+                match std::env::var_os("RLTBL_CONNECTION").and_then(|p| Some(p.into_string())) {
+                    Some(Ok(path)) => path,
+                    _ => RLTBL_DEFAULT_DB.to_string(),
+                }
+            }
         };
-        let file = FilePath::new(path);
+        let file = FilePath::new(&path);
         if !file.exists() {
             return Err(RelatableError::InitError(
                 "First create a database with `rltbl init`".into(),
             )
             .into());
         }
-        let (connection, _) = DbConnection::connect(path).await?;
+        let (connection, _) = DbConnection::connect(&path).await?;
         Ok(Self {
             root,
             readonly,

@@ -23,6 +23,28 @@ use async_std::task::block_on;
 #[cfg(feature = "sqlx")]
 use sqlx::{Acquire as _, Column as _, Row as _};
 
+// Note that SQL_PARAM must be a 'word' (from the point of view of regular expressions) since in
+// [local_sql_syntax()] function we are matchng against it using '\b' which represents a word
+// boundary. If you want to use a non-word placeholder then you must also change '\b' in the regex
+// to '\B'.
+/// The word (in the regex sense) placeholder to use for query parameters when binding using sqlx.
+pub static SQL_PARAM: &str = "RLTBLPARAM";
+
+/// Represents a 'simple' database name
+pub static DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
+
+/// The [maximum number of parameters](https://www.sqlite.org/limits.html#max_variable_number)
+/// that can be bound to a SQLite query
+pub static MAX_PARAMS: usize = 32766;
+
+/// Represents the kind of database being managed
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DbKind {
+    #[cfg(feature = "sqlx")]
+    Postgres,
+    Sqlite,
+}
+
 #[derive(Debug)]
 pub enum DbActiveConnection {
     #[cfg(feature = "rusqlite")]
@@ -32,13 +54,22 @@ pub enum DbActiveConnection {
 #[derive(Debug)]
 pub enum DbConnection {
     #[cfg(feature = "sqlx")]
-    Sqlx(sqlx::AnyPool),
+    Sqlx(sqlx::AnyPool, DbKind),
 
     #[cfg(feature = "rusqlite")]
     Rusqlite(String),
 }
 
 impl DbConnection {
+    pub fn kind(&self) -> DbKind {
+        match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(_, kind) => *kind,
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(_) => DbKind::Sqlite,
+        }
+    }
+
     pub async fn connect(path: &str) -> Result<(Self, Option<DbActiveConnection>)> {
         // We suppress warnings for unused variables for this particular variable because the
         // compiler is becoming confused about which variables have been actually used as a result
@@ -54,9 +85,22 @@ impl DbConnection {
 
         #[cfg(feature = "sqlx")]
         let tuple = {
-            let url = format!("sqlite://{path}?mode=rwc");
+            let url = {
+                if path.starts_with("postgresql://") || path.starts_with("sqlite://") {
+                    path.to_string()
+                } else {
+                    format!("sqlite://{path}?mode=rwc")
+                }
+            };
+            let kind = {
+                if url.starts_with("sqlite://") {
+                    DbKind::Sqlite
+                } else {
+                    DbKind::Postgres
+                }
+            };
             sqlx::any::install_default_drivers();
-            let connection = Self::Sqlx(sqlx::AnyPool::connect(&url).await?);
+            let connection = Self::Sqlx(sqlx::AnyPool::connect(&url).await?, kind);
             (connection, None)
         };
 
@@ -66,7 +110,7 @@ impl DbConnection {
     pub fn reconnect(&self) -> Result<Option<DbActiveConnection>> {
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(_) => Ok(None),
+            Self::Sqlx(_, _) => Ok(None),
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(path) => Ok(Some(DbActiveConnection::Rusqlite(
                 rusqlite::Connection::open(path)?,
@@ -80,7 +124,8 @@ impl DbConnection {
     ) -> Result<DbTransaction<'a>> {
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(pool) => {
+            Self::Sqlx(pool, _) => {
+                // TODO: Distinguish between PostgreSQL and SQLite
                 let tx = pool.begin().await?;
                 Ok(DbTransaction::Sqlx(tx))
             }
@@ -112,7 +157,8 @@ impl DbConnection {
 
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(pool) => {
+            Self::Sqlx(pool, _) => {
+                // TODO: Pass the kind parameter (the second one) to prepare_sqlx_query().
                 let query = prepare_sqlx_query(statement, params)?;
                 let mut rows = vec![];
                 for row in query.fetch_all(pool).await? {
@@ -241,6 +287,66 @@ impl DbTransaction<'_> {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Database-related utilities and functions
+///////////////////////////////////////////////////////////////////////////////
+
+/// Helper function to determine whether the given name is 'simple', as defined by
+/// [DB_OBJECT_MATCH_STR]
+pub fn is_simple(db_object_name: &str) -> Result<(), String> {
+    let db_object_regex: Regex = Regex::new(DB_OBJECT_MATCH_STR).unwrap();
+
+    let db_object_root = db_object_name.splitn(2, ".").collect::<Vec<_>>()[0];
+    if !db_object_regex.is_match(&db_object_root) {
+        Err(format!(
+            "Illegal database object name: '{}' in '{}'. Does not match: /{}/",
+            db_object_root, db_object_name, DB_OBJECT_MATCH_STR,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Given a SQL string, possibly with unbound parameters represented by the placeholder string
+/// SQL_PARAM, and given a database kind, if the kind is Sqlite, then change the syntax used
+/// for unbound parameters to Sqlite syntax, which uses "?", otherwise use Postgres syntax, which
+/// uses numbered parameters, i.e., $1, $2, ...
+pub fn local_sql_syntax(kind: &DbKind, sql: &String) -> String {
+    // Do not replace instances of SQL_PARAM if they are within quotation marks.
+    let rx = Regex::new(&format!(
+        r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")|\b{}\b"#,
+        SQL_PARAM
+    ))
+    .unwrap();
+
+    #[cfg(feature = "sqlx")]
+    let mut pg_param_idx = 1;
+
+    let mut final_sql = String::from("");
+    let mut saved_start = 0;
+    for m in rx.find_iter(sql) {
+        let this_match = &sql[m.start()..m.end()];
+        final_sql.push_str(&sql[saved_start..m.start()]);
+        if this_match == SQL_PARAM {
+            match *kind {
+                #[cfg(feature = "sqlx")]
+                DbKind::Postgres => {
+                    final_sql.push_str(&format!("${}", pg_param_idx));
+                    pg_param_idx += 1;
+                }
+                DbKind::Sqlite => {
+                    final_sql.push_str(&format!("?"));
+                }
+            }
+        } else {
+            final_sql.push_str(&format!("{}", this_match));
+        }
+        saved_start = m.start() + this_match.len();
+    }
+    final_sql.push_str(&sql[saved_start..]);
+    final_sql
+}
+
 /// Given an SQL string that has been bound to the given parameter vector, construct a database
 /// query and return it.
 #[cfg(feature = "sqlx")]
@@ -316,33 +422,6 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
             None => Ok(None),
         },
         None => Ok(None),
-    }
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Other database-related utilities and functions
-///////////////////////////////////////////////////////////////////////////////
-
-/// Represents a 'simple' database name
-pub static DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
-
-/// The [maximum number of parameters](https://www.sqlite.org/limits.html#max_variable_number)
-/// that can be bound to a SQLite query
-pub static MAX_PARAMS: usize = 32766;
-
-/// Helper function to determine whether the given name is 'simple', as defined by
-/// [DB_OBJECT_MATCH_STR]
-pub fn is_simple(db_object_name: &str) -> Result<(), String> {
-    let db_object_regex: Regex = Regex::new(DB_OBJECT_MATCH_STR).unwrap();
-
-    let db_object_root = db_object_name.splitn(2, ".").collect::<Vec<_>>()[0];
-    if !db_object_regex.is_match(&db_object_root) {
-        Err(format!(
-            "Illegal database object name: '{}' in '{}'. Does not match: /{}/",
-            db_object_root, db_object_name, DB_OBJECT_MATCH_STR,
-        ))
-    } else {
-        Ok(())
     }
 }
 
