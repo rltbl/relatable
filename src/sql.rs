@@ -125,7 +125,6 @@ impl DbConnection {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(pool, _) => {
-                // TODO: Distinguish between PostgreSQL and SQLite
                 let tx = pool.begin().await?;
                 Ok(DbTransaction::Sqlx(tx))
             }
@@ -155,11 +154,11 @@ impl DbConnection {
             return Ok(vec![]);
         }
 
+        let statement = local_sql_syntax(&self.kind(), statement);
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(pool, _) => {
-                // TODO: Pass the kind parameter (the second one) to prepare_sqlx_query().
-                let query = prepare_sqlx_query(statement, params)?;
+                let query = prepare_sqlx_query(&statement, params)?;
                 let mut rows = vec![];
                 for row in query.fetch_all(pool).await? {
                     rows.push(JsonRow::try_from(row)?);
@@ -171,7 +170,7 @@ impl DbConnection {
                 let conn = self.reconnect()?;
                 match conn {
                     Some(DbActiveConnection::Rusqlite(conn)) => {
-                        let mut stmt = conn.prepare(statement)?;
+                        let mut stmt = conn.prepare(&statement)?;
                         submit_rusqlite_statement(&mut stmt, params)
                     }
                     None => Err(RelatableError::DataError(format!(
@@ -208,7 +207,7 @@ impl DbConnection {
 #[derive(Debug)]
 pub enum DbTransaction<'a> {
     #[cfg(feature = "sqlx")]
-    Sqlx(sqlx::Transaction<'a, sqlx::Any>),
+    Sqlx(sqlx::Transaction<'a, sqlx::Any>, DbKind),
 
     #[cfg(feature = "rusqlite")]
     Rusqlite(rusqlite::Transaction<'a>),
@@ -217,10 +216,19 @@ pub enum DbTransaction<'a> {
 // TODO: Try to share more code (i.e., refactor a little) between DbTransaction and DbConnection.
 // E.g., the query() methods share things in common.
 impl DbTransaction<'_> {
+    pub fn kind(&self) -> DbKind {
+        match self {
+            #[cfg(feature = "sqlx")]
+            Self::Sqlx(_, kind) => *kind,
+            #[cfg(feature = "rusqlite")]
+            Self::Rusqlite(_) => DbKind::Sqlite,
+        }
+    }
+
     pub fn commit(self) -> Result<()> {
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(tx) => block_on(tx.commit())?,
+            Self::Sqlx(tx, _) => block_on(tx.commit())?,
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(tx) => tx.commit()?,
         };
@@ -230,7 +238,7 @@ impl DbTransaction<'_> {
     pub fn rollback(self) -> Result<()> {
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(tx) => block_on(tx.rollback())?,
+            Self::Sqlx(tx, _) => block_on(tx.rollback())?,
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(tx) => tx.rollback()?,
         };
@@ -247,10 +255,11 @@ impl DbTransaction<'_> {
             return Ok(vec![]);
         }
 
+        let statement = local_sql_syntax(&self.kind(), statement);
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(tx) => {
-                let query = prepare_sqlx_query(statement, params)?;
+            Self::Sqlx(tx, _) => {
+                let query = prepare_sqlx_query(&statement, params)?;
                 let mut rows = vec![];
                 for row in block_on(query.fetch_all(block_on(tx.acquire())?))? {
                     rows.push(JsonRow::try_from(row)?);
@@ -259,7 +268,7 @@ impl DbTransaction<'_> {
             }
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(tx) => {
-                let mut stmt = tx.prepare(statement)?;
+                let mut stmt = tx.prepare(&statement)?;
                 submit_rusqlite_statement(&mut stmt, params)
             }
         }
@@ -311,7 +320,7 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 /// SQL_PARAM, and given a database kind, if the kind is Sqlite, then change the syntax used
 /// for unbound parameters to Sqlite syntax, which uses "?", otherwise use Postgres syntax, which
 /// uses numbered parameters, i.e., $1, $2, ...
-pub fn local_sql_syntax(kind: &DbKind, sql: &String) -> String {
+pub fn local_sql_syntax(kind: &DbKind, sql: &str) -> String {
     // Do not replace instances of SQL_PARAM if they are within quotation marks.
     let rx = Regex::new(&format!(
         r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")|\b{}\b"#,
