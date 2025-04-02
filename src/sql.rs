@@ -12,7 +12,7 @@ use anyhow::Result;
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
 #[cfg(feature = "rusqlite")]
 use rusqlite;
@@ -191,6 +191,28 @@ impl DbConnection {
     ) -> Result<Option<JsonValue>> {
         let rows = self.query(statement, params).await?;
         extract_value(&rows)
+    }
+
+    pub async fn cache(&self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
+        let sql2 = r#"SELECT value FROM "cache" WHERE key = $1 LIMIT 1"#;
+        let params2 = json!([statement]);
+        match self.query_one(&sql2, Some(&params2)).await? {
+            Some(json_row) => {
+                let value = json_row.get_string("value")?;
+                // tracing::warn!("CACHED VALUE: {value:?}");
+                let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
+                tracing::debug!("USED CACHE: {json_rows:?}");
+                Ok(json_rows)
+            }
+            None => {
+                let json_rows = self.query(statement, params).await?;
+                let sql3 = r#"INSERT INTO "cache" VALUES ($1, $2)"#;
+                let params3 = json!([statement, json_rows]);
+                self.query(&sql3, Some(&params3)).await?;
+                tracing::debug!("UPDATED CACHE: {json_rows:?}");
+                Ok(json_rows)
+            }
+        }
     }
 }
 
@@ -441,7 +463,7 @@ where
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRow {
     pub content: JsonMap<String, JsonValue>,
 }
@@ -568,18 +590,6 @@ impl TryFrom<sqlx::any::AnyRow> for JsonRow {
     }
 
     type Error = anyhow::Error;
-}
-
-impl std::fmt::Display for JsonRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.to_strings().join("\t"))
-    }
-}
-
-impl std::fmt::Debug for JsonRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.to_string_map())
-    }
 }
 
 impl From<JsonRow> for Vec<String> {

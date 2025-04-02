@@ -5,9 +5,7 @@
 use crate as rltbl;
 use rltbl::{
     cli::Cli,
-    core::{
-        ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Row, Select,
-    },
+    core::{ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, Row, Select},
     sql::JsonRow,
 };
 use std::io::Write;
@@ -78,52 +76,21 @@ async fn main_css() -> impl IntoResponse {
     (headers, include_str!("resources/main.css"))
 }
 
-async fn render_html(rltbl: &Relatable, username: &str, result: &ResultSet) -> Result<String> {
-    let site = rltbl.get_site(username).await;
-    rltbl.render("table.html", context! {site, result})
-}
-
-async fn render_response(rltbl: &Relatable, username: &str, result: &ResultSet) -> Response<Body> {
-    match render_html(rltbl, username, result).await {
-        Ok(html) => Html(html).into_response(),
-        Err(error) => {
-            tracing::error!("{error:?}");
-            return get_500(&error);
-        }
-    }
-}
-
-async fn respond(
-    rltbl: &Relatable,
-    username: &str,
-    select: &Select,
-    format: &Format,
-) -> Response<Body> {
-    let result = match rltbl.fetch(&select).await {
-        Ok(result) => result,
-        Err(error) => return get_500(&error),
-    };
-
-    // format!(
-    //     "get_table:\nPath: {path}, {table_name}, {extension:?}, {format}\nQuery Parameters: \
-    //      {query_params:?}\nResult Set: {pretty}"
-    // );
+async fn respond(rltbl: &Relatable, format: &Format, content: &JsonValue) -> Response<Body> {
     let response = match format {
-        Format::Html | Format::Default => render_response(&rltbl, &username, &result).await,
+        Format::Html | Format::Default => match rltbl.render("table.html", content) {
+            Ok(html) => Html(html).into_response(),
+            Err(error) => {
+                tracing::error!("{error:?}");
+                return get_500(&error);
+            }
+        },
         Format::PrettyJson => {
-            let site = rltbl.get_site(username).await;
             let mut headers = HeaderMap::new();
             headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
-            (
-                headers,
-                to_string_pretty(&json!({"site": site, "result": result})).unwrap_or_default(),
-            )
-                .into_response()
+            (headers, to_string_pretty(content).unwrap_or_default()).into_response()
         }
-        Format::Json => {
-            let site = rltbl.get_site(username).await;
-            Json(&json!({"site": site, "result": result})).into_response()
-        }
+        Format::Json => Json(content).into_response(),
     };
     response
 }
@@ -157,7 +124,101 @@ async fn get_table(
         Ok(format) => format,
         Err(error) => return get_404(&error),
     };
-    respond(&rltbl, &username, &select, &format).await
+    let result = match rltbl.fetch(&select).await {
+        Ok(result) => result,
+        Err(error) => return get_500(&error),
+    };
+    let site = rltbl.get_site(&username).await;
+    let content = json!({"site": site, "path": "table", "result": result});
+    respond(&rltbl, &format, &content).await
+}
+
+async fn get_tableset(
+    State(rltbl): State<Arc<Relatable>>,
+    Path((tableset_name, path)): Path<(String, String)>,
+    Query(query_params): Query<QueryParams>,
+    session: Session<SessionNullPool>,
+) -> Response<Body> {
+    tracing::info!("get_tableset({rltbl:?}, {tableset_name}, {path}, {query_params:?})");
+    let format = match Format::try_from(&path) {
+        Ok(format) => format,
+        Err(error) => return get_404(&error),
+    };
+
+    let username = get_username(session);
+    if username.trim() != "" {
+        init_user(&rltbl, &username).await;
+    }
+    // tracing::info!("USERNAME {username}");
+
+    let sql = format!(r#"SELECT * FROM "tableset" WHERE tableset = '{tableset_name}'"#);
+    let json_rows = match rltbl.connection.query(&sql, None).await {
+        Ok(rows) => rows,
+        Err(error) => return get_500(&error),
+    };
+    tracing::info!("TAB {:?}", json_rows);
+
+    let mut select = Select::from_path_and_query(&rltbl, &path, &query_params);
+
+    // Override FROM using JOINs.
+    let mut joins = vec![];
+    for row in json_rows.clone() {
+        if row.get_string("using").unwrap() == "" {
+            joins.push(format!(r#"FROM {}"#, row.get_string("table").unwrap()));
+        } else {
+            joins.push(format!(
+                "LEFT JOIN {} USING ({})",
+                row.get_string("table").unwrap(),
+                row.get_string("using").unwrap()
+            ));
+        }
+    }
+    if select.filters.len() > 0 {
+        select.join = Some(joins.join("\n"));
+    }
+
+    let result = match rltbl.fetch(&select).await {
+        Ok(result) => result,
+        Err(error) => return get_500(&error),
+    };
+    let site = rltbl.get_site(&username).await;
+
+    // Count distinct values for the table in the tabset, using the same filters.
+    let mut lines = vec!["SELECT".to_string()];
+    let mut counts = vec![];
+    for row in json_rows {
+        counts.push(format!(
+            r#"  COUNT(DISTINCT "{}") AS "{}""#,
+            row.get_string("distinct").unwrap(),
+            row.get_string("table").unwrap(),
+        ));
+    }
+    lines.push(counts.join(",\n"));
+    lines.append(&mut joins);
+    for (i, filter) in select.filters.iter().enumerate() {
+        let keyword = if i == 0 { "WHERE" } else { "  AND" };
+        lines.push(format!(
+            "{keyword} {filter}",
+            filter = filter.to_sqlite().unwrap()
+        ));
+    }
+    let sql = lines.join("\n");
+    let json_rows = rltbl.connection.cache(&sql, None).await.unwrap();
+
+    let mut tabs = vec![];
+    for (table, count) in json_rows[0].content.clone() {
+        let mut s = select.clone();
+        s.table_name = table.clone();
+        tabs.push(json!({
+            "table": table,
+            "active": (table == select.table_name),
+            "count": count,
+            "url": s.to_url(format!("{}/tableset/{tableset_name}", site.root).as_str(), &format).unwrap()
+        }));
+    }
+
+    let content = json!({"site": site, "path": format!("tableset/{}", tableset_name), "tabs": tabs, "result": result});
+    respond(&rltbl, &format, &content).await
 }
 
 async fn post_table(
@@ -559,6 +620,7 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
         .route("/sign-out", post(post_sign_out))
         .route("/cursor", post(post_cursor))
         .route("/table/{*path}", get(get_table).post(post_table))
+        .route("/tableset/{tableset_name}/{*path}", get(get_tableset))
         .route("/row-menu/{table_name}/{row_id}", get(get_row_menu))
         .route("/column-menu/{table_name}/{column}", get(get_column_menu))
         .route(

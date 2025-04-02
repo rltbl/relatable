@@ -266,8 +266,8 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     const params = new URLSearchParams(document.location.search);
     params.set("limit", String(limit));
     params.set("offset", String(first));
-    const url = `${site.root}/table/${table}.json?${params.toString()}`;
-    // console.log("Fetch: " + url);
+    const url = `${site.root}/${rltbl.path}/${table}.json?${params.toString()}`;
+    // console.log("getRowData: " + url);
     try {
       const response = await fetch(url);
       if (!response.ok) {
@@ -298,8 +298,8 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     params.set("_change_id", `gt.${change_id.current}`);
     params.delete("limit");
     params.delete("offset");
-    const url = `${site.root}/table/${table}.json?${params.toString()}`;
-    // console.log("Fetch: " + url);
+    const url = `${site.root}/${rltbl.path}/${table}.json?${params.toString()}`;
+    // console.log("pollData: " + url);
     var rows: Row[] = [];
     try {
       const response = await fetch(url);
@@ -484,11 +484,13 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
         value = value["value"];
       }
       var row = dataRef.current[entry.location[1]];
+      var column = columns[entry.location[0]].id;
       changes.push({
         "type": "Update",
         row: row.id,
         column: columns[entry.location[0]].id,
-        value: value
+        before: row.cells[column].value,
+        after: value
       })
       onCellEdited(entry.location, entry.value, dataRef.current[entry.location[1]]);
     }

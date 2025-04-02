@@ -2,7 +2,7 @@
 //!
 //! This is relatable (rltbl::core).
 
-use crate as rltbl;
+use crate::{self as rltbl};
 use rltbl::{
     git,
     sql::{
@@ -108,7 +108,7 @@ impl Relatable {
             readonly,
             connection,
             // minijinja: env,
-            default_limit: 100,
+            default_limit: 10,
             max_limit: 1000,
         })
     }
@@ -140,6 +140,13 @@ impl Relatable {
         File::create(path)?;
 
         let rltbl = Relatable::connect(None).await?;
+
+        // Create a simple key-value cache table.
+        let sql = r#"CREATE TABLE "cache" (
+          "key" TEXT PRIMARY KEY,
+          "value" TEXT
+        )"#;
+        rltbl.connection.query(sql, None).await.unwrap();
 
         // Create the internal rltbl tables:
         let sql = r#"CREATE TABLE "table" (
@@ -230,7 +237,7 @@ impl Relatable {
         // Load templates dynamically if src/templates/ exists,
         // otherwise use strings from compile time.
         // TODO: This should be a configuration option.
-        let dir = "src/templates/";
+        let dir = "src/rltbl-templates/";
         if FilePath::new(dir).is_dir() {
             env.set_loader(path_loader(dir));
         };
@@ -287,7 +294,7 @@ impl Relatable {
         // Fetch the columns corresponding to `table` from the database's metadata:
         let sql = match self.connection.kind() {
             DbKind::Postgres => format!(
-                r#"SELECT column_name AS name FROM information_schema.columns WHERE table_name = '{table}' ORDER BY ordinal_position"#
+                r#"SELECT column_name AS name FROM information_schema.columns WHERE table_schema = 'hcckb' AND table_name = '{table}' ORDER BY ordinal_position"#
             ),
             DbKind::Sqlite => {
                 format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#)
@@ -331,8 +338,9 @@ impl Relatable {
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
         tracing::debug!("SELECT: {select:?}");
-        let mut table = self.get_table(select.table_name.as_str()).await?;
-        let columns = table.ensure_view_created(self).await?;
+        let table = self.get_table(select.table_name.as_str()).await?;
+        // let mut columns = table.ensure_view_created(self).await?;
+        let (mut columns, _meta_columns) = self.fetch_all_columns(&select.table_name).await?;
         let mut select = select.clone();
         select.view_name = table.view.clone();
         let (statement, params) = select.to_sqlite()?;
@@ -347,16 +355,21 @@ impl Relatable {
             tracing::debug!("They are: {json_rows:#?}");
         }
 
-        let total = match json_rows.get(0) {
-            Some(row) => row
-                .content
-                .get("_total")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0) as usize,
-            None => 0,
-        };
-
+        if select.select.len() > 0 {
+            columns = columns
+                .iter()
+                .filter(|c| select.select.contains(&c.name))
+                .map(|c| c.clone())
+                .collect();
+        }
         let rows: Vec<Row> = json_rows.vec_into();
+
+        let (sql, params) = select.to_sqlite_count()?;
+        let params = json!(params);
+        let json_rows = self.connection.cache(&sql, Some(&params)).await?;
+        let total = json_rows[0].get_unsigned("count")?;
+        // tracing::warn!("TOTAL {total:?}");
+
         Ok(ResultSet {
             range: Range {
                 count,
@@ -859,8 +872,9 @@ impl Relatable {
         }
 
         let statement = match self.connection.kind() {
+            // WARN: This hardcodes the table_schema!
             DbKind::Postgres => {
-                r#"SELECT table_name FROM information_schema.views WHERE table_name = $1"#
+                r#"SELECT table_name FROM information_schema.views WHERE table_schema = 'hcckb' AND table_name = $1"#
             }
             DbKind::Sqlite => r#"SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?"#,
         };
@@ -918,7 +932,7 @@ impl Relatable {
                   FROM history
                   WHERE history."table" = "table"."table"
                  ) AS _change_id
-               FROM 'table'"#
+               FROM "table""#
         );
 
         let rows = self.connection.query(&statement, None).await?;
@@ -2323,7 +2337,7 @@ impl Change {
                 }),
                 _ => {
                     return Err(RelatableError::InputError(format!(
-                        "Unrecognized change type for change: {change_json}"
+                        "Unrecognized change type for change: {change_json:?}"
                     ))
                     .into());
                 }
@@ -2355,7 +2369,7 @@ impl Change {
             }),
             _ => {
                 return Err(RelatableError::InputError(format!(
-                    "Unrecognized action type for change {json_row}"
+                    "Unrecognized action type for change {json_row:?}"
                 ))
                 .into());
             }
@@ -2606,7 +2620,7 @@ impl Default for Table {
 }
 
 impl Table {
-    async fn ensure_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
+    async fn _ensure_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
         tracing::debug!("Entering ensure_view_created({rltbl:?})");
         let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
         self.view = format!("{}_view", self.name);
@@ -3011,6 +3025,8 @@ impl Filter {
 pub struct Select {
     pub table_name: String,
     pub view_name: String,
+    pub select: Vec<String>,
+    pub join: Option<String>,
     pub limit: usize,
     pub offset: usize,
     pub filters: Vec<Filter>,
@@ -3479,18 +3495,32 @@ impl Select {
         tracing::debug!("to_sqlite: {self:?}");
         let mut lines = Vec::new();
         let mut params = Vec::new();
-        lines.push("SELECT *,".to_string());
-        // WARN: The _total count should probably be optional.
-        lines.push("  COUNT(1) OVER() AS _total, ".to_string());
+        if self.select.len() == 0 {
+            match self.join {
+                Some(_) => lines.push(format!(r#"SELECT DISTINCT "{}".*,"#, self.table_name)),
+                None => lines.push("SELECT *,".to_string()),
+            }
+        } else {
+            lines.push("SELECT".to_string());
+            lines.push("  _id".to_string());
+            lines.push("  _order".to_string());
+            for column in self.select.clone() {
+                lines.push(format!(r#"  "{column}","#));
+            }
+        }
         // WARN: Postgres only!
         lines.push(format!(
             r#"(SELECT MAX(change_id) FROM history
                   WHERE "table" = $1
-                    AND "row" = _id
-               ) AS _change_id"#
+                    AND "row" = "{}"._id
+               ) AS _change_id"#,
+            self.table_name
         ));
         params.push(json!(self.table_name)); // the real table name
-        lines.push(format!(r#"FROM "{}""#, self.view_name)); // the view name, which may differ
+        match self.join.clone() {
+            Some(join) => lines.push(join),
+            None => lines.push(format!(r#"FROM "{}""#, self.table_name)),
+        }
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             lines.push(format!("{keyword} {filter}", filter = filter.to_sqlite()?));
@@ -3506,6 +3536,25 @@ impl Select {
         }
         if self.offset > 0 {
             lines.push(format!("OFFSET {}", self.offset));
+        }
+        Ok((lines.join("\n"), params))
+    }
+
+    pub fn to_sqlite_count(&self) -> Result<(String, Vec<JsonValue>)> {
+        tracing::debug!("to_sqlite: {self:?}");
+        let mut lines = Vec::new();
+        let params = Vec::new();
+        lines.push(format!(
+            r#"SELECT COUNT(DISTINCT "{}"._id) AS count"#,
+            self.table_name
+        ));
+        match self.join.clone() {
+            Some(join) => lines.push(join),
+            None => lines.push(format!(r#"FROM "{}""#, self.table_name)),
+        }
+        for (i, filter) in self.filters.iter().enumerate() {
+            let keyword = if i == 0 { "WHERE" } else { "  AND" };
+            lines.push(format!("{keyword} {filter}", filter = filter.to_sqlite()?));
         }
         Ok((lines.join("\n"), params))
     }
@@ -3587,12 +3636,12 @@ impl Select {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Site {
-    title: String,
-    root: String,
-    editable: bool,
-    user: Account,
-    users: IndexMap<String, UserCursor>,
-    tables: IndexMap<String, Table>,
+    pub title: String,
+    pub root: String,
+    pub editable: bool,
+    pub user: Account,
+    pub users: IndexMap<String, UserCursor>,
+    pub tables: IndexMap<String, Table>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

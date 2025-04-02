@@ -789,6 +789,42 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         .await
         .expect("Database was initialized");
 
+    let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('tableset', 'tableset.tsv')"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    // Create the study table.
+    let sql = r#"CREATE TABLE tableset (
+      _id INTEGER PRIMARY KEY AUTOINCREMENT,
+      _order INTEGER UNIQUE,
+      tableset TEXT,
+      "table" TEXT,
+      "distinct" TEXT,
+      "using" TEXT
+    )"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    let sql = r#"INSERT INTO "tableset" VALUES
+      (1, 1000, 'penguin', 'study', 'study_name', NULL),
+      (2, 2000, 'penguin', 'penguin', 'individual_id', 'study_name')
+    "#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('study', 'study.tsv')"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    // Create the study table.
+    let sql = r#"CREATE TABLE study (
+      _id INTEGER PRIMARY KEY AUTOINCREMENT,
+      _order INTEGER UNIQUE,
+      study_name TEXT UNIQUE,
+      description TEXT
+    )"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    let sql = r#"INSERT INTO study VALUES
+        (0, 0, 'FAKE123', 'Fake Study 123')"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
     let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('penguin', 'penguin.tsv')"#;
     rltbl.connection.query(sql, None).await.unwrap();
 
@@ -802,7 +838,8 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
       island TEXT,
       individual_id TEXT,
       culmen_length TEXT,
-      body_mass TEXT
+      body_mass TEXT,
+      FOREIGN KEY (study_name) REFERENCES study(study_name)
     )"#;
     rltbl.connection.query(sql, None).await.unwrap();
 
