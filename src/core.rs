@@ -85,6 +85,7 @@ pub struct Relatable {
 
 impl Relatable {
     pub async fn connect(path: Option<&str>) -> Result<Self> {
+        tracing::trace!("Relatable::connect({path:?})");
         let root = std::env::var("RLTBL_ROOT").unwrap_or_default();
         // Set up database connection.
         let readonly = match std::env::var("RLTBL_READONLY") {
@@ -114,6 +115,7 @@ impl Relatable {
     }
 
     pub async fn init(force: &bool, path: Option<&str>) -> Result<Self> {
+        tracing::trace!("Relatable::init({force:?}, {path:?})");
         let path = match path {
             None => RLTBL_DEFAULT_DB,
             Some(path) => path,
@@ -211,6 +213,7 @@ impl Relatable {
     }
 
     pub fn render<T: Serialize>(&self, template: &str, context: T) -> Result<String> {
+        tracing::trace!("Relatable::render({template:?}, context)");
         // TODO: Optionally we should set up the environment once and store it,
         // but during development it's very convenient to rebuild every time.
         let mut env = Environment::new();
@@ -247,6 +250,7 @@ impl Relatable {
     }
 
     pub fn from(&self, table_name: &str) -> Select {
+        tracing::trace!("Relatable::from({table_name:?})");
         Select {
             table_name: table_name.to_string(),
             view_name: table_name.to_string(),
@@ -256,6 +260,7 @@ impl Relatable {
     }
 
     pub async fn fetch_all_columns(&self, table: &str) -> Result<(Vec<Column>, Vec<Column>)> {
+        tracing::trace!("Relatable::fetch_all_columns({table:?})");
         // Fetch the columns corresponding to `table` from the database's metadata:
         // WARN: SQLite only!
         let sql = format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
@@ -302,11 +307,12 @@ impl Relatable {
     }
 
     pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
+        tracing::trace!("Relatable::fetch_columns({table_name:?})");
         Ok(self.fetch_all_columns(table_name).await?.0)
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        tracing::debug!("SELECT: {select:?}");
+        tracing::trace!("Relatable::fetch({select:?})");
         let mut table = self.get_table(select.table_name.as_str()).await?;
         let columns = table.ensure_view_created(self).await?;
         let mut select = select.clone();
@@ -348,6 +354,7 @@ impl Relatable {
     }
 
     pub async fn fetch_json_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
+        tracing::trace!("Relatable::fetch_json_rows({select:?})");
         let (statement, params) = select.to_sqlite()?;
         let params = json!(params);
         self.connection.query(&statement, Some(&params)).await
@@ -355,6 +362,7 @@ impl Relatable {
 
     /// Note that this function may panic.
     pub async fn load_table(&self, table_name: &str, path: &str) {
+        tracing::trace!("Relatable::load_table({table_name:?}, {path:?})");
         // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
@@ -532,6 +540,7 @@ impl Relatable {
     }
 
     pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
+        tracing::trace!("Relatable::save_all({save_dir:?})");
         let sql = r#"SELECT "table", "path" FROM "table" WHERE "path" IS NOT NULL"#;
         let table_rows = self.connection.query(&sql, None).await?;
         for table_row in table_rows {
@@ -600,6 +609,7 @@ impl Relatable {
     }
 
     pub async fn commit_to_git(&self) -> Result<()> {
+        tracing::trace!("Relatable::commit_to_git()");
         let author = match env::var("RLTBL_GIT_AUTHOR") {
             Err(err) => match err {
                 env::VarError::NotPresent => {
@@ -656,6 +666,7 @@ impl Relatable {
         user: &str,
         action: &ChangeAction,
     ) -> Result<Option<(usize, ChangeSet)>> {
+        tracing::trace!("Relatable::_get_last_action_for_user(tx, {user:?}, {action:?})");
         let sql = r#"SELECT "change_id", "user", "table", "description", "content"
                      FROM "change"
                      WHERE "user" = ? AND "action" = ?
@@ -686,6 +697,7 @@ impl Relatable {
     }
 
     pub fn record_changes(&self, changeset: &ChangeSet, tx: &mut DbTransaction<'_>) -> Result<()> {
+        tracing::trace!("Relatable::record_changes({changeset:?}, tx)");
         let user = changeset.user.clone();
         let action = changeset.action.to_string();
         let table = changeset.table.clone();
@@ -829,6 +841,7 @@ impl Relatable {
     }
 
     pub async fn get_user(&self, username: &str) -> Account {
+        tracing::trace!("Relatable::get_user({username:?})");
         let statement = format!(
             r#"SELECT "name", "color", "cursor", "datetime"
                FROM user WHERE name = '{username}' LIMIT 1"#
@@ -848,6 +861,7 @@ impl Relatable {
     }
 
     pub async fn get_users(&self) -> Result<IndexMap<String, UserCursor>> {
+        tracing::trace!("Relatable::get_users()");
         let mut users = IndexMap::new();
         // let statement = format!(
         //     r#"SELECT "name", color", "cursor", "datetime" FROM user WHERE cursor IS NOT NULL
@@ -876,6 +890,7 @@ impl Relatable {
     }
 
     fn json_to_columns_map(json_cols: &Vec<JsonRow>) -> Result<HashMap<String, Column>> {
+        tracing::trace!("Relatable::json_to_columns_map({json_cols:?})");
         let mut columns = HashMap::new();
         for json_col in json_cols {
             columns.insert(
@@ -893,6 +908,7 @@ impl Relatable {
     }
 
     pub async fn get_columns_map(&self, table_name: &str) -> Result<HashMap<String, Column>> {
+        tracing::trace!("Relatable::get_columns_map({table_name:?})");
         let sql = r#"SELECT * FROM "column" WHERE "table" = ?"#;
         let params = json!([table_name]);
         let json_columns = self
@@ -907,6 +923,7 @@ impl Relatable {
         table_name: &str,
         tx: &mut DbTransaction<'_>,
     ) -> Result<HashMap<String, Column>> {
+        tracing::trace!("Relatable::_get_columns_map({table_name:?}, tx)");
         let sql = r#"SELECT * FROM "column" WHERE "table" = ?"#;
         let params = json!([table_name]);
         let json_columns = tx.query(&sql, Some(&params)).unwrap_or(vec![]);
@@ -914,6 +931,7 @@ impl Relatable {
     }
 
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
+        tracing::trace!("Relatable::get_table({table_name:?})");
         let mut conn = self.connection.reconnect()?;
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
@@ -927,6 +945,7 @@ impl Relatable {
     }
 
     fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
+        tracing::trace!("Relatable::_get_table({table_name:?}, tx)");
         let statement = r#"SELECT "table" FROM 'table' WHERE "table" = ?"#;
         let params = json!([table_name]);
         match tx.query_value(&statement, Some(&params))? {
@@ -965,6 +984,7 @@ impl Relatable {
     }
 
     pub async fn get_tables(&self) -> Result<IndexMap<String, Table>> {
+        tracing::trace!("Relatable::get_tables()");
         let mut tables = IndexMap::new();
         let statement = format!(
             r#"SELECT "_id", "_order", "table", "path",
@@ -997,6 +1017,7 @@ impl Relatable {
     }
 
     fn _get_row_order(&self, table: &str, row: usize, tx: &mut DbTransaction<'_>) -> Result<usize> {
+        tracing::trace!("Relatable::_get_row_order({table:?}, {row}, tx)");
         let sql = format!(r#"SELECT "_order" FROM "{table}" WHERE "_id" = ?"#,);
         let params = json!([row]);
         let rows = tx.query(&sql, Some(&params))?;
@@ -1014,6 +1035,7 @@ impl Relatable {
         row: usize,
         tx: &mut DbTransaction<'_>,
     ) -> Result<usize> {
+        tracing::trace!("Relatable::_get_previous_row_id({table:?}, {row}, tx)");
         let curr_row_order = self._get_row_order(table, row, tx)?;
         let sql = format!(
             r#"SELECT "_id" FROM "{table}" WHERE "_order" < ?
@@ -1034,12 +1056,14 @@ impl Relatable {
         row: usize,
         tx: &mut DbTransaction<'_>,
     ) -> Result<Option<JsonRow>> {
+        tracing::trace!("Relatable::_get_row({table:}?, {row}, tx)");
         let sql = format!(r#"SELECT * FROM "{table}" WHERE "_id" = ?"#);
         let params = json!([row]);
         tx.query_one(&sql, Some(&params))
     }
 
     pub async fn get_site(&self, username: &str) -> Site {
+        tracing::trace!("Relatable::get_site({username:?})");
         let mut users = self.get_users().await.unwrap_or_default();
         users.shift_remove(username);
         Site {
@@ -1057,6 +1081,7 @@ impl Relatable {
         changeset: &ChangeSet,
         tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
+        tracing::trace!("Relatable::prepare_user_cursor({changeset:?}, tx)");
         // Make sure the user is present in the user table
         let user = changeset.user.clone();
         let color = random_color::RandomColor::new().to_hex();
@@ -1088,6 +1113,7 @@ impl Relatable {
         &self,
         user: &str,
     ) -> Result<Option<(usize, ChangeSet)>> {
+        tracing::trace!("Relatable::get_last_redoable_action_for_user({user:?})");
         let history = self.get_user_history(user, Some(1)).await?;
         match history.changes_undone_stack.first() {
             None => Ok(None),
@@ -1113,6 +1139,7 @@ impl Relatable {
         &self,
         user: &str,
     ) -> Result<Option<(usize, ChangeSet)>> {
+        tracing::trace!("Relatable::get_last_undoable_action_for_user({user:?})");
         let history = self.get_user_history(user, Some(1)).await?;
         match history.changes_done_stack.first() {
             None => Ok(None),
@@ -1135,6 +1162,7 @@ impl Relatable {
     }
 
     pub async fn get_user_history(&self, user: &str, context: Option<usize>) -> Result<History> {
+        tracing::trace!("Relatable::get_user_history({user:?}, {context:?})");
         fn content_to_json_row(content: &str) -> Result<JsonRow> {
             tracing::debug!("Entering content_to_json_row(content: {content})");
             match serde_json::from_str::<JsonValue>(content) {
@@ -1163,9 +1191,7 @@ impl Relatable {
         }
 
         fn on_the_same_target(change1: &JsonRow, change2: &JsonRow) -> Result<bool> {
-            tracing::debug!(
-                "Entering on_the_same_target(change1: {change1:?}, change2: {change2:?})"
-            );
+            tracing::trace!("Relatable::on_the_same_target({change1:?}, {change2:?})");
             let change1 = content_to_json_row(&change1.get_string("content")?)?;
             let change2 = content_to_json_row(&change2.get_string("content")?)?;
             let row1 = change1.get_unsigned("row")?;
@@ -1185,6 +1211,9 @@ impl Relatable {
             changes_done_stack: &Vec<JsonRow>,
             changes_undone_stack: &Vec<JsonRow>,
         ) -> (Vec<JsonRow>, Vec<JsonRow>) {
+            tracing::trace!(
+                "Relatable::prune_stacks({changes_done_stack:?}, {changes_undone_stack:?})"
+            );
             let mut pruned_dones = vec![];
             let mut pruned_undones = vec![];
             for change in changes_done_stack.iter() {
@@ -1473,6 +1502,7 @@ impl Relatable {
         change_id: usize,
         changeset: &ChangeSet,
     ) -> Result<Option<ChangeSet>> {
+        tracing::trace!("Relatable::_undo_or_redo({change_id}, {changeset:?})");
         match changeset.changes.first() {
             None => Ok(None),
             Some(change) => {
@@ -1571,6 +1601,7 @@ impl Relatable {
     }
 
     pub async fn undo(&self, user: &str) -> Result<Option<ChangeSet>> {
+        tracing::trace!("Relatable::undo({user:?})");
         let (change_id, mut changeset) = match self.get_last_undoable_action_for_user(user).await? {
             None => {
                 tracing::warn!("Nothing to undo for '{user}'");
@@ -1587,6 +1618,7 @@ impl Relatable {
     }
 
     pub async fn redo(&self, user: &str) -> Result<Option<ChangeSet>> {
+        tracing::trace!("Relatable::redo({user:?})");
         let (change_id, mut changeset) = match self.get_last_redoable_action_for_user(user).await? {
             None => {
                 tracing::warn!("Nothing to redo for '{user}'");
@@ -1607,6 +1639,7 @@ impl Relatable {
         mut conn: Option<DbActiveConnection>,
         changeset: &ChangeSet,
     ) -> Result<ChangeSet> {
+        tracing::trace!("Relatable::set_values(conn, {changeset:?})");
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
@@ -1715,6 +1748,7 @@ impl Relatable {
     }
 
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<ChangeSet> {
+        tracing::trace!("Relatable::set_values({changeset:?})");
         let conn = self.connection.reconnect()?;
         let changeset = self._set_values(conn, changeset).await?;
         if changeset.changes.len() > 0 {
@@ -1733,6 +1767,10 @@ impl Relatable {
         rule: &str,
         message: &str,
     ) -> Result<(usize, Message)> {
+        tracing::trace!(
+            "Relatable::add_message({user:?}, {table_name:?}, {row}, \
+                         {column:?}, {level:?}, {rule:?}, {message:?})"
+        );
         let sql = format!(r#"SELECT "{column}" FROM "{table_name}" WHERE _id = ?"#);
         let params = json!([row]);
         let value = match self.connection.query_value(&sql, Some(&params)).await? {
@@ -1775,6 +1813,11 @@ impl Relatable {
         after_id: Option<usize>,
         row: &JsonRow,
     ) -> Result<Row> {
+        tracing::trace!(
+            "Relatable::_add_row(conn, {action:?}, {user:?}, {new_row_id:?}, \
+                         {after_id:?}, {row:?})"
+        );
+
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
@@ -1849,6 +1892,7 @@ impl Relatable {
         after_id: Option<usize>,
         row: &JsonRow,
     ) -> Result<Row> {
+        tracing::trace!("Relatable::add_row({table_name:?}, {user:?}, {after_id:?}, {row:?})");
         let conn = self.connection.reconnect()?;
         let new_row = self
             ._add_row(
@@ -1873,6 +1917,10 @@ impl Relatable {
         user: &str,
         row: usize,
     ) -> Result<usize> {
+        tracing::trace!(
+            "Relatable::_delete_row(conn, {action:?}, {table_name:?}, {user:?} \
+                         {row})"
+        );
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
@@ -1926,6 +1974,7 @@ impl Relatable {
     }
 
     pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<usize> {
+        tracing::trace!("Relatable::delete_row({table_name:?}, {user:?}, {row})");
         let conn = self.connection.reconnect()?;
         let num_deleted = self
             ._delete_row(conn, &ChangeAction::Do, table_name, user, row)
@@ -1944,6 +1993,10 @@ impl Relatable {
         target_rule: Option<&str>,
         target_user: Option<&str>,
     ) -> Result<usize> {
+        tracing::trace!(
+            "Relatable::delete_message({table:?}, {row:?}, {column:?}, \
+                         {target_rule:?}, {target_user:?})"
+        );
         let mut sql = r#"DELETE FROM "message" WHERE "table" = ?"#.to_string();
         let mut params = vec![json!(table)];
 
@@ -1982,6 +2035,11 @@ impl Relatable {
         id: usize,
         after_id: usize,
     ) -> Result<usize> {
+        tracing::trace!(
+            "Relatable::_move_and_record_row(conn, {action:?}, {table_name:?}, \
+                         {user:?}, {id}, {after_id})"
+        );
+
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
@@ -2031,6 +2089,7 @@ impl Relatable {
         id: usize,
         after_id: usize,
     ) -> Result<usize> {
+        tracing::trace!("Relatable::_move_row(tx, {table:?}, {id}, {after_id})");
         fn get_row_order(
             tx: &mut DbTransaction<'_>,
             table: &Table,
@@ -2208,6 +2267,7 @@ impl Relatable {
         id: usize,
         new_id: usize,
     ) -> Result<()> {
+        tracing::trace!("Relatable::_change_row_id(tx, {table:?}, {id}, {new_id})");
         let sql = format!(
             r#"UPDATE "{table}"
                   SET "_id" = ?, "_order" = ?
@@ -2229,6 +2289,7 @@ impl Relatable {
         id: usize,
         after_id: usize,
     ) -> Result<usize> {
+        tracing::trace!("Relatable::move_row({table_name:?}, {user:?}, {after_id:?})");
         let conn = self.connection.reconnect()?;
         let new_order = self
             ._move_and_record_row(conn, &ChangeAction::Do, table_name, user, id, after_id)
@@ -2251,6 +2312,7 @@ pub struct ChangeSet {
 
 impl ChangeSet {
     fn to_cursor(&self) -> Result<Cursor> {
+        tracing::trace!("ChangeSet::to_cursor()");
         let table = self.table.clone();
         match self.changes.first() {
             Some(change) => match change {
@@ -2300,6 +2362,7 @@ impl FromStr for ChangeAction {
     type Err = anyhow::Error;
 
     fn from_str(action: &str) -> Result<Self> {
+        tracing::trace!("ChangeAction::from_str({action:?})");
         match action.to_lowercase().as_str() {
             "do" => Ok(Self::Do),
             "undo" => Ok(Self::Undo),
@@ -2349,6 +2412,7 @@ pub enum Change {
 
 impl Change {
     pub fn from_str(content: &str) -> Result<Self> {
+        tracing::trace!("Change::from_str({content:?})");
         let changes = Self::many_from_str(content)?;
         let change = match changes.first() {
             None => {
@@ -2363,6 +2427,7 @@ impl Change {
     }
 
     pub fn many_from_str(content: &str) -> Result<Vec<Self>> {
+        tracing::trace!("Change::many_from_str({content:?})");
         let json_content = match serde_json::from_str::<JsonValue>(content) {
             Err(err) => return Err(err.into()),
             Ok(JsonValue::Array(v)) => v,
@@ -2422,6 +2487,7 @@ impl Change {
     }
 
     pub fn from_json_row(json_row: &JsonRow) -> Result<Self> {
+        tracing::trace!("Change::from_json_row({json_row:?})");
         match json_row.get_string("type")?.as_str() {
             "Update" => Ok(Self::Update {
                 row: json_row.get_unsigned("row")?,
@@ -2511,6 +2577,7 @@ pub struct Cell {
 
 impl From<&JsonValue> for Cell {
     fn from(value: &JsonValue) -> Self {
+        tracing::trace!("Cell::from({value:?})");
         Self {
             value: value.clone(),
             text: match value {
@@ -2532,6 +2599,7 @@ pub struct Row {
 
 impl Row {
     fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
+        tracing::trace!("Row::get_next_id({table:?}, tx)");
         let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
         let params = json!([table]);
         let current_row_id = match tx.query_value(&sql, Some(&params))? {
@@ -2546,6 +2614,7 @@ impl Row {
         json_row: Option<&JsonRow>,
         tx: &mut DbTransaction<'_>,
     ) -> Result<Self> {
+        tracing::trace!("Row::prepare_new({table:?}, {json_row:?}, tx)");
         let json_row = match json_row {
             None => {
                 // WARN: SQLite only!
@@ -2581,10 +2650,12 @@ impl Row {
     }
 
     fn to_strings(&self) -> Vec<String> {
+        tracing::trace!("Row::to_strings()");
         self.cells.values().map(|cell| cell.text.clone()).collect()
     }
 
     fn as_insert(&self, table: &str) -> (String, JsonValue) {
+        tracing::trace!("Row::as_insert({table:?})");
         let id = self.id;
         let order = self.order;
         let quoted_column_names = self
@@ -2628,12 +2699,14 @@ impl Row {
 
 impl From<Row> for Vec<String> {
     fn from(row: Row) -> Self {
+        tracing::trace!("Row::from({row:?})");
         row.to_strings()
     }
 }
 
 impl From<JsonRow> for Row {
     fn from(row: JsonRow) -> Self {
+        tracing::trace!("Row::from({row:?})");
         let id = row
             .content
             .get("_id")
@@ -2690,7 +2763,7 @@ pub struct Table {
 
 impl Table {
     pub async fn ensure_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
-        tracing::debug!("Entering ensure_view_created({rltbl:?})");
+        tracing::trace!("Table::ensure_view_created({rltbl:?})");
         let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
         self.view = format!("{}_default_view", self.name);
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
@@ -2750,6 +2823,7 @@ impl Table {
     }
 
     pub fn get_column_attribute(&self, column: &str, attribute: &str) -> Option<String> {
+        tracing::trace!("Table::get_column_attribute({column:?}, {attribute:?})");
         self.columns.get(column).and_then(|col| match attribute {
             "table" => Some(col.table.to_string()),
             "column" => Some(col.name.to_string()),
@@ -2844,6 +2918,7 @@ impl Display for Format {
 
 impl TryFrom<&String> for Format {
     fn try_from(path: &String) -> Result<Self> {
+        tracing::trace!("Format::try_from({path:?})");
         let path = path.to_lowercase();
         let format = if path.ends_with(".pretty.json") {
             Format::PrettyJson
@@ -2885,6 +2960,7 @@ fn render_in_not_in<S: Into<String>>(
     options: &Vec<JsonValue>,
     positive: bool,
 ) -> Result<String> {
+    tracing::trace!("render_in_not_in(lhs, {options:?}, {positive:?})");
     let negation;
     if !positive {
         negation = " NOT";
@@ -2937,6 +3013,7 @@ fn render_in_not_in<S: Into<String>>(
 
 impl Filter {
     pub fn parts(&self) -> (String, String, JsonValue) {
+        tracing::trace!("Filter::parts()");
         let (column, operator, value) = match self {
             Filter::Like { column, value } => (column, "like", value),
             Filter::Equal { column, value } => (column, "eq", value),
@@ -2954,6 +3031,7 @@ impl Filter {
     }
 
     pub fn to_url(&self) -> Result<String> {
+        tracing::trace!("Filter::to_url()");
         fn handle_string_value(token: &str) -> String {
             let reserved = vec![':', ',', '.', '(', ')'];
             if token.chars().all(char::is_numeric) || reserved.iter().any(|&c| token.contains(c)) {
@@ -3000,6 +3078,7 @@ impl Filter {
     }
 
     pub fn to_sqlite(&self) -> Result<String> {
+        tracing::trace!("Filter::to_sqlite()");
         // TODO: This should be factored out.
         fn json_to_string(value: &JsonValue) -> String {
             match value {
@@ -3109,6 +3188,7 @@ pub enum Order {
 
 impl Select {
     pub fn from_path_and_query(rltbl: &Relatable, path: &str, query_params: &QueryParams) -> Self {
+        tracing::trace!("Select::from_path_and_query({rltbl:?}, {path:?}, {query_params:?})");
         let table_name = path.split(".").next().unwrap_or_default().to_string();
         let mut query_params = query_params.clone();
         let mut filters = Vec::new();
@@ -3289,21 +3369,25 @@ impl Select {
     }
 
     pub fn order_by(mut self, column: &str) -> Self {
+        tracing::trace!("Select::order_by({column:?})");
         self.order_by = vec![(column.to_string(), Order::ASC)];
         self
     }
 
     pub fn limit(mut self, limit: &usize) -> Self {
+        tracing::trace!("Select::limit({limit})");
         self.limit = *limit;
         self
     }
 
     pub fn offset(mut self, offset: &usize) -> Self {
+        tracing::trace!("Select::offset({offset})");
         self.offset = *offset;
         self
     }
 
     pub fn filters(mut self, filters: &Vec<String>) -> Result<Self> {
+        tracing::trace!("Select::filters({filters:?})");
         let basic = r"[\w\-]";
         let wildcarded = r"[\w\-%]";
 
@@ -3342,7 +3426,7 @@ impl Select {
             }
         };
         for filter in filters {
-            tracing::debug!("Applying filter: {filter}");
+            tracing::trace!("Applying filter: {filter}");
             if like.is_match(&filter) {
                 let captures = like.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
@@ -3441,6 +3525,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::like({column:?}, value)");
         self.filters.push(Filter::Like {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3452,6 +3537,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::eq({column:?}, value)");
         self.filters.push(Filter::Equal {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3463,6 +3549,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::not_eq({column:?}, value)");
         self.filters.push(Filter::NotEqual {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3474,6 +3561,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::gt({column:?}, value)");
         self.filters.push(Filter::GreaterThan {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3485,6 +3573,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::gte({column:?}, value)");
         self.filters.push(Filter::GreaterThanOrEqual {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3496,6 +3585,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::lt({column:?}, value)");
         self.filters.push(Filter::LessThan {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3507,6 +3597,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::lte({column:?}, value)");
         self.filters.push(Filter::LessThanOrEqual {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3518,6 +3609,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::is({column:?}, value)");
         self.filters.push(Filter::Is {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3529,6 +3621,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::is_not({column:?}, value)");
         self.filters.push(Filter::IsNot {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3540,6 +3633,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::is_in({column:?}, value)");
         self.filters.push(Filter::In {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3551,6 +3645,7 @@ impl Select {
     where
         T: Serialize,
     {
+        tracing::trace!("Select::is_not_in({column:?}, value)");
         self.filters.push(Filter::NotIn {
             column: column.to_string(),
             value: to_value(value)?,
@@ -3559,7 +3654,7 @@ impl Select {
     }
 
     pub fn to_sqlite(&self) -> Result<(String, Vec<JsonValue>)> {
-        tracing::debug!("to_sqlite: {self:?}");
+        tracing::trace!("Select::to_sqlite({self:?})");
         let mut lines = Vec::new();
         let mut params = Vec::new();
         lines.push("SELECT *,".to_string());
@@ -3593,6 +3688,7 @@ impl Select {
     }
 
     pub fn to_params(&self) -> Result<JsonMap<String, JsonValue>> {
+        tracing::trace!("Select::to_params()");
         if self.table_name.is_empty() {
             return Err(RelatableError::InputError(
                 "Missing required field: `table` in to_sql()".to_string(),
@@ -3638,6 +3734,7 @@ impl Select {
     }
 
     pub fn to_url(&self, base: &str, format: &Format) -> Result<String> {
+        tracing::trace!("Select::to_urs({base:?}, format)");
         let table_name = unquote(&self.table_name).unwrap_or(self.table_name.to_string());
         if let Err(e) = is_simple(&table_name) {
             return Err(RelatableError::InputError(format!(

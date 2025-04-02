@@ -96,6 +96,9 @@ test-perf: test/perf/tsv/penguin.tsv
 .PHONY: test
 test: src/resources/main.js src/resources/main.css test-code test-tesh-doc test-tesh-misc test-random test-perf
 
+.PHONY: test_sqlx
+test_sqlx: sqlx test
+
 .PHONY: clean-test
 clean-test:
 	rm -Rf test/perf

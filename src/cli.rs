@@ -785,25 +785,12 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('penguin', 'penguin.tsv')"#;
     rltbl.connection.query(sql, None).await.unwrap();
 
-    // Create the penguin table.
-    let sql = r#"CREATE TABLE penguin (
-      _id INTEGER PRIMARY KEY AUTOINCREMENT,
-      _order INTEGER UNIQUE,
-      study_name TEXT,
-      sample_number TEXT,
-      species TEXT,
-      island TEXT,
-      individual_id TEXT,
-      culmen_length TEXT,
-      body_mass TEXT
-    )"#;
-    rltbl.connection.query(sql, None).await.unwrap();
-
+    // Create and populate a column table:
     let sql = r#"CREATE TABLE "column" (
       _id INTEGER PRIMARY KEY AUTOINCREMENT,
       _order INTEGER UNIQUE,
-      "table" TEXT NOT NULL,
-      "column" TEXT NOT NULL,
+      "table" TEXT,
+      "column" TEXT,
       "label" TEXT,
       "description" TEXT,
       "nulltype" TEXT
@@ -816,6 +803,20 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
                         ('penguin', 'sample_number', NULL,         'a sample number', NULL),
                         ('penguin', 'maple_syrup',   'maple syrup', NULL,             NULL),
                         ('penguin', 'species',       NULL,          NULL,             'empty')"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    // Create a data table called penguin:
+    let sql = r#"CREATE TABLE penguin (
+      _id INTEGER PRIMARY KEY AUTOINCREMENT,
+      _order INTEGER UNIQUE,
+      study_name TEXT,
+      sample_number TEXT,
+      species TEXT,
+      island TEXT,
+      individual_id TEXT,
+      culmen_length TEXT,
+      body_mass TEXT
+    )"#;
     rltbl.connection.query(sql, None).await.unwrap();
 
     // Populate the penguin table with random data.
