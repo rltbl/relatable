@@ -76,7 +76,7 @@ test-tesh-misc: debug
 test-random: debug
 	test/random.sh --varying-rate
 
-perf_test_timeout = 10
+perf_test_timeout = 5
 perf_test_size = 100000
 
 test/perf/tsv:

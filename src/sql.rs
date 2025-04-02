@@ -24,17 +24,13 @@ use async_std::task::block_on;
 #[cfg(feature = "sqlx")]
 use sqlx::{Acquire as _, Column as _, Row as _};
 
-// Note that SQL_PARAM must be a 'word' (from the point of view of regular expressions) since in
-// [local_sql_syntax()] function we are matchng against it using '\b' which represents a word
-// boundary. If you want to use a non-word placeholder then you must also change '\b' in the regex
-// to '\B'.
 /// The word (in the regex sense) placeholder to use for query parameters when binding using sqlx.
-pub static SQL_PARAM: &str = "RLTBLPARAM";
+pub static SQL_PARAM: &str = "?";
 
-// Do not replace instances of SQL_PARAM if they are within quotation marks.
 lazy_static! {
+    // This accepts a non-word SQL_PARAM. For a word SQL_PARAM change '\B' to '\b' below.
     pub static ref SQL_PARAM_REGEX: Regex = Regex::new(&format!(
-        r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")|\b{}\b"#,
+        r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")|\B{}\B"#,
         SQL_PARAM
     ))
     .unwrap();
@@ -163,7 +159,11 @@ impl DbConnection {
             tracing::warn!("invalid parameter argument");
             return Ok(vec![]);
         }
-        let statement = local_sql_syntax(&self.kind(), statement);
+        let statement = match self.kind() {
+            DbKind::Sqlite => statement,
+            #[cfg(feature = "sqlx")]
+            DbKind::Postgres => &local_sql_syntax(&self.kind(), statement),
+        };
         self.query_direct(&statement, params).await
     }
 
@@ -271,7 +271,11 @@ impl DbTransaction<'_> {
             tracing::warn!("invalid parameter argument");
             return Ok(vec![]);
         }
-        let statement = local_sql_syntax(&self.kind(), statement);
+        let statement = match self.kind() {
+            DbKind::Sqlite => statement,
+            #[cfg(feature = "sqlx")]
+            DbKind::Postgres => &local_sql_syntax(&self.kind(), statement),
+        };
         self.query_direct(&statement, params)
     }
 
