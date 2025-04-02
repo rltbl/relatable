@@ -1,6 +1,6 @@
 //! # rltbl/relatable
 //!
-//! This is relatable (rltbl::sql).
+//! This is [relatable](crate) (rltbl::[sql](crate::sql)).
 //!
 //! This module contains functions for connecting to and querying the database, and implements
 //! any elements of the API that are database-specific.
@@ -24,11 +24,18 @@ use async_std::task::block_on;
 #[cfg(feature = "sqlx")]
 use sqlx::{Acquire as _, Column as _, Row as _};
 
-/// The word (in the regex sense) placeholder to use for query parameters when binding using sqlx.
+// In principle SQL_PARAM can be set to any arbitrary sequence of non-word characters. If you would
+// like SQL_PARAM to be a word then you must also modify SQL_PARAM_REGEX correspondingly. See the
+// comment beside it, below, for instructions on how to do that.
+/// The placeholder to use for query parameters when binding using sqlx. Currently set to "?",
+/// which corresponds to SQLite's parameter syntax. To convert SQL to postgres, use the function
+/// [local_sql_syntax()].
 pub static SQL_PARAM: &str = "?";
 
 lazy_static! {
-    // This accepts a non-word SQL_PARAM. For a word SQL_PARAM change '\B' to '\b' below.
+    // This accepts a non-word SQL_PARAM unless it is enclosed in quotation marks. To use a word
+    // SQL_PARAM change '\B' to '\b' below.
+    /// Regular expression used to find the next instance of [SQL_PARAM] in a given SQL statement.
     pub static ref SQL_PARAM_REGEX: Regex = Regex::new(&format!(
         r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")|\B{}\B"#,
         SQL_PARAM
@@ -41,7 +48,12 @@ pub static DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
 
 /// The [maximum number of parameters](https://www.sqlite.org/limits.html#max_variable_number)
 /// that can be bound to a SQLite query
-pub static MAX_PARAMS: usize = 32766;
+pub static MAX_PARAMS_SQLITE: usize = 32766;
+
+/// The [maximum number of parameters](https://www.postgresql.org/docs/current/limits.html)
+/// that can be bound to a Postgres query
+#[cfg(feature = "sqlx")]
+pub static MAX_PARAMS_POSTGRES: usize = 65535;
 
 /// Represents the kind of database being managed
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -345,7 +357,7 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 }
 
 /// Given a SQL string, possibly with unbound parameters represented by the placeholder string
-/// SQL_PARAM, and given a database kind, if the kind is Sqlite, then change the syntax used
+/// [SQL_PARAM], and given a database kind, if the kind is Sqlite, then change the syntax used
 /// for unbound parameters to Sqlite syntax, which uses "?", otherwise use Postgres syntax, which
 /// uses numbered parameters, i.e., $1, $2, ...
 pub fn local_sql_syntax(kind: &DbKind, sql: &str) -> String {

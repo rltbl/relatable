@@ -1,6 +1,6 @@
 //! # rltbl/relatable
 //!
-//! This is relatable (rltbl::git).
+//! This is [relatable](crate) (rltbl::[git](crate::git)).
 
 use crate as rltbl;
 use rltbl::core::RelatableError;

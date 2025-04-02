@@ -1,6 +1,6 @@
 //! # rltbl/relatable
 //!
-//! This is relatable (rltbl::web).
+//! This is [relatable](crate) (rltbl::[web](crate::web)).
 
 use crate as rltbl;
 use rltbl::{

@@ -1,11 +1,11 @@
 //! # rltbl/relatable
 //!
-//! This is relatable (rltbl::cli)
+//! This is [relatable](crate) (rltbl::[cli](crate::cli))
 
 use crate as rltbl;
 use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Format, Relatable, MOVE_INTERVAL},
-    sql::{JsonRow, VecInto, MAX_PARAMS, SQL_PARAM},
+    sql::{JsonRow, VecInto, MAX_PARAMS_SQLITE, SQL_PARAM},
     web::{serve, serve_cgi},
 };
 
@@ -826,7 +826,7 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     let mut sql_value_parts = vec![];
     let mut params = vec![];
     for i in 1..=size {
-        if (params.len() + 7) >= MAX_PARAMS {
+        if (params.len() + 7) >= MAX_PARAMS_SQLITE {
             let sql = format!(
                 "{sql_first_part} {sql_value_part}",
                 sql_value_part = sql_value_parts.join(", ")

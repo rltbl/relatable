@@ -1,13 +1,13 @@
 //! # rltbl/relatable
 //!
-//! This is relatable (rltbl::core).
+//! This is [relatable](crate) (rltbl::[core](crate::core)).
 
 use crate as rltbl;
 use rltbl::{
     git,
     sql::{
         is_simple, json_to_string, DbActiveConnection, DbConnection, DbTransaction, JsonRow,
-        VecInto, MAX_PARAMS, SQL_PARAM,
+        VecInto, MAX_PARAMS_SQLITE, SQL_PARAM,
     },
 };
 
@@ -454,7 +454,7 @@ impl Relatable {
         while let Some(row) = records.next() {
             let row = row.expect("Error processing row");
             // We add 2 here because of _id and _order:
-            if (params.len() + row.len() + 2) >= MAX_PARAMS {
+            if (params.len() + row.len() + 2) >= MAX_PARAMS_SQLITE {
                 let sql = format!(
                     "{sql_first_part} {sql_value_part}",
                     sql_value_part = sql_value_parts.join(", ")
