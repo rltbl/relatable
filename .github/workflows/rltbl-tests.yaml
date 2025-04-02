@@ -29,4 +29,5 @@ jobs:
           node-version: '18.19'
       - name: Run tests
         run: |
-          make test test_sqlx
+          make test
+          make test_sqlx
