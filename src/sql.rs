@@ -10,6 +10,7 @@ use rltbl::core::{RelatableError, Table};
 
 use anyhow::Result;
 use indexmap::IndexMap;
+use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -29,6 +30,15 @@ use sqlx::{Acquire as _, Column as _, Row as _};
 // to '\B'.
 /// The word (in the regex sense) placeholder to use for query parameters when binding using sqlx.
 pub static SQL_PARAM: &str = "RLTBLPARAM";
+
+// Do not replace instances of SQL_PARAM if they are within quotation marks.
+lazy_static! {
+    pub static ref SQL_PARAM_REGEX: Regex = Regex::new(&format!(
+        r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")|\b{}\b"#,
+        SQL_PARAM
+    ))
+    .unwrap();
+}
 
 /// Represents a 'simple' database name
 pub static DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
@@ -124,9 +134,9 @@ impl DbConnection {
     ) -> Result<DbTransaction<'a>> {
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(pool, _) => {
+            Self::Sqlx(pool, kind) => {
                 let tx = pool.begin().await?;
-                Ok(DbTransaction::Sqlx(tx))
+                Ok(DbTransaction::Sqlx(tx, *kind))
             }
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(_) => match conn {
@@ -153,8 +163,15 @@ impl DbConnection {
             tracing::warn!("invalid parameter argument");
             return Ok(vec![]);
         }
-
         let statement = local_sql_syntax(&self.kind(), statement);
+        self.query_direct(&statement, params).await
+    }
+
+    pub async fn query_direct(
+        &self,
+        statement: &str,
+        params: Option<&JsonValue>,
+    ) -> Result<Vec<JsonRow>> {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(pool, _) => {
@@ -254,8 +271,15 @@ impl DbTransaction<'_> {
             tracing::warn!("invalid parameter argument");
             return Ok(vec![]);
         }
-
         let statement = local_sql_syntax(&self.kind(), statement);
+        self.query_direct(&statement, params)
+    }
+
+    pub fn query_direct(
+        &mut self,
+        statement: &str,
+        params: Option<&JsonValue>,
+    ) -> Result<Vec<JsonRow>> {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(tx, _) => {
@@ -321,19 +345,12 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 /// for unbound parameters to Sqlite syntax, which uses "?", otherwise use Postgres syntax, which
 /// uses numbered parameters, i.e., $1, $2, ...
 pub fn local_sql_syntax(kind: &DbKind, sql: &str) -> String {
-    // Do not replace instances of SQL_PARAM if they are within quotation marks.
-    let rx = Regex::new(&format!(
-        r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")|\b{}\b"#,
-        SQL_PARAM
-    ))
-    .unwrap();
-
     #[cfg(feature = "sqlx")]
     let mut pg_param_idx = 1;
 
     let mut final_sql = String::from("");
     let mut saved_start = 0;
-    for m in rx.find_iter(sql) {
+    for m in SQL_PARAM_REGEX.find_iter(sql) {
         let this_match = &sql[m.start()..m.end()];
         final_sql.push_str(&sql[saved_start..m.start()]);
         if this_match == SQL_PARAM {

@@ -5,7 +5,7 @@
 use crate as rltbl;
 use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Format, Relatable, MOVE_INTERVAL},
-    sql::{JsonRow, VecInto, MAX_PARAMS},
+    sql::{JsonRow, VecInto, MAX_PARAMS, SQL_PARAM},
     web::{serve, serve_cgi},
 };
 
@@ -387,7 +387,7 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
-    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
+    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = {SQL_PARAM}"#);
     let params = json!([row]);
     if let Some(value) = rltbl
         .connection
@@ -497,7 +497,7 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
 
     // Fetch the current value from the db:
-    let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = ?"#);
+    let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = {SQL_PARAM}"#);
     let params = json!([row]);
     let before = rltbl
         .connection
@@ -847,7 +847,10 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         let island = islands.iter().choose(&mut rng).unwrap();
         let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
-        sql_value_parts.push("(?, ?, 'FAKE123', ?, 'Pygoscelis adeliae', ?, ?, ?, ?)");
+        sql_value_parts.push(format!(
+            "({SQL_PARAM}, {SQL_PARAM}, 'FAKE123', {SQL_PARAM}, 'Pygoscelis adeliae', \
+             {SQL_PARAM}, {SQL_PARAM}, {SQL_PARAM}, {SQL_PARAM})"
+        ));
         params.push(json!(id));
         params.push(json!(order));
         params.push(json!(id));

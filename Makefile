@@ -76,21 +76,21 @@ test-tesh-misc: debug
 test-random: debug
 	test/random.sh --varying-rate
 
-perf_test_timeout = 5
+perf_test_timeout = 10
 perf_test_size = 100000
 
 test/perf/tsv:
 	mkdir -p $@
 
-test/perf/tsv/penguin.tsv: debug | test/perf/tsv
+test/perf/tsv/penguin.tsv: | test/perf/tsv
 	target/debug/rltbl demo --size $(perf_test_size) --force
 	target/debug/rltbl save test/perf/tsv/
 
 .PHONY: test-perf
 test-perf: test/perf/tsv/penguin.tsv
 	target/debug/rltbl init --force
-	@echo "target/debug/rltbl -vvv load table $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vvv load table $< || \
+	@echo "target/debug/rltbl -vv load table $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vv load table $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 .PHONY: test

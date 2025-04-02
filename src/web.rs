@@ -8,7 +8,7 @@ use rltbl::{
     core::{
         ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Row, Select,
     },
-    sql::JsonRow,
+    sql::{JsonRow, SQL_PARAM},
 };
 use std::io::Write;
 
@@ -201,7 +201,8 @@ async fn post_table(
 
 async fn init_user(rltbl: &Relatable, username: &str) -> () {
     let color = random_color::RandomColor::new().to_hex();
-    let statement = format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES (?, ?)"#);
+    let statement =
+        format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES ({SQL_PARAM}, {SQL_PARAM})"#);
     let params = json!([username, color]);
     rltbl
         .connection
@@ -259,9 +260,9 @@ async fn post_cursor(
     // TODO: sanitize the cursor JSON.
     let statement = format!(
         r#"UPDATE user
-           SET "cursor" = ?,
+           SET "cursor" = {SQL_PARAM},
                "datetime" = CURRENT_TIMESTAMP
-           WHERE "name" = ?"#,
+           WHERE "name" = {SQL_PARAM}"#,
     );
     let cursor = to_value(cursor).unwrap_or_default();
     let params = json!([cursor, username]);
@@ -286,7 +287,7 @@ async fn get_row_menu(
     let row: Row = match rltbl
         .connection
         .query_one(
-            &format!(r#"SELECT * FROM "{}" WHERE _id = ?"#, table.view),
+            &format!(r#"SELECT * FROM "{}" WHERE _id = {SQL_PARAM}"#, table.view),
             Some(&json!([row_id])),
         )
         .await
@@ -362,7 +363,7 @@ async fn get_cell_menu(
     let row: Row = match rltbl
         .connection
         .query_one(
-            &format!(r#"SELECT * FROM "{}" WHERE _id = ?"#, table.view),
+            &format!(r#"SELECT * FROM "{}" WHERE _id = {SQL_PARAM}"#, table.view),
             Some(&json!([row_id])),
         )
         .await
@@ -425,7 +426,7 @@ async fn get_cell_options(
 async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &usize) -> usize {
     let sql = format!(
         r#"SELECT "_id", MAX("_order") FROM "{table}"
-        WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = ?)"#
+        WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = {SQL_PARAM})"#
     );
     let after_id = rltbl
         .connection
@@ -494,7 +495,7 @@ async fn add_row(
             let offset = rltbl
                 .connection
                 .query_value(
-                    &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= ?"#),
+                    &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= {SQL_PARAM}"#),
                     Some(&json!([row.order])),
                 )
                 .await;
@@ -529,7 +530,7 @@ async fn delete_row(
                 .query_value(
                     &format!(
                         r#"SELECT COUNT() FROM "{table}"
-                       WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = ?)"#
+                       WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = {SQL_PARAM})"#
                     ),
                     Some(&json!([prev])),
                 )
