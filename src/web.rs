@@ -201,14 +201,24 @@ async fn post_table(
 
 async fn init_user(rltbl: &Relatable, username: &str) -> () {
     let color = random_color::RandomColor::new().to_hex();
-    let statement =
-        format!(r#"INSERT OR IGNORE INTO user("name", "color") VALUES ({SQL_PARAM}, {SQL_PARAM})"#);
-    let params = json!([username, color]);
-    rltbl
+    let statement = format!(r#"SELECT 1 FROM "user" WHERE "name" = {SQL_PARAM}"#);
+    let params = json!([username]);
+    if let None = rltbl
         .connection
-        .query(&statement, Some(&params))
+        .query_value(&statement, Some(&params))
         .await
-        .expect("Update user");
+        .expect("Error getting user")
+    {
+        let statement = format!(
+            r#"INSERT OR IGNORE INTO user("name", "color") VALUES ({SQL_PARAM}, {SQL_PARAM})"#
+        );
+        let params = json!([username, color]);
+        rltbl
+            .connection
+            .query(&statement, Some(&params))
+            .await
+            .expect("Update user");
+    }
 }
 
 async fn post_sign_in(
