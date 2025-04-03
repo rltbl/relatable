@@ -46,6 +46,10 @@ lazy_static! {
 /// Represents a 'simple' database name
 pub static DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
 
+lazy_static! {
+    pub static ref DB_OBJECT_REGEX: Regex = Regex::new(DB_OBJECT_MATCH_STR).unwrap();
+}
+
 /// The [maximum number of parameters](https://www.sqlite.org/limits.html#max_variable_number)
 /// that can be bound to a SQLite query
 pub static MAX_PARAMS_SQLITE: usize = 32766;
@@ -343,10 +347,8 @@ impl DbTransaction<'_> {
 /// Helper function to determine whether the given name is 'simple', as defined by
 /// [DB_OBJECT_MATCH_STR]
 pub fn is_simple(db_object_name: &str) -> Result<(), String> {
-    let db_object_regex: Regex = Regex::new(DB_OBJECT_MATCH_STR).unwrap();
-
     let db_object_root = db_object_name.splitn(2, ".").collect::<Vec<_>>()[0];
-    if !db_object_regex.is_match(&db_object_root) {
+    if !DB_OBJECT_REGEX.is_match(&db_object_root) {
         Err(format!(
             "Illegal database object name: '{}' in '{}'. Does not match: /{}/",
             db_object_root, db_object_name, DB_OBJECT_MATCH_STR,
@@ -357,9 +359,9 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 }
 
 /// Given a SQL string, possibly with unbound parameters represented by the placeholder string
-/// [SQL_PARAM], and given a database kind, if the kind is Sqlite, then change the syntax used
-/// for unbound parameters to Sqlite syntax, which uses "?", otherwise use Postgres syntax, which
-/// uses numbered parameters, i.e., $1, $2, ...
+/// [SQL_PARAM], and given a database kind, if the kind is [Sqlite](DbKind::Sqlite), then change
+/// the syntax usedters to SQLite syntax, which uses "?", otherwise use the syntax appropriate for
+/// that kind.
 pub fn local_sql_syntax(kind: &DbKind, sql: &str) -> String {
     #[cfg(feature = "sqlx")]
     let mut pg_param_idx = 1;
