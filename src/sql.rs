@@ -6,14 +6,14 @@
 //! any elements of the API that are database-specific.
 
 use crate as rltbl;
-use rltbl::core::{RelatableError, Table};
+use rltbl::core::{Column, RelatableError, Table, MOVE_INTERVAL};
 
 use anyhow::Result;
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
 #[cfg(feature = "rusqlite")]
 use rusqlite;
@@ -235,6 +235,35 @@ impl DbConnection {
         let rows = self.query(statement, params).await?;
         extract_value(&rows)
     }
+
+    pub async fn get_table_columns(&self, table: &str) -> Result<Vec<JsonRow>> {
+        // WARN: SQLite only!
+        let sql = format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
+        self.query(&sql, None).await
+    }
+
+    pub async fn view_exists_for(&mut self, table: &str) -> Result<bool> {
+        let statement =
+            format!(r#"SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = {SQL_PARAM}"#);
+        let params = json!([format!("{table}_default_view")]);
+        let result = self.query_value(&statement, Some(&params)).await?;
+        match result {
+            None => Ok(false),
+            _ => Ok(true),
+        }
+    }
+
+    pub async fn get_next_id(&self, table: &str) -> Result<usize> {
+        tracing::trace!("Row::get_next_id({table:?}, tx)");
+        // TODO: Here.
+        let sql = format!(r#"SELECT seq FROM sqlite_sequence WHERE name = {SQL_PARAM}"#);
+        let params = json!([table]);
+        let current_row_id = match self.query_value(&sql, Some(&params)).await? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(current_row_id + 1)
+    }
 }
 
 #[derive(Debug)]
@@ -338,6 +367,35 @@ impl DbTransaction<'_> {
         let rows = self.query(statement, params)?;
         extract_value(&rows)
     }
+
+    pub fn get_table_columns(&mut self, table: &str) -> Result<Vec<JsonRow>> {
+        // WARN: SQLite only!
+        let sql = format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
+        self.query(&sql, None)
+    }
+
+    pub fn view_exists_for(&mut self, table: &str) -> Result<bool> {
+        let statement =
+            format!(r#"SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = {SQL_PARAM}"#);
+        let params = json!([format!("{table}_default_view")]);
+        let result = self.query_value(&statement, Some(&params))?;
+        match result {
+            None => Ok(false),
+            _ => Ok(true),
+        }
+    }
+
+    pub fn get_next_id(&mut self, table: &str) -> Result<usize> {
+        tracing::trace!("Row::get_next_id({table:?}, tx)");
+        // TODO: Here.
+        let sql = format!(r#"SELECT seq FROM sqlite_sequence WHERE name = {SQL_PARAM}"#);
+        let params = json!([table]);
+        let current_row_id = match self.query_value(&sql, Some(&params))? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(current_row_id + 1)
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -356,6 +414,14 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+pub fn is_clause(db_kind: &DbKind) -> String {
+    "IS".into()
+}
+
+pub fn is_not_clause(db_kind: &DbKind) -> String {
+    "IS NOT".into()
 }
 
 /// Given a SQL string, possibly with unbound parameters represented by the placeholder string
@@ -467,6 +533,215 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
         },
         None => Ok(None),
     }
+}
+
+pub fn generate_ddl(table: &Table) -> Result<Vec<String>> {
+    if table.has_meta {
+        for (cname, col) in table.columns.iter() {
+            if cname == "_id" || cname == "_order" {
+                return Err(RelatableError::InputError(format!(
+                    "column {cname} conflicts with has_meta == {has_meta}",
+                    has_meta = table.has_meta,
+                ))
+                .into());
+            }
+
+            if col.primary_key {
+                return Err(RelatableError::InputError(format!(
+                    "Primary key on column {cname} conflicts with has_meta == {has_meta}",
+                    has_meta = table.has_meta,
+                ))
+                .into());
+            }
+        }
+    }
+
+    let mut ddl = vec![];
+    let mut column_clauses = vec![];
+    for (cname, col) in table.columns.iter() {
+        if col.table != table.name {
+            return Err(RelatableError::InputError(format!(
+                "Table name mismatch: '{}' != '{}'",
+                col.table, table.name,
+            ))
+            .into());
+        }
+        let clause = format!(
+            r#""{cname}" TEXT{unique}"#,
+            unique = match col.unique {
+                true => " UNIQUE",
+                false => "",
+            },
+        );
+        column_clauses.push(clause);
+    }
+
+    let mut sql = format!(r#"CREATE TABLE IF NOT EXISTS "{}" ( "#, table.name);
+    if table.has_meta {
+        sql.push_str(
+            "_id INTEGER PRIMARY KEY AUTOINCREMENT, \
+             _order INTEGER UNIQUE, ",
+        );
+    }
+    sql.push_str(&format!(" {})", column_clauses.join(", ")));
+    ddl.push(sql);
+
+    if table.has_meta {
+        let sql = format!(
+            r#"CREATE TRIGGER "{table}_order"
+                 AFTER INSERT ON "{table}"
+                 WHEN NEW._order IS NULL
+                 BEGIN
+                   UPDATE "{table}" SET _order = ({MOVE_INTERVAL} * NEW._id)
+                   WHERE _id = NEW._id;
+                 END"#,
+            table = table.name,
+        );
+        ddl.push(sql);
+    }
+
+    Ok(ddl)
+}
+
+pub fn generate_view_ddl(
+    table_name: &str,
+    view_name: &str,
+    id_col: &str,
+    order_col: &str,
+    columns: &Vec<Column>,
+) -> String {
+    // Note that '?' parameters are not allowed in views so we must hard code them:
+    format!(
+        r#"CREATE VIEW IF NOT EXISTS "{view}" AS
+             SELECT
+               {id_col} AS _id,
+               {order_col} AS _order,
+               (SELECT '[' || GROUP_CONCAT("after") || ']'
+                  FROM (
+                    SELECT "after"
+                    FROM "history"
+                    WHERE "table" = '{table}'
+                    AND "after" IS NOT NULL
+                    AND "row" = {id_col}
+                    ORDER BY "history_id"
+                 )
+               ) AS "_history",
+               (SELECT NULLIF(
+                  JSON_GROUP_ARRAY(
+                    JSON_OBJECT(
+                      'column', "column",
+                      'value', "value",
+                      'level', "level",
+                      'rule', "rule",
+                      'message', "message"
+                    )
+                  ),
+                  '[]'
+                ) AS "_message"
+                  FROM "message"
+                  WHERE "table" = '{table}'
+                  AND "row" = {id_col}
+                  ORDER BY "column", "message_id"
+               ) AS "_message",
+               {columns}
+             FROM "{table}""#,
+        table = table_name,
+        view = view_name,
+        columns = columns
+            .iter()
+            .map(|c| format!(r#""{}""#, c.name))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+pub fn generate_table_table_ddl() -> Vec<String> {
+    let mut table = Table::new("table");
+    table.columns.insert(
+        "table".into(),
+        Column {
+            table: "table".into(),
+            name: "table".into(),
+            unique: true,
+            ..Default::default()
+        },
+    );
+    table.columns.insert(
+        "path".into(),
+        Column {
+            table: "table".into(),
+            name: "path".into(),
+            unique: true,
+            ..Default::default()
+        },
+    );
+    generate_ddl(&table).unwrap()
+}
+
+// TODO: When the Table struct is rich enough to support different datatypes, foreign keys,
+// and defaults, create these other meta tables in a similar way to the table table above.
+
+pub fn generate_user_table_ddl() -> Vec<String> {
+    vec![r#"CREATE TABLE "user" (
+             "name" TEXT PRIMARY KEY,
+             "color" TEXT,
+             "cursor" TEXT,
+             "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           )"#
+    .to_string()]
+}
+
+pub fn generate_change_table_ddl() -> Vec<String> {
+    vec![r#"CREATE TABLE "change" (
+             change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+             "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+             "user" TEXT NOT NULL,
+             "action" TEXT NOT NULL,
+             "table" TEXT NOT NULL,
+             "description" TEXT,
+             "content" TEXT,
+             FOREIGN KEY ("user") REFERENCES user("name")
+           )"#
+    .to_string()]
+}
+
+pub fn generate_history_table_ddl() -> Vec<String> {
+    vec![r#"CREATE TABLE "history" (
+             history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+             change_id INTEGER NOT NULL,
+             "table" TEXT NOT NULL,
+             "row" INTEGER NOT NULL,
+             "before" TEXT,
+             "after" TEXT,
+             FOREIGN KEY ("change_id") REFERENCES change("change_id"),
+             FOREIGN KEY ("table") REFERENCES "table"("table")
+           )"#
+    .to_string()]
+}
+
+pub fn generate_message_table_ddl() -> Vec<String> {
+    vec![r#"CREATE TABLE "message" (
+             "message_id" INTEGER PRIMARY KEY AUTOINCREMENT,
+             "added_by" TEXT,
+             "table" TEXT NOT NULL,
+             "row" INTEGER NOT NULL,
+             "column" TEXT NOT NULL,
+             "value" TEXT,
+             "level" TEXT,
+             "rule" TEXT,
+             "message" TEXT,
+             FOREIGN KEY ("table") REFERENCES "table"("table")
+           )"#
+    .to_string()]
+}
+
+pub fn generate_meta_tables_ddl() -> Vec<String> {
+    let mut ddl = generate_table_table_ddl();
+    ddl.append(&mut generate_user_table_ddl());
+    ddl.append(&mut generate_change_table_ddl());
+    ddl.append(&mut generate_history_table_ddl());
+    ddl.append(&mut generate_message_table_ddl());
+    ddl
 }
 
 ///////////////////////////////////////////////////////////////////////////////
