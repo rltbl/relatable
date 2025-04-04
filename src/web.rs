@@ -209,9 +209,8 @@ async fn init_user(rltbl: &Relatable, username: &str) -> () {
         .await
         .expect("Error getting user")
     {
-        let statement = format!(
-            r#"INSERT OR IGNORE INTO user("name", "color") VALUES ({SQL_PARAM}, {SQL_PARAM})"#
-        );
+        let statement =
+            format!(r#"INSERT INTO user("name", "color") VALUES ({SQL_PARAM}, {SQL_PARAM})"#);
         let params = json!([username, color]);
         rltbl
             .connection

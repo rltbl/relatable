@@ -1023,10 +1023,14 @@ impl Relatable {
         // Make sure the user is present in the user table
         let user = changeset.user.clone();
         let color = random_color::RandomColor::new().to_hex();
-        let statement =
-            format!(r#"INSERT INTO user("name", "color") VALUES ({SQL_PARAM}, {SQL_PARAM})"#);
-        let params = json!([user, color]);
-        tx.query(&statement, Some(&params)).ok();
+        let statement = format!(r#"SELECT 1 FROM "user" WHERE "name" = {SQL_PARAM}"#);
+        let params = json!([user]);
+        if let None = tx.query_value(&statement, Some(&params))? {
+            let statement =
+                format!(r#"INSERT INTO user("name", "color") VALUES ({SQL_PARAM}, {SQL_PARAM})"#);
+            let params = json!([user, color]);
+            tx.query(&statement, Some(&params))?;
+        }
 
         // Update the user's cursor position.
         let mut cursor = changeset.to_cursor()?;
