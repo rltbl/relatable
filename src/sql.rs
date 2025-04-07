@@ -15,6 +15,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
+#[cfg(feature = "sqlx")]
+use std::str::FromStr as _;
+
 #[cfg(feature = "rusqlite")]
 use rusqlite;
 
@@ -22,7 +25,10 @@ use rusqlite;
 use async_std::task::block_on;
 
 #[cfg(feature = "sqlx")]
-use sqlx::{Acquire as _, Column as _, Row as _};
+use sqlx::{
+    any::{AnyConnectOptions, AnyPoolOptions},
+    Acquire as _, Column as _, Row as _,
+};
 
 // In principle SQL_PARAM can be set to any arbitrary sequence of non-word characters. If you would
 // like SQL_PARAM to be a word then you must also modify SQL_PARAM_REGEX correspondingly. See the
@@ -30,14 +36,14 @@ use sqlx::{Acquire as _, Column as _, Row as _};
 /// The placeholder to use for query parameters when binding using sqlx. Currently set to "?",
 /// which corresponds to SQLite's parameter syntax. To convert SQL to postgres, use the function
 /// [local_sql_syntax()].
-pub static SQL_PARAM: &str = "?";
+pub static SQL_PARAM: &str = "VALVEPARAM";
 
 lazy_static! {
     // This accepts a non-word SQL_PARAM unless it is enclosed in quotation marks. To use a word
     // SQL_PARAM change '\B' to '\b' below.
     /// Regular expression used to find the next instance of [SQL_PARAM] in a given SQL statement.
     pub static ref SQL_PARAM_REGEX: Regex = Regex::new(&format!(
-        r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")|\B{}\B"#,
+        r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")|\b{}\b"#,
         SQL_PARAM
     ))
     .unwrap();
@@ -50,19 +56,20 @@ lazy_static! {
     pub static ref DB_OBJECT_REGEX: Regex = Regex::new(DB_OBJECT_MATCH_STR).unwrap();
 }
 
+/// Maximum number of database connections.
+pub static MAX_DB_CONNECTIONS: u32 = 5;
+
 /// The [maximum number of parameters](https://www.sqlite.org/limits.html#max_variable_number)
 /// that can be bound to a SQLite query
 pub static MAX_PARAMS_SQLITE: usize = 32766;
 
 /// The [maximum number of parameters](https://www.postgresql.org/docs/current/limits.html)
 /// that can be bound to a Postgres query
-#[cfg(feature = "sqlx")]
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
 
 /// Represents the kind of database being managed
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DbKind {
-    #[cfg(feature = "sqlx")]
     Postgres,
     Sqlite,
 }
@@ -92,41 +99,86 @@ impl DbConnection {
         }
     }
 
-    pub async fn connect(path: &str) -> Result<(Self, Option<DbActiveConnection>)> {
-        // We suppress warnings for unused variables for this particular variable because the
-        // compiler is becoming confused about which variables have been actually used as a result
-        // of the conditional sqlx/rusqlite compilation (or maybe the programmer is confused).
-        #[allow(unused_variables)]
-        #[cfg(feature = "rusqlite")]
-        let tuple = (
-            Self::Rusqlite(path.to_string()),
-            Some(DbActiveConnection::Rusqlite(rusqlite::Connection::open(
-                path,
-            )?)),
-        );
+    pub async fn connect(database: &str) -> Result<(Self, Option<DbActiveConnection>)> {
+        let is_postgresql = database.starts_with("postgresql://");
+        match is_postgresql {
+            true => {
+                #[cfg(not(feature = "sqlx"))]
+                return Err(RelatableError::InputError(
+                    "rltbl was built without the sqlx feature, which is required for PostgreSQL \
+                     support. To build rltbl with sqlx enabled, run \
+                     `cargo build --features sqlx`"
+                        .to_string(),
+                )
+                .into());
 
-        #[cfg(feature = "sqlx")]
-        let tuple = {
-            let url = {
-                if path.starts_with("postgresql://") || path.starts_with("sqlite://") {
-                    path.to_string()
-                } else {
-                    format!("sqlite://{path}?mode=rwc")
-                }
-            };
-            let kind = {
-                if url.starts_with("sqlite://") {
-                    DbKind::Sqlite
-                } else {
-                    DbKind::Postgres
-                }
-            };
-            sqlx::any::install_default_drivers();
-            let connection = Self::Sqlx(sqlx::AnyPool::connect(&url).await?, kind);
-            (connection, None)
-        };
+                #[cfg(feature = "sqlx")]
+                {
+                    sqlx::any::install_default_drivers();
+                    let connection_options;
+                    let db_kind;
+                    if database.starts_with("postgresql://") {
+                        connection_options = AnyConnectOptions::from_str(database)?;
+                        db_kind = DbKind::Postgres;
+                    } else {
+                        let connection_string;
+                        if !database.starts_with("sqlite://") {
+                            connection_string = format!("sqlite://{}?mode=rwc", database);
+                        } else {
+                            connection_string = database.to_string();
+                        }
+                        connection_options =
+                            AnyConnectOptions::from_str(connection_string.as_str())?;
+                        db_kind = DbKind::Sqlite;
+                    }
 
-        Ok(tuple)
+                    let pool = AnyPoolOptions::new()
+                        .max_connections(MAX_DB_CONNECTIONS)
+                        .connect_with(connection_options)
+                        .await?;
+
+                    let connection = Self::Sqlx(pool, db_kind);
+                    Ok((connection, None))
+                }
+            }
+            false => {
+                // We suppress warnings for unused variables for this particular variable because
+                // the compiler is becoming confused about which variables have been actually used
+                // as a result of the conditional sqlx/rusqlite compilation (or maybe the programmer
+                // is confused).
+                #[allow(unused_variables)]
+                #[cfg(feature = "rusqlite")]
+                let tuple = (
+                    Self::Rusqlite(database.to_string()),
+                    Some(DbActiveConnection::Rusqlite(rusqlite::Connection::open(
+                        database,
+                    )?)),
+                );
+
+                #[cfg(feature = "sqlx")]
+                let tuple = {
+                    let url = {
+                        if database.starts_with("sqlite://") {
+                            database.to_string()
+                        } else {
+                            format!("sqlite://{database}?mode=rwc")
+                        }
+                    };
+                    let kind = {
+                        if url.starts_with("sqlite://") {
+                            DbKind::Sqlite
+                        } else {
+                            DbKind::Postgres
+                        }
+                    };
+                    sqlx::any::install_default_drivers();
+                    let connection = Self::Sqlx(sqlx::AnyPool::connect(&url).await?, kind);
+                    (connection, None)
+                };
+
+                Ok(tuple)
+            }
+        }
     }
 
     pub fn reconnect(&self) -> Result<Option<DbActiveConnection>> {
@@ -177,7 +229,6 @@ impl DbConnection {
         }
         let statement = match self.kind() {
             DbKind::Sqlite => statement,
-            #[cfg(feature = "sqlx")]
             DbKind::Postgres => &local_sql_syntax(&self.kind(), statement),
         };
         self.query_direct(&statement, params).await
@@ -237,14 +288,43 @@ impl DbConnection {
     }
 
     pub async fn get_table_columns(&self, table: &str) -> Result<Vec<JsonRow>> {
-        // WARN: SQLite only!
-        let sql = format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
-        self.query(&sql, None).await
+        match self.kind() {
+            DbKind::Sqlite => {
+                let sql =
+                    format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
+                self.query(&sql, None).await
+            }
+            DbKind::Postgres => {
+                let sql = format!(
+                    r#"SELECT "column_name"::TEXT AS "name"
+                       FROM "information_schema"."columns"
+                       WHERE "table_schema" = 'public'
+                       AND "table_name" = {SQL_PARAM}
+                       ORDER BY "ordinal_position""#,
+                );
+                let params = json!([table]);
+                self.query(&sql, Some(&params)).await
+            }
+        }
     }
 
     pub async fn view_exists_for(&mut self, table: &str) -> Result<bool> {
-        let statement =
-            format!(r#"SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = {SQL_PARAM}"#);
+        // TODO: Add a trace! call here and at the beginning of any other functions in this module
+        // that are missing one.
+        let statement = match self.kind() {
+            DbKind::Sqlite => format!(
+                r#"SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'view' AND name = {SQL_PARAM}"#
+            ),
+            DbKind::Postgres => format!(
+                r#"SELECT 1
+                   FROM "information_schema"."tables"
+                   WHERE "table_schema" = 'public'
+                   AND "table_name" = {SQL_PARAM}
+                   AND "table_type" = 'VIEW'"#,
+            ),
+        };
         let params = json!([format!("{table}_default_view")]);
         let result = self.query_value(&statement, Some(&params)).await?;
         match result {
@@ -255,10 +335,21 @@ impl DbConnection {
 
     pub async fn get_next_id(&self, table: &str) -> Result<usize> {
         tracing::trace!("Row::get_next_id({table:?}, tx)");
-        // TODO: Here.
-        let sql = format!(r#"SELECT seq FROM sqlite_sequence WHERE name = {SQL_PARAM}"#);
-        let params = json!([table]);
-        let current_row_id = match self.query_value(&sql, Some(&params)).await? {
+        let current_row_id = match self.kind() {
+            DbKind::Sqlite => {
+                let sql = format!(r#"SELECT seq FROM sqlite_sequence WHERE name = {SQL_PARAM}"#);
+                let params = json!([table]);
+                self.query_value(&sql, Some(&params)).await?
+            }
+            DbKind::Postgres => {
+                let sql = format!(
+                    // Note that in the case of postgres an _id column is required.
+                    r#"SELECT last_value FROM public."{table}__id_seq""#
+                );
+                self.query_value(&sql, None).await?
+            }
+        };
+        let current_row_id = match current_row_id {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
@@ -318,7 +409,6 @@ impl DbTransaction<'_> {
         }
         let statement = match self.kind() {
             DbKind::Sqlite => statement,
-            #[cfg(feature = "sqlx")]
             DbKind::Postgres => &local_sql_syntax(&self.kind(), statement),
         };
         self.query_direct(&statement, params)
@@ -369,14 +459,43 @@ impl DbTransaction<'_> {
     }
 
     pub fn get_table_columns(&mut self, table: &str) -> Result<Vec<JsonRow>> {
-        // WARN: SQLite only!
-        let sql = format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
-        self.query(&sql, None)
+        match self.kind() {
+            DbKind::Sqlite => {
+                let sql =
+                    format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
+                self.query(&sql, None)
+            }
+            DbKind::Postgres => {
+                let sql = format!(
+                    r#"SELECT "column_name"::TEXT AS "name"
+                       FROM "information_schema"."columns"
+                       WHERE "table_schema" = 'public'
+                       AND "table_name" = {SQL_PARAM}
+                       ORDER BY "ordinal_position""#,
+                );
+                let params = json!([table]);
+                self.query(&sql, Some(&params))
+            }
+        }
     }
 
     pub fn view_exists_for(&mut self, table: &str) -> Result<bool> {
-        let statement =
-            format!(r#"SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = {SQL_PARAM}"#);
+        // TODO: Add a trace! call here and at the beginning of any other functions in this module
+        // that are missing one.
+        let statement = match self.kind() {
+            DbKind::Sqlite => format!(
+                r#"SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'view' AND name = {SQL_PARAM}"#
+            ),
+            DbKind::Postgres => format!(
+                r#"SELECT 1
+                   FROM "information_schema"."tables"
+                   WHERE "table_schema" = 'public'
+                   AND "table_name" = {SQL_PARAM}
+                   AND "table_type" = 'VIEW'"#,
+            ),
+        };
         let params = json!([format!("{table}_default_view")]);
         let result = self.query_value(&statement, Some(&params))?;
         match result {
@@ -387,10 +506,21 @@ impl DbTransaction<'_> {
 
     pub fn get_next_id(&mut self, table: &str) -> Result<usize> {
         tracing::trace!("Row::get_next_id({table:?}, tx)");
-        // TODO: Here.
-        let sql = format!(r#"SELECT seq FROM sqlite_sequence WHERE name = {SQL_PARAM}"#);
-        let params = json!([table]);
-        let current_row_id = match self.query_value(&sql, Some(&params))? {
+        let current_row_id = match self.kind() {
+            DbKind::Sqlite => {
+                let sql = format!(r#"SELECT seq FROM sqlite_sequence WHERE name = {SQL_PARAM}"#);
+                let params = json!([table]);
+                self.query_value(&sql, Some(&params))?
+            }
+            DbKind::Postgres => {
+                let sql = format!(
+                    // Note that in the case of postgres an _id column is required.
+                    r#"SELECT last_value FROM public."{table}__id_seq""#
+                );
+                self.query_value(&sql, None)?
+            }
+        };
+        let current_row_id = match current_row_id {
             Some(value) => value.as_u64().unwrap_or_default() as usize,
             None => 0,
         };
@@ -417,11 +547,17 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 }
 
 pub fn is_clause(db_kind: &DbKind) -> String {
-    "IS".into()
+    match db_kind {
+        DbKind::Sqlite => "IS".into(),
+        DbKind::Postgres => "IS NOT DISTINCT FROM".into(),
+    }
 }
 
 pub fn is_not_clause(db_kind: &DbKind) -> String {
-    "IS NOT".into()
+    match db_kind {
+        DbKind::Sqlite => "IS NOT".into(),
+        DbKind::Postgres => "IS DISTINCT FROM".into(),
+    }
 }
 
 /// Given a SQL string, possibly with unbound parameters represented by the placeholder string
@@ -429,9 +565,7 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
 /// the syntax usedters to SQLite syntax, which uses "?", otherwise use the syntax appropriate for
 /// that kind.
 pub fn local_sql_syntax(kind: &DbKind, sql: &str) -> String {
-    #[cfg(feature = "sqlx")]
     let mut pg_param_idx = 1;
-
     let mut final_sql = String::from("");
     let mut saved_start = 0;
     for m in SQL_PARAM_REGEX.find_iter(sql) {
@@ -439,7 +573,6 @@ pub fn local_sql_syntax(kind: &DbKind, sql: &str) -> String {
         final_sql.push_str(&sql[saved_start..m.start()]);
         if this_match == SQL_PARAM {
             match *kind {
-                #[cfg(feature = "sqlx")]
                 DbKind::Postgres => {
                     final_sql.push_str(&format!("${}", pg_param_idx));
                     pg_param_idx += 1;
@@ -535,7 +668,7 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
     }
 }
 
-pub fn generate_ddl(table: &Table) -> Result<Vec<String>> {
+pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Result<Vec<String>> {
     if table.has_meta {
         for (cname, col) in table.columns.iter() {
             if cname == "_id" || cname == "_order" {
@@ -576,28 +709,71 @@ pub fn generate_ddl(table: &Table) -> Result<Vec<String>> {
         column_clauses.push(clause);
     }
 
-    let mut sql = format!(r#"CREATE TABLE IF NOT EXISTS "{}" ( "#, table.name);
+    if force {
+        if let DbKind::Postgres = db_kind {
+            ddl.push(format!(r#"DROP TABLE "{}" CASCADE"#, table.name));
+        }
+    }
+
+    let mut sql = format!(r#"CREATE TABLE "{}" ( "#, table.name);
     if table.has_meta {
-        sql.push_str(
-            "_id INTEGER PRIMARY KEY AUTOINCREMENT, \
-             _order INTEGER UNIQUE, ",
-        );
+        sql.push_str(match db_kind {
+            DbKind::Sqlite => {
+                "_id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                 _order INTEGER UNIQUE, "
+            }
+            DbKind::Postgres => {
+                "_id SERIAL PRIMARY KEY, \
+                 _order INTEGER UNIQUE, "
+            }
+        });
     }
     sql.push_str(&format!(" {})", column_clauses.join(", ")));
     ddl.push(sql);
 
     if table.has_meta {
-        let sql = format!(
-            r#"CREATE TRIGGER "{table}_order"
-                 AFTER INSERT ON "{table}"
-                 WHEN NEW._order IS NULL
-                 BEGIN
-                   UPDATE "{table}" SET _order = ({MOVE_INTERVAL} * NEW._id)
-                   WHERE _id = NEW._id;
-                 END"#,
+        let update_stmt = format!(
+            r#"UPDATE "{table}" SET _order = ({MOVE_INTERVAL} * NEW._id)
+                WHERE _id = NEW._id;"#,
             table = table.name,
         );
-        ddl.push(sql);
+        match db_kind {
+            DbKind::Sqlite => {
+                ddl.push(format!(
+                    r#"CREATE TRIGGER "{table}_order"
+                         AFTER INSERT ON "{table}"
+                         WHEN NEW._order IS NULL
+                           BEGIN
+                             {update_stmt}
+                           END"#,
+                    table = table.name,
+                ));
+            }
+            DbKind::Postgres => {
+                ddl.push(format!(
+                    r#"CREATE OR REPLACE FUNCTION "update_order_{table}"()
+                         RETURNS TRIGGER
+                         LANGUAGE PLPGSQL
+                         AS
+                       $$
+                       BEGIN
+                         IF NEW._order IS NOT DISTINCT FROM NULL THEN
+                           {update_stmt}
+                         END IF;
+                         RETURN NEW;
+                       END;
+                       $$"#,
+                    table = table.name,
+                ));
+                ddl.push(format!(
+                    r#"CREATE TRIGGER "{table}_order"
+                           AFTER INSERT ON "{table}"
+                           FOR EACH ROW
+                           EXECUTE FUNCTION "update_order_{table}"()"#,
+                    table = table.name,
+                ));
+            }
+        };
     }
 
     Ok(ddl)
@@ -609,53 +785,90 @@ pub fn generate_view_ddl(
     id_col: &str,
     order_col: &str,
     columns: &Vec<Column>,
+    db_kind: &DbKind,
 ) -> String {
+    // TODO: The behaviour for sqlite is slightly different than for postgres (if not exits vs
+    // or replace). Make them consistent.
+
     // Note that '?' parameters are not allowed in views so we must hard code them:
-    format!(
-        r#"CREATE VIEW IF NOT EXISTS "{view}" AS
-             SELECT
-               {id_col} AS _id,
-               {order_col} AS _order,
-               (SELECT '[' || GROUP_CONCAT("after") || ']'
-                  FROM (
-                    SELECT "after"
-                    FROM "history"
-                    WHERE "table" = '{table}'
-                    AND "after" IS NOT NULL
-                    AND "row" = {id_col}
-                    ORDER BY "history_id"
-                 )
-               ) AS "_history",
-               (SELECT NULLIF(
-                  JSON_GROUP_ARRAY(
-                    JSON_OBJECT(
-                      'column', "column",
-                      'value', "value",
-                      'level', "level",
-                      'rule', "rule",
-                      'message', "message"
-                    )
-                  ),
-                  '[]'
-                ) AS "_message"
-                  FROM "message"
-                  WHERE "table" = '{table}'
-                  AND "row" = {id_col}
-                  ORDER BY "column", "message_id"
-               ) AS "_message",
-               {columns}
-             FROM "{table}""#,
-        table = table_name,
-        view = view_name,
-        columns = columns
-            .iter()
-            .map(|c| format!(r#""{}""#, c.name))
-            .collect::<Vec<_>>()
-            .join(", "),
-    )
+    match db_kind {
+        DbKind::Sqlite => format!(
+            r#"CREATE VIEW IF NOT EXISTS "{view}" AS
+                 SELECT
+                   {id_col} AS _id,
+                   {order_col} AS _order,
+                   (SELECT '[' || GROUP_CONCAT("after") || ']'
+                      FROM (
+                        SELECT "after"
+                        FROM "history"
+                        WHERE "table" = '{table}'
+                        AND "after" IS NOT NULL
+                        AND "row" = {id_col}
+                        ORDER BY "history_id"
+                     )
+                   ) AS "_history",
+                   (SELECT NULLIF(
+                      JSON_GROUP_ARRAY(
+                        JSON_OBJECT(
+                          'column', "column",
+                          'value', "value",
+                          'level', "level",
+                          'rule', "rule",
+                          'message', "message"
+                        )
+                      ),
+                      '[]'
+                    ) AS "_message"
+                      FROM "message"
+                      WHERE "table" = '{table}'
+                      AND "row" = {id_col}
+                      ORDER BY "column", "message_id"
+                   ) AS "_message",
+                   {columns}
+                 FROM "{table}""#,
+            table = table_name,
+            view = view_name,
+            columns = columns
+                .iter()
+                .map(|c| format!(r#""{}""#, c.name))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        DbKind::Postgres => format!(
+            r#"CREATE OR REPLACE VIEW "{view}" AS
+                 SELECT
+                   "{table}"._id,
+                   "{table}"._order,
+                   ( SELECT json_agg(m.*)::TEXT AS json_agg
+                     FROM ( SELECT "message"."column",
+                                   "message"."value",
+                                   "message"."level",
+                                   "message"."rule",
+                                   "message"."message"
+                            FROM "message"
+                     WHERE "message"."table" = '{table}' AND "message"."row" = "{table}"._id
+                     ORDER BY "message"."column", "message"."message_id") m) AS "message",
+                     ( SELECT ('['::TEXT || string_agg(h.after, ','::TEXT)) || ']'::TEXT
+                       FROM ( SELECT "history"."after"
+                              FROM "history"
+                              WHERE "history"."table" = '{table}'
+                                AND "after" IS DISTINCT FROM NULL
+                                AND "row" = "{table}"._id
+                              ORDER BY "history_id" ) h ) AS "history",
+                     {columns}
+                     FROM "{table}""#,
+            table = table_name,
+            view = view_name,
+            columns = columns
+                .iter()
+                .map(|c| format!(r#""{}""#, c.name))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    }
 }
 
-pub fn generate_table_table_ddl() -> Vec<String> {
+pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     let mut table = Table::new("table");
     table.columns.insert(
         "table".into(),
@@ -675,72 +888,158 @@ pub fn generate_table_table_ddl() -> Vec<String> {
             ..Default::default()
         },
     );
-    generate_ddl(&table).unwrap()
+    generate_table_ddl(&table, force, db_kind).unwrap()
 }
 
 // TODO: When the Table struct is rich enough to support different datatypes, foreign keys,
 // and defaults, create these other meta tables in a similar way to the table table above.
 
-pub fn generate_user_table_ddl() -> Vec<String> {
-    vec![r#"CREATE TABLE "user" (
+pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    let mut ddl = vec![];
+    if force {
+        if let DbKind::Postgres = db_kind {
+            ddl.push(format!(r#"DROP TABLE "user" CASCADE"#));
+        }
+    }
+
+    ddl.push(format!(
+        r#"CREATE TABLE "user" (
              "name" TEXT PRIMARY KEY,
              "color" TEXT,
              "cursor" TEXT,
              "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
            )"#
-    .to_string()]
+    ));
+    ddl
 }
 
-pub fn generate_change_table_ddl() -> Vec<String> {
-    vec![r#"CREATE TABLE "change" (
-             change_id INTEGER PRIMARY KEY AUTOINCREMENT,
-             "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-             "user" TEXT NOT NULL,
-             "action" TEXT NOT NULL,
-             "table" TEXT NOT NULL,
-             "description" TEXT,
-             "content" TEXT,
-             FOREIGN KEY ("user") REFERENCES user("name")
-           )"#
-    .to_string()]
+pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    match db_kind {
+        DbKind::Sqlite => {
+            vec![r#"CREATE TABLE "change" (
+                      change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                      "user" TEXT NOT NULL,
+                      "action" TEXT NOT NULL,
+                      "table" TEXT NOT NULL,
+                      "description" TEXT,
+                      "content" TEXT,
+                      FOREIGN KEY ("user") REFERENCES "user"("name")
+                    )"#
+            .to_string()]
+        }
+        DbKind::Postgres => {
+            let mut ddl = vec![];
+            if force {
+                if let DbKind::Postgres = db_kind {
+                    ddl.push(format!(r#"DROP TABLE "change" CASCADE"#));
+                }
+            }
+            ddl.push(format!(
+                r#"CREATE TABLE "change" (
+                     change_id SERIAL PRIMARY KEY,
+                     "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                     "user" TEXT NOT NULL,
+                     "action" TEXT NOT NULL,
+                     "table" TEXT NOT NULL,
+                     "description" TEXT,
+                     "content" TEXT,
+                     FOREIGN KEY ("user") REFERENCES "user"("name")
+                   )"#
+            ));
+            ddl
+        }
+    }
 }
 
-pub fn generate_history_table_ddl() -> Vec<String> {
-    vec![r#"CREATE TABLE "history" (
-             history_id INTEGER PRIMARY KEY AUTOINCREMENT,
-             change_id INTEGER NOT NULL,
-             "table" TEXT NOT NULL,
-             "row" INTEGER NOT NULL,
-             "before" TEXT,
-             "after" TEXT,
-             FOREIGN KEY ("change_id") REFERENCES change("change_id"),
-             FOREIGN KEY ("table") REFERENCES "table"("table")
-           )"#
-    .to_string()]
+pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    match db_kind {
+        DbKind::Sqlite => {
+            vec![r#"CREATE TABLE "history" (
+                      history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      change_id INTEGER NOT NULL,
+                      "table" TEXT NOT NULL,
+                      "row" INTEGER NOT NULL,
+                      "before" TEXT,
+                      "after" TEXT,
+                      FOREIGN KEY ("change_id") REFERENCES "change"("change_id"),
+                      FOREIGN KEY ("table") REFERENCES "table"("table")
+                    )"#
+            .to_string()]
+        }
+        DbKind::Postgres => {
+            let mut ddl = vec![];
+            if force {
+                if let DbKind::Postgres = db_kind {
+                    ddl.push(format!(r#"DROP TABLE "history" CASCADE"#));
+                }
+            }
+            ddl.push(format!(
+                r#"CREATE TABLE "history" (
+                     history_id SERIAL PRIMARY KEY,
+                     change_id INTEGER NOT NULL,
+                     "table" TEXT NOT NULL,
+                     "row" INTEGER NOT NULL,
+                     "before" TEXT,
+                     "after" TEXT,
+                     FOREIGN KEY ("change_id") REFERENCES "change"("change_id"),
+                     FOREIGN KEY ("table") REFERENCES "table"("table")
+                   )"#
+            ));
+            ddl
+        }
+    }
 }
 
-pub fn generate_message_table_ddl() -> Vec<String> {
-    vec![r#"CREATE TABLE "message" (
-             "message_id" INTEGER PRIMARY KEY AUTOINCREMENT,
-             "added_by" TEXT,
-             "table" TEXT NOT NULL,
-             "row" INTEGER NOT NULL,
-             "column" TEXT NOT NULL,
-             "value" TEXT,
-             "level" TEXT,
-             "rule" TEXT,
-             "message" TEXT,
-             FOREIGN KEY ("table") REFERENCES "table"("table")
-           )"#
-    .to_string()]
+pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    match db_kind {
+        DbKind::Sqlite => {
+            vec![r#"CREATE TABLE "message" (
+                      "message_id" INTEGER PRIMARY KEY AUTOINCREMENT,
+                      "added_by" TEXT,
+                      "table" TEXT NOT NULL,
+                      "row" INTEGER NOT NULL,
+                      "column" TEXT NOT NULL,
+                      "value" TEXT,
+                      "level" TEXT,
+                      "rule" TEXT,
+                      "message" TEXT,
+                      FOREIGN KEY ("table") REFERENCES "table"("table")
+                    )"#
+            .to_string()]
+        }
+        DbKind::Postgres => {
+            let mut ddl = vec![];
+            if force {
+                if let DbKind::Postgres = db_kind {
+                    ddl.push(format!(r#"DROP TABLE "message" CASCADE"#));
+                }
+            }
+            ddl.push(format!(
+                r#"CREATE TABLE "message" (
+                     "message_id" SERIAL PRIMARY KEY,
+                     "added_by" TEXT,
+                     "table" TEXT NOT NULL,
+                     "row" INTEGER NOT NULL,
+                     "column" TEXT NOT NULL,
+                     "value" TEXT,
+                     "level" TEXT,
+                     "rule" TEXT,
+                     "message" TEXT,
+                     FOREIGN KEY ("table") REFERENCES "table"("table")
+                   )"#
+            ));
+            ddl
+        }
+    }
 }
 
-pub fn generate_meta_tables_ddl() -> Vec<String> {
-    let mut ddl = generate_table_table_ddl();
-    ddl.append(&mut generate_user_table_ddl());
-    ddl.append(&mut generate_change_table_ddl());
-    ddl.append(&mut generate_history_table_ddl());
-    ddl.append(&mut generate_message_table_ddl());
+pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    let mut ddl = generate_table_table_ddl(force, db_kind);
+    ddl.append(&mut generate_user_table_ddl(force, db_kind));
+    ddl.append(&mut generate_change_table_ddl(force, db_kind));
+    ddl.append(&mut generate_history_table_ddl(force, db_kind));
+    ddl.append(&mut generate_message_table_ddl(force, db_kind));
     ddl
 }
 

@@ -6,8 +6,8 @@ use crate as rltbl;
 use rltbl::{
     git, sql,
     sql::{
-        json_to_string, DbActiveConnection, DbConnection, DbTransaction, JsonRow, VecInto,
-        MAX_PARAMS_SQLITE, SQL_PARAM,
+        json_to_string, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow, VecInto,
+        SQL_PARAM,
     },
 };
 
@@ -98,12 +98,14 @@ impl Relatable {
                 }
             }
         };
-        let file = FilePath::new(&path);
-        if !file.exists() {
-            return Err(RelatableError::InitError(
-                "First create a database with `rltbl init`".into(),
-            )
-            .into());
+        if !path.starts_with("postgresql://") {
+            let file = FilePath::new(&path);
+            if !file.exists() {
+                return Err(RelatableError::InitError(
+                    "First create a database with `rltbl init`".into(),
+                )
+                .into());
+            }
         }
         let (connection, _) = DbConnection::connect(&path).await?;
         Ok(Self {
@@ -122,30 +124,32 @@ impl Relatable {
             None => RLTBL_DEFAULT_DB,
             Some(path) => path,
         };
-        let dir = FilePath::new(path)
-            .parent()
-            .expect("parent should be defined");
-        if !dir.exists() {
-            std::fs::create_dir_all(&dir)?;
-            tracing::info!("Created '{dir:?}' directory");
-        }
-        let file = FilePath::new(path);
-        if file.exists() {
-            if *force {
-                std::fs::remove_file(&file)?;
-                tracing::info!("Removed '{file:?}' file");
-            } else {
-                return Err(RelatableError::InitError(format!(
-                    "File {file:?} already exists. Use --force to overwrite"
-                ))
-                .into());
+        if !path.starts_with("postgresql://") {
+            let dir = FilePath::new(path)
+                .parent()
+                .expect("parent should be defined");
+            if !dir.exists() {
+                std::fs::create_dir_all(&dir)?;
+                tracing::info!("Created '{dir:?}' directory");
             }
+            let file = FilePath::new(path);
+            if file.exists() {
+                if *force {
+                    std::fs::remove_file(&file)?;
+                    tracing::info!("Removed '{file:?}' file");
+                } else {
+                    return Err(RelatableError::InitError(format!(
+                        "File {file:?} already exists. Use --force to overwrite"
+                    ))
+                    .into());
+                }
+            }
+            File::create(path)?;
         }
-        File::create(path)?;
 
         // Create the meta tables:
-        let rltbl = Relatable::connect(None).await?;
-        let ddl = sql::generate_meta_tables_ddl();
+        let rltbl = Relatable::connect(Some(path)).await?;
+        let ddl = sql::generate_meta_tables_ddl(*force, &rltbl.connection.kind());
         for sql in ddl {
             rltbl.connection.query(&sql, None).await?;
         }
@@ -326,8 +330,11 @@ impl Relatable {
         };
 
         // Add an entry corresponding to the table being loaded to the table table:
-        let sql =
+        let mut sql =
             format!(r#"INSERT INTO "table" ("table", "path") VALUES ({SQL_PARAM}, {SQL_PARAM})"#);
+        if let DbKind::Postgres = self.connection.kind() {
+            sql = sql::local_sql_syntax(&self.connection.kind(), &sql);
+        }
         let params = json!([table_name, path]);
         self.connection
             .query(&sql, Some(&params))
@@ -348,7 +355,9 @@ impl Relatable {
         }
 
         // Generate the SQL statements needed to instantiate the table and execute them:
-        for sql in sql::generate_ddl(&table).expect("Error getting DDL") {
+        for sql in sql::generate_table_ddl(&table, false, &self.connection.kind())
+            .expect("Error getting DDL")
+        {
             self.connection
                 .query(&sql, None)
                 .await
@@ -377,14 +386,21 @@ impl Relatable {
         let sql_first_part = format!(r#"INSERT INTO "{table_name}" ({columns_line}) VALUES "#);
         let mut sql_value_parts = vec![];
         let mut params = vec![];
+        let max_params = match self.connection.kind() {
+            DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
+            DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
+        };
         while let Some(row) = records.next() {
             let row = row.expect("Error processing row");
             // We add 2 here because of _id and _order:
-            if (params.len() + row.len() + 2) >= MAX_PARAMS_SQLITE {
-                let sql = format!(
+            if (params.len() + row.len() + 2) >= max_params {
+                let mut sql = format!(
                     "{sql_first_part} {sql_value_part}",
                     sql_value_part = sql_value_parts.join(", ")
                 );
+                if let DbKind::Postgres = self.connection.kind() {
+                    sql = sql::local_sql_syntax(&self.connection.kind(), &sql);
+                }
                 let params_so_far = json!(params);
                 self.connection
                     .query(&sql, Some(&params_so_far))
@@ -439,10 +455,13 @@ impl Relatable {
             order += MOVE_INTERVAL;
         }
         if params.len() > 0 {
-            let sql = format!(
+            let mut sql = format!(
                 "{sql_first_part} {sql_value_part}",
                 sql_value_part = sql_value_parts.join(", ")
             );
+            if let DbKind::Postgres = self.connection.kind() {
+                sql = sql::local_sql_syntax(&self.connection.kind(), &sql);
+            }
             let params = json!(params);
             self.connection
                 .query(&sql, Some(&params))
@@ -884,7 +903,7 @@ impl Relatable {
 
     fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
         tracing::trace!("Relatable::_get_table({table_name:?}, tx)");
-        let statement = format!(r#"SELECT "table" FROM 'table' WHERE "table" = {SQL_PARAM}"#);
+        let statement = format!(r#"SELECT "table" FROM "table" WHERE "table" = {SQL_PARAM}"#);
         let params = json!([table_name]);
         match tx.query_value(&statement, Some(&params))? {
             Some(_) => (),
@@ -1026,8 +1045,9 @@ impl Relatable {
         let statement = format!(r#"SELECT 1 FROM "user" WHERE "name" = {SQL_PARAM}"#);
         let params = json!([user]);
         if let None = tx.query_value(&statement, Some(&params))? {
-            let statement =
-                format!(r#"INSERT INTO user("name", "color") VALUES ({SQL_PARAM}, {SQL_PARAM})"#);
+            let statement = format!(
+                r#"INSERT INTO "user" ("name", "color") VALUES ({SQL_PARAM}, {SQL_PARAM})"#
+            );
             let params = json!([user, color]);
             tx.query(&statement, Some(&params))?;
         }
@@ -1045,7 +1065,7 @@ impl Relatable {
         };
 
         let statement = format!(
-            r#"UPDATE user
+            r#"UPDATE "user"
                SET "cursor" = {SQL_PARAM}, "datetime" = CURRENT_TIMESTAMP
                WHERE "name" = {SQL_PARAM}"#
         );
@@ -2614,7 +2634,7 @@ impl Row {
                 if cell.value == JsonValue::Null {
                     value_placeholders.push("NULL");
                 } else {
-                    value_placeholders.push("?");
+                    value_placeholders.push(SQL_PARAM);
                     params.push(cell.value.clone());
                 }
             }
@@ -2625,13 +2645,13 @@ impl Row {
             format!(
                 r#"INSERT INTO "{table}"
                    ("_id", "_order")
-                   VALUES (?, ?)"#
+                   VALUES ({SQL_PARAM}, {SQL_PARAM})"#
             )
         } else {
             format!(
                 r#"INSERT INTO "{table}"
                    ("_id", "_order", {quoted_column_names})
-                   VALUES (?, ?, {column_values})"#,
+                   VALUES ({SQL_PARAM}, {SQL_PARAM}, {column_values})"#,
                 quoted_column_names = quoted_column_names.join(", "),
                 column_values = value_placeholders.join(", "),
             )
@@ -2742,7 +2762,14 @@ impl Table {
             true => r#"_order"#,
         };
 
-        let sql = sql::generate_view_ddl(&self.name, &self.view, id_col, order_col, &columns);
+        let sql = sql::generate_view_ddl(
+            &self.name,
+            &self.view,
+            id_col,
+            order_col,
+            &columns,
+            &rltbl.connection.kind(),
+        );
         rltbl.connection.query(&sql, None).await?;
         Ok(columns)
     }
@@ -3587,7 +3614,7 @@ impl Select {
         lines.push("  COUNT(1) OVER() AS _total, ".to_string());
         lines.push(format!(
             r#"(SELECT MAX(change_id) FROM history
-                  WHERE "table" = ?
+                  WHERE "table" = {SQL_PARAM}
                     AND "row" = _id
                ) AS _change_id"#
         ));

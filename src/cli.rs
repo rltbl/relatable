@@ -5,7 +5,8 @@
 use crate as rltbl;
 use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Format, Relatable, MOVE_INTERVAL},
-    sql::{JsonRow, VecInto, MAX_PARAMS_SQLITE, SQL_PARAM},
+    sql,
+    sql::{DbKind, JsonRow, VecInto, SQL_PARAM},
     web::{serve, serve_cgi},
 };
 
@@ -782,20 +783,42 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         .await
         .expect("Database was initialized");
 
-    let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('penguin', 'penguin.tsv')"#;
+    if *force {
+        if let DbKind::Postgres = rltbl.connection.kind() {
+            rltbl
+                .connection
+                .query(r#"DROP TABLE IF EXISTS "column" CASCADE"#, None)
+                .await
+                .expect("Error dropping column table");
+            rltbl
+                .connection
+                .query(r#"DROP TABLE IF EXISTS "penguin" CASCADE"#, None)
+                .await
+                .expect("Error dropping penguin table");
+        }
+    }
+
+    let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('penguin', 'penguin.tsv')"#;
     rltbl.connection.query(sql, None).await.unwrap();
 
+    let pkey_clause = match rltbl.connection.kind() {
+        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        DbKind::Postgres => "SERIAL PRIMARY KEY",
+    };
+
     // Create and populate a column table:
-    let sql = r#"CREATE TABLE "column" (
-      _id INTEGER PRIMARY KEY AUTOINCREMENT,
-      _order INTEGER UNIQUE,
-      "table" TEXT,
-      "column" TEXT,
-      "label" TEXT,
-      "description" TEXT,
-      "nulltype" TEXT
-    )"#;
-    rltbl.connection.query(sql, None).await.unwrap();
+    let sql = format!(
+        r#"CREATE TABLE "column" (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             "table" TEXT,
+             "column" TEXT,
+             "label" TEXT,
+             "description" TEXT,
+             "nulltype" TEXT
+           )"#,
+    );
+    rltbl.connection.query(&sql, None).await.unwrap();
 
     let sql = r#"INSERT INTO "column"
                         ("table",   "column",        "label",      "description", "nulltype")
@@ -806,18 +829,20 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     rltbl.connection.query(sql, None).await.unwrap();
 
     // Create a data table called penguin:
-    let sql = r#"CREATE TABLE penguin (
-      _id INTEGER PRIMARY KEY AUTOINCREMENT,
-      _order INTEGER UNIQUE,
-      study_name TEXT,
-      sample_number TEXT,
-      species TEXT,
-      island TEXT,
-      individual_id TEXT,
-      culmen_length TEXT,
-      body_mass TEXT
-    )"#;
-    rltbl.connection.query(sql, None).await.unwrap();
+    let sql = format!(
+        r#"CREATE TABLE penguin (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             study_name TEXT,
+             sample_number TEXT,
+             species TEXT,
+             island TEXT,
+             individual_id TEXT,
+             culmen_length TEXT,
+             body_mass TEXT
+           )"#,
+    );
+    rltbl.connection.query(&sql, None).await.unwrap();
 
     // Populate the penguin table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
@@ -825,8 +850,12 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     let sql_first_part = r#"INSERT INTO "penguin" VALUES "#;
     let mut sql_value_parts = vec![];
     let mut params = vec![];
+    let max_params = match rltbl.connection.kind() {
+        DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
+        DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
+    };
     for i in 1..=size {
-        if (params.len() + 7) >= MAX_PARAMS_SQLITE {
+        if (params.len() + 7) >= max_params {
             let sql = format!(
                 "{sql_first_part} {sql_value_part}",
                 sql_value_part = sql_value_parts.join(", ")
@@ -860,11 +889,14 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         params.push(json!(body_mass));
     }
     if params.len() > 0 {
-        let sql = format!(
+        let mut sql = format!(
             "{sql_first_part} {sql_value_part}",
             sql_value_part = sql_value_parts.join(", ")
         );
         let params = json!(params);
+        if let DbKind::Postgres = rltbl.connection.kind() {
+            sql = sql::local_sql_syntax(&DbKind::Postgres, &sql);
+        }
         rltbl.connection.query(&sql, Some(&params)).await.unwrap();
     }
 }
