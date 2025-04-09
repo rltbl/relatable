@@ -20,10 +20,10 @@ jobs:
       - name: Start the database server
         run: |
           sudo systemctl start postgresql.service
-      - name: Create the valve_postgres database
+      - name: Create the rltbl_db database
         run: |
           sudo su - postgres -c "createuser runner"
-          sudo su - postgres -c "createdb -O runner valve_postgres"
+          sudo su - postgres -c "createdb -O runner rltbl_db"
       - name: Check out repository code
         uses: actions/checkout@v3
       - name: Setup python
