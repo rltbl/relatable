@@ -62,18 +62,29 @@ cleanall: clean
 .PHONY: test-code
 test-code:
 	cargo fmt --check
-	cargo test
 
 .PHONY: test-tesh-doc
-test-tesh-doc:
+test-tesh-doc: debug
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
+
+.PHONY: test-tesh-doc-sqlx
+test-tesh-doc-sqlx: sqlx_debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
 .PHONY: test-tesh-misc
-test-tesh-misc:
+test-tesh-misc: debug
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test
+
+.PHONY: test-tesh-misc-sqlx
+test-tesh-misc-sqlx: sqlx_debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test
 
 .PHONY: test-random
-test-random:
+test-random: debug
+	test/random.sh --varying-rate
+
+.PHONY: test-random-sqlx
+test-random-sqlx: sqlx_debug
 	test/random.sh --varying-rate
 
 perf_test_timeout = 5
@@ -87,7 +98,14 @@ test/perf/tsv/penguin.tsv: | test/perf/tsv
 	target/debug/rltbl save test/perf/tsv/
 
 .PHONY: test-perf
-test-perf: test/perf/tsv/penguin.tsv
+test-perf: debug test/perf/tsv/penguin.tsv
+	target/debug/rltbl init --force
+	@echo "target/debug/rltbl -vv load table $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vv load table $< || \
+		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
+
+.PHONY: test-perf-sqlx
+test-perf-sqlx: test/perf/tsv/penguin.tsv sqlx_debug
 	target/debug/rltbl init --force
 	@echo "target/debug/rltbl -vv load table $<"
 	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vv load table $< || \
@@ -97,7 +115,7 @@ test-perf: test/perf/tsv/penguin.tsv
 test: src/resources/main.js src/resources/main.css test-code test-tesh-doc test-tesh-misc test-random test-perf
 
 .PHONY: test_sqlx
-test_sqlx: sqlx test
+test_sqlx: src/resources/main.js src/resources/main.css test-code test-tesh-doc-sqlx test-tesh-misc-sqlx test-random-sqlx test-perf-sqlx
 
 .PHONY: clean-test
 clean-test:
