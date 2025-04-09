@@ -60,7 +60,7 @@ cleanall: clean
 ### Tests
 
 .PHONY: test-code
-test-code: debug
+test-code:
 	cargo fmt --check
 	cargo test
 
