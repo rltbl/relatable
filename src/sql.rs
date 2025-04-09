@@ -312,11 +312,10 @@ impl DbConnection {
         // TODO: Add a trace! call here and at the beginning of any other functions in this module
         // that are missing one.
         let statement = match self.kind() {
-            DbKind::Sqlite => format!(
-                r#"SELECT 1
+            DbKind::Sqlite => r#"SELECT 1
                    FROM sqlite_master
-                   WHERE type = 'view' AND name = {SQL_PARAM}"#
-            ),
+                   WHERE type = 'view' AND name = ?"#
+                .to_string(),
             DbKind::Postgres => format!(
                 r#"SELECT 1
                    FROM "information_schema"."tables"
@@ -337,7 +336,7 @@ impl DbConnection {
         tracing::trace!("Row::get_next_id({table:?}, tx)");
         let current_row_id = match self.kind() {
             DbKind::Sqlite => {
-                let sql = format!(r#"SELECT seq FROM sqlite_sequence WHERE name = {SQL_PARAM}"#);
+                let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#.to_string();
                 let params = json!([table]);
                 self.query_value(&sql, Some(&params)).await?
             }
@@ -483,11 +482,10 @@ impl DbTransaction<'_> {
         // TODO: Add a trace! call here and at the beginning of any other functions in this module
         // that are missing one.
         let statement = match self.kind() {
-            DbKind::Sqlite => format!(
-                r#"SELECT 1
+            DbKind::Sqlite => r#"SELECT 1
                    FROM sqlite_master
-                   WHERE type = 'view' AND name = {SQL_PARAM}"#
-            ),
+                   WHERE type = 'view' AND name = ?"#
+                .to_string(),
             DbKind::Postgres => format!(
                 r#"SELECT 1
                    FROM "information_schema"."tables"
@@ -508,9 +506,9 @@ impl DbTransaction<'_> {
         tracing::trace!("Row::get_next_id({table:?}, tx)");
         let current_row_id = match self.kind() {
             DbKind::Sqlite => {
-                let sql = format!(r#"SELECT seq FROM sqlite_sequence WHERE name = {SQL_PARAM}"#);
+                let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
                 let params = json!([table]);
-                self.query_value(&sql, Some(&params))?
+                self.query_value(sql, Some(&params))?
             }
             DbKind::Postgres => {
                 let sql = format!(

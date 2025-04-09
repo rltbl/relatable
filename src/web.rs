@@ -8,7 +8,7 @@ use rltbl::{
     core::{
         ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Row, Select,
     },
-    sql::{JsonRow, SQL_PARAM},
+    sql::{DbKind, JsonRow, SQL_PARAM},
 };
 use std::io::Write;
 
@@ -201,7 +201,13 @@ async fn post_table(
 
 async fn init_user(rltbl: &Relatable, username: &str) -> () {
     let color = random_color::RandomColor::new().to_hex();
-    let statement = format!(r#"SELECT 1 FROM "user" WHERE "name" = {SQL_PARAM}"#);
+    let statement = format!(
+        r#"SELECT 1 FROM "user" WHERE "name" = {sql_param}"#,
+        sql_param = match rltbl.connection.kind() {
+            DbKind::Sqlite => "?",
+            _ => SQL_PARAM,
+        }
+    );
     let params = json!([username]);
     if let None = rltbl
         .connection
@@ -209,8 +215,13 @@ async fn init_user(rltbl: &Relatable, username: &str) -> () {
         .await
         .expect("Error getting user")
     {
-        let statement =
-            format!(r#"INSERT INTO user("name", "color") VALUES ({SQL_PARAM}, {SQL_PARAM})"#);
+        let statement = format!(
+            r#"INSERT INTO user("name", "color") VALUES ({sql_param}, {sql_param})"#,
+            sql_param = match rltbl.connection.kind() {
+                DbKind::Sqlite => "?",
+                _ => SQL_PARAM,
+            }
+        );
         let params = json!([username, color]);
         rltbl
             .connection
@@ -269,9 +280,13 @@ async fn post_cursor(
     // TODO: sanitize the cursor JSON.
     let statement = format!(
         r#"UPDATE user
-           SET "cursor" = {SQL_PARAM},
+           SET "cursor" = {sql_param},
                "datetime" = CURRENT_TIMESTAMP
-           WHERE "name" = {SQL_PARAM}"#,
+           WHERE "name" = {sql_param}"#,
+        sql_param = match rltbl.connection.kind() {
+            DbKind::Sqlite => "?",
+            _ => SQL_PARAM,
+        }
     );
     let cursor = to_value(cursor).unwrap_or_default();
     let params = json!([cursor, username]);
@@ -296,7 +311,14 @@ async fn get_row_menu(
     let row: Row = match rltbl
         .connection
         .query_one(
-            &format!(r#"SELECT * FROM "{}" WHERE _id = {SQL_PARAM}"#, table.view),
+            &format!(
+                r#"SELECT * FROM "{}" WHERE _id = {sql_param}"#,
+                table.view,
+                sql_param = match rltbl.connection.kind() {
+                    DbKind::Sqlite => "?",
+                    _ => SQL_PARAM,
+                }
+            ),
             Some(&json!([row_id])),
         )
         .await
@@ -372,7 +394,14 @@ async fn get_cell_menu(
     let row: Row = match rltbl
         .connection
         .query_one(
-            &format!(r#"SELECT * FROM "{}" WHERE _id = {SQL_PARAM}"#, table.view),
+            &format!(
+                r#"SELECT * FROM "{}" WHERE _id = {sql_param}"#,
+                table.view,
+                sql_param = match rltbl.connection.kind() {
+                    DbKind::Sqlite => "?",
+                    _ => SQL_PARAM,
+                }
+            ),
             Some(&json!([row_id])),
         )
         .await
@@ -435,7 +464,11 @@ async fn get_cell_options(
 async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &usize) -> usize {
     let sql = format!(
         r#"SELECT "_id", MAX("_order") FROM "{table}"
-        WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = {SQL_PARAM})"#
+        WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = {sql_param})"#,
+        sql_param = match rltbl.connection.kind() {
+            DbKind::Sqlite => "?",
+            _ => SQL_PARAM,
+        }
     );
     let after_id = rltbl
         .connection
@@ -504,7 +537,13 @@ async fn add_row(
             let offset = rltbl
                 .connection
                 .query_value(
-                    &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= {SQL_PARAM}"#),
+                    &format!(
+                        r#"SELECT COUNT() FROM "{table}" WHERE _order <= {sql_param}"#,
+                        sql_param = match rltbl.connection.kind() {
+                            DbKind::Sqlite => "?",
+                            _ => SQL_PARAM,
+                        }
+                    ),
                     Some(&json!([row.order])),
                 )
                 .await;
@@ -539,7 +578,11 @@ async fn delete_row(
                 .query_value(
                     &format!(
                         r#"SELECT COUNT() FROM "{table}"
-                       WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = {SQL_PARAM})"#
+                       WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = {sql_param})"#,
+                        sql_param = match rltbl.connection.kind() {
+                            DbKind::Sqlite => "?",
+                            _ => SQL_PARAM,
+                        }
                     ),
                     Some(&json!([prev])),
                 )

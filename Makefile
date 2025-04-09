@@ -65,15 +65,15 @@ test-code: debug
 	cargo test
 
 .PHONY: test-tesh-doc
-test-tesh-doc: debug
+test-tesh-doc:
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
 .PHONY: test-tesh-misc
-test-tesh-misc: debug
+test-tesh-misc:
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test
 
 .PHONY: test-random
-test-random: debug
+test-random:
 	test/random.sh --varying-rate
 
 perf_test_timeout = 5

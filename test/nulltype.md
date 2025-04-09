@@ -1,6 +1,4 @@
-# Nulltype tests
-
-```console tesh-session="nulltype"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "", "island": ""}' | rltbl --input JSON add row penguin
 $ rltbl set value penguin 10 species ""

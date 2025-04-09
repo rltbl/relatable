@@ -1,8 +1,6 @@
-# Web tests
-
 Test case 1
 
-```bash tesh-session="web"
+```bash tesh-session="test"
 $ rltbl demo --size 10
 $ rltbl serve --port 9000 --timeout 5 &
 ...

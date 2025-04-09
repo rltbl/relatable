@@ -35,7 +35,7 @@ pub struct Cli {
     #[arg(long,
           default_value = rltbl::core::RLTBL_DEFAULT_DB,
           action = ArgAction::Set,
-          env = "RLTBL_DATABASE")]
+          env = "RLTBL_CONNECTION")]
     database: String,
 
     #[arg(long, default_value="", action = ArgAction::Set, env = "RLTBL_USER")]
@@ -301,7 +301,9 @@ pub enum DeleteSubcommand {
 #[derive(Subcommand, Debug)]
 pub enum LoadSubcommand {
     Table {
-        #[arg(value_name = "PATH", num_args=1.., action = ArgAction::Set, help = "The path(s) to load from")]
+        #[arg(value_name = "PATH", num_args=1..,
+              action = ArgAction::Set,
+              help = "The path(s) to load from")]
         paths: Vec<String>,
     },
 }
@@ -388,7 +390,13 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
-    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = {SQL_PARAM}"#);
+    let statement = format!(
+        r#"SELECT "{column}" FROM "{table}" WHERE _id = {sql_param}"#,
+        sql_param = match rltbl.connection.kind() {
+            DbKind::Sqlite => "?",
+            _ => SQL_PARAM,
+        }
+    );
     let params = json!([row]);
     if let Some(value) = rltbl
         .connection
@@ -498,7 +506,13 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
 
     // Fetch the current value from the db:
-    let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = {SQL_PARAM}"#);
+    let sql = format!(
+        r#"SELECT "{column}" FROM "{table}" WHERE "_id" = {sql_param}"#,
+        sql_param = match rltbl.connection.kind() {
+            DbKind::Sqlite => "?",
+            _ => SQL_PARAM,
+        }
+    );
     let params = json!([row]);
     let before = rltbl
         .connection
@@ -847,27 +861,41 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     );
     rltbl.connection.query(&sql, None).await.unwrap();
 
-    let sql = format!(
-        r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_penguin"()
-             RETURNS TRIGGER
-             LANGUAGE PLPGSQL
-             AS
-           $$
-           BEGIN
-             PERFORM setval('penguin__id_seq', NEW._id);
-             RETURN NEW;
-           END;
-           $$"#,
-    );
-    rltbl.connection.query(&sql, None).await.unwrap();
+    if rltbl.connection.kind() == DbKind::Postgres {
+        // This is required, because in PostgreSQL, assiging SERIAL PRIMARY KEY to a column is
+        // equivalent to:
+        //   CREATE SEQUENCE table_name_id_seq;
+        //   CREATE TABLE table_name (
+        //     id integer NOT NULL DEFAULT nextval('table_name_id_seq')
+        //   );
+        //   ALTER SEQUENCE table_name_id_seq OWNED BY table_name.id;
+        // This means that such a column is only ever auto-incremented when it is explicitly left
+        // out of an INSERT statement. To replicate SQLite's more sane behaviour, we define the
+        // following trigger to *always* update the last value of the sequence to the currently
+        // inserted row number. A similar trigger is also defined generically for postgresql tables
+        // in [rltbl::core].
+        let sql = format!(
+            r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_penguin"()
+                 RETURNS TRIGGER
+                 LANGUAGE PLPGSQL
+                 AS
+               $$
+               BEGIN
+                 PERFORM setval('penguin__id_seq', NEW._id);
+                 RETURN NEW;
+               END;
+               $$"#,
+        );
+        rltbl.connection.query(&sql, None).await.unwrap();
 
-    let sql = format!(
-        r#"CREATE TRIGGER "penguin_order"
-             AFTER INSERT ON "penguin"
-             FOR EACH ROW
-             EXECUTE FUNCTION "update_order_and_nextval_penguin"()"#,
-    );
-    rltbl.connection.query(&sql, None).await.unwrap();
+        let sql = format!(
+            r#"CREATE TRIGGER "penguin_order"
+                 AFTER INSERT ON "penguin"
+                 FOR EACH ROW
+                 EXECUTE FUNCTION "update_order_and_nextval_penguin"()"#,
+        );
+        rltbl.connection.query(&sql, None).await.unwrap();
+    }
 
     // Populate the penguin table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
@@ -902,8 +930,12 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
         sql_value_parts.push(format!(
-            "({SQL_PARAM}, {SQL_PARAM}, 'FAKE123', {SQL_PARAM}, 'Pygoscelis adeliae', \
-             {SQL_PARAM}, {SQL_PARAM}, {SQL_PARAM}, {SQL_PARAM})"
+            "({sql_param}, {sql_param}, 'FAKE123', {sql_param}, 'Pygoscelis adeliae', \
+             {sql_param}, {sql_param}, {sql_param}, {sql_param})",
+            sql_param = match rltbl.connection.kind() {
+                DbKind::Sqlite => "?",
+                _ => SQL_PARAM,
+            }
         ));
         params.push(json!(id));
         params.push(json!(order));

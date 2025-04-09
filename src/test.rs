@@ -18,7 +18,7 @@ pub struct Cli {
     #[arg(long,
           default_value = RLTBL_DEFAULT_DB,
           action = ArgAction::Set,
-          env = "RLTBL_DATABASE")]
+          env = "RLTBL_CONNECTION")]
     database: String,
 
     #[arg(long, default_value="", action = ArgAction::Set, env = "RLTBL_USER")]

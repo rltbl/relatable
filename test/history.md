@@ -1,8 +1,6 @@
-# History tests
-
 Test case 1
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
@@ -37,7 +35,7 @@ $ rltbl -v history
 
 Test case 2
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
@@ -71,7 +69,7 @@ $ rltbl -v history
 
 Test case 3
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
@@ -104,7 +102,7 @@ $ rltbl -v history
 
 Test case 4
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
@@ -137,7 +135,7 @@ $ rltbl -v history
 
 Test case 5
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
@@ -194,7 +192,7 @@ $ rltbl -v history
 
 Test case 6
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v move row penguin 9 7
@@ -226,7 +224,7 @@ $ rltbl -v history
 
 Test case 7
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ rltbl -v set value penguin 4 island Enderby
 $ rltbl -v undo
@@ -261,7 +259,7 @@ $ rltbl -v history
 
 Test case 9
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ rltbl -v delete row penguin 5
 $ rltbl -v undo
@@ -308,7 +306,7 @@ $ rltbl -v history
 
 Test case 10
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 30 --force
 $ rltbl -v delete row penguin 1
 $ rltbl -v undo
@@ -375,7 +373,7 @@ $ rltbl -v history
 ```
  Test case 11
  
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
@@ -417,7 +415,7 @@ $ rltbl -v history
 ```
  Test case 12
  
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
@@ -451,7 +449,7 @@ $ rltbl -v history
 
 Test case 13
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
@@ -484,7 +482,7 @@ $ rltbl -v history
 
 Test case 14
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
@@ -517,7 +515,7 @@ $ rltbl -v history
 
 Test case 15
 
-```console tesh-session="history"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
 $ rltbl -v delete row penguin 6
 $ rltbl -v undo
