@@ -1,4 +1,4 @@
-name: Valve Tests
+name: Test sqlx (SQLite)
 
 on:
   pull_request:

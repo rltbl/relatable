@@ -1,4 +1,4 @@
-name: Valve Tests
+name: Test PostgreSQL (sqlx)
 
 on:
   pull_request:

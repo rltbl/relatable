@@ -1,4 +1,4 @@
-name: Valve Tests
+name: Test default (rusqlite)
 
 on:
   pull_request:
