@@ -828,6 +828,9 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
                         ('penguin', 'species',       NULL,          NULL,             'empty')"#;
     rltbl.connection.query(sql, None).await.unwrap();
 
+    // TODO Don't explicitly execute any create table/trigger etc. statements here. Save the
+    // generated values to a TSV file first in a demo/ directory instead and then load it.
+
     // Create a data table called penguin:
     let sql = format!(
         r#"CREATE TABLE penguin (
@@ -841,6 +844,28 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
              culmen_length TEXT,
              body_mass TEXT
            )"#,
+    );
+    rltbl.connection.query(&sql, None).await.unwrap();
+
+    let sql = format!(
+        r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_penguin"()
+             RETURNS TRIGGER
+             LANGUAGE PLPGSQL
+             AS
+           $$
+           BEGIN
+             PERFORM setval('penguin__id_seq', NEW._id);
+             RETURN NEW;
+           END;
+           $$"#,
+    );
+    rltbl.connection.query(&sql, None).await.unwrap();
+
+    let sql = format!(
+        r#"CREATE TRIGGER "penguin_order"
+             AFTER INSERT ON "penguin"
+             FOR EACH ROW
+             EXECUTE FUNCTION "update_order_and_nextval_penguin"()"#,
     );
     rltbl.connection.query(&sql, None).await.unwrap();
 

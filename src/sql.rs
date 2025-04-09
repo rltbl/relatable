@@ -751,7 +751,7 @@ pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Resul
             }
             DbKind::Postgres => {
                 ddl.push(format!(
-                    r#"CREATE OR REPLACE FUNCTION "update_order_{table}"()
+                    r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_{table}"()
                          RETURNS TRIGGER
                          LANGUAGE PLPGSQL
                          AS
@@ -760,6 +760,7 @@ pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Resul
                          IF NEW._order IS NOT DISTINCT FROM NULL THEN
                            {update_stmt}
                          END IF;
+                         PERFORM setval('{table}__id_seq', NEW._id);
                          RETURN NEW;
                        END;
                        $$"#,
@@ -767,9 +768,9 @@ pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Resul
                 ));
                 ddl.push(format!(
                     r#"CREATE TRIGGER "{table}_order"
-                           AFTER INSERT ON "{table}"
-                           FOR EACH ROW
-                           EXECUTE FUNCTION "update_order_{table}"()"#,
+                         AFTER INSERT ON "{table}"
+                         FOR EACH ROW
+                         EXECUTE FUNCTION "update_order_and_nextval_{table}"()"#,
                     table = table.name,
                 ));
             }

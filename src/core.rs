@@ -2641,20 +2641,6 @@ impl Row {
             (value_placeholders, params)
         };
 
-        // TODO: There is a problem here because of the serial primary key. In postgres SERIAL
-        // is equivalent to the statements below, thus it is only triggered on a NULL value:
-        //    CREATE SEQUENCE table_name_id_seq;
-        //    CREATE TABLE table_name (
-        //      id integer NOT NULL DEFAULT nextval('table_name_id_seq')
-        //    );
-        //    ALTER SEQUENCE table_name_id_seq
-        //    OWNED BY table_name.id;
-        // Note that this problem affects the code that constructs the penguin demo in cli.rs
-        // as well, since it also explicitly specifies ids and orders.
-        // We should be able to workaround this by changing SERIAL PRIMARY KEY to
-        // INTEGER PRIMARY KEY in the CREATE TABLE statement, then additionally creating a
-        // SEQUENCE owned by the table and a TRIGGER to *always* autoincrement the sequence
-        // (instead of tying it to DEFAULT as above which is only triggered on a NULL).
         let sql = if quoted_column_names.len() == 0 {
             format!(
                 r#"INSERT INTO "{table}"
