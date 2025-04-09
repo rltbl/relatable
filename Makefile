@@ -98,7 +98,7 @@ test/perf/tsv/penguin.tsv: | test/perf/tsv
 	target/debug/rltbl save test/perf/tsv/
 
 .PHONY: test-perf
-test-perf: debug test/perf/tsv/penguin.tsv
+test-perf: test/perf/tsv/penguin.tsv debug
 	target/debug/rltbl init --force
 	@echo "target/debug/rltbl -vv load table $<"
 	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vv load table $< || \
