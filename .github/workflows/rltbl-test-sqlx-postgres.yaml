@@ -1,4 +1,4 @@
-name: Test PostgreSQL (sqlx)
+name: Test sqlx (PostgreSQL)
 
 on:
   pull_request:
