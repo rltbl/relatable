@@ -709,7 +709,7 @@ pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Resul
 
     if force {
         if let DbKind::Postgres = db_kind {
-            ddl.push(format!(r#"DROP TABLE "{}" CASCADE"#, table.name));
+            ddl.push(format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, table.name));
         }
     }
 
@@ -897,7 +897,7 @@ pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     let mut ddl = vec![];
     if force {
         if let DbKind::Postgres = db_kind {
-            ddl.push(format!(r#"DROP TABLE "user" CASCADE"#));
+            ddl.push(format!(r#"DROP TABLE IF EXISTS "user" CASCADE"#));
         }
     }
 
@@ -931,7 +931,7 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
             let mut ddl = vec![];
             if force {
                 if let DbKind::Postgres = db_kind {
-                    ddl.push(format!(r#"DROP TABLE "change" CASCADE"#));
+                    ddl.push(format!(r#"DROP TABLE IF EXISTS "change" CASCADE"#));
                 }
             }
             ddl.push(format!(
@@ -970,7 +970,7 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
             let mut ddl = vec![];
             if force {
                 if let DbKind::Postgres = db_kind {
-                    ddl.push(format!(r#"DROP TABLE "history" CASCADE"#));
+                    ddl.push(format!(r#"DROP TABLE IF EXISTS "history" CASCADE"#));
                 }
             }
             ddl.push(format!(
@@ -1011,7 +1011,7 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
             let mut ddl = vec![];
             if force {
                 if let DbKind::Postgres = db_kind {
-                    ddl.push(format!(r#"DROP TABLE "message" CASCADE"#));
+                    ddl.push(format!(r#"DROP TABLE IF EXISTS "message" CASCADE"#));
                 }
             }
             ddl.push(format!(
