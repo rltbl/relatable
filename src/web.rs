@@ -2,13 +2,13 @@
 //!
 //! This is relatable (rltbl::web).
 
-use crate as rltbl;
+use crate::{self as rltbl, core::render_values};
 use rltbl::{
     cli::Cli,
     core::{ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, Row, Select},
     sql::JsonRow,
 };
-use std::io::Write;
+use std::{collections::HashSet, io::Write};
 
 use anyhow::Result;
 use async_std::sync::Arc;
@@ -33,6 +33,7 @@ fn forbid() -> Response<Body> {
 }
 
 fn get_404(error: &anyhow::Error) -> Response<Body> {
+    tracing::error!("404 {error:?}");
     (
         StatusCode::NOT_FOUND,
         Html(format!("404 Not Found: {error}")),
@@ -41,6 +42,7 @@ fn get_404(error: &anyhow::Error) -> Response<Body> {
 }
 
 fn get_500(error: &anyhow::Error) -> Response<Body> {
+    tracing::error!("500 {error:?}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Html(format!("500 Internal Server Error: {error}")),
@@ -67,12 +69,14 @@ async fn get_root(State(rltbl): State<Arc<Relatable>>) -> impl IntoResponse {
 async fn main_js() -> impl IntoResponse {
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, "text/javascript".parse().unwrap());
+    headers.insert(header::CACHE_CONTROL, "public, max-age=60".parse().unwrap());
     (headers, include_str!("resources/main.js"))
 }
 
 async fn main_css() -> impl IntoResponse {
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, "text/css".parse().unwrap());
+    headers.insert(header::CACHE_CONTROL, "public, max-age=60".parse().unwrap());
     (headers, include_str!("resources/main.css"))
 }
 
@@ -90,7 +94,7 @@ async fn respond(rltbl: &Relatable, format: &Format, content: &JsonValue) -> Res
             headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
             (headers, to_string_pretty(content).unwrap_or_default()).into_response()
         }
-        Format::Json => Json(content).into_response(),
+        Format::ValueJson | Format::Json => Json(content).into_response(),
     };
     response
 }
@@ -145,80 +149,148 @@ async fn get_tableset(
         Err(error) => return get_404(&error),
     };
 
+    let select = Select::from_path_and_query(&rltbl, &path, &query_params);
+    tracing::info!("SELECT {select:?}",);
+
+    if matches!(format, Format::ValueJson) {
+        let sel = match joined_query(&rltbl, &select).await {
+            Ok(select) => select,
+            Err(error) => return get_500(&error),
+        };
+        let value = match rltbl.count(&sel).await {
+            Ok(count) => count,
+            Err(error) => return get_500(&error),
+        };
+        return Json(value).into_response();
+    }
+
     let username = get_username(session);
     if username.trim() != "" {
         init_user(&rltbl, &username).await;
     }
     // tracing::info!("USERNAME {username}");
 
+    let site = rltbl.get_site(&username).await;
+
     let sql = format!(r#"SELECT * FROM "tableset" WHERE tableset = '{tableset_name}'"#);
     let json_rows = match rltbl.connection.query(&sql, None).await {
         Ok(rows) => rows,
         Err(error) => return get_500(&error),
     };
-    tracing::info!("TAB {:?}", json_rows);
 
-    let mut select = Select::from_path_and_query(&rltbl, &path, &query_params);
-
-    // Override FROM using JOINs.
-    let mut joins = vec![];
-    for row in json_rows.clone() {
-        if row.get_string("using").unwrap() == "" {
-            joins.push(format!(r#"FROM {}"#, row.get_string("table").unwrap()));
-        } else {
-            joins.push(format!(
-                "LEFT JOIN {} USING ({})",
-                row.get_string("table").unwrap(),
-                row.get_string("using").unwrap()
-            ));
-        }
-    }
-    if select.filters.len() > 0 {
-        select.join = Some(joins.join("\n"));
-    }
-
-    let result = match rltbl.fetch(&select).await {
-        Ok(result) => result,
-        Err(error) => return get_500(&error),
-    };
-    let site = rltbl.get_site(&username).await;
-
-    // Count distinct values for the table in the tabset, using the same filters.
-    let mut lines = vec!["SELECT".to_string()];
-    let mut counts = vec![];
-    for row in json_rows {
-        counts.push(format!(
-            r#"  COUNT(DISTINCT "{}") AS "{}""#,
-            row.get_string("distinct").unwrap(),
-            row.get_string("table").unwrap(),
-        ));
-    }
-    lines.push(counts.join(",\n"));
-    lines.append(&mut joins);
-    for (i, filter) in select.filters.iter().enumerate() {
-        let keyword = if i == 0 { "WHERE" } else { "  AND" };
-        lines.push(format!(
-            "{keyword} {filter}",
-            filter = filter.to_sqlite().unwrap()
-        ));
-    }
-    let sql = lines.join("\n");
-    let json_rows = rltbl.connection.cache(&sql, None).await.unwrap();
-
+    tracing::info!("TAB {json_rows:?}");
     let mut tabs = vec![];
-    for (table, count) in json_rows[0].content.clone() {
+    for json_row in json_rows {
+        let table = json_row.get_string("table").unwrap();
         let mut s = select.clone();
         s.table_name = table.clone();
+        let mut c = s.clone();
+        c.select = vec!["count()".to_string()];
         tabs.push(json!({
             "table": table,
             "active": (table == select.table_name),
-            "count": count,
-            "url": s.to_url(format!("{}/tableset/{tableset_name}", site.root).as_str(), &format).unwrap()
+            "disabled": (table == "total"),
+            "url": s.to_url(format!("{}/tableset/{tableset_name}", site.root).as_str(), &Format::Default).unwrap(),
+            "count": c.to_url(format!("{}/tableset/{tableset_name}", site.root).as_str(), &Format::ValueJson).unwrap()
         }));
     }
 
+    let mut result = match joined_query(&rltbl, &select).await {
+        Ok(sel) => match rltbl.fetch(&sel).await {
+            Ok(result) => result,
+            Err(error) => return get_500(&error),
+        },
+        Err(error) => return get_500(&error),
+    };
+    result.select = select.clone();
+
     let content = json!({"site": site, "path": format!("tableset/{}", tableset_name), "tabs": tabs, "result": result});
     respond(&rltbl, &format, &content).await
+}
+
+async fn joined_query(rltbl: &Relatable, select: &Select) -> Result<Select> {
+    let mut tables = HashSet::new();
+    tables.insert(json!(select.table_name));
+    for filter in &select.filters {
+        let (t, _, _, _) = filter.parts();
+        if t != "" {
+            tables.insert(json!(t));
+        }
+    }
+
+    if tables.len() == 1 {
+        return Ok(select.clone());
+    }
+
+    let tables: Vec<JsonValue> = tables.into_iter().collect();
+    let values = render_values(&tables).unwrap();
+
+    let sql = format!(
+        r#"WITH RECURSIVE ancestors("table", "using") AS (
+      SELECT "table", "using"
+      FROM tableset
+      WHERE "table" IN {values}
+      UNION
+      SELECT tableset."table", tableset."using"
+      FROM ancestors
+      JOIN tableset ON ancestors."using" = tableset."distinct"
+      WHERE tableset.tableset = 'combined'
+    )
+    SELECT tableset.*
+    FROM tableset
+    JOIN ancestors USING ("table")
+    WHERE _order >= (SELECT MIN(_order) FROM tableset WHERE "table" IN {values})
+      AND _order <= (SELECT MAX(_order) FROM tableset WHERE "table" IN {values})
+    ORDER BY _order"#
+    );
+    let json_rows = rltbl.connection.query(&sql, None).await?;
+    tracing::info!("TABLESET {json_rows:?}",);
+
+    // Build a custom query, something like this:
+    // SELECT *
+    // FROM hcckb.arm
+    // WHERE arm_id IN (
+    //   SELECT arm_id
+    //   FROM hcckb.arm
+    //   JOIN hcckb.participant_2_arm USING (arm_id)
+    //   JOIN hcckb.participant USING (participant_id)
+    //   LEFT JOIN hcckb.specimen USING (participant_id)
+    //   WHERE biological_sex = 'Male'
+    //     AND specimen_type = 'PBMC'
+    // )
+    let limit = select.limit;
+    let mut sel = select.clone();
+    let table_name = select.table_name.clone();
+    let mut pkey = String::new();
+    for json_row in json_rows.clone() {
+        if table_name == json_row.get_string("table").unwrap() {
+            pkey = json_row.get_string("distinct").unwrap();
+        }
+    }
+    sel.select = vec![pkey.clone()];
+    if table_name == json_rows.last().unwrap().get_string("table").unwrap() {
+        sel.order_by(&pkey);
+    } else {
+        sel.limit = 0;
+    }
+    let json_row = json_rows.first().unwrap();
+    sel.table_name = json_row.get_string("table").unwrap();
+    for json_row in json_rows.iter().skip(1) {
+        sel.left_join_using(
+            &json_row.get_string("table").unwrap(),
+            &json_row.get_string("using").unwrap(),
+        );
+    }
+    Ok(crate::core::Select {
+        table_name,
+        filters: vec![crate::core::Filter::InSubquery {
+            table: String::new(),
+            column: pkey.clone(),
+            subquery: sel.clone(),
+        }],
+        limit,
+        ..Default::default()
+    })
 }
 
 async fn post_table(
@@ -347,7 +419,7 @@ async fn get_row_menu(
     let row: Row = match rltbl
         .connection
         .query_one(
-            &format!(r#"SELECT * FROM "{}" WHERE _id = ?"#, table.view),
+            &format!(r#"SELECT * FROM "{}" WHERE _id = $1"#, table.view),
             Some(&json!([row_id])),
         )
         .await
@@ -384,7 +456,7 @@ async fn get_column_menu(
     let mut value = json!("");
     let mut order = String::new();
     for filter in select.filters {
-        let (c, o, v) = filter.parts();
+        let (_, c, o, v) = filter.parts();
         tracing::warn!("FILTER {filter:?} {o}");
         if c == column {
             operator = o;
@@ -423,7 +495,7 @@ async fn get_cell_menu(
     let row: Row = match rltbl
         .connection
         .query_one(
-            &format!(r#"SELECT * FROM "{}" WHERE _id = ?"#, table.view),
+            &format!(r#"SELECT * FROM "{}" WHERE _id = $1"#, table.view),
             Some(&json!([row_id])),
         )
         .await
@@ -555,7 +627,7 @@ async fn add_row(
             let offset = rltbl
                 .connection
                 .query_value(
-                    &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= ?"#),
+                    &format!(r#"SELECT COUNT(*) FROM "{table}" WHERE _order <= ?"#),
                     Some(&json!([row.order])),
                 )
                 .await;
@@ -589,7 +661,7 @@ async fn delete_row(
                 .connection
                 .query_value(
                     &format!(
-                        r#"SELECT COUNT() FROM "{table}"
+                        r#"SELECT COUNT(*) FROM "{table}"
                        WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = ?)"#
                     ),
                     Some(&json!([prev])),

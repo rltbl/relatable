@@ -9,6 +9,7 @@ import {
   EditableGridCell, GridCell, GridCellKind,
   GridColumn,
   GridColumnIcon,
+  GridMouseEventArgs,
   GridSelection,
   Highlight,
   Rectangle,
@@ -294,10 +295,8 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   // Fetch data updated since we started.
   const pollData = React.useCallback(async () => {
     if (!dataRef.current) { return; }
-    const params = new URLSearchParams(document.location.search);
+    const params = new URLSearchParams();
     params.set("_change_id", `gt.${change_id.current}`);
-    params.delete("limit");
-    params.delete("offset");
     const url = `${site.root}/${rltbl.path}/${table}.json?${params.toString()}`;
     // console.log("pollData: " + url);
     var rows: Row[] = [];
@@ -336,8 +335,10 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
 
   // Poll for new data.
   React.useEffect(() => {
-    const interval = setInterval(pollData, 5000);
-    return () => clearInterval(interval);
+    if (site.editable == true) {
+      const interval = setInterval(pollData, 5000);
+      return () => clearInterval(interval);
+    }
   }, [pollData, dataRef]);
 
   // Scroll to offset
@@ -583,6 +584,22 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     return false;
   }, [site, table, columns]);
 
+  const onItemHovered = React.useCallback((args: GridMouseEventArgs) => {
+    // console.log("onItemHovered", args);
+    const c = args.location[0];
+    const r = args.location[1];
+    if (r < 0) return;
+    var bounds = gridRef.current?.getBounds(c, r);
+    if (!bounds) return;
+    if (!bounds.width) return;
+    bounds.width = bounds.width - 50;
+    if (bounds && bounds.width > 0) {
+      const text = '<a href="./penguin"><i class="bi bi-arrow-left-circle"></i><i class="bi bi-funnel-fill"></i></a>';
+      const content: React.JSX.Element = parse(text) as React.JSX.Element;
+      setShowMenu({ bounds: bounds, content: content });
+    };
+  }, []);
+
   const { renderLayer, layerProps } = useLayer({
     isOpen: showMenu !== undefined,
     triggerOffset: 4,
@@ -598,6 +615,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
         width: showMenu?.bounds.width ?? 0,
       }),
     },
+    // placement: "right-center",
     placement: "bottom-start",
     auto: true,
     possiblePlacements: ["bottom-start", "bottom-end", "top-start", "top-end"],
@@ -652,6 +670,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       //onCellClicked={onCellClicked}
       onCellContextMenu={onCellContextMenu}
       onHeaderMenuClick={onHeaderMenuClick}
+      // onItemHovered={onItemHovered}
       // onPaste={true}
       // fillHandle={true}
       freezeColumns={grid.freezeColumns}

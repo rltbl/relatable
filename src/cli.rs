@@ -804,8 +804,9 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     rltbl.connection.query(sql, None).await.unwrap();
 
     let sql = r#"INSERT INTO "tableset" VALUES
-      (1, 1000, 'penguin', 'study', 'study_name', NULL),
-      (2, 2000, 'penguin', 'penguin', 'individual_id', 'study_name')
+      (1, 1000, 'combined', 'study', 'study_name', NULL),
+      (2, 2000, 'combined', 'penguin', 'individual_id', 'study_name'),
+      (3, 3000, 'combined', 'egg', 'egg_id', 'individual_id')
     "#;
     rltbl.connection.query(sql, None).await.unwrap();
 
@@ -888,6 +889,22 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         let params = json!(params);
         rltbl.connection.query(&sql, Some(&params)).await.unwrap();
     }
+
+    let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('egg', 'egg.tsv')"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    // Create the egg table.
+    let sql = r#"CREATE TABLE egg (
+      _id INTEGER PRIMARY KEY AUTOINCREMENT,
+      _order INTEGER UNIQUE,
+      egg_id TEXT UNIQUE,
+      individual_id TEXT
+    )"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    let sql = r#"INSERT INTO egg VALUES
+        (0, 0, 'E1', 'N1')"#;
+    rltbl.connection.query(sql, None).await.unwrap();
 }
 
 pub async fn process_command() {

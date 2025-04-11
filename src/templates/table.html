@@ -26,9 +26,10 @@
 <ul class="nav nav-tabs mb-2">
   {% for tab in tabs %}
   <li class="nav-item">
-    <a class="nav-link {{'active' if tab['active'] == true}}" href="{{tab['url']}}">
+    <a class="nav-link {{'active' if tab['active'] == true}} {{'disabled' if tab['disabled'] == true}}"
+      href="{{tab['url']}}">
       {{tab['table']}}
-      <span class="badge rounded-pill text-bg-secondary">{{tab['count']}}</span>
+      <span id="tab-{{tab['table']}}-count" class="badge rounded-pill text-bg-secondary">...</span>
     </a>
   </li>
   {% endfor %}
@@ -65,8 +66,26 @@
   window.rltbl = {};
   window.rltbl.site = {{site | tojson}};
   window.rltbl.path = {{path | tojson}};
+  window.rltbl.tabs = {{tabs | tojson}};
   window.rltbl.result = {{result | tojson}};
   window.rltbl.grid = {};
+
+  for (var i = 0; i < window.rltbl.tabs.length; i++) {
+    var tab = window.rltbl.tabs[i];
+    // console.log("fetch " + i, tab);
+    fetch_count(tab);
+  }
+
+  function fetch_count(tab) {
+    fetch(tab['count'])
+      .catch(e => console.log("tab count error", tab, e))
+      .then(response => response.json())
+      .then(data => {
+        // console.log("tab count result", tab, data);
+        document.getElementById("tab-" + tab['table'] + "-count").innerHTML = data;
+      });
+  }
+
 
   // Example: Use an autocomplete dropdown for 'penguin.island' column.
   const table = {{result.table.name | tojson}};
