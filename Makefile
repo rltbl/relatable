@@ -105,15 +105,15 @@ test/perf/tsv/penguin.tsv: | test/perf/tsv
 .PHONY: test-perf
 test-perf: test/perf/tsv/penguin.tsv debug
 	target/debug/rltbl init --force
-	@echo "target/debug/rltbl -vv load --force table $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vv load --force table $< || \
+	@echo "target/debug/rltbl -vv load table --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vv load table --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 .PHONY: test-perf-sqlx
 test-perf-sqlx: test/perf/tsv/penguin.tsv sqlx_debug
 	target/debug/rltbl init --force
-	@echo "target/debug/rltbl -vv load --force table $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vv load --force table $< || \
+	@echo "target/debug/rltbl -vv load table --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vv load table --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 .PHONY: test
