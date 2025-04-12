@@ -8,8 +8,6 @@ MIN_RETRY_SLEEP=1
 MAX_RETRY_SLEEP=4
 NUM_RETRIES=5
 
-# TODO: Handle postgres.
-
 varying_rate=0
 case $1 in
     "--varying-rate")

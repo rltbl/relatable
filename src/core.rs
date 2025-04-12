@@ -1644,7 +1644,10 @@ impl Relatable {
                                     }
                                 };
                                 let before = JsonRow { content: before };
-                                // Re-add it to the data table:
+                                tracing::debug!(
+                                    "Re-adding row '{before}' to table '{}'",
+                                    changeset.table
+                                );
                                 self._add_row(
                                     conn,
                                     &changeset.action,
@@ -1697,6 +1700,7 @@ impl Relatable {
             }
             Some(changeset) => changeset,
         };
+        tracing::debug!("Last redoable action (ID {change_id}) for user {user} was {changeset:?}");
         changeset.action = ChangeAction::Redo;
         let changeset = self._undo_or_redo(change_id, &changeset).await?;
         if let Some(_) = changeset {
@@ -1935,6 +1939,7 @@ impl Relatable {
         // the table (recall that there is a unique constraint on _order). However the row_order
         // currently assigned is at the end of the table so there should not be any conflicts.
         if let Some(new_row_id) = new_row_id {
+            tracing::debug!("Changing new row ID to {new_row_id}");
             new_row.id = new_row_id;
         }
 
@@ -1947,11 +1952,22 @@ impl Relatable {
             None => self._get_previous_row_id(table_name, new_row.id, &mut tx)?,
             Some(after_id) => {
                 // Move the row to its assigned spot within the table:
+                tracing::debug!(
+                    "Moving new row {id} to after row {after_id} in '{table}'",
+                    id = new_row.id,
+                    table = table.name
+                );
                 let new_order = self._move_row(&mut tx, &table, new_row.id, after_id)?;
                 new_row.order = new_order;
                 after_id
             }
         };
+
+        tracing::debug!(
+            "Added new row {id} to table '{table}' after row {after_id}",
+            id = new_row.id,
+            table = table.name
+        );
 
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with the new_row's id and position in the table:
@@ -2392,6 +2408,11 @@ impl Relatable {
             }
         };
 
+        tracing::debug!(
+            "Updating _order in table '{table}' for row {id} to {new_order}",
+            table = table.name
+        );
+
         let sql = format!(
             r#"UPDATE "{}" SET "_order" = {sql_param}
                WHERE "_id" = {sql_param}
@@ -2786,6 +2807,7 @@ impl Row {
         row.id = tx.get_next_id(table.name.as_str())?;
         row.order = MOVE_INTERVAL * row.id;
         row.change_id = table.change_id;
+        tracing::debug!("Prepared a new row: {row:?}");
         Ok(row)
     }
 

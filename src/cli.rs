@@ -884,7 +884,9 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
                  AS
                $$
                BEGIN
-                 PERFORM setval('penguin__id_seq', NEW._id);
+                 IF NEW._id > (SELECT MAX(last_value) FROM "penguin__id_seq") THEN
+                   PERFORM setval('penguin__id_seq', NEW._id);
+                 END IF;
                  RETURN NEW;
                END;
                $$"#,

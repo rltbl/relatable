@@ -85,14 +85,10 @@ test-random: debug
 
 .PHONY: test-random-sqlx
 test-random-sqlx: sqlx_debug
-	# TODO: PostgreSQL seems to have more trouble recovering from conflicts than SQLite.
-	#       This is why we have switched this to a fixed-rate test for now and increased
-#         the value of MIN_SLEEP in test/random.sh, but it would be good to have a better
-#         understanding of the precise problem with PostgreSQL.
-	# test/random.sh --varying-rate
-	test/random.sh
+	test/random.sh --varying-rate
 
-perf_test_timeout = 5
+# TODO: Postgres is real slow. We need to ideally get the timeout back down to 5.
+perf_test_timeout = 15
 perf_test_size = 100000
 
 test/perf/tsv:

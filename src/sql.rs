@@ -758,7 +758,9 @@ pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Resul
                          IF NEW._order IS NOT DISTINCT FROM NULL THEN
                            {update_stmt}
                          END IF;
-                         PERFORM setval('{table}__id_seq', NEW._id);
+                         IF NEW._id > (SELECT MAX(last_value) FROM "{table}__id_seq") THEN
+                           PERFORM setval('{table}__id_seq', NEW._id);
+                         END IF;
                          RETURN NEW;
                        END;
                        $$"#,
