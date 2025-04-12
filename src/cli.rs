@@ -301,6 +301,9 @@ pub enum DeleteSubcommand {
 #[derive(Subcommand, Debug)]
 pub enum LoadSubcommand {
     Table {
+        #[arg(long, action = ArgAction::SetTrue)]
+        force: bool,
+
         #[arg(value_name = "PATH", num_args=1..,
               action = ArgAction::Set,
               help = "The path(s) to load from")]
@@ -758,14 +761,14 @@ pub async fn redo(cli: &Cli) {
     tracing::info!("Last operation redone");
 }
 
-pub async fn load_tables(cli: &Cli, paths: &Vec<String>) {
+pub async fn load_tables(cli: &Cli, paths: &Vec<String>, force: bool) {
     tracing::debug!("load_tables({cli:?}, {paths:?})");
     for path in paths {
-        load_table(cli, &path).await;
+        load_table(cli, &path, force).await;
     }
 }
 
-pub async fn load_table(cli: &Cli, path: &str) {
+pub async fn load_table(cli: &Cli, path: &str, force: bool) {
     tracing::debug!("load_table({cli:?}, {path})");
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
 
@@ -780,7 +783,7 @@ pub async fn load_table(cli: &Cli, path: &str) {
     let table = table.trim_end_matches("_");
     let table = table.trim_start_matches("_");
 
-    rltbl.load_table(&table, path).await;
+    rltbl.load_table(&table, path, force).await;
     tracing::info!("Loaded table '{table}'");
 }
 
@@ -1038,7 +1041,7 @@ pub async fn process_command() {
         Command::Redo {} => redo(&cli).await,
         Command::History { context } => print_history(&cli, *context).await,
         Command::Load { subcommand } => match subcommand {
-            LoadSubcommand::Table { paths } => load_tables(&cli, paths).await,
+            LoadSubcommand::Table { paths, force } => load_tables(&cli, paths, *force).await,
         },
         Command::Save { save_dir } => save_all(&cli, save_dir.as_deref()).await,
         Command::Serve {

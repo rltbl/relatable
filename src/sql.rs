@@ -785,60 +785,70 @@ pub fn generate_view_ddl(
     order_col: &str,
     columns: &Vec<Column>,
     db_kind: &DbKind,
-) -> String {
-    // TODO: The behaviour for sqlite is slightly different than for postgres (if not exits vs
-    // or replace). Make them consistent.
-
+) -> Vec<String> {
     // Note that '?' parameters are not allowed in views so we must hard code them:
     match db_kind {
-        DbKind::Sqlite => format!(
-            r#"CREATE VIEW IF NOT EXISTS "{view}" AS
-                 SELECT
-                   {id_col} AS _id,
-                   {order_col} AS _order,
-                   (SELECT '[' || GROUP_CONCAT("after") || ']'
-                      FROM (
-                        SELECT "after"
-                        FROM "history"
-                        WHERE "table" = '{table}'
-                        AND "after" IS NOT NULL
-                        AND "row" = {id_col}
-                        ORDER BY "history_id"
-                     )
-                   ) AS "_history",
-                   (SELECT NULLIF(
-                      JSON_GROUP_ARRAY(
-                        JSON_OBJECT(
-                          'column', "column",
-                          'value', "value",
-                          'level', "level",
-                          'rule', "rule",
-                          'message', "message"
-                        )
-                      ),
-                      '[]'
-                    ) AS "_message"
-                      FROM "message"
-                      WHERE "table" = '{table}'
-                      AND "row" = {id_col}
-                      ORDER BY "column", "message_id"
-                   ) AS "_message",
-                   {columns}
-                 FROM "{table}""#,
-            table = table_name,
-            view = view_name,
-            columns = columns
-                .iter()
-                .map(|c| format!(r#""{}""#, c.name))
-                .collect::<Vec<_>>()
-                .join(", "),
-        ),
-        DbKind::Postgres => format!(
+        DbKind::Sqlite => vec![
+            format!(r#"DROP VIEW IF EXISTS "{}""#, view_name),
+            format!(
+                r#"CREATE VIEW IF NOT EXISTS "{view}" AS
+                     SELECT
+                       {id_col} AS _id,
+                       {order_col} AS _order,
+                       (SELECT '[' || GROUP_CONCAT("after") || ']'
+                          FROM (
+                            SELECT "after"
+                            FROM "history"
+                            WHERE "table" = '{table}'
+                            AND "after" IS NOT NULL
+                            AND "row" = {id_col}
+                            ORDER BY "history_id"
+                         )
+                       ) AS "_history",
+                       (SELECT NULLIF(
+                          JSON_GROUP_ARRAY(
+                            JSON_OBJECT(
+                              'column', "column",
+                              'value', "value",
+                              'level', "level",
+                              'rule', "rule",
+                              'message', "message"
+                            )
+                          ),
+                          '[]'
+                        ) AS "_message"
+                          FROM "message"
+                          WHERE "table" = '{table}'
+                          AND "row" = {id_col}
+                          ORDER BY "column", "message_id"
+                       ) AS "_message",
+                       {columns}
+                     FROM "{table}""#,
+                table = table_name,
+                view = view_name,
+                columns = columns
+                    .iter()
+                    .map(|c| format!(r#""{}""#, c.name))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        ],
+        DbKind::Postgres => vec![format!(
             r#"CREATE OR REPLACE VIEW "{view}" AS
                  SELECT
                    "{table}"._id,
                    "{table}"._order,
-                   ( SELECT json_agg(m.*)::TEXT AS json_agg
+                   (
+                     SELECT ('['::TEXT || string_agg(h.after, ','::TEXT)) || ']'::TEXT
+                     FROM ( SELECT "history"."after"
+                            FROM "history"
+                            WHERE "history"."table" = '{table}'
+                            AND "after" IS DISTINCT FROM NULL
+                            AND "row" = "{table}"._id
+                            ORDER BY "history_id" ) h
+                   ) AS "_history",
+                   (
+                     SELECT json_agg(m.*)::TEXT AS json_agg
                      FROM ( SELECT "message"."column",
                                    "message"."value",
                                    "message"."level",
@@ -846,15 +856,9 @@ pub fn generate_view_ddl(
                                    "message"."message"
                             FROM "message"
                      WHERE "message"."table" = '{table}' AND "message"."row" = "{table}"._id
-                     ORDER BY "message"."column", "message"."message_id") m) AS "message",
-                     ( SELECT ('['::TEXT || string_agg(h.after, ','::TEXT)) || ']'::TEXT
-                       FROM ( SELECT "history"."after"
-                              FROM "history"
-                              WHERE "history"."table" = '{table}'
-                                AND "after" IS DISTINCT FROM NULL
-                                AND "row" = "{table}"._id
-                              ORDER BY "history_id" ) h ) AS "history",
-                     {columns}
+                     ORDER BY "message"."column", "message"."message_id") m
+                   ) AS "_message",
+                   {columns}
                      FROM "{table}""#,
             table = table_name,
             view = view_name,
@@ -863,7 +867,7 @@ pub fn generate_view_ddl(
                 .map(|c| format!(r#""{}""#, c.name))
                 .collect::<Vec<_>>()
                 .join(", "),
-        ),
+        )],
     }
 }
 

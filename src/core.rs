@@ -245,10 +245,6 @@ impl Relatable {
             ))
             .into());
         }
-        tracing::debug!(
-            "Returning (columns: {columns:?}, meta_columns: {meta_columns:?} from \
-             fetch_all_columns()"
-        );
         Ok((columns, meta_columns))
     }
 
@@ -307,7 +303,7 @@ impl Relatable {
     }
 
     /// Note that this function may panic.
-    pub async fn load_table(&self, table_name: &str, path: &str) {
+    pub async fn load_table(&self, table_name: &str, path: &str, force: bool) {
         tracing::trace!("Relatable::load_table({table_name:?}, {path:?})");
         // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
@@ -365,7 +361,7 @@ impl Relatable {
         }
 
         // Generate the SQL statements needed to instantiate the table and execute them:
-        for sql in sql::generate_table_ddl(&table, false, &self.connection.kind())
+        for sql in sql::generate_table_ddl(&table, force, &self.connection.kind())
             .expect("Error getting DDL")
         {
             self.connection
@@ -2945,6 +2941,7 @@ impl Table {
         tracing::trace!("Table::ensure_view_created({rltbl:?})");
         let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
         self.view = format!("{}_default_view", self.name);
+        tracing::debug!(r#"Creating view "{}" with columns {columns:?}"#, self.view);
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
             true => r#"_id"#,
@@ -2954,15 +2951,16 @@ impl Table {
             true => r#"_order"#,
         };
 
-        let sql = sql::generate_view_ddl(
+        for sql in sql::generate_view_ddl(
             &self.name,
             &self.view,
             id_col,
             order_col,
             &columns,
             &rltbl.connection.kind(),
-        );
-        rltbl.connection.query(&sql, None).await?;
+        ) {
+            rltbl.connection.query(&sql, None).await?;
+        }
         Ok(columns)
     }
 
