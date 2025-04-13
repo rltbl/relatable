@@ -65,19 +65,19 @@ test-code:
 
 .PHONY: test-tesh-doc
 test-tesh-doc: debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc 2>/dev/null
 
 .PHONY: test-tesh-doc-sqlx
 test-tesh-doc-sqlx: sqlx_debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc 2>/dev/null
 
 .PHONY: test-tesh-misc
 test-tesh-misc: debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test 2>/dev/null
 
 .PHONY: test-tesh-misc-sqlx
 test-tesh-misc-sqlx: sqlx_debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test 2>/dev/null
 
 .PHONY: test-random
 test-random: debug
