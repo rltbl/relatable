@@ -123,8 +123,8 @@ test-perf-sqlx: test/perf/tsv/penguin.tsv sqlx_debug
 .PHONY: test_sqlx
 test_sqlx: src/resources/main.js src/resources/main.css test-code test-tesh-doc-sqlx test-tesh-misc-sqlx test-random-sqlx test-perf-sqlx
 
-.PHONY: test_postgres
-test_postgres: test_sqlx test-tesh-postgres-only
+.PHONY: test_sqlx_postgres
+test_sqlx_postgres: test_sqlx test-tesh-postgres-only
 
 .PHONY: test_sqlite
 test_sqlite: src/resources/main.js src/resources/main.css test-code test-tesh-doc test-tesh-misc test-random test-perf test-tesh-sqlite-only

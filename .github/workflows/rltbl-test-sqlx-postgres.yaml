@@ -46,4 +46,4 @@ jobs:
           for f in test/tesh/common/*.md; do cat header $f > $f.new; mv -f $f.new $f; done; rm -f header
       - name: Run tests
         run: |
-          make test_postgres
+          make test_sqlx_postgres
