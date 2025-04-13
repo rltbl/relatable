@@ -43,7 +43,7 @@ jobs:
           echo '```console tesh-session="define-connection"' > header
           echo '$ export RLTBL_CONNECTION=postgresql:///rltbl_db' >> header
           echo '```' >> header
-          for f in test/*.md; do   cat header $f > $f.new;   mv -f $f.new $f; done; rm -f header
+          for f in test/tesh/common/*.md; do cat header $f > $f.new; mv -f $f.new $f; done; rm -f header
       - name: Run tests
         run: |
           make test_sqlx
