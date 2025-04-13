@@ -4,6 +4,7 @@ To add rows to a table on the command line, one uses `rltbl add row TABLE`. **rl
 
 ```console tesh-session="history"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in '.relatable/relatable.db'
 $ echo '{"species": "FOO"}' | RLTBL_USER=mike rltbl -v --input JSON add row penguin
 ```
 Note the use of the environment variable, `RLTBL_USER`, to specify the user associated with this particular action. This can be done on a per-command basis, as we have done here, or alternately (the usual setup) one can set the environment variable in one's shell initialization script (e.g., `~/.bashrc`). Because the examples below depend sensitively on which actions are owned by which user, we have been careful to be explicit about the user of each command below for which it is relevant.

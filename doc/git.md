@@ -24,6 +24,7 @@ Now we set up Relatable and make a first commit:
 
 ```console tesh-session="git"
 $ rltbl demo --size 1 --force
+Created a demonstration database in '.relatable/relatable.db'
 $ rltbl save
 $ echo '.relatable/' > .gitignore
 $ git add .gitignore penguin.tsv

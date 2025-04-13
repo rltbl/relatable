@@ -1,6 +1,5 @@
 MAKEFLAGS += --warn-undefined-variables
 SHELL := bash
-.SHELLFLAGS := -eu -o pipefail -c
 .DEFAULT_GOAL := debug
 .DELETE_ON_ERROR:
 .SUFFIXES:
@@ -83,17 +82,17 @@ test-tesh-misc-sqlx: sqlx_debug
 test-tesh-sqlite-only: debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/sqlite_only
 
-.PHONY: test-tesh-postgres-only
-test-tesh-postgres-only: sqlx_debug
+.PHONY: test-tesh-sqlx-postgres-only
+test-tesh-sqlx-postgres-only: sqlx_debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/postgres_only
 
 .PHONY: test-random
 test-random: debug
-	test/random.sh --varying-rate
+	bash test/random.sh --varying-rate
 
 .PHONY: test-random-sqlx
 test-random-sqlx: sqlx_debug
-	test/random.sh --varying-rate
+	bash test/random.sh --varying-rate
 
 # TODO: Postgres is real slow. We need to ideally get the timeout back down to 5.
 perf_test_timeout = 15
@@ -127,10 +126,10 @@ test_rusqlite: src/resources/main.js src/resources/main.css test-code test-tesh-
 test_sqlx: src/resources/main.js src/resources/main.css test-code test-tesh-doc-sqlx test-tesh-misc-sqlx test-random-sqlx test-perf-sqlx
 
 .PHONY: test_sqlx_postgres
-test_sqlx_postgres: test_sqlx test-tesh-postgres-only
+test_sqlx_postgres: test_sqlx test-tesh-sqlx-postgres-only
 
 .PHONY: test_sqlx_sqlite
-test_sqlx_postgres: test_sqlx test-tesh-sqlite-only
+test_sqlx_sqlite: test_sqlx test-tesh-sqlite-only
 
 .PHONY: test
 test: test_rusqlite

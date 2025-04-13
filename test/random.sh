@@ -1,5 +1,3 @@
-#/bin/bash
-
 PATH="target/debug:$PATH"
 RLTBL='rltbl -v'
 

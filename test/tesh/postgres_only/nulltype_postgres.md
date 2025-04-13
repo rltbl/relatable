@@ -1,6 +1,7 @@
-```console tesh-session="test-1"
+```console tesh-session="test"
 $ export RLTBL_CONNECTION=postgresql:///rltbl_db
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in 'postgresql:///rltbl_db'
 $ echo '{"species": "", "island": ""}' | rltbl --input JSON add row penguin
 $ rltbl set value penguin 10 species ""
 $ rltbl set value penguin 10 island ""

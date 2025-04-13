@@ -1,5 +1,6 @@
-```console tesh-session="test-1"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
 $ rltbl -v redo
@@ -31,8 +32,9 @@ $ rltbl -v history
 ▲ Delete row 11 (action #10, undo)
 ```
 
-```console tesh-session="test-2"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "KEW"}' | rltbl -v --input JSON add row penguin
@@ -63,8 +65,9 @@ $ rltbl -v history
 ▲ Delete row 11 (action #10, undo)
 ```
 
-```console tesh-session="test-3"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "KEW"}' | rltbl -v --input JSON add row penguin
@@ -94,8 +97,9 @@ $ rltbl -v history
 ▲ Delete row 11 (action #10, undo)
 ```
 
-```console tesh-session="test-4"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
 $ rltbl -v move row penguin 4 9
@@ -125,8 +129,9 @@ $ rltbl -v history
 ▲ Move row 4 from after row 9 to after row 3 (action #10, undo)
 ```
 
-```console tesh-session="test-5"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "KEW"}' | rltbl -v --input JSON add row penguin
@@ -180,8 +185,9 @@ $ rltbl -v history
 ▲ Delete row 11 (action #26, undo)
 ```
 
-```console tesh-session="test-6"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v move row penguin 9 7
 $ rltbl -v undo
@@ -210,8 +216,9 @@ $ rltbl -v history
 ▲ Delete row 11 (action #8, undo)
 ```
 
-```console tesh-session="test-7"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ rltbl -v set value penguin 4 island Enderby
 $ rltbl -v undo
 $ rltbl -v redo
@@ -243,8 +250,9 @@ $ rltbl -v history
 ▲ Add row 9 after row 8 (action #12, undo)
 ```
 
-```console tesh-session="test-8"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ rltbl -v delete row penguin 5
 $ rltbl -v undo
 
@@ -288,8 +296,9 @@ $ rltbl -v history
 ▲ Add row 10 after row 9 (action #16, undo)
 ```
 
-```console tesh-session="test-9"
+```console tesh-session="test"
 $ rltbl -v demo --size 20 --force
+Created a demonstration database in ...
 $ rltbl -v delete row penguin 1
 $ rltbl -v undo
 
@@ -344,8 +353,9 @@ $ rltbl -v history
 ▲ Add row 3 after row 2 (action #18, undo)
 ```
  
-```console tesh-session="test-10"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
 $ rltbl -v redo
@@ -385,8 +395,9 @@ $ rltbl -v history
 ▲ Delete row 11 (action #18, undo)
 ```
  
-```console tesh-session="test-11"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "KEW"}' | rltbl -v --input JSON add row penguin
@@ -417,8 +428,9 @@ $ rltbl -v history
 ▲ Delete row 11 (action #10, undo)
 ```
 
-```console tesh-session="test-12"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "KEW"}' | rltbl -v --input JSON add row penguin
@@ -448,8 +460,9 @@ $ rltbl -v history
 ▲ Delete row 11 (action #10, undo)
 ```
 
-```console tesh-session="test-13"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
 $ rltbl -v move row penguin 4 9
@@ -479,8 +492,9 @@ $ rltbl -v history
 ▲ Move row 4 from after row 9 to after row 3 (action #10, undo)
 ```
 
-```console tesh-session="test-14"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in ...
 $ rltbl -v delete row penguin 6
 $ rltbl -v undo
 $ rltbl -v redo

@@ -4,6 +4,7 @@
 
 ```console tesh-session="message"
 $ rltbl demo --size 10 --force
+Created a demonstration database in '.relatable/relatable.db'
 $ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
 $ echo '{"level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 4 species
 ```

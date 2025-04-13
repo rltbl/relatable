@@ -1,5 +1,6 @@
-```console tesh-session="test-1"
+```console tesh-session="test"
 $ rltbl -v demo --size 10 --force
+Created a demonstration database in '.relatable/relatable.db'
 $ echo '{"species": "", "island": ""}' | rltbl --input JSON add row penguin
 $ rltbl set value penguin 10 species ""
 $ rltbl set value penguin 10 island ""

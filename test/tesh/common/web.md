@@ -1,5 +1,6 @@
-```bash tesh-session="test-1"
+```bash tesh-session="test"
 $ rltbl demo --size 10 --force
+Created a demonstration database in ...
 $ rltbl serve --port 9000 --timeout 5 &
 ...
 $ curl http://0.0.0.0:9000/table/penguin
