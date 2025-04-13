@@ -963,6 +963,7 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         }
         rltbl.connection.query(&sql, Some(&params)).await.unwrap();
     }
+    println!("Created a demonstration database in '{}'", cli.database);
 }
 
 pub async fn process_command() {
