@@ -1,7 +1,5 @@
-Test case 1
-
-```bash tesh-session="test"
-$ rltbl demo --size 10
+```bash tesh-session="test-1"
+$ rltbl demo --size 10 --force
 $ rltbl serve --port 9000 --timeout 5 &
 ...
 $ curl http://0.0.0.0:9000/table/penguin

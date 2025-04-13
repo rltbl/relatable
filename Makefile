@@ -65,27 +65,35 @@ test-code:
 
 .PHONY: test-tesh-doc
 test-tesh-doc: debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc 2>/dev/null
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
 .PHONY: test-tesh-doc-sqlx
 test-tesh-doc-sqlx: sqlx_debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc 2>/dev/null
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
 .PHONY: test-tesh-misc
 test-tesh-misc: debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test 2>/dev/null
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/common
 
 .PHONY: test-tesh-misc-sqlx
 test-tesh-misc-sqlx: sqlx_debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test 2>/dev/null
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/common
+
+.PHONY: test-tesh-sqlite-only
+test-tesh-sqlite-only: debug
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/sqlite_only
+
+.PHONY: test-tesh-postgres-only
+test-tesh-postgres-only: sqlx_debug
+	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/postgres_only
 
 .PHONY: test-random
 test-random: debug
-	test/random.sh --varying-rate 2>/dev/null
+	test/random.sh --varying-rate
 
 .PHONY: test-random-sqlx
 test-random-sqlx: sqlx_debug
-	test/random.sh --varying-rate 2>/dev/null
+	test/random.sh --varying-rate
 
 # TODO: Postgres is real slow. We need to ideally get the timeout back down to 5.
 perf_test_timeout = 15
@@ -112,11 +120,17 @@ test-perf-sqlx: test/perf/tsv/penguin.tsv sqlx_debug
 	@timeout $(perf_test_timeout) time -p target/debug/rltbl -vv load table --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
-.PHONY: test
-test: src/resources/main.js src/resources/main.css test-code test-tesh-doc test-tesh-misc test-random test-perf
-
 .PHONY: test_sqlx
 test_sqlx: src/resources/main.js src/resources/main.css test-code test-tesh-doc-sqlx test-tesh-misc-sqlx test-random-sqlx test-perf-sqlx
+
+.PHONY: test_postgres
+test_postgres: test_sqlx test-tesh-postgres-only
+
+.PHONY: test_sqlite
+test_sqlite: src/resources/main.js src/resources/main.css test-code test-tesh-doc test-tesh-misc test-random test-perf test-tesh-sqlite-only
+
+.PHONY: test
+test: test_sqlite
 
 .PHONY: clean-test
 clean-test:

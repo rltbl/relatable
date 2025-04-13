@@ -40,7 +40,7 @@ jobs:
           node-version: '18.19'
       - name: set RLTBL_CONNECTION
         run: |
-          echo '```console tesh-session="test"' > header
+          echo '```console tesh-session="define-connection"' > header
           echo '$ export RLTBL_CONNECTION=postgresql:///rltbl_db' >> header
           echo '```' >> header
           for f in test/*.md; do   cat header $f > $f.new;   mv -f $f.new $f; done; rm -f header

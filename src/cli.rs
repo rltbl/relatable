@@ -346,6 +346,8 @@ pub async fn print_table(
     limit: &usize,
     offset: &usize,
 ) {
+    // TODO: We need to ouput round numbers consistently between PostgreSQL and SQLite.
+    // Currently, for instance, 37 is displayed as 37.0 in SQLite and 37 in PostgreSQL.
     tracing::debug!("print_table {table_name}");
     let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
     let select = rltbl

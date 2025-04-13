@@ -1,4 +1,4 @@
-```console tesh-session="test"
+```console tesh-session="test-1"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "", "island": ""}' | rltbl --input JSON add row penguin
 $ rltbl set value penguin 10 species ""
@@ -17,7 +17,7 @@ FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9   
 FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             null                           N10            33.8           4697
 null        null           null                           null           null           null
-$ sqlite3 -header .relatable/relatable.db "select * from penguin where species is null and island = ''"
+$ sqlite3 -header .relatable/relatable.db "select * from penguin where species is null and island = '' order by _order"
 _id|_order|study_name|sample_number|species|island|individual_id|culmen_length|body_mass
 10|10000|FAKE123|10|||N10|33.8|4697
 11|11000|||||||
@@ -25,7 +25,7 @@ $ rltbl save
 $ sqlite3 .relatable/relatable.db "drop table penguin"
 $ sqlite3 .relatable/relatable.db "delete from \"table\" where \"table\" like 'penguin'"
 $ rltbl load table penguin.tsv
-$ sqlite3 -header .relatable/relatable.db "select * from penguin where species is null and island = ''"
+$ sqlite3 -header .relatable/relatable.db "select * from penguin where species is null and island = '' order by _order"
 _id|_order|study_name|sample_number|species|island|individual_id|culmen_length|body_mass
 10|10000|FAKE123|10|||N10|33.8|4697
 11|11000|||||||

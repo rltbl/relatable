@@ -1,6 +1,4 @@
-Test case 1
-
-```console tesh-session="test"
+```console tesh-session="test-1"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
@@ -33,9 +31,7 @@ $ rltbl -v history
 ▲ Delete row 11 (action #10, undo)
 ```
 
-Test case 2
-
-```console tesh-session="test"
+```console tesh-session="test-2"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
@@ -67,9 +63,7 @@ $ rltbl -v history
 ▲ Delete row 11 (action #10, undo)
 ```
 
-Test case 3
-
-```console tesh-session="test"
+```console tesh-session="test-3"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
@@ -100,9 +94,7 @@ $ rltbl -v history
 ▲ Delete row 11 (action #10, undo)
 ```
 
-Test case 4
-
-```console tesh-session="test"
+```console tesh-session="test-4"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
@@ -133,9 +125,7 @@ $ rltbl -v history
 ▲ Move row 4 from after row 9 to after row 3 (action #10, undo)
 ```
 
-Test case 5
-
-```console tesh-session="test"
+```console tesh-session="test-5"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
@@ -190,9 +180,7 @@ $ rltbl -v history
 ▲ Delete row 11 (action #26, undo)
 ```
 
-Test case 6
-
-```console tesh-session="test"
+```console tesh-session="test-6"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v move row penguin 9 7
@@ -222,9 +210,7 @@ $ rltbl -v history
 ▲ Delete row 11 (action #8, undo)
 ```
 
-Test case 7
-
-```console tesh-session="test"
+```console tesh-session="test-7"
 $ rltbl -v demo --size 10 --force
 $ rltbl -v set value penguin 4 island Enderby
 $ rltbl -v undo
@@ -257,9 +243,7 @@ $ rltbl -v history
 ▲ Add row 9 after row 8 (action #12, undo)
 ```
 
-Test case 9
-
-```console tesh-session="test"
+```console tesh-session="test-8"
 $ rltbl -v demo --size 10 --force
 $ rltbl -v delete row penguin 5
 $ rltbl -v undo
@@ -304,10 +288,8 @@ $ rltbl -v history
 ▲ Add row 10 after row 9 (action #16, undo)
 ```
 
-Test case 10
-
-```console tesh-session="test"
-$ rltbl -v demo --size 30 --force
+```console tesh-session="test-9"
+$ rltbl -v demo --size 20 --force
 $ rltbl -v delete row penguin 1
 $ rltbl -v undo
 
@@ -335,7 +317,7 @@ $ rltbl -v undo
 $ rltbl -v undo
 
 $ rltbl -v get table penguin
-Rows 1-30 of 30
+Rows 1-20 of 20
 study_name  sample_number  species             island     individual_id  culmen_length  body_mass
 FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.6           3221
 FAKE123     2              Pygoscelis adeliae  Torgersen  N2             30.5           3685
@@ -357,23 +339,12 @@ FAKE123     17             Pygoscelis adeliae  Biscoe     N17            34.3   
 FAKE123     18             Pygoscelis adeliae  Dream      N18            43.5           2516
 FAKE123     19             Pygoscelis adeliae  Biscoe     N19            46.3           1276
 FAKE123     20             Pygoscelis adeliae  Torgersen  N20            42.3           3803
-FAKE123     21             Pygoscelis adeliae  Torgersen  N21            45.7           2299
-FAKE123     22             Pygoscelis adeliae  Torgersen  N22            46.3           1335
-FAKE123     23             Pygoscelis adeliae  Dream      N23            47.2           4011
-FAKE123     24             Pygoscelis adeliae  Torgersen  N24            33.3           1350
-FAKE123     25             Pygoscelis adeliae  Biscoe     N25            37.0           4591
-FAKE123     26             Pygoscelis adeliae  Biscoe     N26            47.7           3089
-FAKE123     27             Pygoscelis adeliae  Dream      N27            35.2           2613
-FAKE123     28             Pygoscelis adeliae  Dream      N28            43.3           1388
-FAKE123     29             Pygoscelis adeliae  Torgersen  N29            42.4           4167
-FAKE123     30             Pygoscelis adeliae  Torgersen  N30            35.8           4211
 $ rltbl -v history
   Add row 7 after row 6 (action #17, undo)
 ▲ Add row 3 after row 2 (action #18, undo)
 ```
- Test case 11
  
-```console tesh-session="test"
+```console tesh-session="test-10"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
@@ -413,9 +384,8 @@ $ rltbl -v history
   Add row 6 after row 5 (action #17, undo)
 ▲ Delete row 11 (action #18, undo)
 ```
- Test case 12
  
-```console tesh-session="test"
+```console tesh-session="test-11"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
@@ -447,9 +417,7 @@ $ rltbl -v history
 ▲ Delete row 11 (action #10, undo)
 ```
 
-Test case 13
-
-```console tesh-session="test"
+```console tesh-session="test-12"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ echo '{"species": "BAR"}' | rltbl -v --input JSON add row penguin
@@ -480,9 +448,7 @@ $ rltbl -v history
 ▲ Delete row 11 (action #10, undo)
 ```
 
-Test case 14
-
-```console tesh-session="test"
+```console tesh-session="test-13"
 $ rltbl -v demo --size 10 --force
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
@@ -513,9 +479,7 @@ $ rltbl -v history
 ▲ Move row 4 from after row 9 to after row 3 (action #10, undo)
 ```
 
-Test case 15
-
-```console tesh-session="test"
+```console tesh-session="test-14"
 $ rltbl -v demo --size 10 --force
 $ rltbl -v delete row penguin 6
 $ rltbl -v undo

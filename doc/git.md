@@ -23,7 +23,7 @@ $ git config core.pager cat
 Now we set up Relatable and make a first commit:
 
 ```console tesh-session="git"
-$ rltbl demo --size 1
+$ rltbl demo --size 1 --force
 $ rltbl save
 $ echo '.relatable/' > .gitignore
 $ git add .gitignore penguin.tsv
