@@ -125,9 +125,19 @@ act_randomly () {
 
 ### Execution begins here
 
+if [[ $RLTBL_CONNECTION != "" ]]; then DATABASE=postgresql:///rltbl_db; else DATABASE='.relatable/relatable.db'; fi
+echo "Created a demonstration database in '$DATABASE'" > expected_output.txt
+
 command="${RLTBL} demo --size 20 --force"
 echo $command
-eval "$command"
+output=$(eval "$command" | diff - expected_output.txt)
+cat expected_output.txt
+
+if [[ $output != "" ]]
+then
+    echo "Unexpected output"
+    exit 1
+fi
 
 (
     act_randomly mike 1 5
