@@ -81,11 +81,11 @@ test-tesh-misc-sqlx: sqlx_debug
 
 .PHONY: test-random
 test-random: debug
-	test/random.sh --varying-rate
+	test/random.sh --varying-rate 2>/dev/null
 
 .PHONY: test-random-sqlx
 test-random-sqlx: sqlx_debug
-	test/random.sh --varying-rate
+	test/random.sh --varying-rate 2>/dev/null
 
 # TODO: Postgres is real slow. We need to ideally get the timeout back down to 5.
 perf_test_timeout = 15
