@@ -1,6 +1,8 @@
 ```console tesh-session="test"
-$ rltbl -v demo --size 10 --force
-Created a demonstration database in ...
+$ if [[ $RLTBL_CONNECTION != "" ]]; then DATABASE=postgresql:///rltbl_db; else DATABASE='.relatable/relatable.db'; fi
+$ echo "Created a demonstration database in '$DATABASE'" > expected_output.txt
+$ rltbl -v demo --size 10 --force | diff - expected_output.txt
+$ rm -f expected_output.txt
 $ echo '{"species": "FOO"}' | rltbl -v --input JSON add row penguin
 $ rltbl -v undo
 $ rltbl -v redo

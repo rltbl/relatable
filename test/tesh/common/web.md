@@ -1,6 +1,8 @@
 ```bash tesh-session="test"
-$ rltbl demo --size 10 --force
-Created a demonstration database in ...
+$ if [[ $RLTBL_CONNECTION != "" ]]; then DATABASE=postgresql:///rltbl_db; else DATABASE='.relatable/relatable.db'; fi
+$ echo "Created a demonstration database in '$DATABASE'" > expected_output.txt
+$ rltbl -v demo --size 10 --force | diff - expected_output.txt
+$ rm -f expected_output.txt
 $ rltbl serve --port 9000 --timeout 5 &
 ...
 $ curl http://0.0.0.0:9000/table/penguin
