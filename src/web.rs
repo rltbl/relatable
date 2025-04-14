@@ -51,7 +51,7 @@ fn get_500(error: &anyhow::Error) -> Response<Body> {
 }
 
 async fn get_root(State(rltbl): State<Arc<Relatable>>) -> impl IntoResponse {
-    tracing::info!("request root");
+    // tracing::info!("request root");
     let default = "table";
     let table = rltbl
         .connection
@@ -143,17 +143,17 @@ async fn get_tableset(
     Query(query_params): Query<QueryParams>,
     session: Session<SessionNullPool>,
 ) -> Response<Body> {
-    tracing::info!("get_tableset({rltbl:?}, {tableset_name}, {path}, {query_params:?})");
+    // tracing::info!("get_tableset({rltbl:?}, {tableset_name}, {path}, {query_params:?})");
     let format = match Format::try_from(&path) {
         Ok(format) => format,
         Err(error) => return get_404(&error),
     };
 
     let select = Select::from_path_and_query(&rltbl, &path, &query_params);
-    tracing::info!("SELECT {select:?}",);
+    // tracing::info!("SELECT {select:?}",);
 
     if matches!(format, Format::ValueJson) {
-        let sel = match joined_query(&rltbl, &select).await {
+        let sel = match joined_query(&rltbl, &tableset_name, &select).await {
             Ok(select) => select,
             Err(error) => return get_500(&error),
         };
@@ -178,7 +178,7 @@ async fn get_tableset(
         Err(error) => return get_500(&error),
     };
 
-    tracing::info!("TAB {json_rows:?}");
+    // tracing::info!("TAB {json_rows:?}");
     let mut tabs = vec![];
     for json_row in json_rows {
         let table = json_row.get_string("table").unwrap();
@@ -195,7 +195,7 @@ async fn get_tableset(
         }));
     }
 
-    let mut result = match joined_query(&rltbl, &select).await {
+    let mut result = match joined_query(&rltbl, &tableset_name, &select).await {
         Ok(sel) => match rltbl.fetch(&sel).await {
             Ok(result) => result,
             Err(error) => return get_500(&error),
@@ -208,7 +208,7 @@ async fn get_tableset(
     respond(&rltbl, &format, &content).await
 }
 
-async fn joined_query(rltbl: &Relatable, select: &Select) -> Result<Select> {
+async fn joined_query(rltbl: &Relatable, tableset_name: &str, select: &Select) -> Result<Select> {
     let mut tables = HashSet::new();
     tables.insert(json!(select.table_name));
     for filter in &select.filters {
@@ -234,7 +234,7 @@ async fn joined_query(rltbl: &Relatable, select: &Select) -> Result<Select> {
       SELECT tableset."table", tableset."using"
       FROM ancestors
       JOIN tableset ON ancestors."using" = tableset."distinct"
-      WHERE tableset.tableset = 'combined'
+      WHERE tableset.tableset = '{tableset_name}'
     )
     SELECT tableset.*
     FROM tableset
@@ -409,7 +409,7 @@ async fn get_row_menu(
     session: Session<SessionNullPool>,
     Path((table_name, row_id)): Path<(String, usize)>,
 ) -> Response<Body> {
-    tracing::info!("get_row_menu({table_name}, {row_id})");
+    // tracing::info!("get_row_menu({table_name}, {row_id})");
     let username = get_username(session);
     let site = rltbl.get_site(&username).await;
     let table = match rltbl.get_table(&table_name).await {
@@ -449,7 +449,7 @@ async fn get_column_menu(
     Path((table_name, column)): Path<(String, String)>,
     Query(query_params): Query<QueryParams>,
 ) -> Response<Body> {
-    tracing::info!("get_column_menu({table_name}, {column})");
+    // tracing::info!("get_column_menu({table_name}, {column})");
     let username = get_username(session);
     let select = Select::from_path_and_query(&rltbl, &table_name, &query_params);
     let mut operator = String::new();
@@ -485,7 +485,7 @@ async fn get_cell_menu(
     session: Session<SessionNullPool>,
     Path((table_name, row_id, column)): Path<(String, usize, String)>,
 ) -> Response<Body> {
-    tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
+    // tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
     let username = get_username(session);
     let site = rltbl.get_site(&username).await;
     let table = match rltbl.get_table(&table_name).await {
@@ -525,10 +525,10 @@ async fn get_cell_menu(
 
 async fn get_cell_options(
     State(rltbl): State<Arc<Relatable>>,
-    Path((table, row_id, column)): Path<(String, usize, String)>,
+    Path((table, _row_id, column)): Path<(String, usize, String)>,
     Query(query_params): Query<QueryParams>,
 ) -> Response<Body> {
-    tracing::info!("get_cell_option({table}, {row_id}, {column}, {query_params:?})");
+    // tracing::info!("get_cell_option({table}, {row_id}, {column}, {query_params:?})");
     let input = match query_params.get("input") {
         Some(input) => input,
         None => &String::new(),
@@ -648,7 +648,7 @@ async fn delete_row(
     session: Session<SessionNullPool>,
     Path((table, row_id)): Path<(String, usize)>,
 ) -> Response<Body> {
-    tracing::info!("add_row_after({table}, {row_id})");
+    tracing::info!("delete_row({table}, {row_id})");
     if rltbl.readonly {
         return forbid().into();
     }

@@ -237,8 +237,8 @@ impl Relatable {
         // Load templates dynamically if src/templates/ exists,
         // otherwise use strings from compile time.
         // TODO: This should be a configuration option.
-        let dir = "src/rltbl-templates/";
-        if FilePath::new(dir).is_dir() {
+        let dir = std::env::var("RLTBL_TEMPLATES").unwrap_or("src/templates/".to_string());
+        if FilePath::new(&dir).is_dir() {
             env.set_loader(path_loader(dir));
         };
         for (name, content) in templates {
@@ -337,9 +337,9 @@ impl Relatable {
     }
 
     pub async fn count(&self, select: &Select) -> Result<usize> {
-        tracing::debug!("COUNT: {select:?}");
+        // tracing::debug!("COUNT: {select:?}");
         let (statement, params) = select.to_sqlite_count()?;
-        tracing::debug!("SQL {statement}");
+        tracing::info!("SQL {statement}");
         let params = json!(params);
         let json_rows = self.connection.cache(&statement, Some(&params)).await?;
         match json_rows.get(0) {
@@ -349,14 +349,14 @@ impl Relatable {
     }
 
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        tracing::debug!("SELECT: {select:?}");
+        // tracing::debug!("SELECT: {select:?}");
         let table = self.get_table(select.table_name.as_str()).await?;
         // let mut columns = table.ensure_view_created(self).await?;
         let (mut columns, _meta_columns) = self.fetch_all_columns(&select.table_name).await?;
         let mut select = select.clone();
         select.view_name = table.view.clone();
         let (statement, params) = select.to_sqlite()?;
-        tracing::debug!("SQL {statement}");
+        tracing::info!("SQL {statement}");
         let params = json!(params);
         let json_rows = self.connection.query(&statement, Some(&params)).await?;
         let count = json_rows.len();
@@ -4022,7 +4022,8 @@ impl Select {
                 params.insert(lhs, format!("{}", filter.to_url()?).into());
             }
         }
-        if self.limit > 0 {
+        // WARN: This should be the rltbl.default_limit!
+        if self.limit > 0 && self.limit != 100 {
             params.insert("limit".into(), self.limit.into());
         }
         if self.offset > 0 {
