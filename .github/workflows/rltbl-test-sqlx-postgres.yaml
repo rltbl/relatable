@@ -39,6 +39,7 @@ jobs:
           # See https://github.com/actions/setup-node for further options
           node-version: '18.19'
       - name: set RLTBL_CONNECTION
+        # TODO: move this to the makefile instead.
         run: |
           echo '```console tesh-session="test"' > header
           echo '$ export RLTBL_CONNECTION=postgresql:///rltbl_db' >> header

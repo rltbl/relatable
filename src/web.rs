@@ -8,7 +8,8 @@ use rltbl::{
     core::{
         ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Row, Select,
     },
-    sql::{get_sql_param, JsonRow},
+    sql,
+    sql::JsonRow,
 };
 use std::io::Write;
 
@@ -201,9 +202,10 @@ async fn post_table(
 
 async fn init_user(rltbl: &Relatable, username: &str) -> () {
     let color = random_color::RandomColor::new().to_hex();
+    let db_kind = rltbl.connection.kind();
     let statement = format!(
         r#"SELECT 1 FROM "user" WHERE "name" = {sql_param}"#,
-        sql_param = get_sql_param(&rltbl.connection.kind())
+        sql_param = sql::SqlParam::new(&db_kind).next()
     );
     let params = json!([username]);
     if let None = rltbl
@@ -213,8 +215,8 @@ async fn init_user(rltbl: &Relatable, username: &str) -> () {
         .expect("Error getting user")
     {
         let statement = format!(
-            r#"INSERT INTO user("name", "color") VALUES ({sql_param}, {sql_param})"#,
-            sql_param = get_sql_param(&rltbl.connection.kind())
+            r#"INSERT INTO user("name", "color") VALUES ({sql_params})"#,
+            sql_params = sql::SqlParam::new(&db_kind).get_as_list(2)
         );
         let params = json!([username, color]);
         rltbl
@@ -272,12 +274,14 @@ async fn post_cursor(
     let username = get_username(session);
     tracing::debug!("post_cursor({cursor:?}, {username})");
     // TODO: sanitize the cursor JSON.
+    let mut sql_param = sql::SqlParam::new(&rltbl.connection.kind());
     let statement = format!(
         r#"UPDATE user
-           SET "cursor" = {sql_param},
+           SET "cursor" = {sql_param_1},
                "datetime" = CURRENT_TIMESTAMP
-           WHERE "name" = {sql_param}"#,
-        sql_param = get_sql_param(&rltbl.connection.kind())
+           WHERE "name" = {sql_param_2}"#,
+        sql_param_1 = sql_param.next(),
+        sql_param_2 = sql_param.next(),
     );
     let cursor = to_value(cursor).unwrap_or_default();
     let params = json!([cursor, username]);
@@ -305,7 +309,7 @@ async fn get_row_menu(
             &format!(
                 r#"SELECT * FROM "{}" WHERE _id = {sql_param}"#,
                 table.view,
-                sql_param = get_sql_param(&rltbl.connection.kind())
+                sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
             ),
             Some(&json!([row_id])),
         )
@@ -385,7 +389,7 @@ async fn get_cell_menu(
             &format!(
                 r#"SELECT * FROM "{}" WHERE _id = {sql_param}"#,
                 table.view,
-                sql_param = get_sql_param(&rltbl.connection.kind())
+                sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
             ),
             Some(&json!([row_id])),
         )
@@ -450,7 +454,7 @@ async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &usize) -> usiz
     let sql = format!(
         r#"SELECT "_id", MAX("_order") FROM "{table}"
         WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = {sql_param})"#,
-        sql_param = get_sql_param(&rltbl.connection.kind())
+        sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
     );
     let after_id = rltbl
         .connection
@@ -521,7 +525,7 @@ async fn add_row(
                 .query_value(
                     &format!(
                         r#"SELECT COUNT() FROM "{table}" WHERE _order <= {sql_param}"#,
-                        sql_param = get_sql_param(&rltbl.connection.kind())
+                        sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
                     ),
                     Some(&json!([row.order])),
                 )
@@ -558,7 +562,7 @@ async fn delete_row(
                     &format!(
                         r#"SELECT COUNT() FROM "{table}"
                            WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = {sql_param})"#,
-                        sql_param = get_sql_param(&rltbl.connection.kind())
+                        sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
                     ),
                     Some(&json!([prev])),
                 )

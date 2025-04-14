@@ -95,7 +95,7 @@ test-random-sqlx: sqlx_debug
 	bash test/random.sh --varying-rate
 
 # TODO: Postgres is real slow. We need to ideally get the timeout back down to 5.
-perf_test_timeout = 15
+perf_test_timeout = 7.5
 perf_test_size = 100000
 
 test/perf/tsv:

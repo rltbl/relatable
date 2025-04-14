@@ -6,7 +6,7 @@
 //! any elements of the API that are database-specific.
 
 use crate as rltbl;
-use rltbl::core::{Column, RelatableError, Table, MOVE_INTERVAL};
+use rltbl::core::{Column, RelatableError, Table, NEW_ORDER_MULTIPLIER};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -30,23 +30,51 @@ use sqlx::{
     Acquire as _, Column as _, Row as _,
 };
 
-// In principle SQL_PARAM can be set to any arbitrary sequence of non-word characters. If you would
-// like SQL_PARAM to be a word then you must also modify SQL_PARAM_REGEX correspondingly. See the
-// comment beside it, below, for instructions on how to do that.
-/// The placeholder to use for query parameters when binding using sqlx. Currently set to "?",
-/// which corresponds to SQLite's parameter syntax. To convert SQL to postgres, use the function
-/// [local_sql_syntax()].
-static SQL_PARAM: &str = "VALVEPARAM";
+#[derive(Clone, Copy, Debug)]
+pub struct SqlParam {
+    pub kind: DbKind,
+    pub index: usize,
+}
 
-lazy_static! {
-    // This accepts a non-word SQL_PARAM unless it is enclosed in quotation marks. To use a word
-    // SQL_PARAM change '\B' to '\b' below.
-    /// Regular expression used to find the next instance of [SQL_PARAM] in a given SQL statement.
-    pub static ref SQL_PARAM_REGEX: Regex = Regex::new(&format!(
-        r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")|\b{}\b"#,
-        SQL_PARAM
-    ))
-    .unwrap();
+impl SqlParam {
+    pub fn new(kind: &DbKind) -> Self {
+        Self {
+            kind: *kind,
+            index: 0,
+        }
+    }
+
+    pub fn next(&mut self) -> String {
+        match self.kind {
+            DbKind::Postgres => {
+                self.index += 1;
+                format!("${}", self.index)
+            }
+            DbKind::Sqlite => "?".to_string(),
+        }
+    }
+
+    pub fn get(&mut self, amount: usize) -> Vec<String> {
+        let mut params = vec![];
+        let mut made = 0;
+        while made < amount {
+            params.push(self.next());
+            made += 1;
+        }
+        params
+    }
+
+    pub fn get_as_list(&mut self, amount: usize) -> String {
+        self.get(amount).join(", ")
+    }
+
+    pub fn set_last(&mut self, last_val: usize) {
+        self.index = last_val;
+    }
+
+    pub fn reset(&mut self) {
+        self.index = 0;
+    }
 }
 
 /// Represents a 'simple' database name
@@ -91,6 +119,7 @@ pub enum DbConnection {
 
 impl DbConnection {
     pub fn kind(&self) -> DbKind {
+        tracing::trace!("DbConnection::kind()");
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(_, kind) => *kind,
@@ -100,6 +129,7 @@ impl DbConnection {
     }
 
     pub async fn connect(database: &str) -> Result<(Self, Option<DbActiveConnection>)> {
+        tracing::trace!("DbConnection::connect({database})");
         let is_postgresql = database.starts_with("postgresql://");
         match is_postgresql {
             true => {
@@ -182,6 +212,7 @@ impl DbConnection {
     }
 
     pub fn reconnect(&self) -> Result<Option<DbActiveConnection>> {
+        tracing::trace!("DbConnection::reconnect()");
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(_, _) => Ok(None),
@@ -196,6 +227,7 @@ impl DbConnection {
         &self,
         conn: &'a mut Option<DbActiveConnection>,
     ) -> Result<DbTransaction<'a>> {
+        tracing::trace!("DbConnection::begin()");
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(pool, kind) => {
@@ -223,22 +255,11 @@ impl DbConnection {
     // and whatever result types it returns.
     // Since it uses a vector, statements should be limited to a sane number of rows.
     pub async fn query(&self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
+        tracing::trace!("DbConnection::query({statement}, {params:?})");
         if !valid_params(params) {
             tracing::warn!("invalid parameter argument");
             return Ok(vec![]);
         }
-        let statement = match self.kind() {
-            DbKind::Sqlite => statement,
-            DbKind::Postgres => &local_sql_syntax(&self.kind(), statement),
-        };
-        self.query_direct(&statement, params).await
-    }
-
-    pub async fn query_direct(
-        &self,
-        statement: &str,
-        params: Option<&JsonValue>,
-    ) -> Result<Vec<JsonRow>> {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(pool, _) => {
@@ -271,6 +292,7 @@ impl DbConnection {
         statement: &str,
         params: Option<&JsonValue>,
     ) -> Result<Option<JsonRow>> {
+        tracing::trace!("DbConnection::query_one({statement}, {params:?})");
         let rows = self.query(&statement, params).await?;
         match rows.iter().next() {
             Some(row) => Ok(Some(row.clone())),
@@ -283,11 +305,13 @@ impl DbConnection {
         statement: &str,
         params: Option<&JsonValue>,
     ) -> Result<Option<JsonValue>> {
+        tracing::trace!("DbConnection::query_value({statement}, {params:?})");
         let rows = self.query(statement, params).await?;
         extract_value(&rows)
     }
 
     pub async fn get_table_columns(&self, table: &str) -> Result<Vec<JsonRow>> {
+        tracing::trace!("DbConnection::get_table_columns({table})");
         match self.kind() {
             DbKind::Sqlite => {
                 let sql =
@@ -299,8 +323,9 @@ impl DbConnection {
                     r#"SELECT "column_name"::TEXT AS "name"
                        FROM "information_schema"."columns"
                        WHERE "table_schema" = 'public'
-                       AND "table_name" = {SQL_PARAM}
+                       AND "table_name" = {sql_param}
                        ORDER BY "ordinal_position""#,
+                    sql_param = SqlParam::new(&self.kind()).next()
                 );
                 let params = json!([table]);
                 self.query(&sql, Some(&params)).await
@@ -309,18 +334,19 @@ impl DbConnection {
     }
 
     pub async fn view_exists_for(&mut self, table: &str) -> Result<bool> {
-        // TODO: Add a trace! call here and at the beginning of any other functions in this module
-        // that are missing one.
+        tracing::trace!("DbConnection::view_exists_for({table})");
+        let sql_param = SqlParam::new(&self.kind()).next();
         let statement = match self.kind() {
-            DbKind::Sqlite => r#"SELECT 1
+            DbKind::Sqlite => format!(
+                r#"SELECT 1
                    FROM sqlite_master
-                   WHERE type = 'view' AND name = ?"#
-                .to_string(),
+                   WHERE type = 'view' AND name = {sql_param}"#
+            ),
             DbKind::Postgres => format!(
                 r#"SELECT 1
                    FROM "information_schema"."tables"
                    WHERE "table_schema" = 'public'
-                   AND "table_name" = {SQL_PARAM}
+                   AND "table_name" = {sql_param}
                    AND "table_type" = 'VIEW'"#,
             ),
         };
@@ -369,6 +395,7 @@ pub enum DbTransaction<'a> {
 // E.g., the query() methods share things in common.
 impl DbTransaction<'_> {
     pub fn kind(&self) -> DbKind {
+        tracing::trace!("DbTransaction::kind()");
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(_, kind) => *kind,
@@ -378,6 +405,7 @@ impl DbTransaction<'_> {
     }
 
     pub fn commit(self) -> Result<()> {
+        tracing::trace!("DbTransaction::commit()");
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(tx, _) => block_on(tx.commit())?,
@@ -388,6 +416,7 @@ impl DbTransaction<'_> {
     }
 
     pub fn rollback(self) -> Result<()> {
+        tracing::trace!("DbTransaction::rollback()");
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(tx, _) => block_on(tx.rollback())?,
@@ -402,22 +431,11 @@ impl DbTransaction<'_> {
     // and whatever result types it returns.
     // Since it uses a vector, statements should be limited to a sane number of rows.
     pub fn query(&mut self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
+        tracing::trace!("DbTransaction::query({statement}, {params:?})");
         if !valid_params(params) {
             tracing::warn!("invalid parameter argument");
             return Ok(vec![]);
         }
-        let statement = match self.kind() {
-            DbKind::Sqlite => statement,
-            DbKind::Postgres => &local_sql_syntax(&self.kind(), statement),
-        };
-        self.query_direct(&statement, params)
-    }
-
-    pub fn query_direct(
-        &mut self,
-        statement: &str,
-        params: Option<&JsonValue>,
-    ) -> Result<Vec<JsonRow>> {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(tx, _) => {
@@ -441,6 +459,7 @@ impl DbTransaction<'_> {
         statement: &str,
         params: Option<&JsonValue>,
     ) -> Result<Option<JsonRow>> {
+        tracing::trace!("DbTransaction::query_one({statement}, {params:?})");
         let rows = self.query(&statement, params)?;
         match rows.iter().next() {
             Some(row) => Ok(Some(row.clone())),
@@ -453,11 +472,13 @@ impl DbTransaction<'_> {
         statement: &str,
         params: Option<&JsonValue>,
     ) -> Result<Option<JsonValue>> {
+        tracing::trace!("DbTransaction::query_value({statement}, {params:?})");
         let rows = self.query(statement, params)?;
         extract_value(&rows)
     }
 
     pub fn get_table_columns(&mut self, table: &str) -> Result<Vec<JsonRow>> {
+        tracing::trace!("DbTransaction::get_table_columns({table})");
         match self.kind() {
             DbKind::Sqlite => {
                 let sql =
@@ -469,8 +490,9 @@ impl DbTransaction<'_> {
                     r#"SELECT "column_name"::TEXT AS "name"
                        FROM "information_schema"."columns"
                        WHERE "table_schema" = 'public'
-                       AND "table_name" = {SQL_PARAM}
+                       AND "table_name" = {sql_param}
                        ORDER BY "ordinal_position""#,
+                    sql_param = SqlParam::new(&self.kind()).next()
                 );
                 let params = json!([table]);
                 self.query(&sql, Some(&params))
@@ -479,18 +501,19 @@ impl DbTransaction<'_> {
     }
 
     pub fn view_exists_for(&mut self, table: &str) -> Result<bool> {
-        // TODO: Add a trace! call here and at the beginning of any other functions in this module
-        // that are missing one.
+        tracing::trace!("DbTransaction::view_exists_for({table})");
+        let sql_param = SqlParam::new(&self.kind()).next();
         let statement = match self.kind() {
-            DbKind::Sqlite => r#"SELECT 1
+            DbKind::Sqlite => format!(
+                r#"SELECT 1
                    FROM sqlite_master
-                   WHERE type = 'view' AND name = ?"#
-                .to_string(),
+                   WHERE type = 'view' AND name = {sql_param}"#
+            ),
             DbKind::Postgres => format!(
                 r#"SELECT 1
                    FROM "information_schema"."tables"
                    WHERE "table_schema" = 'public'
-                   AND "table_name" = {SQL_PARAM}
+                   AND "table_name" = {sql_param}
                    AND "table_type" = 'VIEW'"#,
             ),
         };
@@ -503,7 +526,7 @@ impl DbTransaction<'_> {
     }
 
     pub fn get_next_id(&mut self, table: &str) -> Result<usize> {
-        tracing::trace!("Row::get_next_id({table:?}, tx)");
+        tracing::trace!("DbTransaction::get_next_id({table:?}, tx)");
         let current_row_id = match self.kind() {
             DbKind::Sqlite => {
                 let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
@@ -530,9 +553,35 @@ impl DbTransaction<'_> {
 // Database-related utilities and functions
 ///////////////////////////////////////////////////////////////////////////////
 
+pub async fn table_exists(table: &str, conn: &DbConnection) -> Result<bool> {
+    tracing::trace!("table_exists({table}, {conn:?})");
+    let sql_param = SqlParam::new(&conn.kind()).next();
+    let (sql, params) = match conn.kind() {
+        DbKind::Sqlite => (
+            format!(
+                r#"SELECT 1 FROM "sqlite_master"
+                   WHERE "type" = {sql_param} AND name = {sql_param} LIMIT 1"#,
+            ),
+            json!(["table", table]),
+        ),
+        DbKind::Postgres => (
+            format!(
+                r#"SELECT 1 FROM "information_schema"."tables"
+                   WHERE "table_type" LIKE {sql_param} AND "table_name" = {sql_param}"#,
+            ),
+            json!(["%TABLE", table]),
+        ),
+    };
+    match conn.query_value(&sql, Some(&params)).await? {
+        None => Ok(false),
+        Some(_) => Ok(true),
+    }
+}
+
 /// Helper function to determine whether the given name is 'simple', as defined by
 /// [DB_OBJECT_MATCH_STR]
 pub fn is_simple(db_object_name: &str) -> Result<(), String> {
+    tracing::trace!("is_simple({db_object_name})");
     let db_object_root = db_object_name.splitn(2, ".").collect::<Vec<_>>()[0];
     if !DB_OBJECT_REGEX.is_match(&db_object_root) {
         Err(format!(
@@ -545,6 +594,7 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 }
 
 pub fn is_clause(db_kind: &DbKind) -> String {
+    tracing::trace!("is_clause({db_kind:?})");
     match db_kind {
         DbKind::Sqlite => "IS".into(),
         DbKind::Postgres => "IS NOT DISTINCT FROM".into(),
@@ -552,47 +602,11 @@ pub fn is_clause(db_kind: &DbKind) -> String {
 }
 
 pub fn is_not_clause(db_kind: &DbKind) -> String {
+    tracing::trace!("is_not_clause({db_kind:?})");
     match db_kind {
         DbKind::Sqlite => "IS NOT".into(),
         DbKind::Postgres => "IS DISTINCT FROM".into(),
     }
-}
-
-pub fn get_sql_param(kind: &DbKind) -> &str {
-    match kind {
-        DbKind::Sqlite => "?",
-        _ => SQL_PARAM,
-    }
-}
-
-/// Given a SQL string, possibly with unbound parameters represented by the placeholder string
-/// [SQL_PARAM], and given a database kind, if the kind is [Sqlite](DbKind::Sqlite), then change
-/// the syntax usedters to SQLite syntax, which uses "?", otherwise use the syntax appropriate for
-/// that kind.
-pub fn local_sql_syntax(kind: &DbKind, sql: &str) -> String {
-    let mut pg_param_idx = 1;
-    let mut final_sql = String::from("");
-    let mut saved_start = 0;
-    for m in SQL_PARAM_REGEX.find_iter(sql) {
-        let this_match = &sql[m.start()..m.end()];
-        final_sql.push_str(&sql[saved_start..m.start()]);
-        if this_match == SQL_PARAM {
-            match *kind {
-                DbKind::Postgres => {
-                    final_sql.push_str(&format!("${}", pg_param_idx));
-                    pg_param_idx += 1;
-                }
-                DbKind::Sqlite => {
-                    final_sql.push_str(&format!("?"));
-                }
-            }
-        } else {
-            final_sql.push_str(&format!("{}", this_match));
-        }
-        saved_start = m.start() + this_match.len();
-    }
-    final_sql.push_str(&sql[saved_start..]);
-    final_sql
 }
 
 /// Given an SQL string that has been bound to the given parameter vector, construct a database
@@ -602,6 +616,7 @@ pub fn prepare_sqlx_query<'a>(
     statement: &'a str,
     params: Option<&'a JsonValue>,
 ) -> Result<sqlx::query::Query<'a, sqlx::Any, sqlx::any::AnyArguments<'a>>> {
+    tracing::trace!("prepare_sqlx_query({statement}, {params:?})");
     let mut query = sqlx::query::<sqlx::Any>(&statement);
     if let Some(params) = params {
         for param in params.as_array().unwrap() {
@@ -626,6 +641,7 @@ pub fn submit_rusqlite_statement(
     stmt: &mut rusqlite::Statement<'_>,
     params: Option<&JsonValue>,
 ) -> Result<Vec<JsonRow>> {
+    tracing::trace!("submit_rusqlite_statement({stmt:?}, {params:?})");
     let column_names = stmt
         .column_names()
         .iter()
@@ -653,6 +669,7 @@ pub fn submit_rusqlite_statement(
 }
 
 pub fn valid_params(params: Option<&JsonValue>) -> bool {
+    tracing::trace!("valid_params({params:?})");
     if let Some(params) = params {
         match params {
             JsonValue::Array(_) => true,
@@ -664,6 +681,7 @@ pub fn valid_params(params: Option<&JsonValue>) -> bool {
 }
 
 pub fn extract_value(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
+    tracing::trace!("extract_value({rows:?})");
     match rows.iter().next() {
         Some(row) => match row.content.values().next() {
             Some(value) => Ok(Some(value.clone())),
@@ -674,6 +692,7 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
 }
 
 pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Result<Vec<String>> {
+    tracing::trace!("generate_table_ddl({table:?}, {force}, {db_kind:?})");
     if table.has_meta {
         for (cname, col) in table.columns.iter() {
             if cname == "_id" || cname == "_order" {
@@ -738,7 +757,7 @@ pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Resul
 
     if table.has_meta {
         let update_stmt = format!(
-            r#"UPDATE "{table}" SET _order = ({MOVE_INTERVAL} * NEW._id)
+            r#"UPDATE "{table}" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
                 WHERE _id = NEW._id;"#,
             table = table.name,
         );
@@ -793,10 +812,13 @@ pub fn generate_view_ddl(
     id_col: &str,
     order_col: &str,
     columns: &Vec<Column>,
-    db_kind: &DbKind,
+    kind: &DbKind,
 ) -> Vec<String> {
+    tracing::trace!(
+        "generate_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, {kind:?})"
+    );
     // Note that '?' parameters are not allowed in views so we must hard code them:
-    match db_kind {
+    match kind {
         DbKind::Sqlite => vec![
             format!(r#"DROP VIEW IF EXISTS "{}""#, view_name),
             format!(
@@ -881,6 +903,7 @@ pub fn generate_view_ddl(
 }
 
 pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    tracing::trace!("generate_table_table_ddl({force}, {db_kind:?})");
     let mut table = Table::new("table");
     table.columns.insert(
         "table".into(),
@@ -907,6 +930,7 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 // and defaults, create these other meta tables in a similar way to the table table above.
 
 pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    tracing::trace!("generate_user_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
     if force {
         if let DbKind::Postgres = db_kind {
@@ -926,6 +950,7 @@ pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 }
 
 pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    tracing::trace!("generate_change_table_ddl({force}, {db_kind:?})");
     match db_kind {
         DbKind::Sqlite => {
             vec![r#"CREATE TABLE "change" (
@@ -965,6 +990,7 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 }
 
 pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    tracing::trace!("generate_history_table_ddl({force}, {db_kind:?})");
     match db_kind {
         DbKind::Sqlite => {
             vec![r#"CREATE TABLE "history" (
@@ -1004,6 +1030,7 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
 }
 
 pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    tracing::trace!("generate_message_table_ddl({force}, {db_kind:?})");
     match db_kind {
         DbKind::Sqlite => {
             vec![r#"CREATE TABLE "message" (
@@ -1047,6 +1074,7 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
 }
 
 pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    tracing::trace!("generate_meta_tables_ddl({force}, {db_kind:?})");
     let mut ddl = generate_table_table_ddl(force, db_kind);
     ddl.append(&mut generate_user_table_ddl(force, db_kind));
     ddl.append(&mut generate_change_table_ddl(force, db_kind));

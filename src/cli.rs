@@ -4,9 +4,9 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Format, Relatable, MOVE_INTERVAL},
+    core::{Change, ChangeAction, ChangeSet, Format, Relatable, NEW_ORDER_MULTIPLIER},
     sql,
-    sql::{get_sql_param, DbKind, JsonRow, VecInto},
+    sql::{DbKind, JsonRow, SqlParam, VecInto},
     web::{serve, serve_cgi},
 };
 
@@ -32,9 +32,7 @@ static VALUE_HELP: &str = "A value for a cell";
           long_about = None)]
 pub struct Cli {
     /// Location of the database.
-    #[arg(long,
-          action = ArgAction::Set,
-          env = "RLTBL_CONNECTION")]
+    #[arg(long, action = ArgAction::Set, env = "RLTBL_CONNECTION")]
     database: Option<String>,
 
     #[arg(long, action = ArgAction::Set, env = "RLTBL_USER")]
@@ -311,6 +309,7 @@ pub enum LoadSubcommand {
 }
 
 pub async fn init(_cli: &Cli, force: &bool, path: Option<&str>) {
+    tracing::trace!("init({_cli:?}, {force}, {path:?})");
     match Relatable::init(force, path).await {
         Ok(_) => println!(
             "Initialized a relatable database in '{}'",
@@ -326,6 +325,7 @@ pub async fn init(_cli: &Cli, force: &bool, path: Option<&str>) {
 /// Given a vector of vectors of strings,
 /// print text with "elastic tabstops".
 pub fn print_text(rows: &Vec<Vec<String>>) {
+    tracing::trace!("print_text({rows:?})");
     let mut tw = TabWriter::new(vec![]);
     for row in rows {
         tw.write(format!("{}\n", row.join("\t")).as_bytes())
@@ -337,6 +337,7 @@ pub fn print_text(rows: &Vec<Vec<String>>) {
 }
 
 pub fn print_tsv(rows: Vec<Vec<String>>) {
+    tracing::trace!("print_tsv({rows:?})");
     for row in rows {
         println!("{}", row.join("\t"));
     }
@@ -351,6 +352,7 @@ pub async fn print_table(
     limit: &usize,
     offset: &usize,
 ) {
+    tracing::trace!("print_table({cli:?}, {table_name}, {filters:?}, {format}, {limit}, {offset})");
     // TODO: We need to ouput round numbers consistently between PostgreSQL and SQLite.
     // Currently, for instance, 37 is displayed as 37.0 in SQLite and 37 in PostgreSQL.
     tracing::debug!("print_table {table_name}");
@@ -390,7 +392,7 @@ pub async fn print_table(
 
 // Print rows of a table, without column header.
 pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
-    tracing::debug!("print_rows {table_name}");
+    tracing::trace!("print_rows({cli:?}, {table_name}, {limit}, {offset})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let select = rltbl.from(table_name).limit(limit).offset(offset);
     let rows = rltbl.fetch_json_rows(&select).await.unwrap().vec_into();
@@ -398,11 +400,11 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
 }
 
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
-    tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
+    tracing::trace!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let statement = format!(
         r#"SELECT "{column}" FROM "{table}" WHERE _id = {sql_param}"#,
-        sql_param = get_sql_param(&rltbl.connection.kind()),
+        sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next(),
     );
     let params = json!([row]);
     if let Some(value) = rltbl
@@ -420,8 +422,7 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
 }
 
 pub async fn print_history(cli: &Cli, context: usize) {
-    tracing::debug!("print_history({cli:?}, {context})");
-
+    tracing::trace!("print_history({cli:?}, {context})");
     fn get_content_as_string(change_json: &JsonRow) -> String {
         let content = change_json.get_string("content").expect("No content found");
         let content = Change::many_from_str(&content).expect("Could not parse content");
@@ -501,6 +502,7 @@ pub async fn print_history(cli: &Cli, context: usize) {
 // Get the user from the CLI, RLTBL_USER environment variable,
 // or the general environment.
 pub fn get_username(cli: &Cli) -> String {
+    tracing::trace!("get_username({cli:?})");
     match &cli.user {
         Some(user) => user.clone(),
         None => whoami::username(),
@@ -508,13 +510,13 @@ pub fn get_username(cli: &Cli) -> String {
 }
 
 pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: &str) {
-    tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
+    tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
 
     // Fetch the current value from the db:
     let sql = format!(
         r#"SELECT "{column}" FROM "{table}" WHERE "_id" = {sql_param}"#,
-        sql_param = get_sql_param(&rltbl.connection.kind())
+        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
     );
     let params = json!([row]);
     let before = rltbl
@@ -549,6 +551,7 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
 }
 
 pub fn input_json_row() -> JsonRow {
+    tracing::trace!("input_json_row()");
     let mut json_row = String::new();
     io::stdin()
         .read_line(&mut json_row)
@@ -562,6 +565,7 @@ pub fn input_json_row() -> JsonRow {
 }
 
 pub fn prompt_for_column_value(column: &str) -> JsonValue {
+    tracing::trace!("prompt_for_column_value({column})");
     let value: Option<String> = prompt_opt(format!("Enter a {column}"))
         .expect("Error getting column value from user input");
     match value {
@@ -576,6 +580,7 @@ pub async fn prompt_for_json_message(
     row: usize,
     column: &str,
 ) -> Result<JsonRow> {
+    tracing::trace!("prompt_for_json_message({rltbl:?}, {table}, {row}, {column})");
     let columns = rltbl
         .fetch_columns("message")
         .await?
@@ -603,6 +608,7 @@ pub async fn prompt_for_json_message(
 }
 
 pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<JsonRow> {
+    tracing::trace!("prompt_for_json_row({rltbl:?}, {table_name})");
     let columns = rltbl
         .fetch_columns(table_name)
         .await?
@@ -625,7 +631,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
 /// a [Message](rltbl::core::Message) to the message table. The details of the message are read
 /// from STDIN, either interactively or in JSON format.
 pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
-    tracing::debug!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
+    tracing::trace!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let json_message = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
@@ -664,7 +670,7 @@ pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
 }
 
 pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
-    tracing::debug!("add_row({cli:?}, {table}, {after_id:?})");
+    tracing::trace!("add_row({cli:?}, {table}, {after_id:?})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let json_row = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
@@ -687,7 +693,7 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
 }
 
 pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
-    tracing::debug!("move_row({cli:?}, {table}, {row}, {after_id})");
+    tracing::trace!("move_row({cli:?}, {table}, {row}, {after_id})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let user = get_username(&cli);
     let new_order = rltbl
@@ -702,7 +708,7 @@ pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
 }
 
 pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
-    tracing::debug!("delete_row({cli:?}, {table}, {row})");
+    tracing::trace!("delete_row({cli:?}, {table}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let user = get_username(&cli);
     let num_deleted = rltbl
@@ -724,7 +730,7 @@ pub async fn delete_message(
     row: Option<usize>,
     column: Option<&str>,
 ) {
-    tracing::debug!(
+    tracing::trace!(
         "delete_message({cli:?}, {target_rule:?}, {target_user:?}, {table}, {row:?}, {column:?})"
     );
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
@@ -740,7 +746,7 @@ pub async fn delete_message(
 }
 
 pub async fn undo(cli: &Cli) {
-    tracing::debug!("undo({cli:?})");
+    tracing::trace!("undo({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let user = get_username(&cli);
     let changeset = rltbl.undo(&user).await.expect("Failed to undo");
@@ -751,7 +757,7 @@ pub async fn undo(cli: &Cli) {
 }
 
 pub async fn redo(cli: &Cli) {
-    tracing::debug!("redo({cli:?})");
+    tracing::trace!("redo({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let user = get_username(&cli);
     let changeset = rltbl.redo(&user).await.expect("Failed to redo");
@@ -762,14 +768,14 @@ pub async fn redo(cli: &Cli) {
 }
 
 pub async fn load_tables(cli: &Cli, paths: &Vec<String>, force: bool) {
-    tracing::debug!("load_tables({cli:?}, {paths:?})");
+    tracing::trace!("load_tables({cli:?}, {paths:?})");
     for path in paths {
         load_table(cli, &path, force).await;
     }
 }
 
 pub async fn load_table(cli: &Cli, path: &str, force: bool) {
-    tracing::debug!("load_table({cli:?}, {path})");
+    tracing::trace!("load_table({cli:?}, {path})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
 
     // We will use this pattern to normalize the table name:
@@ -788,13 +794,13 @@ pub async fn load_table(cli: &Cli, path: &str, force: bool) {
 }
 
 pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
-    tracing::debug!("save_all({cli:?})");
+    tracing::trace!("save_all({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     rltbl.save_all(save_dir).await.expect("Error saving all");
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
-    tracing::debug!("build_demo({cli:?}");
+    tracing::trace!("build_demo({cli:?}");
 
     let rltbl = Relatable::init(force, cli.database.as_deref())
         .await
@@ -907,6 +913,7 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     let mut rng = StdRng::seed_from_u64(0);
     let sql_first_part = r#"INSERT INTO "penguin" VALUES "#;
     let mut sql_value_parts = vec![];
+    let mut sql_param = SqlParam::new(&rltbl.connection.kind());
     let mut params = vec![];
     let max_params = match rltbl.connection.kind() {
         DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
@@ -927,17 +934,20 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
             tracing::info!("{num_rows} rows loaded to table penguin", num_rows = i - 1);
             params.clear();
             sql_value_parts.clear();
+            sql_param.reset();
         }
 
         let id = i;
-        let order = i * MOVE_INTERVAL;
+        let order = i * NEW_ORDER_MULTIPLIER;
         let island = islands.iter().choose(&mut rng).unwrap();
         let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
         sql_value_parts.push(format!(
-            "({sql_param}, {sql_param}, 'FAKE123', {sql_param}, 'Pygoscelis adeliae', \
-             {sql_param}, {sql_param}, {sql_param}, {sql_param})",
-            sql_param = get_sql_param(&rltbl.connection.kind())
+            "({sql_param_list_1}, 'FAKE123', {lone_sql_param}, 'Pygoscelis adeliae', \
+             {sql_param_list_2})",
+            sql_param_list_1 = sql_param.get_as_list(2),
+            lone_sql_param = sql_param.next(),
+            sql_param_list_2 = sql_param.get_as_list(4),
         ));
         params.push(json!(id));
         params.push(json!(order));
@@ -948,14 +958,11 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         params.push(json!(body_mass));
     }
     if params.len() > 0 {
-        let mut sql = format!(
+        let sql = format!(
             "{sql_first_part} {sql_value_part}",
             sql_value_part = sql_value_parts.join(", ")
         );
         let params = json!(params);
-        if let DbKind::Postgres = rltbl.connection.kind() {
-            sql = sql::local_sql_syntax(&DbKind::Postgres, &sql);
-        }
         rltbl.connection.query(&sql, Some(&params)).await.unwrap();
     }
     println!(
@@ -968,6 +975,7 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
 }
 
 pub async fn process_command() {
+    tracing::trace!("process_command()");
     // Handle a CGI request, instead of normal CLI input.
     match std::env::var_os("GATEWAY_INTERFACE").and_then(|p| Some(p.into_string())) {
         Some(Ok(s)) if s == "CGI/1.1" => {
