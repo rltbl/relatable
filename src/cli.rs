@@ -6,7 +6,7 @@ use crate as rltbl;
 use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Format, Relatable, MOVE_INTERVAL},
     sql,
-    sql::{DbKind, JsonRow, VecInto, SQL_PARAM},
+    sql::{get_sql_param, DbKind, JsonRow, VecInto},
     web::{serve, serve_cgi},
 };
 
@@ -37,8 +37,8 @@ pub struct Cli {
           env = "RLTBL_CONNECTION")]
     database: Option<String>,
 
-    #[arg(long, default_value="", action = ArgAction::Set, env = "RLTBL_USER")]
-    user: String,
+    #[arg(long, action = ArgAction::Set, env = "RLTBL_USER")]
+    user: Option<String>,
 
     /// Can be one of: JSON (that's it for now). If unspecified Valve will attempt to read the
     /// environment variable RLTBL_INPUT. If that is also unset, the user will be presented with
@@ -402,10 +402,7 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let statement = format!(
         r#"SELECT "{column}" FROM "{table}" WHERE _id = {sql_param}"#,
-        sql_param = match rltbl.connection.kind() {
-            DbKind::Sqlite => "?",
-            _ => SQL_PARAM,
-        }
+        sql_param = get_sql_param(&rltbl.connection.kind()),
     );
     let params = json!([row]);
     if let Some(value) = rltbl
@@ -504,11 +501,10 @@ pub async fn print_history(cli: &Cli, context: usize) {
 // Get the user from the CLI, RLTBL_USER environment variable,
 // or the general environment.
 pub fn get_username(cli: &Cli) -> String {
-    let mut username = cli.user.clone();
-    if username == "" {
-        username = whoami::username();
+    match &cli.user {
+        Some(user) => user.clone(),
+        None => whoami::username(),
     }
-    username
 }
 
 pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: &str) {
@@ -518,10 +514,7 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
     // Fetch the current value from the db:
     let sql = format!(
         r#"SELECT "{column}" FROM "{table}" WHERE "_id" = {sql_param}"#,
-        sql_param = match rltbl.connection.kind() {
-            DbKind::Sqlite => "?",
-            _ => SQL_PARAM,
-        }
+        sql_param = get_sql_param(&rltbl.connection.kind())
     );
     let params = json!([row]);
     let before = rltbl
@@ -944,10 +937,7 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         sql_value_parts.push(format!(
             "({sql_param}, {sql_param}, 'FAKE123', {sql_param}, 'Pygoscelis adeliae', \
              {sql_param}, {sql_param}, {sql_param}, {sql_param})",
-            sql_param = match rltbl.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&rltbl.connection.kind())
         ));
         params.push(json!(id));
         params.push(json!(order));

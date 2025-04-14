@@ -36,7 +36,7 @@ use sqlx::{
 /// The placeholder to use for query parameters when binding using sqlx. Currently set to "?",
 /// which corresponds to SQLite's parameter syntax. To convert SQL to postgres, use the function
 /// [local_sql_syntax()].
-pub static SQL_PARAM: &str = "VALVEPARAM";
+static SQL_PARAM: &str = "VALVEPARAM";
 
 lazy_static! {
     // This accepts a non-word SQL_PARAM unless it is enclosed in quotation marks. To use a word
@@ -555,6 +555,13 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
     match db_kind {
         DbKind::Sqlite => "IS NOT".into(),
         DbKind::Postgres => "IS DISTINCT FROM".into(),
+    }
+}
+
+pub fn get_sql_param(kind: &DbKind) -> &str {
+    match kind {
+        DbKind::Sqlite => "?",
+        _ => SQL_PARAM,
     }
 }
 

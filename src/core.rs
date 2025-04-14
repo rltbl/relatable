@@ -6,8 +6,8 @@ use crate as rltbl;
 use rltbl::{
     git, sql,
     sql::{
-        json_to_string, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow, VecInto,
-        SQL_PARAM,
+        get_sql_param, json_to_string, DbActiveConnection, DbConnection, DbKind, DbTransaction,
+        JsonRow, VecInto,
     },
 };
 
@@ -330,16 +330,15 @@ impl Relatable {
             headers
         };
 
+        let db_kind = self.connection.kind();
+
         // Add an entry corresponding to the table being loaded to the table table:
         let mut sql = format!(
             r#"INSERT INTO "table" ("table", "path") VALUES ({sql_param}, {sql_param})"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&db_kind)
         );
-        if let DbKind::Postgres = self.connection.kind() {
-            sql = sql::local_sql_syntax(&self.connection.kind(), &sql);
+        if let DbKind::Postgres = db_kind {
+            sql = sql::local_sql_syntax(&db_kind, &sql);
         }
         let params = json!([table_name, path]);
         self.connection
@@ -361,9 +360,7 @@ impl Relatable {
         }
 
         // Generate the SQL statements needed to instantiate the table and execute them:
-        for sql in sql::generate_table_ddl(&table, force, &self.connection.kind())
-            .expect("Error getting DDL")
-        {
+        for sql in sql::generate_table_ddl(&table, force, &db_kind).expect("Error getting DDL") {
             self.connection
                 .query(&sql, None)
                 .await
@@ -392,7 +389,7 @@ impl Relatable {
         let sql_first_part = format!(r#"INSERT INTO "{table_name}" ({columns_line}) VALUES "#);
         let mut sql_value_parts = vec![];
         let mut params = vec![];
-        let max_params = match self.connection.kind() {
+        let max_params = match db_kind {
             DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
             DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
         };
@@ -404,8 +401,8 @@ impl Relatable {
                     "{sql_first_part} {sql_value_part}",
                     sql_value_part = sql_value_parts.join(", ")
                 );
-                if let DbKind::Postgres = self.connection.kind() {
-                    sql = sql::local_sql_syntax(&self.connection.kind(), &sql);
+                if let DbKind::Postgres = db_kind {
+                    sql = sql::local_sql_syntax(&db_kind, &sql);
                 }
                 let params_so_far = json!(params);
                 self.connection
@@ -445,10 +442,7 @@ impl Relatable {
                             placeholders.push("NULL");
                         }
                         _ => {
-                            placeholders.push(match self.connection.kind() {
-                                DbKind::Sqlite => "?",
-                                _ => SQL_PARAM,
-                            });
+                            placeholders.push(get_sql_param(&db_kind));
                             params.push(json!(value))
                         }
                     };
@@ -459,10 +453,7 @@ impl Relatable {
             sql_value_parts.push(format!(
                 "({sql_param}, {sql_param}, {})",
                 placeholders.join(", "),
-                sql_param = match self.connection.kind() {
-                    DbKind::Sqlite => "?",
-                    _ => SQL_PARAM,
-                }
+                sql_param = get_sql_param(&db_kind)
             ));
             id += 1;
             order += MOVE_INTERVAL;
@@ -472,8 +463,8 @@ impl Relatable {
                 "{sql_first_part} {sql_value_part}",
                 sql_value_part = sql_value_parts.join(", ")
             );
-            if let DbKind::Postgres = self.connection.kind() {
-                sql = sql::local_sql_syntax(&self.connection.kind(), &sql);
+            if let DbKind::Postgres = db_kind {
+                sql = sql::local_sql_syntax(&db_kind, &sql);
             }
             let params = json!(params);
             self.connection
@@ -628,10 +619,7 @@ impl Relatable {
                FROM "change"
                WHERE "user" = {sql_param} AND "action" = {sql_param}
                ORDER BY "change_id" DESC LIMIT 1"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([user, format!("{action}")]);
         let records = tx.query(&sql, Some(&params))?;
@@ -692,10 +680,7 @@ impl Relatable {
             r#"INSERT INTO change("user", "action", "table", "description", "content")
                VALUES ({sql_param}, {sql_param}, {sql_param}, {sql_param}, {sql_param})
                RETURNING change_id"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let content = to_value(&changeset.changes).unwrap_or_default();
         let params = json!([user, action, table, description, content]);
@@ -720,10 +705,7 @@ impl Relatable {
                            ("change_id", "table", "row", "before", "after")
                            VALUES ({sql_param}, {sql_param}, {sql_param}, {sql_param}, {sql_param})
                            RETURNING "history_id""#,
-                        sql_param = match self.connection.kind() {
-                            DbKind::Sqlite => "?",
-                            _ => SQL_PARAM,
-                        }
+                        sql_param = get_sql_param(&tx.kind())
                     );
                     let before = json!({column: before}).to_string();
                     let after = json!({column: after}).to_string();
@@ -742,10 +724,7 @@ impl Relatable {
                                     r#"SELECT "before"
                                          FROM "history"
                                         WHERE "change_id" = {sql_param}"#,
-                                    sql_param = match self.connection.kind() {
-                                        DbKind::Sqlite => "?",
-                                        _ => SQL_PARAM,
-                                    }
+                                    sql_param = get_sql_param(&tx.kind())
                                 );
                                 let params = json!([change_id]);
                                 let before = tx
@@ -779,10 +758,7 @@ impl Relatable {
                            ("change_id", "table", "row", "after")
                            VALUES ({sql_param}, {sql_param}, {sql_param}, {sql_param})
                            RETURNING "history_id""#,
-                        sql_param = match self.connection.kind() {
-                            DbKind::Sqlite => "?",
-                            _ => SQL_PARAM,
-                        }
+                        sql_param = get_sql_param(&tx.kind())
                     );
                     let json_row_str = json!(json_row.content).to_string();
                     let params = json!([change_id, table, row, json_row_str]);
@@ -798,10 +774,7 @@ impl Relatable {
                            ("change_id", "table", "row")
                            VALUES ({sql_param}, {sql_param}, {sql_param})
                            RETURNING "history_id""#,
-                        sql_param = match self.connection.kind() {
-                            DbKind::Sqlite => "?",
-                            _ => SQL_PARAM,
-                        }
+                        sql_param = get_sql_param(&tx.kind())
                     );
                     let params = json!([change_id, table, row]);
                     tx.query_value(&sql, Some(&params))?;
@@ -822,10 +795,7 @@ impl Relatable {
                            ("change_id", "table", "row", "before")
                            VALUES ({sql_param}, {sql_param}, {sql_param}, {sql_param})
                            RETURNING "history_id""#,
-                        sql_param = match self.connection.kind() {
-                            DbKind::Sqlite => "?",
-                            _ => SQL_PARAM,
-                        }
+                        sql_param = get_sql_param(&tx.kind())
                     );
                     let json_row_str = json!(json_row.content).to_string();
                     let params = json!([change_id, table, row, json_row_str]);
@@ -909,10 +879,7 @@ impl Relatable {
         tracing::trace!("Relatable::get_columns_map({table_name:?})");
         let sql = format!(
             r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&self.connection.kind())
         );
         let params = json!([table_name]);
         let json_columns = self
@@ -930,10 +897,7 @@ impl Relatable {
         tracing::trace!("Relatable::_get_columns_map({table_name:?}, tx)");
         let sql = format!(
             r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
-            sql_param = match tx.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([table_name]);
         let json_columns = tx.query(&sql, Some(&params)).unwrap_or(vec![]);
@@ -958,10 +922,7 @@ impl Relatable {
         tracing::trace!("Relatable::_get_table({table_name:?}, tx)");
         let statement = format!(
             r#"SELECT "table" FROM "table" WHERE "table" = {sql_param}"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([table_name]);
         match tx.query_value(&statement, Some(&params))? {
@@ -983,10 +944,7 @@ impl Relatable {
 
         let statement = format!(
             r#"SELECT max(change_id) FROM history WHERE "table" = {sql_param}"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([table_name]);
         let change_id = match tx.query_value(&statement, Some(&params))? {
@@ -1041,10 +999,7 @@ impl Relatable {
         tracing::trace!("Relatable::_get_row_order({table:?}, {row}, tx)");
         let sql = format!(
             r#"SELECT "_order" FROM "{table}" WHERE "_id" = {sql_param}"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([row]);
         let rows = tx.query(&sql, Some(&params))?;
@@ -1067,10 +1022,7 @@ impl Relatable {
         let sql = format!(
             r#"SELECT "_id" FROM "{table}" WHERE "_order" < {sql_param}
                ORDER BY "_order" DESC LIMIT 1"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([curr_row_order]);
         let rows = tx.query(&sql, Some(&params))?;
@@ -1090,10 +1042,7 @@ impl Relatable {
         tracing::trace!("Relatable::_get_row({table:}?, {row}, tx)");
         let sql = format!(
             r#"SELECT * FROM "{table}" WHERE "_id" = {sql_param}"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([row]);
         tx.query_one(&sql, Some(&params))
@@ -1124,19 +1073,13 @@ impl Relatable {
         let color = random_color::RandomColor::new().to_hex();
         let statement = format!(
             r#"SELECT 1 FROM "user" WHERE "name" = {sql_param}"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([user]);
         if let None = tx.query_value(&statement, Some(&params))? {
             let statement = format!(
                 r#"INSERT INTO "user" ("name", "color") VALUES ({sql_param}, {sql_param})"#,
-                sql_param = match self.connection.kind() {
-                    DbKind::Sqlite => "?",
-                    _ => SQL_PARAM,
-                }
+                sql_param = get_sql_param(&tx.kind())
             );
             let params = json!([user, color]);
             tx.query(&statement, Some(&params))?;
@@ -1158,10 +1101,7 @@ impl Relatable {
             r#"UPDATE "user"
                SET "cursor" = {sql_param}, "datetime" = CURRENT_TIMESTAMP
                WHERE "name" = {sql_param}"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([to_value(cursor).unwrap_or_default(), user]);
         tx.query_value(&statement, Some(&params))?;
@@ -1299,10 +1239,7 @@ impl Relatable {
                  FROM "change"
                 WHERE "user" = {sql_param}
                 ORDER BY "change_id" DESC"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&self.connection.kind())
         );
         let params = json!([user]);
         let history = self.connection.query(&sql, Some(&params)).await?;
@@ -1619,10 +1556,7 @@ impl Relatable {
                                 let sql = format!(
                                     r#"SELECT "before" FROM "history"
                                        WHERE "change_id" = {sql_param}"#,
-                                    sql_param = match self.connection.kind() {
-                                        DbKind::Sqlite => "?",
-                                        _ => SQL_PARAM,
-                                    }
+                                    sql_param = get_sql_param(&self.connection.kind())
                                 );
                                 let params = json!([change_id]);
                                 let before = self
@@ -1758,6 +1692,7 @@ impl Relatable {
                         ChangeAction::Undo | ChangeAction::Redo => before.clone(),
                         ChangeAction::Do => after.clone(),
                     };
+                    let db_kind = self.connection.kind();
                     let (sql, params) = {
                         let sql = format!(
                             r#"UPDATE "{table}"
@@ -1767,15 +1702,9 @@ impl Relatable {
                             table = changeset.table,
                             value = match value {
                                 JsonValue::Null => "NULL",
-                                _ => match self.connection.kind() {
-                                    DbKind::Sqlite => "?",
-                                    _ => SQL_PARAM,
-                                },
+                                _ => get_sql_param(&db_kind),
                             },
-                            sql_param = match self.connection.kind() {
-                                DbKind::Sqlite => "?",
-                                _ => SQL_PARAM,
-                            }
+                            sql_param = get_sql_param(&db_kind)
                         );
                         let params = match value {
                             JsonValue::Null => json!([row]),
@@ -1855,10 +1784,7 @@ impl Relatable {
         );
         let sql = format!(
             r#"SELECT "{column}" FROM "{table_name}" WHERE _id = {sql_param}"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&self.connection.kind())
         );
         let params = json!([row]);
         let value = match self.connection.query_value(&sql, Some(&params)).await? {
@@ -1875,10 +1801,7 @@ impl Relatable {
                ({sql_param}, {sql_param}, {sql_param}, {sql_param}, {sql_param},
                 {sql_param}, {sql_param}, {sql_param})
                RETURNING "message_id""#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&self.connection.kind())
         );
         let params = json!([user, table_name, row, column, value, level, rule, message]);
         let message_id = self
@@ -2061,10 +1984,7 @@ impl Relatable {
         let sql = format!(
             r#"DELETE FROM "{}" WHERE "_id" = {sql_param} RETURNING 1 AS "deleted""#,
             table.name,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&self.connection.kind())
         );
         let params = json!([row]);
 
@@ -2112,50 +2032,35 @@ impl Relatable {
         );
         let mut sql = format!(
             r#"DELETE FROM "message" WHERE "table" = {sql_param}"#,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&self.connection.kind())
         );
         let mut params = vec![json!(table)];
 
         if let Some(row) = row {
             sql.push_str(&format!(
                 r#" AND "row" = {sql_param}"#,
-                sql_param = match self.connection.kind() {
-                    DbKind::Sqlite => "?",
-                    _ => SQL_PARAM,
-                }
+                sql_param = get_sql_param(&self.connection.kind()),
             ));
             params.push(json!(row));
         }
         if let Some(column) = column {
             sql.push_str(&format!(
                 r#" AND "column" = {sql_param}"#,
-                sql_param = match self.connection.kind() {
-                    DbKind::Sqlite => "?",
-                    _ => SQL_PARAM,
-                }
+                sql_param = get_sql_param(&self.connection.kind())
             ));
             params.push(json!(column));
         }
         if let Some(target_rule) = target_rule {
             sql.push_str(&format!(
                 r#" AND "rule" LIKE {sql_param}"#,
-                sql_param = match self.connection.kind() {
-                    DbKind::Sqlite => "?",
-                    _ => SQL_PARAM,
-                }
+                sql_param = get_sql_param(&self.connection.kind())
             ));
             params.push(json!(target_rule));
         }
         if let Some(target_user) = target_user {
             sql.push_str(&format!(
                 r#" AND "added_by" = {sql_param}"#,
-                sql_param = match self.connection.kind() {
-                    DbKind::Sqlite => "?",
-                    _ => SQL_PARAM,
-                }
+                sql_param = get_sql_param(&self.connection.kind())
             ));
             params.push(json!(target_user));
         }
@@ -2241,10 +2146,7 @@ impl Relatable {
             let sql = format!(
                 r#"SELECT "_order" FROM "{}" WHERE "_id" = {sql_param}"#,
                 table.name,
-                sql_param = match tx.kind() {
-                    DbKind::Sqlite => "?",
-                    _ => SQL_PARAM,
-                }
+                sql_param = get_sql_param(&tx.kind())
             );
             let params = json!([row_id]);
             let rows = tx.query(&sql, Some(&params))?;
@@ -2295,10 +2197,7 @@ impl Relatable {
             let sql = format!(
                 r#"SELECT MIN("_order") AS "_order" FROM "{}" WHERE "_order" > {sql_param}"#,
                 table.name,
-                sql_param = match self.connection.kind() {
-                    DbKind::Sqlite => "?",
-                    _ => SQL_PARAM,
-                }
+                sql_param = get_sql_param(&tx.kind())
             );
             let params = json!([order_prev]);
             let rows = tx.query(&sql, Some(&params))?;
@@ -2348,10 +2247,7 @@ impl Relatable {
                         WHERE "_order" >= {sql_param} AND "_order" < {sql_param}
                      ORDER BY "_order" DESC"#,
                     table.name,
-                    sql_param = match self.connection.kind() {
-                        DbKind::Sqlite => "?",
-                        _ => SQL_PARAM,
-                    }
+                    sql_param = get_sql_param(&tx.kind())
                 );
                 let params = json!([order_next, upper_bound]);
                 let rows = tx.query(&sql, Some(&params))?;
@@ -2394,10 +2290,7 @@ impl Relatable {
                               SET "_order" = "_order" + 1
                             WHERE "_order" = {sql_param}"#,
                         table.name,
-                        sql_param = match self.connection.kind() {
-                            DbKind::Sqlite => "?",
-                            _ => SQL_PARAM,
-                        }
+                        sql_param = get_sql_param(&tx.kind())
                     );
                     let params = json!([current_order]);
                     tx.query(&sql, Some(&params))?;
@@ -2418,10 +2311,7 @@ impl Relatable {
                WHERE "_id" = {sql_param}
                RETURNING 1 AS "moved""#,
             table.name,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([new_order, id]);
         if tx.query(&sql, Some(&params))?.len() < 1 {
@@ -2447,10 +2337,7 @@ impl Relatable {
                 WHERE "_id" = {sql_param}
             RETURNING "_id" AS "_id""#,
             table = table.name,
-            sql_param = match self.connection.kind() {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(&tx.kind())
         );
         let params = json!([new_id, id, id * MOVE_INTERVAL]);
         tx.query_one(&sql, Some(&params))?
@@ -2833,10 +2720,7 @@ impl Row {
                 if cell.value == JsonValue::Null {
                     value_placeholders.push("NULL");
                 } else {
-                    value_placeholders.push(match db_kind {
-                        DbKind::Sqlite => "?",
-                        _ => SQL_PARAM,
-                    });
+                    value_placeholders.push(get_sql_param(db_kind));
                     params.push(cell.value.clone());
                 }
             }
@@ -2848,10 +2732,7 @@ impl Row {
                 r#"INSERT INTO "{table}"
                    ("_id", "_order")
                    VALUES ({sql_param}, {sql_param})"#,
-                sql_param = match db_kind {
-                    DbKind::Sqlite => "?",
-                    _ => SQL_PARAM,
-                }
+                sql_param = get_sql_param(db_kind)
             )
         } else {
             format!(
@@ -2860,10 +2741,7 @@ impl Row {
                    VALUES ({sql_param}, {sql_param}, {column_values})"#,
                 quoted_column_names = quoted_column_names.join(", "),
                 column_values = value_placeholders.join(", "),
-                sql_param = match db_kind {
-                    DbKind::Sqlite => "?",
-                    _ => SQL_PARAM,
-                }
+                sql_param = get_sql_param(db_kind)
             )
         };
         (sql, json!(params))
@@ -3829,10 +3707,7 @@ impl Select {
                   WHERE "table" = {sql_param}
                     AND "row" = _id
                ) AS _change_id"#,
-            sql_param = match db_kind {
-                DbKind::Sqlite => "?",
-                _ => SQL_PARAM,
-            }
+            sql_param = get_sql_param(db_kind)
         ));
         params.push(json!(self.table_name)); // the real table name
         lines.push(format!(r#"FROM "{}""#, self.view_name)); // the view name, which may differ
