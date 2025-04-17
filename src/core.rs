@@ -358,7 +358,7 @@ impl Relatable {
                 r#"DELETE FROM "table" WHERE "table" = {sql_param}"#,
                 sql_param = sql::SqlParam::new(&db_kind).next(),
             );
-            let params = json!([table_name, path]);
+            let params = json!([table_name]);
             self.connection
                 .query(&sql, Some(&params))
                 .await
