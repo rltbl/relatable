@@ -310,6 +310,7 @@ impl DbConnection {
         extract_value(&rows)
     }
 
+    // TODO: Move this out of here
     pub async fn get_table_columns(&self, table: &str) -> Result<Vec<JsonRow>> {
         tracing::trace!("DbConnection::get_table_columns({table})");
         match self.kind() {
@@ -333,6 +334,7 @@ impl DbConnection {
         }
     }
 
+    // TODO: Move this out of here
     pub async fn view_exists_for(&mut self, table: &str) -> Result<bool> {
         tracing::trace!("DbConnection::view_exists_for({table})");
         let sql_param = SqlParam::new(&self.kind()).next();
@@ -358,6 +360,7 @@ impl DbConnection {
         }
     }
 
+    // TODO: Move this out of here
     pub async fn get_next_id(&self, table: &str) -> Result<usize> {
         tracing::trace!("Row::get_next_id({table:?}, tx)");
         let current_row_id = match self.kind() {
@@ -477,6 +480,7 @@ impl DbTransaction<'_> {
         extract_value(&rows)
     }
 
+    // TODO: Move this out of here
     pub fn get_table_columns(&mut self, table: &str) -> Result<Vec<JsonRow>> {
         tracing::trace!("DbTransaction::get_table_columns({table})");
         match self.kind() {
@@ -500,6 +504,7 @@ impl DbTransaction<'_> {
         }
     }
 
+    // TODO: Move this out of here
     pub fn view_exists_for(&mut self, table: &str) -> Result<bool> {
         tracing::trace!("DbTransaction::view_exists_for({table})");
         let sql_param = SqlParam::new(&self.kind()).next();
@@ -525,6 +530,7 @@ impl DbTransaction<'_> {
         }
     }
 
+    // TODO: Move this out of here
     pub fn get_next_id(&mut self, table: &str) -> Result<usize> {
         tracing::trace!("DbTransaction::get_next_id({table:?}, tx)");
         let current_row_id = match self.kind() {

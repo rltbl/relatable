@@ -38,17 +38,6 @@ jobs:
         with:
           # See https://github.com/actions/setup-node for further options
           node-version: '18.19'
-      - name: set RLTBL_CONNECTION
-        # TODO: move this to the makefile instead.
-        run: |
-          echo '```console tesh-session="test"' > header
-          echo '$ export RLTBL_CONNECTION=postgresql:///rltbl_db' >> header
-          echo '```' >> header
-          for f in test/tesh/common/*.md; do cat header $f > $f.new; mv -f $f.new $f; done; rm -f header
-          echo 'export RLTBL_CONNECTION=postgresql:///rltbl_db' > header
-          cat header test/random.sh > test/random.sh.new
-          mv -f test/random.sh.new test/random.sh
-          rm -f header
       - name: Run tests
         run: |
           make test_sqlx_postgres

@@ -125,8 +125,7 @@ act_randomly () {
 
 ### Execution begins here
 
-if [[ $RLTBL_CONNECTION != "" ]]; then DATABASE=postgresql:///rltbl_db; else DATABASE='.relatable/relatable.db'; fi
-echo "Created a demonstration database in '$DATABASE'" > expected_output.txt
+echo "Created a demonstration database in '$RLTBL_CONNECTION'" > expected_output.txt
 
 command="${RLTBL} demo --size 20 --force"
 echo $command

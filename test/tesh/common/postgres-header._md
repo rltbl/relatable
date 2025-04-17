@@ -1,0 +1,3 @@
+```console tesh-session="test"
+$ export RLTBL_CONNECTION=postgresql:///rltbl_db
+```
