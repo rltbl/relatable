@@ -1566,8 +1566,8 @@ impl Relatable {
     }
 
     /// Reverse the given changeset in the database
-    async fn _reverse(&self, change_id: usize, changeset: &ChangeSet) -> Result<Option<ChangeSet>> {
-        tracing::trace!("Relatable::_reverse({change_id}, {changeset:?})");
+    async fn _revert(&self, change_id: usize, changeset: &ChangeSet) -> Result<Option<ChangeSet>> {
+        tracing::trace!("Relatable::_revert({change_id}, {changeset:?})");
         match changeset.changes.first() {
             None => Ok(None),
             Some(change) => {
@@ -1684,7 +1684,7 @@ impl Relatable {
                 Some(changeset) => changeset,
             };
         changeset.action = ChangeAction::Undo;
-        let changeset = self._reverse(change_id, &changeset).await?;
+        let changeset = self._revert(change_id, &changeset).await?;
         if let Some(_) = changeset {
             self.commit_to_git().await?;
         }
@@ -1704,7 +1704,7 @@ impl Relatable {
             };
         tracing::debug!("Last redoable action (ID {change_id}) for user {user} was {changeset:?}");
         changeset.action = ChangeAction::Redo;
-        let changeset = self._reverse(change_id, &changeset).await?;
+        let changeset = self._revert(change_id, &changeset).await?;
         if let Some(_) = changeset {
             self.commit_to_git().await?;
         }
@@ -2816,14 +2816,15 @@ impl Row {
             .map(|k| format!(r#""{k}""#))
             .collect::<Vec<_>>();
 
+        let mut sql_param_gen = sql::SqlParam::new(db_kind);
         let (value_placeholders, params) = {
-            let mut value_placeholders = vec![];
             let mut params = vec![json!(id), json!(order)];
+            let mut value_placeholders = vec![sql_param_gen.next(), sql_param_gen.next()];
             for cell in self.cells.values() {
                 if cell.value == JsonValue::Null {
                     value_placeholders.push("NULL".to_string());
                 } else {
-                    value_placeholders.push(sql::SqlParam::new(db_kind).next());
+                    value_placeholders.push(sql_param_gen.next());
                     params.push(cell.value.clone());
                 }
             }
@@ -2834,17 +2835,16 @@ impl Row {
             format!(
                 r#"INSERT INTO "{table}"
                    ("_id", "_order")
-                   VALUES ({sql_params})"#,
-                sql_params = sql::SqlParam::new(db_kind).get_as_list(2)
+                   VALUES ({column_values})"#,
+                column_values = value_placeholders.join(", ")
             )
         } else {
             format!(
                 r#"INSERT INTO "{table}"
                    ("_id", "_order", {quoted_column_names})
-                   VALUES ({sql_params}, {column_values})"#,
+                   VALUES ({column_values})"#,
                 quoted_column_names = quoted_column_names.join(", "),
                 column_values = value_placeholders.join(", "),
-                sql_params = sql::SqlParam::new(db_kind).get_as_list(2)
             )
         };
         (sql, json!(params))
