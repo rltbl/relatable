@@ -3,7 +3,12 @@
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
 use crate as rltbl;
-use rltbl::{git, sql, sql::VecInto as _};
+use rltbl::{
+    git, sql,
+    sql::{
+        DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow, SqlParam, VecInto as _,
+    },
+};
 
 use anyhow::Result;
 use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
@@ -74,7 +79,7 @@ impl std::error::Error for RelatableError {}
 pub struct Relatable {
     pub root: String,
     pub readonly: bool,
-    pub connection: sql::DbConnection,
+    pub connection: DbConnection,
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
     pub max_limit: usize,
@@ -110,7 +115,7 @@ impl Relatable {
                 .into());
             }
         }
-        let (connection, _) = sql::DbConnection::connect(&path).await?;
+        let (connection, _) = DbConnection::connect(&path).await?;
         Ok(Self {
             root,
             readonly,
@@ -223,7 +228,7 @@ impl Relatable {
         let mut columns = vec![];
         let mut meta_columns = vec![];
         let table = self.get_table(table_name).await?;
-        for column in self.connection.get_table_columns(table_name).await? {
+        for column in self.get_db_table_columns(table_name).await? {
             // Decorate the column using the information from the column table that we collected
             // above:
             match column.get_string("name")? {
@@ -314,7 +319,7 @@ impl Relatable {
     }
 
     /// Use the given [Select] to fetch data from the database.
-    pub async fn fetch_json_rows(&self, select: &Select) -> Result<Vec<sql::JsonRow>> {
+    pub async fn fetch_json_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
         tracing::trace!("Relatable::fetch_json_rows({select:?})");
         let (statement, params) = select.to_sql(&self.connection.kind())?;
         let params = json!(params);
@@ -356,7 +361,7 @@ impl Relatable {
         if force {
             let sql = format!(
                 r#"DELETE FROM "table" WHERE "table" = {sql_param}"#,
-                sql_param = sql::SqlParam::new(&db_kind).next(),
+                sql_param = SqlParam::new(&db_kind).next(),
             );
             let params = json!([table_name]);
             self.connection
@@ -366,7 +371,7 @@ impl Relatable {
         }
         let sql = format!(
             r#"INSERT INTO "table" ("table", "path") VALUES ({sql_params})"#,
-            sql_params = sql::SqlParam::new(&db_kind).get_as_list(2)
+            sql_params = SqlParam::new(&db_kind).get_as_list(2)
         );
         let params = json!([table_name, path]);
         self.connection
@@ -377,17 +382,23 @@ impl Relatable {
 
         // Initialize a new table struct that we will use to generate DDL to create it in the
         // database if we need to:
-        let mut table = Table::new(table_name);
-        for header in headers.iter() {
-            table.columns.insert(
-                header.to_string(),
-                Column {
-                    name: header.to_string(),
-                    table: table_name.to_string(),
-                    ..Default::default()
-                },
-            );
-        }
+        let table = {
+            let mut table = Table {
+                name: table_name.to_string(),
+                ..Default::default()
+            };
+            for header in headers.iter() {
+                table.columns.insert(
+                    header.to_string(),
+                    Column {
+                        name: header.to_string(),
+                        table: table_name.to_string(),
+                        ..Default::default()
+                    },
+                );
+            }
+            table
+        };
 
         // Generate the SQL statements needed to create the table and execute them:
         for sql in sql::generate_table_ddl(&table, force, &db_kind).expect("Error getting DDL") {
@@ -418,11 +429,11 @@ impl Relatable {
         let mut order = id * NEW_ORDER_MULTIPLIER;
         let sql_first_part = format!(r#"INSERT INTO "{table_name}" ({columns_line}) VALUES "#);
         let mut sql_value_parts = vec![];
-        let mut sql_param_gen = sql::SqlParam::new(&self.connection.kind());
+        let mut sql_param_gen = SqlParam::new(&self.connection.kind());
         let mut params = vec![];
         let max_params = match db_kind {
-            sql::DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
-            sql::DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
+            DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
+            DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
         };
         while let Some(row) = records.next() {
             let row = row.expect("Error processing row");
@@ -637,12 +648,12 @@ impl Relatable {
     /// Get the details of the last change made by the user from the change table.
     fn _get_last_change_for_user(
         &self,
-        tx: &mut sql::DbTransaction<'_>,
+        tx: &mut DbTransaction<'_>,
         user: &str,
         action: &ChangeAction,
     ) -> Result<Option<(usize, ChangeSet)>> {
         tracing::trace!("Relatable::_get_last_change_for_user(tx, {user:?}, {action:?})");
-        let mut sql_param = sql::SqlParam::new(&tx.kind());
+        let mut sql_param = SqlParam::new(&tx.kind());
         let sql = format!(
             r#"SELECT "change_id", "user", "table", "description", "content"
                FROM "change"
@@ -680,7 +691,7 @@ impl Relatable {
     pub fn record_changeset(
         &self,
         changeset: &ChangeSet,
-        tx: &mut sql::DbTransaction<'_>,
+        tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
         tracing::trace!("Relatable::record_changeset({changeset:?}, tx)");
         let user = changeset.user.clone();
@@ -715,7 +726,7 @@ impl Relatable {
             r#"INSERT INTO change("user", "action", "table", "description", "content")
                VALUES ({sql_params})
                RETURNING change_id"#,
-            sql_params = sql::SqlParam::new(&tx.kind()).get_as_list(5)
+            sql_params = SqlParam::new(&tx.kind()).get_as_list(5)
         );
         let content = to_value(&changeset.changes).unwrap_or_default();
         let params = json!([user, action, table, description, content]);
@@ -740,7 +751,7 @@ impl Relatable {
                            ("change_id", "table", "row", "before", "after")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = sql::SqlParam::new(&tx.kind()).get_as_list(5)
+                        sql_params = SqlParam::new(&tx.kind()).get_as_list(5)
                     );
                     let before = json!({column: before}).to_string();
                     let after = json!({column: after}).to_string();
@@ -759,7 +770,7 @@ impl Relatable {
                                     r#"SELECT "before"
                                          FROM "history"
                                         WHERE "change_id" = {sql_param}"#,
-                                    sql_param = sql::SqlParam::new(&tx.kind()).next()
+                                    sql_param = SqlParam::new(&tx.kind()).next()
                                 );
                                 let params = json!([change_id]);
                                 let before = tx
@@ -778,7 +789,7 @@ impl Relatable {
                                         .into());
                                     }
                                 };
-                                sql::JsonRow { content: before }
+                                JsonRow { content: before }
                             }
                             None => {
                                 return Err(RelatableError::DataError(format!(
@@ -793,7 +804,7 @@ impl Relatable {
                            ("change_id", "table", "row", "after")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = sql::SqlParam::new(&tx.kind()).get_as_list(4)
+                        sql_params = SqlParam::new(&tx.kind()).get_as_list(4)
                     );
                     let json_row_str = json!(json_row.content).to_string();
                     let params = json!([change_id, table, row, json_row_str]);
@@ -809,7 +820,7 @@ impl Relatable {
                            ("change_id", "table", "row")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = sql::SqlParam::new(&tx.kind()).get_as_list(3)
+                        sql_params = SqlParam::new(&tx.kind()).get_as_list(3)
                     );
                     let params = json!([change_id, table, row]);
                     tx.query_value(&sql, Some(&params))?;
@@ -830,7 +841,7 @@ impl Relatable {
                            ("change_id", "table", "row", "before")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = sql::SqlParam::new(&tx.kind()).get_as_list(4)
+                        sql_params = SqlParam::new(&tx.kind()).get_as_list(4)
                     );
                     let json_row_str = json!(json_row.content).to_string();
                     let params = json!([change_id, table, row, json_row_str]);
@@ -895,8 +906,8 @@ impl Relatable {
         Ok(users)
     }
 
-    /// Converts a vector of [JsonRow](sql::JsonRow)s to a map from column names to [Column]s.
-    fn json_to_columns_map(json_cols: &Vec<sql::JsonRow>) -> Result<IndexMap<String, Column>> {
+    /// Converts a vector of [JsonRow](JsonRow)s to a map from column names to [Column]s.
+    fn json_to_columns_map(json_cols: &Vec<JsonRow>) -> Result<IndexMap<String, Column>> {
         tracing::trace!("Relatable::json_to_columns_map({json_cols:?})");
         let mut columns = IndexMap::new();
         for json_col in json_cols {
@@ -920,7 +931,7 @@ impl Relatable {
         tracing::trace!("Relatable::get_columns_map({table_name:?})");
         let sql = format!(
             r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
-            sql_param = sql::SqlParam::new(&self.connection.kind()).next()
+            sql_param = SqlParam::new(&self.connection.kind()).next()
         );
         let params = json!([table_name]);
         let json_columns = self
@@ -935,12 +946,12 @@ impl Relatable {
     /// given transaction.
     fn _get_columns_map(
         table_name: &str,
-        tx: &mut sql::DbTransaction<'_>,
+        tx: &mut DbTransaction<'_>,
     ) -> Result<IndexMap<String, Column>> {
         tracing::trace!("Relatable::_get_columns_map({table_name:?}, tx)");
         let sql = format!(
             r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
-            sql_param = sql::SqlParam::new(&tx.kind()).next()
+            sql_param = SqlParam::new(&tx.kind()).next()
         );
         let params = json!([table_name]);
         let json_columns = tx.query(&sql, Some(&params)).unwrap_or(vec![]);
@@ -963,11 +974,11 @@ impl Relatable {
     }
 
     /// Returns a [Table] corresponding to the given table using the given transaction.
-    fn _get_table(&self, table_name: &str, tx: &mut sql::DbTransaction<'_>) -> Result<Table> {
+    fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
         tracing::trace!("Relatable::_get_table({table_name:?}, tx)");
         let statement = format!(
             r#"SELECT "table" FROM "table" WHERE "table" = {sql_param}"#,
-            sql_param = sql::SqlParam::new(&tx.kind()).next()
+            sql_param = SqlParam::new(&tx.kind()).next()
         );
         let params = json!([table_name]);
         match tx.query_value(&statement, Some(&params))? {
@@ -980,7 +991,7 @@ impl Relatable {
             }
         }
 
-        let result = tx.view_exists_for(table_name)?;
+        let result = sql::view_exists_for(table_name, tx)?;
         let view = if result {
             format!("{table_name}_default_view")
         } else {
@@ -989,7 +1000,7 @@ impl Relatable {
 
         let statement = format!(
             r#"SELECT max(change_id) FROM history WHERE "table" = {sql_param}"#,
-            sql_param = sql::SqlParam::new(&tx.kind()).next()
+            sql_param = SqlParam::new(&tx.kind()).next()
         );
         let params = json!([table_name]);
         let change_id = match tx.query_value(&statement, Some(&params))? {
@@ -1042,18 +1053,58 @@ impl Relatable {
         Ok(tables)
     }
 
+    /// Query the database for the columns associated with the given table
+    pub async fn get_db_table_columns(&self, table: &str) -> Result<Vec<JsonRow>> {
+        tracing::trace!("Relatable::get_db_table_columns({table:?})");
+        let mut conn = self.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        let table = sql::get_db_table_columns(table, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(table)
+    }
+
+    /// Determine whether a view already exists for the table in the database.
+    pub async fn view_exists_for(&self, table: &str) -> Result<bool> {
+        tracing::trace!("Relatable::view_exists_for({table:?})");
+        let mut conn = self.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        let table = sql::view_exists_for(table, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(table)
+    }
+
+    /// Determine what the next created row id for the given table will be
+    pub async fn get_next_id(&self, table: &str) -> Result<usize> {
+        tracing::trace!("Relatable::get_next_id({table:?})");
+        let mut conn = self.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        let table = sql::get_next_id(table, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(table)
+    }
+
     /// Returns the value of the _order column of the given row from the given table using the
     /// given transaction.
-    fn _get_row_order(
-        &self,
-        table: &str,
-        row: usize,
-        tx: &mut sql::DbTransaction<'_>,
-    ) -> Result<usize> {
+    fn _get_row_order(&self, table: &str, row: usize, tx: &mut DbTransaction<'_>) -> Result<usize> {
         tracing::trace!("Relatable::_get_row_order({table:?}, {row}, tx)");
         let sql = format!(
             r#"SELECT "_order" FROM "{table}" WHERE "_id" = {sql_param}"#,
-            sql_param = sql::SqlParam::new(&tx.kind()).next()
+            sql_param = SqlParam::new(&tx.kind()).next()
         );
         let params = json!([row]);
         let rows = tx.query(&sql, Some(&params))?;
@@ -1071,14 +1122,14 @@ impl Relatable {
         &self,
         table: &str,
         row: usize,
-        tx: &mut sql::DbTransaction<'_>,
+        tx: &mut DbTransaction<'_>,
     ) -> Result<usize> {
         tracing::trace!("Relatable::_get_previous_row_id({table:?}, {row}, tx)");
         let curr_row_order = self._get_row_order(table, row, tx)?;
         let sql = format!(
             r#"SELECT "_id" FROM "{table}" WHERE "_order" < {sql_param}
                ORDER BY "_order" DESC LIMIT 1"#,
-            sql_param = sql::SqlParam::new(&tx.kind()).next()
+            sql_param = SqlParam::new(&tx.kind()).next()
         );
         let params = json!([curr_row_order]);
         let rows = tx.query(&sql, Some(&params))?;
@@ -1089,18 +1140,18 @@ impl Relatable {
         }
     }
 
-    /// Return a [JsonRow](sql::JsonRow) representing the given row of the given table, using the
+    /// Return a [JsonRow](JsonRow) representing the given row of the given table, using the
     /// given transaction.
     fn _get_row(
         &self,
         table: &str,
         row: usize,
-        tx: &mut sql::DbTransaction<'_>,
-    ) -> Result<Option<sql::JsonRow>> {
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Option<JsonRow>> {
         tracing::trace!("Relatable::_get_row({table:}?, {row}, tx)");
         let sql = format!(
             r#"SELECT * FROM "{table}" WHERE "_id" = {sql_param}"#,
-            sql_param = sql::SqlParam::new(&tx.kind()).next()
+            sql_param = SqlParam::new(&tx.kind()).next()
         );
         let params = json!([row]);
         tx.query_one(&sql, Some(&params))
@@ -1126,7 +1177,7 @@ impl Relatable {
     pub fn prepare_user_cursor(
         &self,
         changeset: &ChangeSet,
-        tx: &mut sql::DbTransaction<'_>,
+        tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
         tracing::trace!("Relatable::prepare_user_cursor({changeset:?}, tx)");
         // Make sure the user is present in the user table
@@ -1134,13 +1185,13 @@ impl Relatable {
         let color = random_color::RandomColor::new().to_hex();
         let statement = format!(
             r#"SELECT 1 FROM "user" WHERE "name" = {sql_param}"#,
-            sql_param = sql::SqlParam::new(&tx.kind()).next()
+            sql_param = SqlParam::new(&tx.kind()).next()
         );
         let params = json!([user]);
         if let None = tx.query_value(&statement, Some(&params))? {
             let statement = format!(
                 r#"INSERT INTO "user" ("name", "color") VALUES ({sql_params})"#,
-                sql_params = sql::SqlParam::new(&tx.kind()).get_as_list(2)
+                sql_params = SqlParam::new(&tx.kind()).get_as_list(2)
             );
             let params = json!([user, color]);
             tx.query(&statement, Some(&params))?;
@@ -1158,7 +1209,7 @@ impl Relatable {
             ChangeAction::Do => (),
         };
 
-        let mut sql_param = sql::SqlParam::new(&tx.kind());
+        let mut sql_param = SqlParam::new(&tx.kind());
         let statement = format!(
             r#"UPDATE "user"
                SET "cursor" = {sql_param_1}, "datetime" = CURRENT_TIMESTAMP
@@ -1230,7 +1281,7 @@ impl Relatable {
     /// is not given) undoable and/or redoable previous changes.
     pub async fn get_user_history(&self, user: &str, context: Option<usize>) -> Result<History> {
         tracing::trace!("Relatable::get_user_history({user:?}, {context:?})");
-        fn content_to_json_row(content: &str) -> Result<sql::JsonRow> {
+        fn content_to_json_row(content: &str) -> Result<JsonRow> {
             tracing::debug!("Entering content_to_json_row(content: {content})");
             match serde_json::from_str::<JsonValue>(content) {
                 Ok(content) => match content
@@ -1238,7 +1289,7 @@ impl Relatable {
                     .and_then(|a| a.first())
                     .and_then(|o| o.as_object())
                 {
-                    Some(object) => Ok(sql::JsonRow {
+                    Some(object) => Ok(JsonRow {
                         content: object.clone(),
                     }),
                     None => {
@@ -1257,7 +1308,7 @@ impl Relatable {
             }
         }
 
-        fn on_the_same_target(change1: &sql::JsonRow, change2: &sql::JsonRow) -> Result<bool> {
+        fn on_the_same_target(change1: &JsonRow, change2: &JsonRow) -> Result<bool> {
             tracing::trace!("Relatable::on_the_same_target({change1:?}, {change2:?})");
             let change1 = content_to_json_row(&change1.get_string("content")?)?;
             let change2 = content_to_json_row(&change2.get_string("content")?)?;
@@ -1275,23 +1326,23 @@ impl Relatable {
         }
 
         fn prune_stacks(
-            changes_done_stack: &Vec<sql::JsonRow>,
-            changes_undone_stack: &Vec<sql::JsonRow>,
-        ) -> (Vec<sql::JsonRow>, Vec<sql::JsonRow>) {
+            changes_done_stack: &Vec<JsonRow>,
+            changes_undone_stack: &Vec<JsonRow>,
+        ) -> (Vec<JsonRow>, Vec<JsonRow>) {
             tracing::trace!(
                 "Relatable::prune_stacks({changes_done_stack:?}, {changes_undone_stack:?})"
             );
             let mut pruned_dones = vec![];
             let mut pruned_undones = vec![];
             for change in changes_done_stack.iter() {
-                if !pruned_dones.iter().any(|done: &sql::JsonRow| {
+                if !pruned_dones.iter().any(|done: &JsonRow| {
                     on_the_same_target(&done, &change).expect("Error looking for a common target")
                 }) {
                     pruned_dones.push(change.clone());
                 }
             }
             for change in changes_undone_stack.iter() {
-                if !pruned_undones.iter().any(|undone: &sql::JsonRow| {
+                if !pruned_undones.iter().any(|undone: &JsonRow| {
                     on_the_same_target(&undone, &change).expect("Error looking for a common target")
                 }) {
                     pruned_undones.push(change.clone());
@@ -1306,7 +1357,7 @@ impl Relatable {
                  FROM "change"
                 WHERE "user" = {sql_param}
                 ORDER BY "change_id" DESC"#,
-            sql_param = sql::SqlParam::new(&self.connection.kind()).next()
+            sql_param = SqlParam::new(&self.connection.kind()).next()
         );
         let params = json!([user]);
         let history = self.connection.query(&sql, Some(&params)).await?;
@@ -1620,7 +1671,7 @@ impl Relatable {
                                 let sql = format!(
                                     r#"SELECT "before" FROM "history"
                                        WHERE "change_id" = {sql_param}"#,
-                                    sql_param = sql::SqlParam::new(&self.connection.kind()).next()
+                                    sql_param = SqlParam::new(&self.connection.kind()).next()
                                 );
                                 let params = json!([change_id]);
                                 let before = self
@@ -1641,7 +1692,7 @@ impl Relatable {
                                         .into());
                                     }
                                 };
-                                let before = sql::JsonRow { content: before };
+                                let before = JsonRow { content: before };
                                 tracing::debug!(
                                     "Re-adding row '{before}' to table '{}'",
                                     changeset.table
@@ -1714,7 +1765,7 @@ impl Relatable {
     /// Update the database using the given [ChangeSet]
     async fn _set_values(
         &self,
-        mut conn: Option<sql::DbActiveConnection>,
+        mut conn: Option<DbActiveConnection>,
         changeset: &ChangeSet,
     ) -> Result<ChangeSet> {
         tracing::trace!("Relatable::set_values(conn, {changeset:?})");
@@ -1763,7 +1814,7 @@ impl Relatable {
                     };
                     let db_kind = self.connection.kind();
                     let (sql, params) = {
-                        let mut sql_param = sql::SqlParam::new(&db_kind);
+                        let mut sql_param = SqlParam::new(&db_kind);
                         let sql = format!(
                             r#"UPDATE "{table}"
                                SET "{column}" = {value}
@@ -1856,7 +1907,7 @@ impl Relatable {
         );
         let sql = format!(
             r#"SELECT "{column}" FROM "{table_name}" WHERE _id = {sql_param}"#,
-            sql_param = sql::SqlParam::new(&self.connection.kind()).next()
+            sql_param = SqlParam::new(&self.connection.kind()).next()
         );
         let params = json!([row]);
         let value = match self.connection.query_value(&sql, Some(&params)).await? {
@@ -1872,7 +1923,7 @@ impl Relatable {
                VALUES
                ({sql_params})
                RETURNING "message_id""#,
-            sql_params = sql::SqlParam::new(&self.connection.kind()).get_as_list(8)
+            sql_params = SqlParam::new(&self.connection.kind()).get_as_list(8)
         );
         let params = json!([user, table_name, row, column, value, level, rule, message]);
         let message_id = self
@@ -1897,13 +1948,13 @@ impl Relatable {
     /// Add a row to the given table
     async fn _add_row(
         &self,
-        mut conn: Option<sql::DbActiveConnection>,
+        mut conn: Option<DbActiveConnection>,
         action: &ChangeAction,
         table_name: &str,
         user: &str,
         new_row_id: Option<usize>,
         after_id: Option<usize>,
-        row: &sql::JsonRow,
+        row: &JsonRow,
     ) -> Result<Row> {
         tracing::trace!(
             "Relatable::_add_row(conn, {action:?}, {user:?}, {new_row_id:?}, \
@@ -1923,7 +1974,7 @@ impl Relatable {
 
         // Nullify the JSON row by setting any column values whose content matches the column's
         // nulltype to Null:
-        let row = sql::JsonRow::nullified(row, &table);
+        let row = JsonRow::nullified(row, &table);
 
         // Prepare a new row to be inserted using the JSON row as a base:
         let mut new_row = Row::prepare_new(&table, Some(&row), &mut tx)?;
@@ -1995,7 +2046,7 @@ impl Relatable {
         table_name: &str,
         user: &str,
         after_id: Option<usize>,
-        row: &sql::JsonRow,
+        row: &JsonRow,
     ) -> Result<Row> {
         tracing::trace!("Relatable::add_row({table_name:?}, {user:?}, {after_id:?}, {row:?})");
         let conn = self.connection.reconnect()?;
@@ -2017,7 +2068,7 @@ impl Relatable {
     /// Delete a row from the table
     async fn _delete_row(
         &self,
-        mut conn: Option<sql::DbActiveConnection>,
+        mut conn: Option<DbActiveConnection>,
         action: &ChangeAction,
         table_name: &str,
         user: &str,
@@ -2058,7 +2109,7 @@ impl Relatable {
         let sql = format!(
             r#"DELETE FROM "{}" WHERE "_id" = {sql_param} RETURNING 1 AS "deleted""#,
             table.name,
-            sql_param = sql::SqlParam::new(&self.connection.kind()).next()
+            sql_param = SqlParam::new(&self.connection.kind()).next()
         );
         let params = json!([row]);
 
@@ -2106,7 +2157,7 @@ impl Relatable {
             "Relatable::delete_message({table:?}, {row:?}, {column:?}, \
                          {target_rule:?}, {target_user:?})"
         );
-        let mut sql_param = sql::SqlParam::new(&self.connection.kind());
+        let mut sql_param = SqlParam::new(&self.connection.kind());
         let mut sql = format!(
             r#"DELETE FROM "message" WHERE "table" = {sql_param}"#,
             sql_param = sql_param.next()
@@ -2154,7 +2205,7 @@ impl Relatable {
     /// Move a row and record the change in the change table
     async fn _move_and_record_row(
         &self,
-        mut conn: Option<sql::DbActiveConnection>,
+        mut conn: Option<DbActiveConnection>,
         action: &ChangeAction,
         table_name: &str,
         user: &str,
@@ -2211,21 +2262,21 @@ impl Relatable {
     /// Move a row to a different position in a given table
     fn _move_row(
         &self,
-        tx: &mut sql::DbTransaction<'_>,
+        tx: &mut DbTransaction<'_>,
         table: &Table,
         id: usize,
         after_id: usize,
     ) -> Result<usize> {
         tracing::trace!("Relatable::_move_row(tx, {table:?}, {id}, {after_id})");
         fn get_row_order(
-            tx: &mut sql::DbTransaction<'_>,
+            tx: &mut DbTransaction<'_>,
             table: &Table,
             row_id: usize,
         ) -> Result<usize> {
             let sql = format!(
                 r#"SELECT "_order" FROM "{}" WHERE "_id" = {sql_param}"#,
                 table.name,
-                sql_param = sql::SqlParam::new(&tx.kind()).next()
+                sql_param = SqlParam::new(&tx.kind()).next()
             );
             let params = json!([row_id]);
             let rows = tx.query(&sql, Some(&params))?;
@@ -2276,7 +2327,7 @@ impl Relatable {
             let sql = format!(
                 r#"SELECT MIN("_order") AS "_order" FROM "{}" WHERE "_order" > {sql_param}"#,
                 table.name,
-                sql_param = sql::SqlParam::new(&tx.kind()).next()
+                sql_param = SqlParam::new(&tx.kind()).next()
             );
             let params = json!([order_prev]);
             let rows = tx.query(&sql, Some(&params))?;
@@ -2320,7 +2371,7 @@ impl Relatable {
                 // violations will ensue:
                 let upper_bound = (order_next as f32 / NEW_ORDER_MULTIPLIER as f32).ceil() as usize
                     * NEW_ORDER_MULTIPLIER as usize;
-                let mut sql_param = sql::SqlParam::new(&tx.kind());
+                let mut sql_param = SqlParam::new(&tx.kind());
                 let sql = format!(
                     r#"SELECT "_order"
                          FROM "{}"
@@ -2371,7 +2422,7 @@ impl Relatable {
                               SET "_order" = "_order" + 1
                             WHERE "_order" = {sql_param}"#,
                         table.name,
-                        sql_param = sql::SqlParam::new(&tx.kind()).next()
+                        sql_param = SqlParam::new(&tx.kind()).next()
                     );
                     let params = json!([current_order]);
                     tx.query(&sql, Some(&params))?;
@@ -2387,7 +2438,7 @@ impl Relatable {
             table = table.name
         );
 
-        let mut sql_param = sql::SqlParam::new(&tx.kind());
+        let mut sql_param = SqlParam::new(&tx.kind());
         let sql = format!(
             r#"UPDATE "{}" SET "_order" = {sql_param_1}
                WHERE "_id" = {sql_param_2}
@@ -2409,13 +2460,13 @@ impl Relatable {
     /// Change the _id of the given row in the given table.
     fn _change_row_id(
         &self,
-        tx: &mut sql::DbTransaction<'_>,
+        tx: &mut DbTransaction<'_>,
         table: &Table,
         id: usize,
         new_id: usize,
     ) -> Result<()> {
         tracing::trace!("Relatable::_change_row_id(tx, {table:?}, {id}, {new_id})");
-        let mut sql_param = sql::SqlParam::new(&tx.kind());
+        let mut sql_param = SqlParam::new(&tx.kind());
         let sql = format!(
             r#"UPDATE "{table}"
                   SET "_id" = {sql_param_1}, "_order" = {sql_param_2}
@@ -2597,7 +2648,7 @@ impl Change {
         let mut changes = vec![];
         for change_json in json_content.iter() {
             let change_json = match change_json.as_object() {
-                Some(change_object) => sql::JsonRow {
+                Some(change_object) => JsonRow {
                     content: change_object.clone(),
                 },
                 None => {
@@ -2641,8 +2692,8 @@ impl Change {
         Ok(changes)
     }
 
-    /// Convers a [JsonRow](sql::JsonRow) to a [Change]
-    pub fn from_json_row(json_row: &sql::JsonRow) -> Result<Self> {
+    /// Convers a [JsonRow](JsonRow) to a [Change]
+    pub fn from_json_row(json_row: &JsonRow) -> Result<Self> {
         tracing::trace!("Change::from_json_row({json_row:?})");
         match json_row.get_string("type")?.as_str() {
             "Update" => Ok(Self::Update {
@@ -2677,8 +2728,8 @@ impl Change {
 /// Describes a history of changes that have been done and undone.
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct History {
-    pub changes_done_stack: Vec<sql::JsonRow>,
-    pub changes_undone_stack: Vec<sql::JsonRow>,
+    pub changes_done_stack: Vec<JsonRow>,
+    pub changes_undone_stack: Vec<JsonRow>,
 }
 
 impl Display for Change {
@@ -2763,14 +2814,14 @@ impl Row {
     /// [order](Row::order) fields pre-assigned with their correct next values for this table
     fn prepare_new(
         table: &Table,
-        json_row: Option<&sql::JsonRow>,
-        tx: &mut sql::DbTransaction<'_>,
+        json_row: Option<&JsonRow>,
+        tx: &mut DbTransaction<'_>,
     ) -> Result<Self> {
         tracing::trace!("Row::prepare_new({table:?}, {json_row:?}, tx)");
         let json_row = match json_row {
             None => {
                 let columns = {
-                    let columns = tx.get_table_columns(&table.name)?;
+                    let columns = sql::get_db_table_columns(&table.name, tx)?;
                     if columns.is_empty() {
                         return Err(RelatableError::DataError(format!(
                             "No defined columns for: {table}",
@@ -2785,12 +2836,12 @@ impl Row {
                         .collect::<Vec<_>>()
                 };
                 let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
-                sql::JsonRow::from_strings(&columns)
+                JsonRow::from_strings(&columns)
             }
             Some(json_row) => json_row.clone(),
         };
         let mut row = Row::from(json_row);
-        row.id = tx.get_next_id(table.name.as_str())?;
+        row.id = sql::get_next_id(table.name.as_str(), tx)?;
         row.order = NEW_ORDER_MULTIPLIER * row.id;
         row.change_id = table.change_id;
         tracing::debug!("Prepared a new row: {row:?}");
@@ -2806,7 +2857,7 @@ impl Row {
 
     /// Generate an insert statement and a [JsonValue] representing an [Array](JsonValue::Array) of
     /// parameters that need to be bound to the statement before it is executed.
-    fn as_insert(&self, table: &str, db_kind: &sql::DbKind) -> (String, JsonValue) {
+    fn as_insert(&self, table: &str, db_kind: &DbKind) -> (String, JsonValue) {
         tracing::trace!("Row::as_insert({table:?})");
         let id = self.id;
         let order = self.order;
@@ -2816,7 +2867,7 @@ impl Row {
             .map(|k| format!(r#""{k}""#))
             .collect::<Vec<_>>();
 
-        let mut sql_param_gen = sql::SqlParam::new(db_kind);
+        let mut sql_param_gen = SqlParam::new(db_kind);
         let (value_placeholders, params) = {
             let mut params = vec![json!(id), json!(order)];
             let mut value_placeholders = vec![sql_param_gen.next(), sql_param_gen.next()];
@@ -2859,8 +2910,8 @@ impl From<Row> for Vec<String> {
     }
 }
 
-impl From<sql::JsonRow> for Row {
-    fn from(row: sql::JsonRow) -> Self {
+impl From<JsonRow> for Row {
+    fn from(row: JsonRow) -> Self {
         tracing::trace!("Row::from({row:?})");
         let id = row
             .content
@@ -2936,15 +2987,6 @@ impl Default for Table {
 }
 
 impl Table {
-    pub fn new(name: &str) -> Self {
-        Self {
-            // By default, view and table name are the same
-            name: name.to_string(),
-            view: name.to_string(),
-            ..Default::default()
-        }
-    }
-
     /// Use the given [relatable](crate) instance to ensure that the default view for this
     /// table has been created, and to set the [view name](Table::view) for this table to
     /// TABLENAME_default_view
@@ -3233,7 +3275,7 @@ impl Filter {
         Ok(format!("{operator}.{rhs}"))
     }
 
-    pub fn to_sql(&self, kind: &sql::DbKind) -> Result<String> {
+    pub fn to_sql(&self, kind: &DbKind) -> Result<String> {
         tracing::trace!("Filter::to_sqlite()");
         let as_string = |value: &JsonValue| -> String {
             match value {
@@ -3851,7 +3893,7 @@ impl Select {
 
     /// Convert the filter to a tuple consisting of an SQL string supported by the given database
     /// kind, and a vector of parameters that must be bound to the string before executing it.
-    pub fn to_sql(&self, kind: &sql::DbKind) -> Result<(String, Vec<JsonValue>)> {
+    pub fn to_sql(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
         tracing::trace!("Select::to_sql({self:?})");
         let mut lines = Vec::new();
         let mut params = Vec::new();
@@ -3863,7 +3905,7 @@ impl Select {
                   WHERE "table" = {sql_param}
                     AND "row" = _id
                ) AS _change_id"#,
-            sql_param = sql::SqlParam::new(kind).next()
+            sql_param = SqlParam::new(kind).next()
         ));
         params.push(json!(self.table_name)); // the real table name
         lines.push(format!(r#"FROM "{}""#, self.view_name)); // the view name, which may differ

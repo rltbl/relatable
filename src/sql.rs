@@ -30,9 +30,12 @@ use sqlx::{
     Acquire as _, Column as _, Row as _,
 };
 
+/// Used to generates parameter placeholder strings for binding to SQL statements
 #[derive(Clone, Copy, Debug)]
 pub struct SqlParam {
+    /// The kind of database the parameters will be generated for
     pub kind: DbKind,
+    /// The current parameter index, if applicable
     pub index: usize,
 }
 
@@ -44,6 +47,8 @@ impl SqlParam {
         }
     }
 
+    /// Generate one parameter. If the database syntax involves an index, this is incremented
+    /// automatically.
     pub fn next(&mut self) -> String {
         match self.kind {
             DbKind::Postgres => {
@@ -54,6 +59,7 @@ impl SqlParam {
         }
     }
 
+    /// Generate `amount` parameters, incrementing the index accordingly.
     pub fn get(&mut self, amount: usize) -> Vec<String> {
         let mut params = vec![];
         let mut made = 0;
@@ -64,14 +70,18 @@ impl SqlParam {
         params
     }
 
+    /// Generate `amount` parameters and return then as a single comma-separated string rather than
+    /// as a list of strings.
     pub fn get_as_list(&mut self, amount: usize) -> String {
         self.get(amount).join(", ")
     }
 
-    pub fn set_last(&mut self, last_val: usize) {
-        self.index = last_val;
+    /// Update the index
+    pub fn set_index(&mut self, index: usize) {
+        self.index = index;
     }
 
+    /// Resets the index
     pub fn reset(&mut self) {
         self.index = 0;
     }
@@ -309,80 +319,6 @@ impl DbConnection {
         let rows = self.query(statement, params).await?;
         extract_value(&rows)
     }
-
-    // TODO: Move this out of here
-    pub async fn get_table_columns(&self, table: &str) -> Result<Vec<JsonRow>> {
-        tracing::trace!("DbConnection::get_table_columns({table})");
-        match self.kind() {
-            DbKind::Sqlite => {
-                let sql =
-                    format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
-                self.query(&sql, None).await
-            }
-            DbKind::Postgres => {
-                let sql = format!(
-                    r#"SELECT "column_name"::TEXT AS "name"
-                       FROM "information_schema"."columns"
-                       WHERE "table_schema" = 'public'
-                       AND "table_name" = {sql_param}
-                       ORDER BY "ordinal_position""#,
-                    sql_param = SqlParam::new(&self.kind()).next()
-                );
-                let params = json!([table]);
-                self.query(&sql, Some(&params)).await
-            }
-        }
-    }
-
-    // TODO: Move this out of here
-    pub async fn view_exists_for(&mut self, table: &str) -> Result<bool> {
-        tracing::trace!("DbConnection::view_exists_for({table})");
-        let sql_param = SqlParam::new(&self.kind()).next();
-        let statement = match self.kind() {
-            DbKind::Sqlite => format!(
-                r#"SELECT 1
-                   FROM sqlite_master
-                   WHERE type = 'view' AND name = {sql_param}"#
-            ),
-            DbKind::Postgres => format!(
-                r#"SELECT 1
-                   FROM "information_schema"."tables"
-                   WHERE "table_schema" = 'public'
-                   AND "table_name" = {sql_param}
-                   AND "table_type" = 'VIEW'"#,
-            ),
-        };
-        let params = json!([format!("{table}_default_view")]);
-        let result = self.query_value(&statement, Some(&params)).await?;
-        match result {
-            None => Ok(false),
-            _ => Ok(true),
-        }
-    }
-
-    // TODO: Move this out of here
-    pub async fn get_next_id(&self, table: &str) -> Result<usize> {
-        tracing::trace!("Row::get_next_id({table:?}, tx)");
-        let current_row_id = match self.kind() {
-            DbKind::Sqlite => {
-                let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#.to_string();
-                let params = json!([table]);
-                self.query_value(&sql, Some(&params)).await?
-            }
-            DbKind::Postgres => {
-                let sql = format!(
-                    // Note that in the case of postgres an _id column is required.
-                    r#"SELECT last_value FROM public."{table}__id_seq""#
-                );
-                self.query_value(&sql, None).await?
-            }
-        };
-        let current_row_id = match current_row_id {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
-        };
-        Ok(current_row_id + 1)
-    }
 }
 
 #[derive(Debug)]
@@ -479,84 +415,10 @@ impl DbTransaction<'_> {
         let rows = self.query(statement, params)?;
         extract_value(&rows)
     }
-
-    // TODO: Move this out of here
-    pub fn get_table_columns(&mut self, table: &str) -> Result<Vec<JsonRow>> {
-        tracing::trace!("DbTransaction::get_table_columns({table})");
-        match self.kind() {
-            DbKind::Sqlite => {
-                let sql =
-                    format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
-                self.query(&sql, None)
-            }
-            DbKind::Postgres => {
-                let sql = format!(
-                    r#"SELECT "column_name"::TEXT AS "name"
-                       FROM "information_schema"."columns"
-                       WHERE "table_schema" = 'public'
-                       AND "table_name" = {sql_param}
-                       ORDER BY "ordinal_position""#,
-                    sql_param = SqlParam::new(&self.kind()).next()
-                );
-                let params = json!([table]);
-                self.query(&sql, Some(&params))
-            }
-        }
-    }
-
-    // TODO: Move this out of here
-    pub fn view_exists_for(&mut self, table: &str) -> Result<bool> {
-        tracing::trace!("DbTransaction::view_exists_for({table})");
-        let sql_param = SqlParam::new(&self.kind()).next();
-        let statement = match self.kind() {
-            DbKind::Sqlite => format!(
-                r#"SELECT 1
-                   FROM sqlite_master
-                   WHERE type = 'view' AND name = {sql_param}"#
-            ),
-            DbKind::Postgres => format!(
-                r#"SELECT 1
-                   FROM "information_schema"."tables"
-                   WHERE "table_schema" = 'public'
-                   AND "table_name" = {sql_param}
-                   AND "table_type" = 'VIEW'"#,
-            ),
-        };
-        let params = json!([format!("{table}_default_view")]);
-        let result = self.query_value(&statement, Some(&params))?;
-        match result {
-            None => Ok(false),
-            _ => Ok(true),
-        }
-    }
-
-    // TODO: Move this out of here
-    pub fn get_next_id(&mut self, table: &str) -> Result<usize> {
-        tracing::trace!("DbTransaction::get_next_id({table:?}, tx)");
-        let current_row_id = match self.kind() {
-            DbKind::Sqlite => {
-                let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
-                let params = json!([table]);
-                self.query_value(sql, Some(&params))?
-            }
-            DbKind::Postgres => {
-                let sql = format!(
-                    // Note that in the case of postgres an _id column is required.
-                    r#"SELECT last_value FROM public."{table}__id_seq""#
-                );
-                self.query_value(&sql, None)?
-            }
-        };
-        let current_row_id = match current_row_id {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
-        };
-        Ok(current_row_id + 1)
-    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Database-related utilities and functions
+// Database-specific utilities and functions
 ///////////////////////////////////////////////////////////////////////////////
 
 pub async fn table_exists(table: &str, conn: &DbConnection) -> Result<bool> {
@@ -582,6 +444,79 @@ pub async fn table_exists(table: &str, conn: &DbConnection) -> Result<bool> {
         None => Ok(false),
         Some(_) => Ok(true),
     }
+}
+
+/// Determine whether a view already exists for the table in the database.
+pub fn view_exists_for(table: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
+    tracing::trace!("Relatable::view_exists_for({table}, tx)");
+    let sql_param = SqlParam::new(&tx.kind()).next();
+    let statement = match tx.kind() {
+        DbKind::Sqlite => format!(
+            r#"SELECT 1
+               FROM sqlite_master
+               WHERE type = 'view' AND name = {sql_param}"#
+        ),
+        DbKind::Postgres => format!(
+            r#"SELECT 1
+               FROM "information_schema"."tables"
+               WHERE "table_schema" = 'public'
+               AND "table_name" = {sql_param}
+               AND "table_type" = 'VIEW'"#,
+        ),
+    };
+    let params = json!([format!("{table}_default_view")]);
+    let result = tx.query_value(&statement, Some(&params))?;
+    match result {
+        None => Ok(false),
+        _ => Ok(true),
+    }
+}
+
+/// Query the database for the columns associated with the given table
+pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<Vec<JsonRow>> {
+    tracing::trace!("Relatable::_get_db_table_columns({table:?}, tx)");
+    match tx.kind() {
+        DbKind::Sqlite => {
+            let sql = format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
+            tx.query(&sql, None)
+        }
+        DbKind::Postgres => {
+            let sql = format!(
+                r#"SELECT "column_name"::TEXT AS "name"
+                   FROM "information_schema"."columns"
+                   WHERE "table_schema" = 'public'
+                   AND "table_name" = {sql_param}
+                   ORDER BY "ordinal_position""#,
+                sql_param = SqlParam::new(&tx.kind()).next()
+            );
+            let params = json!([table]);
+            tx.query(&sql, Some(&params))
+        }
+    }
+}
+
+/// Determine what the next created row id for the given table will be
+pub fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
+    tracing::trace!("DbTransaction::get_next_id({table:?}, tx)");
+    let current_row_id = match tx.kind() {
+        DbKind::Sqlite => {
+            let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
+            let params = json!([table]);
+            tx.query_value(sql, Some(&params))?
+        }
+        DbKind::Postgres => {
+            let sql = format!(
+                // Note that in the case of postgres an _id column is required.
+                r#"SELECT last_value FROM public."{table}__id_seq""#
+            );
+            tx.query_value(&sql, None)?
+        }
+    };
+    let current_row_id = match current_row_id {
+        Some(value) => value.as_u64().unwrap_or_default() as usize,
+        None => 0,
+    };
+    Ok(current_row_id + 1)
 }
 
 /// Helper function to determine whether the given name is 'simple', as defined by
@@ -910,7 +845,10 @@ pub fn generate_view_ddl(
 
 pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_table_table_ddl({force}, {db_kind:?})");
-    let mut table = Table::new("table");
+    let mut table = Table {
+        name: "table".to_string(),
+        ..Default::default()
+    };
     table.columns.insert(
         "table".into(),
         Column {
