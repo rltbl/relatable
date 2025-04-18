@@ -1,11 +1,12 @@
 //! # rltbl/relatable
 //!
-//! This is relatable (rltbl::cli)
+//! This is [relatable](crate) (rltbl::[cli](crate::cli))
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Format, Relatable, MOVE_INTERVAL},
-    sql::{JsonRow, VecInto, MAX_PARAMS},
+    core::{Change, ChangeAction, ChangeSet, Format, Relatable, NEW_ORDER_MULTIPLIER},
+    sql,
+    sql::{DbKind, JsonRow, SqlParam, VecInto},
     web::{serve, serve_cgi},
 };
 
@@ -31,14 +32,11 @@ static VALUE_HELP: &str = "A value for a cell";
           long_about = None)]
 pub struct Cli {
     /// Location of the database.
-    #[arg(long,
-          default_value = rltbl::core::RLTBL_DEFAULT_DB,
-          action = ArgAction::Set,
-          env = "RLTBL_DATABASE")]
-    database: String,
+    #[arg(long, action = ArgAction::Set, env = "RLTBL_CONNECTION")]
+    database: Option<String>,
 
-    #[arg(long, default_value="", action = ArgAction::Set, env = "RLTBL_USER")]
-    user: String,
+    #[arg(long, action = ArgAction::Set, env = "RLTBL_USER")]
+    user: Option<String>,
 
     /// Can be one of: JSON (that's it for now). If unspecified Valve will attempt to read the
     /// environment variable RLTBL_INPUT. If that is also unset, the user will be presented with
@@ -300,14 +298,26 @@ pub enum DeleteSubcommand {
 #[derive(Subcommand, Debug)]
 pub enum LoadSubcommand {
     Table {
-        #[arg(value_name = "PATH", num_args=1.., action = ArgAction::Set, help = "The path(s) to load from")]
+        #[arg(long, action = ArgAction::SetTrue)]
+        force: bool,
+
+        #[arg(value_name = "PATH", num_args=1..,
+              action = ArgAction::Set,
+              help = "The path(s) to load from")]
         paths: Vec<String>,
     },
 }
 
-pub async fn init(_cli: &Cli, force: &bool, path: &str) {
-    match Relatable::init(force, Some(path)).await {
-        Ok(_) => println!("Initialized a relatable database in '{path}'"),
+pub async fn init(_cli: &Cli, force: &bool, path: Option<&str>) {
+    tracing::trace!("init({_cli:?}, {force}, {path:?})");
+    match Relatable::init(force, path).await {
+        Ok(_) => println!(
+            "Initialized a relatable database in '{}'",
+            match path {
+                None => rltbl::core::RLTBL_DEFAULT_DB,
+                Some(db) => db,
+            }
+        ),
         Err(err) => panic!("{err:?}"),
     }
 }
@@ -315,6 +325,7 @@ pub async fn init(_cli: &Cli, force: &bool, path: &str) {
 /// Given a vector of vectors of strings,
 /// print text with "elastic tabstops".
 pub fn print_text(rows: &Vec<Vec<String>>) {
+    tracing::trace!("print_text({rows:?})");
     let mut tw = TabWriter::new(vec![]);
     for row in rows {
         tw.write(format!("{}\n", row.join("\t")).as_bytes())
@@ -326,6 +337,7 @@ pub fn print_text(rows: &Vec<Vec<String>>) {
 }
 
 pub fn print_tsv(rows: Vec<Vec<String>>) {
+    tracing::trace!("print_tsv({rows:?})");
     for row in rows {
         println!("{}", row.join("\t"));
     }
@@ -340,8 +352,11 @@ pub async fn print_table(
     limit: &usize,
     offset: &usize,
 ) {
+    tracing::trace!("print_table({cli:?}, {table_name}, {filters:?}, {format}, {limit}, {offset})");
+    // TODO: We need to ouput round numbers consistently between PostgreSQL and SQLite.
+    // Currently, for instance, 37 is displayed as 37.0 in SQLite and 37 in PostgreSQL.
     tracing::debug!("print_table {table_name}");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let select = rltbl
         .from(table_name)
         .filters(filters)
@@ -377,17 +392,20 @@ pub async fn print_table(
 
 // Print rows of a table, without column header.
 pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
-    tracing::debug!("print_rows {table_name}");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    tracing::trace!("print_rows({cli:?}, {table_name}, {limit}, {offset})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let select = rltbl.from(table_name).limit(limit).offset(offset);
     let rows = rltbl.fetch_json_rows(&select).await.unwrap().vec_into();
     print_text(&rows);
 }
 
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
-    tracing::debug!("print_value({cli:?}, {table}, {row}, {column})");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
-    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = ?"#);
+    tracing::trace!("print_value({cli:?}, {table}, {row}, {column})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let statement = format!(
+        r#"SELECT "{column}" FROM "{table}" WHERE _id = {sql_param}"#,
+        sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next(),
+    );
     let params = json!([row]);
     if let Some(value) = rltbl
         .connection
@@ -404,8 +422,7 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
 }
 
 pub async fn print_history(cli: &Cli, context: usize) {
-    tracing::debug!("print_history({cli:?}, {context})");
-
+    tracing::trace!("print_history({cli:?}, {context})");
     fn get_content_as_string(change_json: &JsonRow) -> String {
         let content = change_json.get_string("content").expect("No content found");
         let content = Change::many_from_str(&content).expect("Could not parse content");
@@ -417,7 +434,7 @@ pub async fn print_history(cli: &Cli, context: usize) {
     }
 
     let user = get_username(&cli);
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let history = rltbl
         .get_user_history(
             &user,
@@ -485,19 +502,22 @@ pub async fn print_history(cli: &Cli, context: usize) {
 // Get the user from the CLI, RLTBL_USER environment variable,
 // or the general environment.
 pub fn get_username(cli: &Cli) -> String {
-    let mut username = cli.user.clone();
-    if username == "" {
-        username = whoami::username();
+    tracing::trace!("get_username({cli:?})");
+    match &cli.user {
+        Some(user) => user.clone(),
+        None => whoami::username(),
     }
-    username
 }
 
 pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: &str) {
-    tracing::debug!("set_value({cli:?}, {table}, {row}, {column}, {value})");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
 
     // Fetch the current value from the db:
-    let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = ?"#);
+    let sql = format!(
+        r#"SELECT "{column}" FROM "{table}" WHERE "_id" = {sql_param}"#,
+        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
+    );
     let params = json!([row]);
     let before = rltbl
         .connection
@@ -531,6 +551,7 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
 }
 
 pub fn input_json_row() -> JsonRow {
+    tracing::trace!("input_json_row()");
     let mut json_row = String::new();
     io::stdin()
         .read_line(&mut json_row)
@@ -544,6 +565,7 @@ pub fn input_json_row() -> JsonRow {
 }
 
 pub fn prompt_for_column_value(column: &str) -> JsonValue {
+    tracing::trace!("prompt_for_column_value({column})");
     let value: Option<String> = prompt_opt(format!("Enter a {column}"))
         .expect("Error getting column value from user input");
     match value {
@@ -558,6 +580,7 @@ pub async fn prompt_for_json_message(
     row: usize,
     column: &str,
 ) -> Result<JsonRow> {
+    tracing::trace!("prompt_for_json_message({rltbl:?}, {table}, {row}, {column})");
     let columns = rltbl
         .fetch_columns("message")
         .await?
@@ -585,6 +608,7 @@ pub async fn prompt_for_json_message(
 }
 
 pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<JsonRow> {
+    tracing::trace!("prompt_for_json_row({rltbl:?}, {table_name})");
     let columns = rltbl
         .fetch_columns(table_name)
         .await?
@@ -607,8 +631,8 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
 /// a [Message](rltbl::core::Message) to the message table. The details of the message are read
 /// from STDIN, either interactively or in JSON format.
 pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
-    tracing::debug!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    tracing::trace!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let json_message = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
@@ -646,8 +670,8 @@ pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
 }
 
 pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
-    tracing::debug!("add_row({cli:?}, {table}, {after_id:?})");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    tracing::trace!("add_row({cli:?}, {table}, {after_id:?})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let json_row = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
@@ -669,8 +693,8 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
 }
 
 pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
-    tracing::debug!("move_row({cli:?}, {table}, {row}, {after_id})");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    tracing::trace!("move_row({cli:?}, {table}, {row}, {after_id})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let user = get_username(&cli);
     let new_order = rltbl
         .move_row(table, &user, row, after_id)
@@ -684,8 +708,8 @@ pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
 }
 
 pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
-    tracing::debug!("delete_row({cli:?}, {table}, {row})");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    tracing::trace!("delete_row({cli:?}, {table}, {row})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let user = get_username(&cli);
     let num_deleted = rltbl
         .delete_row(table, &user, row)
@@ -706,10 +730,10 @@ pub async fn delete_message(
     row: Option<usize>,
     column: Option<&str>,
 ) {
-    tracing::debug!(
+    tracing::trace!(
         "delete_message({cli:?}, {target_rule:?}, {target_user:?}, {table}, {row:?}, {column:?})"
     );
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let num_deleted = rltbl
         .delete_message(table, row, column, target_rule, target_user)
         .await
@@ -722,8 +746,8 @@ pub async fn delete_message(
 }
 
 pub async fn undo(cli: &Cli) {
-    tracing::debug!("undo({cli:?})");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    tracing::trace!("undo({cli:?})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let user = get_username(&cli);
     let changeset = rltbl.undo(&user).await.expect("Failed to undo");
     if let None = changeset {
@@ -733,8 +757,8 @@ pub async fn undo(cli: &Cli) {
 }
 
 pub async fn redo(cli: &Cli) {
-    tracing::debug!("redo({cli:?})");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    tracing::trace!("redo({cli:?})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let user = get_username(&cli);
     let changeset = rltbl.redo(&user).await.expect("Failed to redo");
     if let None = changeset {
@@ -743,16 +767,16 @@ pub async fn redo(cli: &Cli) {
     tracing::info!("Last operation redone");
 }
 
-pub async fn load_tables(cli: &Cli, paths: &Vec<String>) {
-    tracing::debug!("load_tables({cli:?}, {paths:?})");
+pub async fn load_tables(cli: &Cli, paths: &Vec<String>, force: bool) {
+    tracing::trace!("load_tables({cli:?}, {paths:?})");
     for path in paths {
-        load_table(cli, &path).await;
+        load_table(cli, &path, force).await;
     }
 }
 
-pub async fn load_table(cli: &Cli, path: &str) {
-    tracing::debug!("load_table({cli:?}, {path})");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+pub async fn load_table(cli: &Cli, path: &str, force: bool) {
+    tracing::trace!("load_table({cli:?}, {path})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
 
     // We will use this pattern to normalize the table name:
     let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
@@ -765,50 +789,59 @@ pub async fn load_table(cli: &Cli, path: &str) {
     let table = table.trim_end_matches("_");
     let table = table.trim_start_matches("_");
 
-    rltbl.load_table(&table, path).await;
+    rltbl.load_table(&table, path, force).await;
     tracing::info!("Loaded table '{table}'");
 }
 
 pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
-    tracing::debug!("save_all({cli:?})");
-    let rltbl = Relatable::connect(Some(&cli.database)).await.unwrap();
+    tracing::trace!("save_all({cli:?})");
+    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     rltbl.save_all(save_dir).await.expect("Error saving all");
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
-    tracing::debug!("build_demo({cli:?}");
+    tracing::trace!("build_demo({cli:?}");
 
-    let rltbl = Relatable::init(force, Some(&cli.database))
+    let rltbl = Relatable::init(force, cli.database.as_deref())
         .await
         .expect("Database was initialized");
 
-    let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('penguin', 'penguin.tsv')"#;
+    if *force {
+        if let DbKind::Postgres = rltbl.connection.kind() {
+            rltbl
+                .connection
+                .query(r#"DROP TABLE IF EXISTS "column" CASCADE"#, None)
+                .await
+                .expect("Error dropping column table");
+            rltbl
+                .connection
+                .query(r#"DROP TABLE IF EXISTS "penguin" CASCADE"#, None)
+                .await
+                .expect("Error dropping penguin table");
+        }
+    }
+
+    let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('penguin', 'penguin.tsv')"#;
     rltbl.connection.query(sql, None).await.unwrap();
 
-    // Create the penguin table.
-    let sql = r#"CREATE TABLE penguin (
-      _id INTEGER PRIMARY KEY AUTOINCREMENT,
-      _order INTEGER UNIQUE,
-      study_name TEXT,
-      sample_number TEXT,
-      species TEXT,
-      island TEXT,
-      individual_id TEXT,
-      culmen_length TEXT,
-      body_mass TEXT
-    )"#;
-    rltbl.connection.query(sql, None).await.unwrap();
+    let pkey_clause = match rltbl.connection.kind() {
+        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        DbKind::Postgres => "SERIAL PRIMARY KEY",
+    };
 
-    let sql = r#"CREATE TABLE "column" (
-      _id INTEGER PRIMARY KEY AUTOINCREMENT,
-      _order INTEGER UNIQUE,
-      "table" TEXT NOT NULL,
-      "column" TEXT NOT NULL,
-      "label" TEXT,
-      "description" TEXT,
-      "nulltype" TEXT
-    )"#;
-    rltbl.connection.query(sql, None).await.unwrap();
+    // Create and populate a column table:
+    let sql = format!(
+        r#"CREATE TABLE "column" (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             "table" TEXT,
+             "column" TEXT,
+             "label" TEXT,
+             "description" TEXT,
+             "nulltype" TEXT
+           )"#,
+    );
+    rltbl.connection.query(&sql, None).await.unwrap();
 
     let sql = r#"INSERT INTO "column"
                         ("table",   "column",        "label",      "description", "nulltype")
@@ -818,14 +851,76 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
                         ('penguin', 'species',       NULL,          NULL,             'empty')"#;
     rltbl.connection.query(sql, None).await.unwrap();
 
+    // TODO Don't explicitly execute any create table/trigger etc. statements here. Save the
+    // generated values to a TSV file first in a demo/ directory instead and then load it.
+
+    // Create a data table called penguin:
+    let sql = format!(
+        r#"CREATE TABLE penguin (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             study_name TEXT,
+             sample_number TEXT,
+             species TEXT,
+             island TEXT,
+             individual_id TEXT,
+             culmen_length TEXT,
+             body_mass TEXT
+           )"#,
+    );
+    rltbl.connection.query(&sql, None).await.unwrap();
+
+    if rltbl.connection.kind() == DbKind::Postgres {
+        // This is required, because in PostgreSQL, assiging SERIAL PRIMARY KEY to a column is
+        // equivalent to:
+        //   CREATE SEQUENCE table_name_id_seq;
+        //   CREATE TABLE table_name (
+        //     id integer NOT NULL DEFAULT nextval('table_name_id_seq')
+        //   );
+        //   ALTER SEQUENCE table_name_id_seq OWNED BY table_name.id;
+        // This means that such a column is only ever auto-incremented when it is explicitly left
+        // out of an INSERT statement. To replicate SQLite's more sane behaviour, we define the
+        // following trigger to *always* update the last value of the sequence to the currently
+        // inserted row number. A similar trigger is also defined generically for postgresql tables
+        // in [rltbl::core].
+        let sql = format!(
+            r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_penguin"()
+                 RETURNS TRIGGER
+                 LANGUAGE PLPGSQL
+                 AS
+               $$
+               BEGIN
+                 IF NEW._id > (SELECT MAX(last_value) FROM "penguin__id_seq") THEN
+                   PERFORM setval('penguin__id_seq', NEW._id);
+                 END IF;
+                 RETURN NEW;
+               END;
+               $$"#,
+        );
+        rltbl.connection.query(&sql, None).await.unwrap();
+
+        let sql = format!(
+            r#"CREATE TRIGGER "penguin_order"
+                 AFTER INSERT ON "penguin"
+                 FOR EACH ROW
+                 EXECUTE FUNCTION "update_order_and_nextval_penguin"()"#,
+        );
+        rltbl.connection.query(&sql, None).await.unwrap();
+    }
+
     // Populate the penguin table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
     let mut rng = StdRng::seed_from_u64(0);
     let sql_first_part = r#"INSERT INTO "penguin" VALUES "#;
     let mut sql_value_parts = vec![];
+    let mut sql_param = SqlParam::new(&rltbl.connection.kind());
     let mut params = vec![];
+    let max_params = match rltbl.connection.kind() {
+        DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
+        DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
+    };
     for i in 1..=size {
-        if (params.len() + 7) >= MAX_PARAMS {
+        if (params.len() + 7) >= max_params {
             let sql = format!(
                 "{sql_first_part} {sql_value_part}",
                 sql_value_part = sql_value_parts.join(", ")
@@ -839,14 +934,21 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
             tracing::info!("{num_rows} rows loaded to table penguin", num_rows = i - 1);
             params.clear();
             sql_value_parts.clear();
+            sql_param.reset();
         }
 
         let id = i;
-        let order = i * MOVE_INTERVAL;
+        let order = i * NEW_ORDER_MULTIPLIER;
         let island = islands.iter().choose(&mut rng).unwrap();
         let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
-        sql_value_parts.push("(?, ?, 'FAKE123', ?, 'Pygoscelis adeliae', ?, ?, ?, ?)");
+        sql_value_parts.push(format!(
+            "({sql_param_list_1}, 'FAKE123', {lone_sql_param}, 'Pygoscelis adeliae', \
+             {sql_param_list_2})",
+            sql_param_list_1 = sql_param.get_as_list(2),
+            lone_sql_param = sql_param.next(),
+            sql_param_list_2 = sql_param.get_as_list(4),
+        ));
         params.push(json!(id));
         params.push(json!(order));
         params.push(json!(id));
@@ -863,9 +965,17 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         let params = json!(params);
         rltbl.connection.query(&sql, Some(&params)).await.unwrap();
     }
+    println!(
+        "Created a demonstration database in '{}'",
+        match &cli.database {
+            None => rltbl::core::RLTBL_DEFAULT_DB,
+            Some(db) => db,
+        }
+    );
 }
 
 pub async fn process_command() {
+    tracing::trace!("process_command()");
     // Handle a CGI request, instead of normal CLI input.
     match std::env::var_os("GATEWAY_INTERFACE").and_then(|p| Some(p.into_string())) {
         Some(Ok(s)) if s == "CGI/1.1" => {
@@ -886,7 +996,7 @@ pub async fn process_command() {
     tracing::debug!("CLI {cli:?}");
 
     match &cli.command {
-        Command::Init { force } => init(&cli, force, &cli.database).await,
+        Command::Init { force } => init(&cli, force, cli.database.as_deref()).await,
         Command::Get { subcommand } => match subcommand {
             GetSubcommand::Table {
                 table,
@@ -945,7 +1055,7 @@ pub async fn process_command() {
         Command::Redo {} => redo(&cli).await,
         Command::History { context } => print_history(&cli, *context).await,
         Command::Load { subcommand } => match subcommand {
-            LoadSubcommand::Table { paths } => load_tables(&cli, paths).await,
+            LoadSubcommand::Table { paths, force } => load_tables(&cli, paths, *force).await,
         },
         Command::Save { save_dir } => save_all(&cli, save_dir.as_deref()).await,
         Command::Serve {

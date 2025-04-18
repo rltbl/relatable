@@ -1,6 +1,6 @@
 //! # rltbl/relatable
 //!
-//! This is relatable.
+//! This is [relatable](crate) (rltbl).
 
 use anyhow::Result;
 use rltbl::cli;

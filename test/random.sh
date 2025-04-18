@@ -1,10 +1,9 @@
-#/bin/bash
-
 PATH="target/debug:$PATH"
 RLTBL='rltbl -v'
 
-MIN_SLEEP=1
-MAX_SLEEP=4
+STEP_SLEEP=1
+MIN_RETRY_SLEEP=1
+MAX_RETRY_SLEEP=4
 NUM_RETRIES=5
 
 varying_rate=0
@@ -29,7 +28,7 @@ esac
 custom_sleep () {
     if [[ ${varying_rate} -eq 0 ]]
     then
-        sleep 1
+        sleep $STEP_SLEEP
     else
         sleep_val=$(printf '%s\n' $(echo "scale=10; $RANDOM/32768 * 2" | bc ))
         sleep ${sleep_val}
@@ -45,7 +44,7 @@ retry_and_fail () {
     eval "${command}" 2>&1
     while [[ $? -ne 0 && $more_tries -gt 0 ]]
     do
-        sleep_val=$(($MIN_SLEEP + $RANDOM % $MAX_SLEEP))
+        sleep_val=$(($MIN_RETRY_SLEEP + $RANDOM % $MAX_RETRY_SLEEP))
         echo "${user} will retry in ${sleep_val}s ..."
         sleep ${sleep_val}
         more_tries=`expr ${more_tries} - 1`
@@ -126,9 +125,18 @@ act_randomly () {
 
 ### Execution begins here
 
+echo "Created a demonstration database in '$RLTBL_CONNECTION'" > expected_output.txt
+
 command="${RLTBL} demo --size 20 --force"
 echo $command
-eval "$command"
+output=$(eval "$command" | diff - expected_output.txt)
+cat expected_output.txt
+
+if [[ $output != "" ]]
+then
+    echo "Unexpected output"
+    exit 1
+fi
 
 (
     act_randomly mike 1 5
