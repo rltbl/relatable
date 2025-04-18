@@ -3,7 +3,7 @@
 //! This is [relatable](crate) (rltbl::[sql](crate::sql)).
 //!
 //! This module contains functions for connecting to and querying the database, and implements
-//! any elements of the API that are database-specific.
+//! elements of the API that are particularly database-specific.
 
 use crate as rltbl;
 use rltbl::core::{Column, RelatableError, Table, NEW_ORDER_MULTIPLIER};
@@ -30,7 +30,33 @@ use sqlx::{
     Acquire as _, Column as _, Row as _,
 };
 
-/// Used to generates parameter placeholder strings for binding to SQL statements
+/// A 'simple' database name
+pub static DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
+
+lazy_static! {
+    /// The regex used to match ['simple'](DB_OBJECT_MATCH_STR) database names
+    pub static ref DB_OBJECT_REGEX: Regex = Regex::new(DB_OBJECT_MATCH_STR).unwrap();
+}
+
+/// Maximum number of database connections.
+pub static MAX_DB_CONNECTIONS: u32 = 5;
+
+/// The [maximum number of parameters](https://www.sqlite.org/limits.html#max_variable_number)
+/// that can be bound to a SQLite query
+pub static MAX_PARAMS_SQLITE: usize = 32766;
+
+/// The [maximum number of parameters](https://www.postgresql.org/docs/current/limits.html)
+/// that can be bound to a Postgres query
+pub static MAX_PARAMS_POSTGRES: usize = 65535;
+
+/// Represents the kind of database being managed
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DbKind {
+    Postgres,
+    Sqlite,
+}
+
+/// Used to generate database-specific parameter placeholder strings for binding to SQL statements
 #[derive(Clone, Copy, Debug)]
 pub struct SqlParam {
     /// The kind of database the parameters will be generated for
@@ -40,6 +66,7 @@ pub struct SqlParam {
 }
 
 impl SqlParam {
+    /// Create a new parameter for the given database kind
     pub fn new(kind: &DbKind) -> Self {
         Self {
             kind: *kind,
@@ -85,31 +112,6 @@ impl SqlParam {
     pub fn reset(&mut self) {
         self.index = 0;
     }
-}
-
-/// Represents a 'simple' database name
-pub static DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
-
-lazy_static! {
-    pub static ref DB_OBJECT_REGEX: Regex = Regex::new(DB_OBJECT_MATCH_STR).unwrap();
-}
-
-/// Maximum number of database connections.
-pub static MAX_DB_CONNECTIONS: u32 = 5;
-
-/// The [maximum number of parameters](https://www.sqlite.org/limits.html#max_variable_number)
-/// that can be bound to a SQLite query
-pub static MAX_PARAMS_SQLITE: usize = 32766;
-
-/// The [maximum number of parameters](https://www.postgresql.org/docs/current/limits.html)
-/// that can be bound to a Postgres query
-pub static MAX_PARAMS_POSTGRES: usize = 65535;
-
-/// Represents the kind of database being managed
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DbKind {
-    Postgres,
-    Sqlite,
 }
 
 #[derive(Debug)]
@@ -330,8 +332,6 @@ pub enum DbTransaction<'a> {
     Rusqlite(rusqlite::Transaction<'a>),
 }
 
-// TODO: Try to share more code (i.e., refactor a little) between DbTransaction and DbConnection.
-// E.g., the query() methods share things in common.
 impl DbTransaction<'_> {
     pub fn kind(&self) -> DbKind {
         tracing::trace!("DbTransaction::kind()");
@@ -448,7 +448,7 @@ pub async fn table_exists(table: &str, conn: &DbConnection) -> Result<bool> {
 
 /// Determine whether a view already exists for the table in the database.
 pub fn view_exists_for(table: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
-    tracing::trace!("Relatable::view_exists_for({table}, tx)");
+    tracing::trace!("view_exists_for({table}, tx)");
     let sql_param = SqlParam::new(&tx.kind()).next();
     let statement = match tx.kind() {
         DbKind::Sqlite => format!(
@@ -474,7 +474,7 @@ pub fn view_exists_for(table: &str, tx: &mut DbTransaction<'_>) -> Result<bool> 
 
 /// Query the database for the columns associated with the given table
 pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<Vec<JsonRow>> {
-    tracing::trace!("Relatable::_get_db_table_columns({table:?}, tx)");
+    tracing::trace!("get_db_table_columns({table:?}, tx)");
     match tx.kind() {
         DbKind::Sqlite => {
             let sql = format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
@@ -495,9 +495,9 @@ pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<V
     }
 }
 
-/// Determine what the next created row id for the given table will be
+/// Query the database for what the id of the next created row of the given table will be
 pub fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
-    tracing::trace!("DbTransaction::get_next_id({table:?}, tx)");
+    tracing::trace!("get_next_id({table:?}, tx)");
     let current_row_id = match tx.kind() {
         DbKind::Sqlite => {
             let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
@@ -534,6 +534,7 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
     }
 }
 
+/// Helper function to deal with alternative "IS" syntax for different SQL flavours
 pub fn is_clause(db_kind: &DbKind) -> String {
     tracing::trace!("is_clause({db_kind:?})");
     match db_kind {
@@ -542,6 +543,7 @@ pub fn is_clause(db_kind: &DbKind) -> String {
     }
 }
 
+/// Helper function to deal with alternative "IS NOT" syntax for different SQL flavours
 pub fn is_not_clause(db_kind: &DbKind) -> String {
     tracing::trace!("is_not_clause({db_kind:?})");
     match db_kind {
@@ -631,6 +633,10 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
         None => Ok(None),
     }
 }
+
+/////////////////
+// Functions for generating DDL
+////////////////
 
 pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Result<Vec<String>> {
     tracing::trace!("generate_table_ddl({table:?}, {force}, {db_kind:?})");
