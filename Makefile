@@ -59,7 +59,7 @@ rltbl-frontend/build/main.js: rltbl-frontend/package.* rltbl-frontend/src/*
 rltbl-frontend/build/main.css: rltbl-frontend/build/main.js
 
 .PHONY: clean
-clean: clean-test
+clean: clean_test
 
 .PHONY: cleanall
 cleanall: clean
