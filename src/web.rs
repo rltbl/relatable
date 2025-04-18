@@ -347,7 +347,7 @@ async fn get_column_menu(
     let mut value = json!("");
     let mut order = String::new();
     for filter in select.filters {
-        let (c, o, v) = filter.parts();
+        let (_t, c, o, v) = filter.parts();
         tracing::warn!("FILTER {filter:?} {o}");
         if c == column {
             operator = o;

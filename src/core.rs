@@ -3139,18 +3139,61 @@ impl TryFrom<&String> for Format {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Filter {
-    // TODO: Add a `table` field to all of these.
-    Like { column: String, value: JsonValue },
-    Equal { column: String, value: JsonValue },
-    NotEqual { column: String, value: JsonValue },
-    GreaterThan { column: String, value: JsonValue },
-    GreaterThanOrEqual { column: String, value: JsonValue },
-    LessThan { column: String, value: JsonValue },
-    LessThanOrEqual { column: String, value: JsonValue },
-    Is { column: String, value: JsonValue },
-    IsNot { column: String, value: JsonValue },
-    In { column: String, value: JsonValue },
-    NotIn { column: String, value: JsonValue },
+    Like {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
+    Equal {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
+    NotEqual {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
+    GreaterThan {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
+    GreaterThanOrEqual {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
+    LessThan {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
+    LessThanOrEqual {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
+    Is {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
+    IsNot {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
+    In {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
+    NotIn {
+        table: String,
+        column: String,
+        value: JsonValue,
+    },
 }
 
 fn render_in_not_in<S: Into<String>>(
@@ -3210,22 +3253,71 @@ fn render_in_not_in<S: Into<String>>(
 }
 
 impl Filter {
-    pub fn parts(&self) -> (String, String, JsonValue) {
+    pub fn parts(&self) -> (String, String, String, JsonValue) {
         tracing::trace!("Filter::parts()");
-        let (column, operator, value) = match self {
-            Filter::Like { column, value } => (column, "like", value),
-            Filter::Equal { column, value } => (column, "eq", value),
-            Filter::NotEqual { column, value } => (column, "not_eq", value),
-            Filter::GreaterThan { column, value } => (column, "gt", value),
-            Filter::GreaterThanOrEqual { column, value } => (column, "gte", value),
-            Filter::LessThan { column, value } => (column, "lt", value),
-            Filter::LessThanOrEqual { column, value } => (column, "lte", value),
-            Filter::Is { column, value } => (column, "is", value),
-            Filter::IsNot { column, value } => (column, "is_not", value),
-            Filter::In { column, value } => (column, "in", value),
-            Filter::NotIn { column, value } => (column, "not_in", value),
+        let (table, column, operator, value) = match self {
+            Filter::Like {
+                table,
+                column,
+                value,
+            } => (table, column, "like", value),
+            Filter::Equal {
+                table,
+                column,
+                value,
+            } => (table, column, "eq", value),
+            Filter::NotEqual {
+                table,
+                column,
+                value,
+            } => (table, column, "not_eq", value),
+            Filter::GreaterThan {
+                table,
+                column,
+                value,
+            } => (table, column, "gt", value),
+            Filter::GreaterThanOrEqual {
+                table,
+                column,
+                value,
+            } => (table, column, "gte", value),
+            Filter::LessThan {
+                table,
+                column,
+                value,
+            } => (table, column, "lt", value),
+            Filter::LessThanOrEqual {
+                table,
+                column,
+                value,
+            } => (table, column, "lte", value),
+            Filter::Is {
+                table,
+                column,
+                value,
+            } => (table, column, "is", value),
+            Filter::IsNot {
+                table,
+                column,
+                value,
+            } => (table, column, "is_not", value),
+            Filter::In {
+                table,
+                column,
+                value,
+            } => (table, column, "in", value),
+            Filter::NotIn {
+                table,
+                column,
+                value,
+            } => (table, column, "not_in", value),
         };
-        (column.to_string(), operator.to_string(), json!(value))
+        (
+            table.to_string(),
+            column.to_string(),
+            operator.to_string(),
+            json!(value),
+        )
     }
 
     pub fn to_url(&self) -> Result<String> {
@@ -3239,7 +3331,7 @@ impl Filter {
             }
         }
 
-        let (_, operator, value) = self.parts();
+        let (_, _, operator, value) = self.parts();
 
         let rhs = match &value {
             JsonValue::String(s) => handle_string_value(&s),
@@ -3287,37 +3379,70 @@ impl Filter {
                 JsonValue::Object(value) => format!("'{value:?}'"),
             }
         };
+        // The table field is unused for now
         match self {
-            Filter::Like { column, value } => {
+            Filter::Like {
+                table: _,
+                column,
+                value,
+            } => {
                 let value = as_string(&value);
                 let value = value.replace("*", "%");
                 Ok(format!(r#""{column}" LIKE {value}"#))
             }
-            Filter::Equal { column, value } => {
+            Filter::Equal {
+                table: _,
+                column,
+                value,
+            } => {
                 let value = as_string(&value);
                 Ok(format!(r#""{column}" = {value}"#))
             }
-            Filter::NotEqual { column, value } => {
+            Filter::NotEqual {
+                table: _,
+                column,
+                value,
+            } => {
                 let value = as_string(&value);
                 Ok(format!(r#""{column}" <> {value}"#))
             }
-            Filter::GreaterThan { column, value } => {
+            Filter::GreaterThan {
+                table: _,
+                column,
+                value,
+            } => {
                 let value = as_string(&value);
                 Ok(format!(r#""{column}" > {value}"#))
             }
-            Filter::GreaterThanOrEqual { column, value } => {
+            Filter::GreaterThanOrEqual {
+                table: _,
+                column,
+                value,
+            } => {
                 let value = as_string(&value);
                 Ok(format!(r#""{column}" >= {value}"#))
             }
-            Filter::LessThan { column, value } => {
+            Filter::LessThan {
+                table: _,
+                column,
+                value,
+            } => {
                 let value = as_string(&value);
                 Ok(format!(r#""{column}" < {value}"#))
             }
-            Filter::LessThanOrEqual { column, value } => {
+            Filter::LessThanOrEqual {
+                table: _,
+                column,
+                value,
+            } => {
                 let value = as_string(&value);
                 Ok(format!(r#""{column}" <= {value}"#))
             }
-            Filter::Is { column, value } => {
+            Filter::Is {
+                table: _,
+                column,
+                value,
+            } => {
                 // Note that we are presupposing SQLite syntax which is not universal for IS:
                 let value = as_string(&value);
                 Ok(format!(
@@ -3325,7 +3450,11 @@ impl Filter {
                     is = sql::is_clause(kind)
                 ))
             }
-            Filter::IsNot { column, value } => {
+            Filter::IsNot {
+                table: _,
+                column,
+                value,
+            } => {
                 // Note that we are presupposing SQLite syntax which is not universal for IS:
                 let value = as_string(&value);
                 Ok(format!(
@@ -3333,7 +3462,11 @@ impl Filter {
                     is_not = sql::is_not_clause(kind)
                 ))
             }
-            Filter::In { column, value } => {
+            Filter::In {
+                table: _,
+                column,
+                value,
+            } => {
                 if let JsonValue::Array(values) = value {
                     let filter_str = match render_in_not_in(column, values, true) {
                         Err(e) => {
@@ -3349,7 +3482,11 @@ impl Filter {
                     Err(RelatableError::DataError(format!("Invalid 'in' value: {value}")).into())
                 }
             }
-            Filter::NotIn { column, value } => {
+            Filter::NotIn {
+                table: _,
+                column,
+                value,
+            } => {
                 if let JsonValue::Array(values) = value {
                     let filter_str = match render_in_not_in(column, values, false) {
                         Err(e) => {
@@ -3411,7 +3548,7 @@ impl Select {
     /// query parameters.
     pub fn from_path_and_query(rltbl: &Relatable, path: &str, query_params: &QueryParams) -> Self {
         tracing::trace!("Select::from_path_and_query({rltbl:?}, {path:?}, {query_params:?})");
-        let table_name = path.split(".").next().unwrap_or_default();
+        let table = path.split(".").next().unwrap_or_default();
         let mut query_params = query_params.clone();
         let mut filters = Vec::new();
         let mut order_by = Vec::new();
@@ -3445,102 +3582,157 @@ impl Select {
 
         for (column, pattern) in query_params {
             if pattern.starts_with("like.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let value = &pattern.replace("like.", "");
                 match serde_json::from_str(value) {
-                    Ok(value) => filters.push(Filter::Like { column, value }),
+                    Ok(value) => filters.push(Filter::Like {
+                        table,
+                        column,
+                        value,
+                    }),
                     Err(_) => filters.push(Filter::Like {
+                        table,
                         column,
                         value: JsonValue::String(value.to_string()),
                     }),
                 }
             } else if pattern.starts_with("eq.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let value = &pattern.replace("eq.", "");
                 match serde_json::from_str(value) {
-                    Ok(value) => filters.push(Filter::Equal { column, value }),
+                    Ok(value) => filters.push(Filter::Equal {
+                        table,
+                        column,
+                        value,
+                    }),
                     Err(_) => filters.push(Filter::Equal {
+                        table,
                         column,
                         value: JsonValue::String(value.to_string()),
                     }),
                 }
             } else if pattern.starts_with("not_eq.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let value = &pattern.replace("not_eq.", "");
                 match serde_json::from_str(value) {
-                    Ok(value) => filters.push(Filter::NotEqual { column, value }),
+                    Ok(value) => filters.push(Filter::NotEqual {
+                        table,
+                        column,
+                        value,
+                    }),
                     Err(_) => filters.push(Filter::NotEqual {
+                        table,
                         column,
                         value: JsonValue::String(value.to_string()),
                     }),
                 }
             } else if pattern.starts_with("gt.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let value = &pattern.replace("gt.", "");
                 match serde_json::from_str(value) {
-                    Ok(value) => filters.push(Filter::GreaterThan { column, value }),
+                    Ok(value) => filters.push(Filter::GreaterThan {
+                        table,
+                        column,
+                        value,
+                    }),
                     Err(_) => filters.push(Filter::GreaterThan {
+                        table,
                         column,
                         value: JsonValue::String(value.to_string()),
                     }),
                 }
             } else if pattern.starts_with("gte.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let value = &pattern.replace("gte.", "");
                 match serde_json::from_str(value) {
-                    Ok(value) => filters.push(Filter::GreaterThanOrEqual { column, value }),
+                    Ok(value) => filters.push(Filter::GreaterThanOrEqual {
+                        table,
+                        column,
+                        value,
+                    }),
                     Err(_) => filters.push(Filter::GreaterThanOrEqual {
+                        table,
                         column,
                         value: JsonValue::String(value.to_string()),
                     }),
                 }
             } else if pattern.starts_with("lt.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let value = &pattern.replace("lt.", "");
                 match serde_json::from_str(value) {
-                    Ok(value) => filters.push(Filter::LessThan { column, value }),
+                    Ok(value) => filters.push(Filter::LessThan {
+                        table,
+                        column,
+                        value,
+                    }),
                     Err(_) => filters.push(Filter::LessThan {
+                        table,
                         column,
                         value: JsonValue::String(value.to_string()),
                     }),
                 }
             } else if pattern.starts_with("lte.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let value = &pattern.replace("lte.", "");
                 match serde_json::from_str(value) {
-                    Ok(value) => filters.push(Filter::LessThanOrEqual { column, value }),
+                    Ok(value) => filters.push(Filter::LessThanOrEqual {
+                        table,
+                        column,
+                        value,
+                    }),
                     Err(_) => filters.push(Filter::LessThanOrEqual {
+                        table,
                         column,
                         value: JsonValue::String(value.to_string()),
                     }),
                 }
             } else if pattern.starts_with("is.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let value = pattern.replace("is.", "");
                 match value.to_lowercase().as_str() {
                     "null" => filters.push(Filter::Is {
+                        table,
                         column,
                         value: JsonValue::Null,
                     }),
                     _ => match serde_json::from_str(&value) {
-                        Ok(value) => filters.push(Filter::Is { column, value }),
+                        Ok(value) => filters.push(Filter::Is {
+                            table,
+                            column,
+                            value,
+                        }),
                         Err(_) => tracing::warn!("invalid 'is' filter value {pattern}"),
                     },
                 };
             } else if pattern.starts_with("is_not.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let value = pattern.replace("is_not.", "");
                 match value.to_lowercase().as_str() {
                     "null" => filters.push(Filter::IsNot {
+                        table,
                         column,
                         value: JsonValue::Null,
                     }),
                     _ => match serde_json::from_str(&value) {
-                        Ok(value) => filters.push(Filter::IsNot { column, value }),
+                        Ok(value) => filters.push(Filter::IsNot {
+                            table,
+                            column,
+                            value,
+                        }),
                         Err(_) => tracing::warn!("invalid 'is_not' filter value {pattern}"),
                     },
                 };
             } else if pattern.starts_with("in.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let separator = Regex::new(r"\s*,\s*").unwrap();
                 let values = pattern.replace("in.", "");
@@ -3556,10 +3748,12 @@ impl Select {
                     .map(|v| serde_json::from_str::<JsonValue>(v).unwrap_or(json!(v.to_string())))
                     .collect::<Vec<_>>();
                 filters.push(Filter::In {
+                    table,
                     column,
                     value: json!(values),
                 })
             } else if pattern.starts_with("not_in.") {
+                let table = table.to_string();
                 let column = column.to_string();
                 let separator = Regex::new(r"\s*,\s*").unwrap();
                 let values = pattern.replace("not_in.", "");
@@ -3575,14 +3769,15 @@ impl Select {
                     .map(|v| serde_json::from_str::<JsonValue>(v).unwrap_or(json!(v.to_string())))
                     .collect::<Vec<_>>();
                 filters.push(Filter::NotIn {
+                    table,
                     column,
                     value: json!(values),
                 })
             }
         }
         Self {
-            table_name: table_name.to_string(),
-            view_name: format!("{table_name}_default_view"),
+            table_name: table.to_string(),
+            view_name: format!("{table}_default_view"),
             limit,
             offset,
             order_by,
@@ -3652,6 +3847,7 @@ impl Select {
                 Ok(value)
             }
         };
+        // The table field is unused (for now) and filled with empty strings.
         for filter in filters {
             tracing::trace!("Applying filter: {filter}");
             if like.is_match(&filter) {
@@ -3659,44 +3855,71 @@ impl Select {
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = maybe_quote_value(&value)?;
-                self.filters.push(Filter::Like { column, value });
+                self.filters.push(Filter::Like {
+                    table: "".to_string(),
+                    column,
+                    value,
+                });
             } else if eq.is_match(&filter) {
                 let captures = eq.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = maybe_quote_value(&value)?;
-                self.filters.push(Filter::Equal { column, value });
+                self.filters.push(Filter::Equal {
+                    table: "".to_string(),
+                    column,
+                    value,
+                });
             } else if not_eq.is_match(&filter) {
                 let captures = not_eq.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = maybe_quote_value(&value)?;
-                self.filters.push(Filter::NotEqual { column, value });
+                self.filters.push(Filter::NotEqual {
+                    table: "".to_string(),
+                    column,
+                    value,
+                });
             } else if gt.is_match(&filter) {
                 let captures = gt.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = maybe_quote_value(&value)?;
-                self.filters.push(Filter::GreaterThan { column, value });
+                self.filters.push(Filter::GreaterThan {
+                    table: "".to_string(),
+                    column,
+                    value,
+                });
             } else if gte.is_match(&filter) {
                 let captures = gte.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = maybe_quote_value(value)?;
-                self.filters
-                    .push(Filter::GreaterThanOrEqual { column, value });
+                self.filters.push(Filter::GreaterThanOrEqual {
+                    table: "".to_string(),
+                    column,
+                    value,
+                });
             } else if lt.is_match(&filter) {
                 let captures = lt.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = maybe_quote_value(&value)?;
-                self.filters.push(Filter::LessThan { column, value });
+                self.filters.push(Filter::LessThan {
+                    table: "".to_string(),
+                    column,
+                    value,
+                });
             } else if lte.is_match(&filter) {
                 let captures = lte.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
                 let value = maybe_quote_value(&value)?;
-                self.filters.push(Filter::LessThanOrEqual { column, value });
+                self.filters.push(Filter::LessThanOrEqual {
+                    table: "".to_string(),
+                    column,
+                    value,
+                });
             } else if is.is_match(&filter) {
                 let captures = is.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
@@ -3705,7 +3928,11 @@ impl Select {
                     "null" => JsonValue::Null,
                     _ => maybe_quote_value(&value)?,
                 };
-                self.filters.push(Filter::Is { column, value });
+                self.filters.push(Filter::Is {
+                    table: "".to_string(),
+                    column,
+                    value,
+                });
             } else if is_not.is_match(&filter) {
                 let captures = is_not.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
@@ -3714,7 +3941,11 @@ impl Select {
                     "null" => JsonValue::Null,
                     _ => maybe_quote_value(&value)?,
                 };
-                self.filters.push(Filter::IsNot { column, value });
+                self.filters.push(Filter::IsNot {
+                    table: "".to_string(),
+                    column,
+                    value,
+                });
             } else if is_in.is_match(&filter) {
                 let captures = is_in.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
@@ -3725,6 +3956,7 @@ impl Select {
                     .map(|v| serde_json::from_str::<JsonValue>(v).unwrap_or(json!(v.to_string())))
                     .collect::<Vec<_>>();
                 self.filters.push(Filter::In {
+                    table: "".to_string(),
                     column,
                     value: json!(values),
                 });
@@ -3738,6 +3970,7 @@ impl Select {
                     .map(|v| serde_json::from_str::<JsonValue>(v).unwrap_or(json!(v.to_string())))
                     .collect::<Vec<_>>();
                 self.filters.push(Filter::NotIn {
+                    table: "".to_string(),
                     column,
                     value: json!(values),
                 });
@@ -3755,6 +3988,8 @@ impl Select {
     {
         tracing::trace!("Select::like({column:?}, value)");
         self.filters.push(Filter::Like {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3768,6 +4003,8 @@ impl Select {
     {
         tracing::trace!("Select::eq({column:?}, value)");
         self.filters.push(Filter::Equal {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3781,6 +4018,8 @@ impl Select {
     {
         tracing::trace!("Select::not_eq({column:?}, value)");
         self.filters.push(Filter::NotEqual {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3794,6 +4033,8 @@ impl Select {
     {
         tracing::trace!("Select::gt({column:?}, value)");
         self.filters.push(Filter::GreaterThan {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3807,6 +4048,8 @@ impl Select {
     {
         tracing::trace!("Select::gte({column:?}, value)");
         self.filters.push(Filter::GreaterThanOrEqual {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3820,6 +4063,8 @@ impl Select {
     {
         tracing::trace!("Select::lt({column:?}, value)");
         self.filters.push(Filter::LessThan {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3833,6 +4078,8 @@ impl Select {
     {
         tracing::trace!("Select::lte({column:?}, value)");
         self.filters.push(Filter::LessThanOrEqual {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3846,6 +4093,8 @@ impl Select {
     {
         tracing::trace!("Select::is({column:?}, value)");
         self.filters.push(Filter::Is {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3859,6 +4108,8 @@ impl Select {
     {
         tracing::trace!("Select::is_not({column:?}, value)");
         self.filters.push(Filter::IsNot {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3872,6 +4123,8 @@ impl Select {
     {
         tracing::trace!("Select::is_in({column:?}, value)");
         self.filters.push(Filter::In {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3885,6 +4138,8 @@ impl Select {
     {
         tracing::trace!("Select::is_not_in({column:?}, value)");
         self.filters.push(Filter::NotIn {
+            // Unused for now
+            table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
         });
@@ -3942,18 +4197,63 @@ impl Select {
         let mut params = JsonMap::new();
         if self.filters.len() > 0 {
             for filter in &self.filters {
+                // The table field is unused for now
                 let column = match &filter {
-                    Filter::Like { column, value: _ }
-                    | Filter::Equal { column, value: _ }
-                    | Filter::NotEqual { column, value: _ }
-                    | Filter::GreaterThan { column, value: _ }
-                    | Filter::GreaterThanOrEqual { column, value: _ }
-                    | Filter::LessThan { column, value: _ }
-                    | Filter::LessThanOrEqual { column, value: _ }
-                    | Filter::Is { column, value: _ }
-                    | Filter::IsNot { column, value: _ }
-                    | Filter::In { column, value: _ }
-                    | Filter::NotIn { column, value: _ } => column,
+                    Filter::Like {
+                        table: _,
+                        column,
+                        value: _,
+                    }
+                    | Filter::Equal {
+                        table: _,
+                        column,
+                        value: _,
+                    }
+                    | Filter::NotEqual {
+                        table: _,
+                        column,
+                        value: _,
+                    }
+                    | Filter::GreaterThan {
+                        table: _,
+                        column,
+                        value: _,
+                    }
+                    | Filter::GreaterThanOrEqual {
+                        table: _,
+                        column,
+                        value: _,
+                    }
+                    | Filter::LessThan {
+                        table: _,
+                        column,
+                        value: _,
+                    }
+                    | Filter::LessThanOrEqual {
+                        table: _,
+                        column,
+                        value: _,
+                    }
+                    | Filter::Is {
+                        table: _,
+                        column,
+                        value: _,
+                    }
+                    | Filter::IsNot {
+                        table: _,
+                        column,
+                        value: _,
+                    }
+                    | Filter::In {
+                        table: _,
+                        column,
+                        value: _,
+                    }
+                    | Filter::NotIn {
+                        table: _,
+                        column,
+                        value: _,
+                    } => column,
                 };
 
                 let column = unquote(&column).unwrap_or(column.to_string());
