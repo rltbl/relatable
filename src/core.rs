@@ -3194,6 +3194,16 @@ pub enum Filter {
         column: String,
         value: JsonValue,
     },
+    InSubquery {
+        table: String,
+        column: String,
+        subquery: Select,
+    },
+    NotInSubquery {
+        table: String,
+        column: String,
+        subquery: Select,
+    },
 }
 
 fn render_in_not_in<S: Into<String>>(
@@ -3315,6 +3325,16 @@ impl Filter {
                 column,
                 value,
             } => (table, column, "not_in", value),
+            Filter::InSubquery {
+                table,
+                column,
+                subquery,
+            } => (table, column, "in", &json!(subquery)),
+            Filter::NotInSubquery {
+                table,
+                column,
+                subquery,
+            } => (table, column, "not_in", &json!(subquery)),
         };
         (
             table.to_string(),
@@ -3360,6 +3380,9 @@ impl Filter {
                 format!("({})", list.join(","))
             }
             _ => {
+                if let Filter::InSubquery { .. } | Filter::NotInSubquery { .. } = self {
+                    tracing::error!("Subquery filters are unsupported: {self:?}");
+                }
                 return Err(RelatableError::DataError(format!(
                     "RHS of Filter: {:?} is not a string, number, or list",
                     self
@@ -3538,6 +3561,29 @@ impl Filter {
                             .into(),
                     )
                 }
+            }
+            Filter::InSubquery {
+                table,
+                column,
+                subquery,
+            } => {
+                // TODO: Double-check this code.
+
+                let lhs = match table.as_str() {
+                    "" => format!(r#""{column}""#),
+                    _ => format!(r#""{table}"."{column}""#),
+                };
+                let (sql, params) = subquery.to_sql(&sql_param.kind)?;
+                let sql = sql.replace("\n", "\n  ");
+                println!("{:?}", (format!("{lhs} IN (\n  {sql}\n)"), params.clone()));
+                Ok((format!("{lhs} IN (\n  {sql}\n)"), params))
+            }
+            Filter::NotInSubquery {
+                table: _,
+                column: _,
+                subquery: _,
+            } => {
+                todo!()
             }
         }
     }
@@ -3881,6 +3927,7 @@ impl Select {
                 Ok(value)
             }
         };
+
         // The table field is unused (for now) and filled with empty strings.
         for filter in filters {
             tracing::trace!("Applying filter: {filter}");
@@ -4290,6 +4337,16 @@ impl Select {
                         table: _,
                         column,
                         value: _,
+                    }
+                    | Filter::InSubquery {
+                        table: _,
+                        column,
+                        subquery: _,
+                    }
+                    | Filter::NotInSubquery {
+                        table: _,
+                        column,
+                        subquery: _,
                     } => column,
                 };
 
