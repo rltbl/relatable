@@ -36,6 +36,7 @@ fn forbid() -> Response<Body> {
 }
 
 fn get_404(error: &anyhow::Error) -> Response<Body> {
+    tracing::error!("404 {error:?}");
     (
         StatusCode::NOT_FOUND,
         Html(format!("404 Not Found: {error}")),
@@ -44,6 +45,7 @@ fn get_404(error: &anyhow::Error) -> Response<Body> {
 }
 
 fn get_500(error: &anyhow::Error) -> Response<Body> {
+    tracing::error!("500 {error:?}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Html(format!("500 Internal Server Error: {error}")),

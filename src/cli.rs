@@ -395,7 +395,7 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
     tracing::trace!("print_rows({cli:?}, {table_name}, {limit}, {offset})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
     let select = rltbl.from(table_name).limit(limit).offset(offset);
-    let rows = rltbl.fetch_json_rows(&select).await.unwrap().vec_into();
+    let rows = rltbl.fetch_rows(&select).await.unwrap().vec_into();
     print_text(&rows);
 }
 

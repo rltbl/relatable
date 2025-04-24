@@ -4,12 +4,13 @@ use rltbl::core::{Relatable, RLTBL_DEFAULT_DB};
 
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
-
 use rand::{
     distributions::{Distribution as _, Uniform},
     rngs::StdRng,
     SeedableRng as _,
 };
+use serde_json::json;
+use std::collections::HashSet;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Relatable (rltbl): Connect your data!", long_about = None)]
@@ -230,6 +231,96 @@ async fn generate_operation_sequence(
     );
 }
 
+/// TODO: Add a docstring and then move this to web.rs
+async fn joined_query(
+    rltbl: &rltbl::core::Relatable,
+    tableset_name: &str,
+    select: &rltbl::core::Select,
+) -> rltbl::core::Select {
+    let mut tables = HashSet::new();
+    tables.insert(json!(select.table_name));
+    for filter in &select.filters {
+        let (t, _, _, _) = filter.parts();
+        if t != "" {
+            tables.insert(json!(t));
+        }
+    }
+
+    tracing::info!("Tables: {tables:?}");
+
+    if tables.len() == 1 {
+        return select.clone();
+    }
+
+    let tables: Vec<serde_json::Value> = tables.into_iter().collect();
+    let (placeholder_list, values) = rltbl::core::render_values(
+        &tables,
+        &mut rltbl::sql::SqlParam::new(&rltbl.connection.kind()),
+    )
+    .unwrap();
+
+    let sql = format!(
+        r#"WITH RECURSIVE ancestors("table", "using") AS (
+             SELECT "table", "using"
+             FROM tableset
+             WHERE "table" IN {placeholder_list}
+             UNION
+             SELECT tableset."table", tableset."using"
+             FROM ancestors
+             JOIN tableset ON ancestors."using" = tableset."distinct"
+             WHERE tableset.tableset = '{tableset_name}'
+           )
+           SELECT tableset.*
+           FROM tableset
+           JOIN ancestors USING ("table")
+           WHERE _order >= (SELECT MIN(_order) FROM tableset WHERE "table" IN {placeholder_list})
+             AND _order <= (SELECT MAX(_order) FROM tableset WHERE "table" IN {placeholder_list})
+           ORDER BY _order"#
+    );
+    let json_rows = rltbl
+        .connection
+        .query(&sql, Some(&json!(values)))
+        .await
+        .unwrap();
+    tracing::info!("TABLESET {json_rows:?}",);
+
+    let limit = select.limit;
+    let mut sel = select.clone();
+    let table_name = select.table_name.clone();
+    let mut pkey = String::new();
+    for json_row in json_rows.iter() {
+        if table_name == json_row.get_string("table").unwrap() {
+            pkey = json_row.get_string("distinct").unwrap();
+        }
+    }
+    sel.select = vec![pkey.clone()];
+    if table_name == json_rows.last().unwrap().get_string("table").unwrap() {
+        sel = sel.order_by(&pkey);
+    } else {
+        sel.limit = 0;
+    }
+    let json_row = json_rows.first().unwrap();
+
+    sel.table_name = json_row.get_string("table").unwrap();
+    for json_row in json_rows.iter().skip(1) {
+        sel.left_join_using(
+            &json_row.get_string("table").unwrap(),
+            &json_row.get_string("using").unwrap(),
+        );
+    }
+
+    rltbl::core::Select {
+        table_name,
+        filters: vec![rltbl::core::Filter::InSubquery {
+            table: String::new(),
+            column: pkey.clone(),
+            subquery: sel.clone(),
+        }],
+        limit,
+        ..Default::default()
+    }
+}
+
 #[async_std::main]
 async fn main() {
     let cli = Cli::parse();
@@ -252,6 +343,27 @@ async fn main() {
             let rltbl = Relatable::connect(Some(&cli.database))
                 .await
                 .expect("Could not connect to relatable database");
+
+            // TODO: Remove this later
+            // if true {
+            //     let select = rltbl::core::Select {
+            //         table_name: "penguin".to_string(),
+            //         view_name: "".to_string(),
+            //         filters: vec![rltbl::core::Filter::Equal {
+            //             table: "menguin".to_string(),
+            //             column: "species".to_string(),
+            //             value: serde_json::Value::String("Mygoscelis adeliae".to_string()),
+            //         }],
+            //         ..Default::default()
+            //     };
+            //     tracing::info!("SELECT {select:?}");
+
+            // let joined_select = joined_query(&rltbl, table, &select).await;
+            // tracing::info!("JOINED SELECT: {joined_select:?}");
+            // let count = rltbl.count(&joined_select).await.unwrap();
+            // tracing::info!("COUNT: {count}");
+            // }
+
             generate_operation_sequence(&cli, &rltbl, table, *min_length, *max_length).await;
         }
     }

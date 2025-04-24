@@ -319,11 +319,25 @@ impl Relatable {
     }
 
     /// Use the given [Select] to fetch data from the database.
-    pub async fn fetch_json_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
-        tracing::trace!("Relatable::fetch_json_rows({select:?})");
+    pub async fn fetch_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
+        tracing::trace!("Relatable::fetch_rows({select:?})");
         let (statement, params) = select.to_sql(&self.connection.kind())?;
         let params = json!(params);
         self.connection.query(&statement, Some(&params)).await
+    }
+
+    /// TODO: Add a docstring here.
+    pub async fn count(&self, select: &Select) -> Result<usize> {
+        tracing::trace!("Relatable::count({select:?})");
+        let (statement, params) = select.to_sql_count(&self.connection.kind())?;
+        tracing::info!("SQL (COUNT) {statement}");
+        let params = json!(params);
+        // TODO: Implement caching.
+        let json_rows = self.connection.query(&statement, Some(&params)).await?;
+        match json_rows.get(0) {
+            Some(json_row) => json_row.get_unsigned("count"),
+            None => Ok(0),
+        }
     }
 
     /// Loads the given table from the given path. When `force` is set to true, deletes any
@@ -3206,20 +3220,10 @@ pub enum Filter {
     },
 }
 
-fn render_in_not_in<S: Into<String>>(
-    lhs: S,
+pub fn render_values(
     options: &Vec<JsonValue>,
-    positive: bool,
     sql_param_gen: &mut SqlParam,
 ) -> Result<(String, Vec<JsonValue>)> {
-    tracing::trace!("render_in_not_in(lhs, {options:?}, {positive:?})");
-    let negation;
-    if !positive {
-        negation = " NOT";
-    } else {
-        negation = "";
-    }
-
     let mut sql_params = vec![];
     let mut values = vec![];
     let mut is_string_list = false;
@@ -3261,9 +3265,7 @@ fn render_in_not_in<S: Into<String>>(
             }
         };
     }
-    let in_clause = format!("({})", sql_params.join(", "));
-    let filter_sql = format!("{}{} IN {}", lhs.into(), negation, in_clause);
-    Ok((filter_sql, values))
+    Ok((format!("({})", sql_params.join(", ")), values))
 }
 
 impl Filter {
@@ -3395,7 +3397,7 @@ impl Filter {
     }
 
     pub fn to_sql(&self, sql_param: &mut SqlParam) -> Result<(String, Vec<JsonValue>)> {
-        tracing::trace!("Filter::to_sqlite()");
+        tracing::trace!("Filter::to_sql({sql_param:?})");
         let as_string = |value: &JsonValue| -> String {
             match value {
                 JsonValue::Null => "NULL".to_string(),
@@ -3406,10 +3408,17 @@ impl Filter {
                 JsonValue::Object(value) => format!("{value:?}"),
             }
         };
-        // The table field is unused for now
+
+        fn generate_lhs(table: &str, column: &str) -> String {
+            match table {
+                "" => format!(r#""{column}""#),
+                _ => format!(r#""{table}"."{column}""#),
+            }
+        }
+
         match self {
             Filter::Like {
-                table: _,
+                table,
                 column,
                 value,
             } => {
@@ -3417,88 +3426,113 @@ impl Filter {
                 let value = value.replace("*", "%");
                 Ok((
                     format!(
-                        r#""{column}" LIKE {sql_param}"#,
+                        r#"{lhs} LIKE {sql_param}"#,
+                        lhs = generate_lhs(table, column),
                         sql_param = sql_param.next()
                     ),
                     vec![json!(value)],
                 ))
             }
             Filter::Equal {
-                table: _,
+                table,
                 column,
                 value,
             } => {
                 let value = as_string(&value);
                 Ok((
-                    format!(r#""{column}" = {sql_param}"#, sql_param = sql_param.next()),
+                    format!(
+                        r#"{lhs} = {sql_param}"#,
+                        lhs = generate_lhs(table, column),
+                        sql_param = sql_param.next()
+                    ),
                     vec![json!(value)],
                 ))
             }
             Filter::NotEqual {
-                table: _,
+                table,
                 column,
                 value,
             } => {
                 let value = as_string(&value);
                 Ok((
-                    format!(r#""{column}" <> {sql_param}"#, sql_param = sql_param.next()),
+                    format!(
+                        r#"{lhs} <> {sql_param}"#,
+                        lhs = generate_lhs(table, column),
+                        sql_param = sql_param.next()
+                    ),
                     vec![json!(value)],
                 ))
             }
             Filter::GreaterThan {
-                table: _,
+                table,
                 column,
                 value,
             } => {
                 let value = as_string(&value);
                 Ok((
-                    format!(r#""{column}" > {sql_param}"#, sql_param = sql_param.next()),
+                    format!(
+                        r#"{lhs} > {sql_param}"#,
+                        lhs = generate_lhs(table, column),
+                        sql_param = sql_param.next()
+                    ),
                     vec![json!(value)],
                 ))
             }
             Filter::GreaterThanOrEqual {
-                table: _,
+                table,
                 column,
                 value,
             } => {
                 let value = as_string(&value);
                 Ok((
-                    format!(r#""{column}" >= {sql_param}"#, sql_param = sql_param.next()),
+                    format!(
+                        r#"{lhs} >= {sql_param}"#,
+                        lhs = generate_lhs(table, column),
+                        sql_param = sql_param.next()
+                    ),
                     vec![json!(value)],
                 ))
             }
             Filter::LessThan {
-                table: _,
+                table,
                 column,
                 value,
             } => {
                 let value = as_string(&value);
                 Ok((
-                    format!(r#""{column}" < {sql_param}"#, sql_param = sql_param.next()),
+                    format!(
+                        r#"{lhs} < {sql_param}"#,
+                        lhs = generate_lhs(table, column),
+                        sql_param = sql_param.next()
+                    ),
                     vec![json!(value)],
                 ))
             }
             Filter::LessThanOrEqual {
-                table: _,
+                table,
                 column,
                 value,
             } => {
                 let value = as_string(&value);
                 Ok((
-                    format!(r#""{column}" <= {sql_param}"#, sql_param = sql_param.next()),
+                    format!(
+                        r#"{lhs} <= {sql_param}"#,
+                        lhs = generate_lhs(table, column),
+                        sql_param = sql_param.next()
+                    ),
                     vec![json!(value)],
                 ))
             }
             Filter::Is {
-                table: _,
+                table,
                 column,
                 value,
             } => {
-                // Note that we are presupposing SQLite syntax which is not universal for IS:
                 let value = as_string(&value);
                 Ok((
                     format!(
-                        r#""{column}" {is} {sql_param}"#,
+                        r#"{lhs} {is} {sql_param}"#,
+                        lhs = generate_lhs(table, column),
                         is = sql::is_clause(&sql_param.kind),
                         sql_param = sql_param.next()
                     ),
@@ -3506,15 +3540,15 @@ impl Filter {
                 ))
             }
             Filter::IsNot {
-                table: _,
+                table,
                 column,
                 value,
             } => {
-                // Note that we are presupposing SQLite syntax which is not universal for IS:
                 let value = as_string(&value);
                 Ok((
                     format!(
-                        r#""{column}" {is_not} {sql_param}"#,
+                        r#"{lhs} {is_not} {sql_param}"#,
+                        lhs = generate_lhs(table, column),
                         sql_param = sql_param.next(),
                         is_not = sql::is_not_clause(&sql_param.kind)
                     ),
@@ -3522,38 +3556,40 @@ impl Filter {
                 ))
             }
             Filter::In {
-                table: _,
+                table,
                 column,
                 value,
             } => {
                 if let JsonValue::Array(values) = value {
-                    match render_in_not_in(column, values, true, sql_param) {
+                    let lhs = generate_lhs(table, column);
+                    match render_values(values, sql_param) {
                         Err(e) => {
                             return Err(RelatableError::DataError(format!(
                                 "Error rendering 'in' filter: {e}"
                             ))
                             .into());
                         }
-                        Ok((filter_sql, params)) => Ok((filter_sql, params)),
+                        Ok((rhs, values)) => Ok((format!("{lhs} IN {rhs}"), values)),
                     }
                 } else {
                     Err(RelatableError::DataError(format!("Invalid 'in' value: {value}")).into())
                 }
             }
             Filter::NotIn {
-                table: _,
+                table,
                 column,
                 value,
             } => {
                 if let JsonValue::Array(values) = value {
-                    match render_in_not_in(column, values, false, sql_param) {
+                    let lhs = generate_lhs(table, column);
+                    match render_values(values, sql_param) {
                         Err(e) => {
                             return Err(RelatableError::DataError(format!(
                                 "Error rendering 'not in' filter: {e}"
                             ))
                             .into());
                         }
-                        Ok((filter_sql, params)) => Ok((filter_sql, params)),
+                        Ok((rhs, values)) => Ok((format!("{lhs} NOT IN {rhs}"), values)),
                     }
                 } else {
                     Err(
@@ -3567,14 +3603,9 @@ impl Filter {
                 column,
                 subquery,
             } => {
-                // TODO: Double-check this code.
-
-                let lhs = match table.as_str() {
-                    "" => format!(r#""{column}""#),
-                    _ => format!(r#""{table}"."{column}""#),
-                };
                 let (sql, params) = subquery.to_sql(&sql_param.kind)?;
                 let sql = sql.replace("\n", "\n  ");
+                let lhs = generate_lhs(table, column);
                 println!("{:?}", (format!("{lhs} IN (\n  {sql}\n)"), params.clone()));
                 Ok((format!("{lhs} IN (\n  {sql}\n)"), params))
             }
@@ -3587,6 +3618,39 @@ impl Filter {
             }
         }
     }
+
+    /// TODO: Add docstring
+    pub fn to_sql_count(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
+        tracing::info!("Filter::to_sql_count({self:?}, {kind:?})");
+        match self {
+            Filter::InSubquery {
+                table,
+                column,
+                subquery,
+            } => {
+                // TODO: Remove this later
+                //let column = match column.as_str() {
+                //    "" => "species",
+                //    _ => column,
+                //};
+
+                let lhs = match table.as_str() {
+                    "" => format!(r#""{column}""#),
+                    _ => format!(r#""{table}"."{column}""#),
+                };
+                let (sql, params) = subquery.to_sql(kind)?;
+                let lines: Vec<&str> = sql
+                    .split("\n")
+                    .filter(|x| !x.starts_with("ORDER BY"))
+                    .filter(|x| !x.starts_with("LIMIT"))
+                    .filter(|x| !x.starts_with("OFFSET"))
+                    .collect();
+                let sql = lines.join("\n  ");
+                Ok((format!("{lhs} IN (\n  {sql}\n)"), params))
+            }
+            _ => self.to_sql(&mut SqlParam::new(kind)),
+        }
+    }
 }
 
 /// Represents a SELECT statement.
@@ -3594,6 +3658,8 @@ impl Filter {
 pub struct Select {
     pub table_name: String,
     pub view_name: String,
+    pub select: Vec<String>,
+    pub joins: Vec<String>,
     pub limit: usize,
     pub offset: usize,
     pub filters: Vec<Filter>,
@@ -3607,6 +3673,8 @@ impl Default for Select {
             // By default, the view name and table name are the same.
             table_name: table_name.to_string(),
             view_name: table_name.to_string(),
+            select: Vec::default(),
+            joins: Vec::default(),
             limit: usize::default(),
             offset: usize::default(),
             filters: Vec::default(),
@@ -3928,7 +3996,6 @@ impl Select {
             }
         };
 
-        // The table field is unused (for now) and filled with empty strings.
         for filter in filters {
             tracing::trace!("Applying filter: {filter}");
             if like.is_match(&filter) {
@@ -4069,7 +4136,6 @@ impl Select {
     {
         tracing::trace!("Select::like({column:?}, value)");
         self.filters.push(Filter::Like {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4084,7 +4150,6 @@ impl Select {
     {
         tracing::trace!("Select::eq({column:?}, value)");
         self.filters.push(Filter::Equal {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4099,7 +4164,6 @@ impl Select {
     {
         tracing::trace!("Select::not_eq({column:?}, value)");
         self.filters.push(Filter::NotEqual {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4114,7 +4178,6 @@ impl Select {
     {
         tracing::trace!("Select::gt({column:?}, value)");
         self.filters.push(Filter::GreaterThan {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4129,7 +4192,6 @@ impl Select {
     {
         tracing::trace!("Select::gte({column:?}, value)");
         self.filters.push(Filter::GreaterThanOrEqual {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4144,7 +4206,6 @@ impl Select {
     {
         tracing::trace!("Select::lt({column:?}, value)");
         self.filters.push(Filter::LessThan {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4159,7 +4220,6 @@ impl Select {
     {
         tracing::trace!("Select::lte({column:?}, value)");
         self.filters.push(Filter::LessThanOrEqual {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4174,7 +4234,6 @@ impl Select {
     {
         tracing::trace!("Select::is({column:?}, value)");
         self.filters.push(Filter::Is {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4189,7 +4248,6 @@ impl Select {
     {
         tracing::trace!("Select::is_not({column:?}, value)");
         self.filters.push(Filter::IsNot {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4204,7 +4262,6 @@ impl Select {
     {
         tracing::trace!("Select::is_in({column:?}, value)");
         self.filters.push(Filter::In {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4219,7 +4276,6 @@ impl Select {
     {
         tracing::trace!("Select::is_not_in({column:?}, value)");
         self.filters.push(Filter::NotIn {
-            // Unused for now
             table: "".to_string(),
             column: column.to_string(),
             value: to_value(value)?,
@@ -4227,33 +4283,82 @@ impl Select {
         Ok(self)
     }
 
+    pub fn left_join_using(&mut self, table: &str, column: &str) {
+        self.joins
+            .push(format!(r#"LEFT JOIN "{table}" USING ("{column}")"#));
+    }
+
     /// Convert the filter to a tuple consisting of an SQL string supported by the given database
     /// kind, and a vector of parameters that must be bound to the string before executing it.
     pub fn to_sql(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
-        tracing::trace!("Select::to_sql({self:?})");
+        tracing::info!("Select::to_sql({self:?}, {kind:?})");
         let mut sql_param_gen = SqlParam::new(kind);
         let mut lines = Vec::new();
         let mut params = Vec::new();
-        lines.push("SELECT *,".to_string());
-        // WARN: The _total count should probably be optional.
-        lines.push("  COUNT(1) OVER() AS _total, ".to_string());
-        lines.push(format!(
-            r#"(SELECT MAX(change_id) FROM history
-                  WHERE "table" = {sql_param}
-                    AND "row" = _id
-               ) AS _change_id"#,
-            sql_param = sql_param_gen.next()
-        ));
-        params.push(json!(self.table_name)); // the real table name
-        lines.push(format!(r#"FROM "{}""#, self.view_name)); // the view name, which may differ
+
+        let get_change_sql = |sql_param_gen: &mut SqlParam| -> String {
+            format!(
+                r#"(SELECT MAX(change_id) FROM history
+                    WHERE "table" = {}
+                      AND "row" = "{}"._id
+                   ) AS _change_id"#,
+                sql_param_gen.next(),
+                self.table_name
+            )
+        };
+
+        if self.select.len() == 0 {
+            if self.joins.len() > 0 {
+                lines.push(format!(r#"SELECT "{}".*,"#, self.table_name));
+            } else {
+                lines.push("SELECT *".to_string());
+            }
+            for filter in &self.filters {
+                let (_, c, _, _) = filter.parts();
+                if c == "_change_id" {
+                    lines.push(format!(", {}", get_change_sql(&mut sql_param_gen)));
+                }
+            }
+        } else {
+            lines.push("SELECT".to_string());
+            for filter in &self.filters {
+                let (_, c, _, _) = filter.parts();
+                if c == "_change_id" {
+                    lines.push(get_change_sql(&mut sql_param_gen));
+                }
+            }
+            for column in &self.select {
+                let mut t = ",";
+                if column == self.select.last().unwrap() {
+                    t = "";
+                }
+                // TODO: Remove this later
+                //let column = match column.as_str() {
+                //    "" => "species",
+                //    _ => column,
+                //};
+                lines.push(format!(r#"  "{column}"{t}"#));
+            }
+        }
+        // the real table name
+        params.push(json!(self.table_name));
+        // // the view name, which may differ
+        //lines.push(format!(r#"FROM "{}""#, self.view_name));
+        lines.push(format!(r#"FROM "{}""#, self.table_name));
+
+        for join in &self.joins {
+            lines.push(join.clone());
+        }
+
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
             lines.push(format!("{keyword} {filter_sql}"));
             params.append(&mut filter_params);
         }
-        if self.order_by.len() == 0 {
-            lines.push(format!("ORDER BY _order ASC"));
+        if self.order_by.len() == 0 && self.joins.len() == 0 {
+            //lines.push(format!(r#"ORDER BY "{}"._order ASC"#, self.view_name));
+            lines.push(format!(r#"ORDER BY "{}"._order ASC"#, self.table_name));
         }
         for (column, order) in &self.order_by {
             lines.push(format!(r#"ORDER BY "{column}" {order:?}"#));
@@ -4263,6 +4368,26 @@ impl Select {
         }
         if self.offset > 0 {
             lines.push(format!("OFFSET {}", self.offset));
+        }
+        Ok((lines.join("\n"), params))
+    }
+
+    /// TODO: Add docstring
+    pub fn to_sql_count(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
+        tracing::info!("Select::to_sql_count({self:?}, {kind:?})");
+        let mut lines = Vec::new();
+        let mut params = Vec::new();
+        lines.push(r#"SELECT COUNT(*) AS "count""#.to_string());
+        lines.push(format!(r#"FROM "{}""#, self.table_name));
+        for join in self.joins.clone() {
+            lines.push(join);
+        }
+        for (i, filter) in self.filters.iter().enumerate() {
+            let keyword = if i == 0 { "WHERE" } else { "  AND" };
+            let (s, p) = filter.to_sql_count(kind)?;
+            //tracing::info!("S&P ARE: {s}, {p:?}");
+            lines.push(format!("{keyword} {s}"));
+            params.append(&mut p.clone());
         }
         Ok((lines.join("\n"), params))
     }
@@ -4281,84 +4406,90 @@ impl Select {
         let mut params = JsonMap::new();
         if self.filters.len() > 0 {
             for filter in &self.filters {
-                // The table field is unused for now
-                let column = match &filter {
+                let (table, column) = match &filter {
                     Filter::Like {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::Equal {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::NotEqual {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::GreaterThan {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::GreaterThanOrEqual {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::LessThan {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::LessThanOrEqual {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::Is {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::IsNot {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::In {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::NotIn {
-                        table: _,
+                        table,
                         column,
                         value: _,
                     }
                     | Filter::InSubquery {
-                        table: _,
+                        table,
                         column,
                         subquery: _,
                     }
                     | Filter::NotInSubquery {
-                        table: _,
+                        table,
                         column,
                         subquery: _,
-                    } => column,
+                    } => (table, column),
                 };
 
-                let column = unquote(&column).unwrap_or(column.to_string());
-                if let Err(e) = sql::is_simple(&column) {
+                let lhs = {
+                    let table = unquote(&table).unwrap_or(table.to_string());
+                    let column = unquote(&column).unwrap_or(column.to_string());
+                    match table.as_str() {
+                        "" => format!(r#""{column}""#),
+                        _ => format!(r#""{table}"."{column}""#),
+                    }
+                };
+                if let Err(e) = sql::is_simple(&lhs) {
                     return Err(RelatableError::InputError(format!(
                         "While reading filters, got error: {}",
                         e
                     ))
                     .into());
                 }
-                params.insert(column, format!("{}", filter.to_url()?).into());
+                params.insert(lhs, format!("{}", filter.to_url()?).into());
             }
         }
         if self.limit > 0 {
