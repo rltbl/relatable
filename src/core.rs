@@ -3623,7 +3623,6 @@ impl Filter {
                 let (sql, params) = subquery.to_sql(&sql_param.kind)?;
                 let sql = sql.replace("\n", "\n  ");
                 let lhs = generate_lhs(table, column);
-                println!("{:?}", (format!("{lhs} IN (\n  {sql}\n)"), params.clone()));
                 Ok((format!("{lhs} IN (\n  {sql}\n)"), params))
             }
             Filter::NotInSubquery {
@@ -3645,12 +3644,9 @@ impl Filter {
                 column,
                 subquery,
             } => {
-                // TODO: Remove this later
-                //let column = match column.as_str() {
-                //    "" => "species",
-                //    _ => column,
-                //};
-
+                if column == "" {
+                    return Err(RelatableError::InputError("Empty column name".to_string()).into());
+                }
                 let lhs = match table.as_str() {
                     "" => format!(r#""{column}""#),
                     _ => format!(r#""{table}"."{column}""#),
@@ -4326,8 +4322,11 @@ impl Select {
 
         if self.select.len() == 0 {
             if self.joins.len() > 0 {
-                //lines.push(format!(r#"SELECT "{}".*,"#, self.table_name));
-                lines.push(format!(r#"SELECT "{}".*,"#, self.view_name));
+                let target = match self.view_name.as_str() {
+                    "" => &self.table_name,
+                    _ => &self.view_name,
+                };
+                lines.push(format!(r#"SELECT "{target}".*,"#));
             } else {
                 lines.push("SELECT *".to_string());
             }
@@ -4346,23 +4345,25 @@ impl Select {
                 }
             }
             for column in &self.select {
+                if column == "" {
+                    return Err(RelatableError::InputError("Empty column name".to_string()).into());
+                }
                 let mut t = ",";
+                // TODO: Remove unwraps
                 if column == self.select.last().unwrap() {
                     t = "";
                 }
-                // TODO: Remove this later
-                //let column = match column.as_str() {
-                //    "" => "species",
-                //    _ => column,
-                //};
                 lines.push(format!(r#"  "{column}"{t}"#));
             }
         }
         // the real table name
         //params.push(json!(self.table_name));
         // // the view name, which may differ
-        lines.push(format!(r#"FROM "{}""#, self.view_name));
-        //lines.push(format!(r#"FROM "{}""#, self.table_name));
+        let target = match self.view_name.as_str() {
+            "" => &self.table_name,
+            _ => &self.view_name,
+        };
+        lines.push(format!(r#"FROM "{target}""#));
 
         for join in &self.joins {
             lines.push(join.clone());
@@ -4375,8 +4376,11 @@ impl Select {
             params.append(&mut filter_params);
         }
         if self.order_by.len() == 0 && self.joins.len() == 0 {
-            //lines.push(format!(r#"ORDER BY "{}"._order ASC"#, self.table_name));
-            lines.push(format!(r#"ORDER BY "{}"._order ASC"#, self.view_name));
+            let target = match self.view_name.as_str() {
+                "" => &self.table_name,
+                _ => &self.view_name,
+            };
+            lines.push(format!(r#"ORDER BY "{target}"._order ASC"#));
         }
         for (column, order) in &self.order_by {
             lines.push(format!(r#"ORDER BY "{column}" {order:?}"#));

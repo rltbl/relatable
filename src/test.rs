@@ -9,7 +9,7 @@ use rand::{
     rngs::StdRng,
     SeedableRng as _,
 };
-use serde_json::json;
+use serde_json::{json, Value as JsonValue};
 use std::collections::HashSet;
 
 #[derive(Parser, Debug)]
@@ -52,6 +52,20 @@ pub enum Command {
 
         #[arg(long, default_value = "15", action = ArgAction::Set)]
         max_length: usize,
+    },
+    /// Test a joined query
+    JoinedQuery {
+        #[arg(action = ArgAction::Set)]
+        table1: String,
+
+        #[arg(action = ArgAction::Set)]
+        column: String,
+
+        #[arg(action = ArgAction::Set)]
+        table2: String,
+
+        #[arg(action = ArgAction::Set)]
+        value: JsonValue,
     },
 }
 
@@ -246,24 +260,28 @@ async fn joined_query(
         }
     }
 
-    tracing::info!("Tables: {tables:?}");
-
     if tables.len() == 1 {
         return select.clone();
     }
 
     let tables: Vec<serde_json::Value> = tables.into_iter().collect();
-    let (placeholder_list, values) = rltbl::core::render_values(
-        &tables,
-        &mut rltbl::sql::SqlParam::new(&rltbl.connection.kind()),
-    )
-    .unwrap();
+    let mut sql_param = rltbl::sql::SqlParam::new(&rltbl.connection.kind());
+    let mut values = vec![];
+    let (placeholder_list_1, mut these_values) =
+        rltbl::core::render_values(&tables, &mut sql_param).unwrap();
+    values.append(&mut these_values);
+    let (placeholder_list_2, mut these_values) =
+        rltbl::core::render_values(&tables, &mut sql_param).unwrap();
+    values.append(&mut these_values);
+    let (placeholder_list_3, mut these_values) =
+        rltbl::core::render_values(&tables, &mut sql_param).unwrap();
+    values.append(&mut these_values);
 
     let sql = format!(
         r#"WITH RECURSIVE ancestors("table", "using") AS (
              SELECT "table", "using"
              FROM tableset
-             WHERE "table" IN {placeholder_list}
+             WHERE "table" IN {placeholder_list_1}
              UNION
              SELECT tableset."table", tableset."using"
              FROM ancestors
@@ -273,8 +291,8 @@ async fn joined_query(
            SELECT tableset.*
            FROM tableset
            JOIN ancestors USING ("table")
-           WHERE _order >= (SELECT MIN(_order) FROM tableset WHERE "table" IN {placeholder_list})
-             AND _order <= (SELECT MAX(_order) FROM tableset WHERE "table" IN {placeholder_list})
+           WHERE _order >= (SELECT MIN(_order) FROM tableset WHERE "table" IN {placeholder_list_2})
+             AND _order <= (SELECT MAX(_order) FROM tableset WHERE "table" IN {placeholder_list_3})
            ORDER BY _order"#
     );
     let json_rows = rltbl
@@ -282,7 +300,6 @@ async fn joined_query(
         .query(&sql, Some(&json!(values)))
         .await
         .unwrap();
-    tracing::info!("TABLESET {json_rows:?}",);
 
     let limit = select.limit;
     let mut sel = select.clone();
@@ -343,28 +360,91 @@ async fn main() {
             let rltbl = Relatable::connect(Some(&cli.database))
                 .await
                 .expect("Could not connect to relatable database");
-
-            // TODO: Remove this later
-            // if true {
-            //     let select = rltbl::core::Select {
-            //         table_name: "penguin".to_string(),
-            //         view_name: "".to_string(),
-            //         filters: vec![rltbl::core::Filter::Equal {
-            //             table: "menguin".to_string(),
-            //             column: "species".to_string(),
-            //             value: serde_json::Value::String("Mygoscelis adeliae".to_string()),
-            //         }],
-            //         ..Default::default()
-            //     };
-            //     tracing::info!("SELECT {select:?}");
-
-            // let joined_select = joined_query(&rltbl, table, &select).await;
-            // tracing::info!("JOINED SELECT: {joined_select:?}");
-            // let count = rltbl.count(&joined_select).await.unwrap();
-            // tracing::info!("COUNT: {count}");
-            // }
-
             generate_operation_sequence(&cli, &rltbl, table, *min_length, *max_length).await;
+        }
+        Command::JoinedQuery {
+            table1,
+            column,
+            table2,
+            value,
+        } => {
+            let rltbl = Relatable::connect(Some(&cli.database))
+                .await
+                .expect("Could not connect to relatable database");
+
+            let sql =
+                r#"INSERT INTO "table" ("table", "path") VALUES ('tableset', 'tableset.tsv')"#;
+            rltbl.connection.query(sql, None).await.unwrap();
+
+            // Create the study table.
+            let sql = r#"CREATE TABLE tableset (
+              _id INTEGER PRIMARY KEY AUTOINCREMENT,
+              _order INTEGER UNIQUE,
+              tableset TEXT,
+              "table" TEXT,
+              "distinct" TEXT,
+              "using" TEXT
+            )"#;
+            rltbl.connection.query(sql, None).await.unwrap();
+
+            let sql = r#"INSERT INTO "tableset" VALUES
+                         (1, 1000, 'combined', 'study', 'study_name', NULL),
+                         (2, 2000, 'combined', 'penguin', 'individual_id', 'study_name'),
+                         (3, 3000, 'combined', 'egg', 'egg_id', 'individual_id')"#;
+            rltbl.connection.query(sql, None).await.unwrap();
+
+            let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('study', 'study.tsv')"#;
+            rltbl.connection.query(sql, None).await.unwrap();
+
+            // Create the study table.
+            let sql = r#"CREATE TABLE study (
+                           _id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           _order INTEGER UNIQUE,
+                           study_name TEXT UNIQUE,
+                           description TEXT
+                         )"#;
+            rltbl.connection.query(sql, None).await.unwrap();
+
+            let sql = r#"INSERT INTO study VALUES
+                         (0, 0, 'FAKE123', 'Fake Study 123')"#;
+            rltbl.connection.query(sql, None).await.unwrap();
+
+            let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('egg', 'egg.tsv')"#;
+            rltbl.connection.query(sql, None).await.unwrap();
+
+            // Create the egg table.
+            let sql = r#"CREATE TABLE egg (
+                           _id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           _order INTEGER UNIQUE,
+                           egg_id TEXT UNIQUE,
+                           individual_id TEXT
+                         )"#;
+            rltbl.connection.query(sql, None).await.unwrap();
+
+            let sql = r#"INSERT INTO egg VALUES
+                         (0, 0, 'E1', 'N1')"#;
+            rltbl.connection.query(sql, None).await.unwrap();
+
+            let select = rltbl::core::Select {
+                table_name: table1.to_string(),
+                filters: vec![rltbl::core::Filter::Equal {
+                    table: table2.to_string(),
+                    column: column.to_string(),
+                    value: serde_json::to_value(value).expect("Error parsing value"),
+                }],
+                ..Default::default()
+            };
+            //let (sql, values) = select.to_sql(&rltbl.connection.kind()).unwrap();
+            //tracing::info!("SELECT: {sql}, {values:?}");
+            tracing::info!("SELECT: {select:?}");
+
+            let joined_select = joined_query(&rltbl, table1, &select).await;
+            //let (sql, values) = joined_select.to_sql(&rltbl.connection.kind()).unwrap();
+            //tracing::info!("SELECT (JOINED): {sql}, {values:?}");
+            tracing::info!("SELECT (JOINED): {joined_select:?}");
+
+            let count = rltbl.count(&joined_select).await.unwrap();
+            tracing::info!("COUNT: {count}");
         }
     }
 }

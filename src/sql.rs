@@ -681,8 +681,11 @@ pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Resul
     }
 
     if force {
-        if let DbKind::Postgres = db_kind {
-            ddl.push(format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, table.name));
+        match db_kind {
+            DbKind::Postgres => {
+                ddl.push(format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, table.name))
+            }
+            DbKind::Sqlite => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}""#, table.name)),
         }
     }
 
