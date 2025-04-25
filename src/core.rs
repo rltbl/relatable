@@ -279,31 +279,48 @@ impl Relatable {
 
         // Get the table and column information and ensure that the view has been created:
         let mut table = self.get_table(select.table_name.as_str()).await?;
-        let columns = table.ensure_default_view_created(self).await?;
+        let mut columns = table.ensure_default_view_created(self).await?;
+
+        let mut select = select.clone();
+        select.view_name = table.view.clone();
 
         // Fetch the data
         let (statement, params) = select.to_sql(&self.connection.kind())?;
-        tracing::debug!("SQL {statement}");
+        tracing::debug!("SQL {statement} (params: {params:?})");
         let params = json!(params);
         let json_rows = self.connection.query(&statement, Some(&params)).await?;
         let count = json_rows.len();
-        tracing::info!("Received {count} rows.");
         if count > 4 {
-            tracing::debug!("The first 4 are: {:#?}", json_rows[..4].to_vec());
+            tracing::info!(
+                "Received {count} rows, of which the first 4 are: {:#?}",
+                json_rows[..4].to_vec()
+            );
         } else if count > 0 {
-            tracing::debug!("They are: {json_rows:#?}");
+            tracing::info!("Received {count} rows: {json_rows:#?}");
         }
 
         // Return the data:
-        let total = match json_rows.get(0) {
-            Some(row) => row
-                .content
-                .get("_total")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0) as usize,
-            None => 0,
-        };
-        let rows: Vec<Row> = json_rows.vec_into();
+        // let total = match json_rows.get(0) {
+        //     Some(row) => row
+        //         .content
+        //         .get("_total")
+        //         .and_then(|x| x.as_u64())
+        //         .unwrap_or(0) as usize,
+        //     None => 0,
+        // };
+        // let rows: Vec<Row> = json_rows.vec_into();
+
+        if select.select.len() > 0 {
+            columns = columns
+                .iter()
+                .filter(|c| select.select.contains(&c.name))
+                .map(|c| c.clone())
+                .collect();
+        }
+        let rows: Vec<Row> = json_rows.clone().vec_into();
+
+        let total = self.count(&select).await?;
+
         Ok(ResultSet {
             range: Range {
                 count,
@@ -330,7 +347,7 @@ impl Relatable {
     pub async fn count(&self, select: &Select) -> Result<usize> {
         tracing::trace!("Relatable::count({select:?})");
         let (statement, params) = select.to_sql_count(&self.connection.kind())?;
-        tracing::info!("SQL (COUNT) {statement}");
+        tracing::debug!("SQL (COUNT) {statement}");
         let params = json!(params);
         // TODO: Implement caching.
         let json_rows = self.connection.query(&statement, Some(&params)).await?;
@@ -2960,7 +2977,7 @@ impl From<JsonRow> for Row {
 }
 
 /// Represents a column from some table
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Column {
     pub name: String,
     pub table: String,
@@ -3621,7 +3638,7 @@ impl Filter {
 
     /// TODO: Add docstring
     pub fn to_sql_count(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
-        tracing::info!("Filter::to_sql_count({self:?}, {kind:?})");
+        tracing::trace!("Filter::to_sql_count({self:?}, {kind:?})");
         match self {
             Filter::InSubquery {
                 table,
@@ -4291,7 +4308,7 @@ impl Select {
     /// Convert the filter to a tuple consisting of an SQL string supported by the given database
     /// kind, and a vector of parameters that must be bound to the string before executing it.
     pub fn to_sql(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
-        tracing::info!("Select::to_sql({self:?}, {kind:?})");
+        tracing::trace!("Select::to_sql({self:?}, {kind:?})");
         let mut sql_param_gen = SqlParam::new(kind);
         let mut lines = Vec::new();
         let mut params = Vec::new();
@@ -4309,7 +4326,8 @@ impl Select {
 
         if self.select.len() == 0 {
             if self.joins.len() > 0 {
-                lines.push(format!(r#"SELECT "{}".*,"#, self.table_name));
+                //lines.push(format!(r#"SELECT "{}".*,"#, self.table_name));
+                lines.push(format!(r#"SELECT "{}".*,"#, self.view_name));
             } else {
                 lines.push("SELECT *".to_string());
             }
@@ -4341,10 +4359,10 @@ impl Select {
             }
         }
         // the real table name
-        params.push(json!(self.table_name));
+        //params.push(json!(self.table_name));
         // // the view name, which may differ
-        //lines.push(format!(r#"FROM "{}""#, self.view_name));
-        lines.push(format!(r#"FROM "{}""#, self.table_name));
+        lines.push(format!(r#"FROM "{}""#, self.view_name));
+        //lines.push(format!(r#"FROM "{}""#, self.table_name));
 
         for join in &self.joins {
             lines.push(join.clone());
@@ -4357,8 +4375,8 @@ impl Select {
             params.append(&mut filter_params);
         }
         if self.order_by.len() == 0 && self.joins.len() == 0 {
-            //lines.push(format!(r#"ORDER BY "{}"._order ASC"#, self.view_name));
-            lines.push(format!(r#"ORDER BY "{}"._order ASC"#, self.table_name));
+            //lines.push(format!(r#"ORDER BY "{}"._order ASC"#, self.table_name));
+            lines.push(format!(r#"ORDER BY "{}"._order ASC"#, self.view_name));
         }
         for (column, order) in &self.order_by {
             lines.push(format!(r#"ORDER BY "{column}" {order:?}"#));
@@ -4374,7 +4392,7 @@ impl Select {
 
     /// TODO: Add docstring
     pub fn to_sql_count(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
-        tracing::info!("Select::to_sql_count({self:?}, {kind:?})");
+        tracing::trace!("Select::to_sql_count({self:?}, {kind:?})");
         let mut lines = Vec::new();
         let mut params = Vec::new();
         lines.push(r#"SELECT COUNT(*) AS "count""#.to_string());
