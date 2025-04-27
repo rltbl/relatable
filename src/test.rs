@@ -1,6 +1,9 @@
 //! API tests
 
-use rltbl::core::{Relatable, RLTBL_DEFAULT_DB};
+use rltbl::{
+    core::{Relatable, RLTBL_DEFAULT_DB},
+    sql::DbKind,
+};
 
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
@@ -245,6 +248,78 @@ async fn generate_operation_sequence(
     );
 }
 
+pub async fn build_egg_demo(cli: &Cli) -> Relatable {
+    tracing::debug!("build_egg_demo({cli:?})");
+
+    let rltbl = Relatable::connect(Some(cli.database.as_str()))
+        .await
+        .expect("Error building demo");
+
+    if let None = rltbl
+        .connection
+        .query_value("SELECT * FROM \"table\" WHERE \"table\" = 'penguin'", None)
+        .await
+        .unwrap()
+    {
+        panic!("Build a demonstration database first");
+    }
+
+    if let DbKind::Postgres = rltbl.connection.kind() {
+        rltbl
+            .connection
+            .query(r#"DROP TABLE IF EXISTS "study" CASCADE"#, None)
+            .await
+            .expect("Error dropping study");
+        rltbl
+            .connection
+            .query(r#"DROP TABLE IF EXISTS "egg" CASCADE"#, None)
+            .await
+            .expect("Error dropping egg");
+    }
+
+    let pkey_clause = match rltbl.connection.kind() {
+        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        DbKind::Postgres => "SERIAL PRIMARY KEY",
+    };
+
+    let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('study', 'study.tsv')"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    // Create the study table.
+    let sql = format!(
+        r#"CREATE TABLE study (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             study_name TEXT UNIQUE,
+             description TEXT
+        )"#
+    );
+    rltbl.connection.query(&sql, None).await.unwrap();
+
+    let sql = r#"INSERT INTO study VALUES
+        (0, 0, 'FAKE123', 'Fake Study 123')"#;
+    rltbl.connection.query(&sql, None).await.unwrap();
+
+    let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('egg', 'egg.tsv')"#;
+    rltbl.connection.query(&sql, None).await.unwrap();
+
+    // Create the egg table.
+    let sql = format!(
+        r#"CREATE TABLE egg (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             egg_id TEXT UNIQUE,
+             individual_id TEXT
+           )"#
+    );
+    rltbl.connection.query(&sql, None).await.unwrap();
+
+    let sql = r#"INSERT INTO egg VALUES
+        (0, 0, 'E1', 'N1')"#;
+    rltbl.connection.query(&sql, None).await.unwrap();
+    rltbl
+}
+
 /// TODO: Add a docstring and then move this to web.rs
 async fn joined_query(
     rltbl: &rltbl::core::Relatable,
@@ -263,6 +338,41 @@ async fn joined_query(
     if tables.len() == 1 {
         return select.clone();
     }
+
+    let pkey_clause = match rltbl.connection.kind() {
+        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        DbKind::Postgres => "SERIAL PRIMARY KEY",
+    };
+
+    let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('tableset', 'tableset.tsv')"#;
+    rltbl.connection.query(sql, None).await.unwrap();
+
+    if let DbKind::Postgres = rltbl.connection.kind() {
+        rltbl
+            .connection
+            .query(r#"DROP TABLE IF EXISTS "tableset" CASCADE"#, None)
+            .await
+            .expect("Error dropping tableset");
+    }
+
+    let sql = format!(
+        r#"CREATE TABLE tableset (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             tableset TEXT,
+             "table" TEXT,
+             "distinct" TEXT,
+             "using" TEXT
+           )"#,
+    );
+    rltbl.connection.query(&sql, None).await.unwrap();
+
+    let sql = r#"INSERT INTO "tableset" VALUES
+      (1, 1000, 'combined', 'study', 'study_name', NULL),
+      (2, 2000, 'combined', 'penguin', 'individual_id', 'study_name'),
+      (3, 3000, 'combined', 'egg', 'egg_id', 'individual_id')
+    "#;
+    rltbl.connection.query(sql, None).await.unwrap();
 
     let tables: Vec<serde_json::Value> = tables.into_iter().collect();
     let mut sql_param = rltbl::sql::SqlParam::new(&rltbl.connection.kind());
@@ -364,66 +474,11 @@ async fn main() {
         }
         Command::JoinedQuery {
             table1,
-            column,
             table2,
+            column,
             value,
         } => {
-            let rltbl = Relatable::connect(Some(&cli.database))
-                .await
-                .expect("Could not connect to relatable database");
-
-            let sql =
-                r#"INSERT INTO "table" ("table", "path") VALUES ('tableset', 'tableset.tsv')"#;
-            rltbl.connection.query(sql, None).await.unwrap();
-
-            // Create the study table.
-            let sql = r#"CREATE TABLE tableset (
-              _id INTEGER PRIMARY KEY AUTOINCREMENT,
-              _order INTEGER UNIQUE,
-              tableset TEXT,
-              "table" TEXT,
-              "distinct" TEXT,
-              "using" TEXT
-            )"#;
-            rltbl.connection.query(sql, None).await.unwrap();
-
-            let sql = r#"INSERT INTO "tableset" VALUES
-                         (1, 1000, 'combined', 'study', 'study_name', NULL),
-                         (2, 2000, 'combined', 'penguin', 'individual_id', 'study_name'),
-                         (3, 3000, 'combined', 'egg', 'egg_id', 'individual_id')"#;
-            rltbl.connection.query(sql, None).await.unwrap();
-
-            let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('study', 'study.tsv')"#;
-            rltbl.connection.query(sql, None).await.unwrap();
-
-            // Create the study table.
-            let sql = r#"CREATE TABLE study (
-                           _id INTEGER PRIMARY KEY AUTOINCREMENT,
-                           _order INTEGER UNIQUE,
-                           study_name TEXT UNIQUE,
-                           description TEXT
-                         )"#;
-            rltbl.connection.query(sql, None).await.unwrap();
-
-            let sql = r#"INSERT INTO study VALUES
-                         (0, 0, 'FAKE123', 'Fake Study 123')"#;
-            rltbl.connection.query(sql, None).await.unwrap();
-
-            let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('egg', 'egg.tsv')"#;
-            rltbl.connection.query(sql, None).await.unwrap();
-
-            // Create the egg table.
-            let sql = r#"CREATE TABLE egg (
-                           _id INTEGER PRIMARY KEY AUTOINCREMENT,
-                           _order INTEGER UNIQUE,
-                           egg_id TEXT UNIQUE,
-                           individual_id TEXT
-                         )"#;
-            rltbl.connection.query(sql, None).await.unwrap();
-
-            let sql = r#"INSERT INTO egg VALUES
-                         (0, 0, 'E1', 'N1')"#;
-            rltbl.connection.query(sql, None).await.unwrap();
+            let rltbl = build_egg_demo(&cli).await;
 
             let select = rltbl::core::Select {
                 table_name: table1.to_string(),
@@ -434,17 +489,18 @@ async fn main() {
                 }],
                 ..Default::default()
             };
-            //let (sql, values) = select.to_sql(&rltbl.connection.kind()).unwrap();
-            //tracing::info!("SELECT: {sql}, {values:?}");
-            tracing::info!("SELECT: {select:?}");
-
             let joined_select = joined_query(&rltbl, table1, &select).await;
-            //let (sql, values) = joined_select.to_sql(&rltbl.connection.kind()).unwrap();
-            //tracing::info!("SELECT (JOINED): {sql}, {values:?}");
-            tracing::info!("SELECT (JOINED): {joined_select:?}");
+
+            let (sql, params) = joined_select.to_sql(&rltbl.connection.kind()).unwrap();
+            println!("to_sql (joined_select)): {sql} {params:?}\n");
+
+            let (sql, params) = joined_select
+                .to_sql_count(&rltbl.connection.kind())
+                .unwrap();
+            println!("to_sql_count (joined_select)): {sql} {params:?}\n");
 
             let count = rltbl.count(&joined_select).await.unwrap();
-            tracing::info!("COUNT: {count}");
+            println!("count (joined_select): {count}\n");
         }
     }
 }

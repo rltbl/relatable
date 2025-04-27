@@ -15,6 +15,7 @@ use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
 use enquote::unquote;
 use indexmap::IndexMap;
 use minijinja::{path_loader, Environment};
+use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value, Map as JsonMap, Value as JsonValue};
@@ -141,9 +142,12 @@ impl Relatable {
             }
         };
         if !path.starts_with("postgresql://") {
-            let dir = FilePath::new(&path)
-                .parent()
-                .expect("Parent path must be defined");
+            let dir: &std::path::Path =
+                FilePath::new(&path)
+                    .parent()
+                    .ok_or(RelatableError::InputError(
+                        "Parent path must be defined".to_string(),
+                    ))?;
             if !dir.exists() {
                 std::fs::create_dir_all(&dir)?;
                 tracing::info!("Created '{dir:?}' directory");
@@ -170,6 +174,178 @@ impl Relatable {
             rltbl.connection.query(&sql, None).await?;
         }
 
+        Ok(rltbl)
+    }
+
+    /// Build a demonstration database
+    pub async fn build_demo(database: Option<&str>, force: &bool, size: usize) -> Result<Self> {
+        let rltbl = Relatable::init(force, database.as_deref()).await?;
+
+        if *force {
+            if let DbKind::Postgres = rltbl.connection.kind() {
+                rltbl
+                    .connection
+                    .query(r#"DROP TABLE IF EXISTS "column" CASCADE"#, None)
+                    .await?;
+                rltbl
+                    .connection
+                    .query(r#"DROP TABLE IF EXISTS "penguin" CASCADE"#, None)
+                    .await?;
+            }
+        }
+
+        let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('penguin', 'penguin.tsv')"#;
+        rltbl.connection.query(sql, None).await?;
+
+        let pkey_clause = match rltbl.connection.kind() {
+            DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+            DbKind::Postgres => "SERIAL PRIMARY KEY",
+        };
+
+        // Create and populate a column table:
+        let sql = format!(
+            r#"CREATE TABLE "column" (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             "table" TEXT,
+             "column" TEXT,
+             "label" TEXT,
+             "description" TEXT,
+             "nulltype" TEXT
+           )"#,
+        );
+        rltbl.connection.query(&sql, None).await?;
+
+        let sql = r#"INSERT INTO "column"
+                        ("table",   "column",        "label",      "description", "nulltype")
+                 VALUES ('penguin', 'study_name',    'muddy_name', NULL,              NULL),
+                        ('penguin', 'sample_number', NULL,         'a sample number', NULL),
+                        ('penguin', 'maple_syrup',   'maple syrup', NULL,             NULL),
+                        ('penguin', 'species',       NULL,          NULL,             'empty')"#;
+        rltbl.connection.query(sql, None).await?;
+
+        // TODO (maybe) Don't explicitly execute any create table/trigger etc. statements here.
+        // Save the generated values to a TSV file first in a demo/ directory instead and then load
+        // it.
+
+        // Create a data table called penguin:
+        let sql = format!(
+            r#"CREATE TABLE penguin (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             study_name TEXT,
+             sample_number TEXT,
+             species TEXT,
+             island TEXT,
+             individual_id TEXT,
+             culmen_length TEXT,
+             body_mass TEXT
+           )"#,
+        );
+        rltbl.connection.query(&sql, None).await?;
+
+        if rltbl.connection.kind() == DbKind::Postgres {
+            // This is required, because in PostgreSQL, assiging SERIAL PRIMARY KEY to a column is
+            // equivalent to:
+            //   CREATE SEQUENCE table_name_id_seq;
+            //   CREATE TABLE table_name (
+            //     id integer NOT NULL DEFAULT nextval('table_name_id_seq')
+            //   );
+            //   ALTER SEQUENCE table_name_id_seq OWNED BY table_name.id;
+            // This means that such a column is only ever auto-incremented when it is explicitly
+            // left out of an INSERT statement. To replicate SQLite's more sane behaviour, we define
+            // the following trigger to *always* update the last value of the sequence to the
+            // currently inserted row number. A similar trigger is also defined generically for
+            // postgresql tables in [rltbl::core].
+            let sql = format!(
+                r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_penguin"()
+                 RETURNS TRIGGER
+                 LANGUAGE PLPGSQL
+                 AS
+               $$
+               BEGIN
+                 IF NEW._id > (SELECT MAX(last_value) FROM "penguin__id_seq") THEN
+                   PERFORM setval('penguin__id_seq', NEW._id);
+                 END IF;
+                 RETURN NEW;
+               END;
+               $$"#,
+            );
+            rltbl.connection.query(&sql, None).await?;
+
+            let sql = format!(
+                r#"CREATE TRIGGER "penguin_order"
+                 AFTER INSERT ON "penguin"
+                 FOR EACH ROW
+                 EXECUTE FUNCTION "update_order_and_nextval_penguin"()"#,
+            );
+            rltbl.connection.query(&sql, None).await?;
+        } else {
+            let sql = format!(
+                r#"CREATE TRIGGER "update_order_penguin"
+                   AFTER INSERT ON "penguin"
+                   WHEN NEW._order IS NULL
+                   BEGIN
+                     UPDATE "penguin" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
+                     WHERE _id = NEW._id;
+                   END"#,
+            );
+            rltbl.connection.query(&sql, None).await?;
+        }
+
+        // Populate the penguin table with random data.
+        let islands = vec!["Biscoe", "Dream", "Torgersen"];
+        let mut rng = StdRng::seed_from_u64(0);
+        let sql_first_part = r#"INSERT INTO "penguin" VALUES "#;
+        let mut sql_value_parts = vec![];
+        let mut sql_param = SqlParam::new(&rltbl.connection.kind());
+        let mut params = vec![];
+        let max_params = match rltbl.connection.kind() {
+            DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
+            DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
+        };
+        for i in 1..=size {
+            if (params.len() + 7) >= max_params {
+                let sql = format!(
+                    "{sql_first_part} {sql_value_part}",
+                    sql_value_part = sql_value_parts.join(", ")
+                );
+                let params_so_far = json!(params);
+                rltbl.connection.query(&sql, Some(&params_so_far)).await?;
+                tracing::info!("{num_rows} rows loaded to table penguin", num_rows = i - 1);
+                params.clear();
+                sql_value_parts.clear();
+                sql_param.reset();
+            }
+
+            let id = i;
+            let order = i * NEW_ORDER_MULTIPLIER;
+            let island = islands.iter().choose(&mut rng);
+            let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
+            let body_mass = rng.gen_range(1000..5000);
+            sql_value_parts.push(format!(
+                "({sql_param_list_1}, 'FAKE123', {lone_sql_param}, 'Pygoscelis adeliae', \
+                 {sql_param_list_2})",
+                sql_param_list_1 = sql_param.get_as_list(2),
+                lone_sql_param = sql_param.next(),
+                sql_param_list_2 = sql_param.get_as_list(4),
+            ));
+            params.push(json!(id));
+            params.push(json!(order));
+            params.push(json!(id));
+            params.push(json!(island));
+            params.push(json!(format!("N{id}")));
+            params.push(json!(culmen_length));
+            params.push(json!(body_mass));
+        }
+        if params.len() > 0 {
+            let sql = format!(
+                "{sql_first_part} {sql_value_part}",
+                sql_value_part = sql_value_parts.join(", ")
+            );
+            let params = json!(params);
+            rltbl.connection.query(&sql, Some(&params)).await?;
+        }
         Ok(rltbl)
     }
 
@@ -347,7 +523,6 @@ impl Relatable {
     pub async fn count(&self, select: &Select) -> Result<usize> {
         tracing::trace!("Relatable::count({select:?})");
         let (statement, params) = select.to_sql_count(&self.connection.kind())?;
-        tracing::debug!("SQL (COUNT) {statement}");
         let params = json!(params);
         // TODO: Implement caching.
         let json_rows = self.connection.query(&statement, Some(&params)).await?;
