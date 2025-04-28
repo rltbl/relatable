@@ -7,9 +7,9 @@ to_sql (joined_select)): SELECT *
 FROM "penguin"
 WHERE "individual_id" IN (
   SELECT
-    "individual_id"
+    "penguin"."individual_id"
   FROM "penguin"
-  LEFT JOIN "egg" USING ("individual_id")
+  LEFT JOIN "egg" ON "penguin"."individual_id" = "egg"."individual_id"
   WHERE "egg"."individual_id" = ...
 )
 ORDER BY "penguin"._order ASC [String("N1")]
@@ -18,9 +18,9 @@ to_sql_count (joined_select)): SELECT COUNT(1) AS "count"
 FROM "penguin"
 WHERE "individual_id" IN (
   SELECT
-    "individual_id"
+    "penguin"."individual_id"
   FROM "penguin"
-  LEFT JOIN "egg" USING ("individual_id")
+  LEFT JOIN "egg" ON "penguin"."individual_id" = "egg"."individual_id"
   WHERE "egg"."individual_id" = ...
 ) [String("N1")]
 ...

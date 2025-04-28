@@ -3860,6 +3860,39 @@ impl Filter {
 }
 
 /// TODO: Add docstring
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Join {
+    LeftJoin {
+        left_table: String,
+        left_column: String,
+        right_table: String,
+        right_column: String,
+    },
+}
+
+impl Join {
+    pub fn to_sql(&self) -> String {
+        match self {
+            Join::LeftJoin {
+                left_table,
+                left_column,
+                right_table,
+                right_column,
+            } => {
+                let (t, lt, lc, rt, rc) = (
+                    &right_table,
+                    &left_table,
+                    &left_column,
+                    &right_table,
+                    &right_column,
+                );
+                format!(r#"LEFT JOIN "{t}" ON "{lt}"."{lc}" = "{rt}"."{rc}""#)
+            }
+        }
+    }
+}
+
+/// TODO: Add docstring
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum SelectField {
     Column {
@@ -3928,7 +3961,7 @@ pub struct Select {
     pub table_name: String,
     pub view_name: String,
     pub select: Vec<SelectField>,
-    pub joins: Vec<String>,
+    pub joins: Vec<Join>,
     pub limit: usize,
     pub offset: usize,
     pub filters: Vec<Filter>,
@@ -4623,9 +4656,20 @@ impl Select {
         self
     }
 
-    pub fn left_join_using(&mut self, table: &str, column: &str) {
-        self.joins
-            .push(format!(r#"LEFT JOIN "{table}" USING ("{column}")"#));
+    pub fn left_join(
+        &mut self,
+        left_table: &str,
+        left_column: &str,
+        right_table: &str,
+        right_column: &str,
+    ) -> &Self {
+        self.joins.push(Join::LeftJoin {
+            left_table: left_table.to_string(),
+            left_column: left_column.to_string(),
+            right_table: right_table.to_string(),
+            right_column: right_column.to_string(),
+        });
+        self
     }
 
     /// Convert the filter to a tuple consisting of an SQL string supported by the given database
@@ -4680,7 +4724,14 @@ impl Select {
                 if column == self.select.last().unwrap() {
                     t = "";
                 }
-                lines.push(format!(r#"  {}{t}"#, column.to_sql()));
+                lines.push(format!(
+                    r#"  {table}{column}{t}"#,
+                    table = match self.table_name.as_str() {
+                        "" => "".to_string(),
+                        _ => format!(r#""{}"."#, self.table_name),
+                    },
+                    column = column.to_sql()
+                ));
             }
         }
         let target = match self.view_name.as_str() {
@@ -4690,7 +4741,7 @@ impl Select {
         lines.push(format!(r#"FROM "{target}""#));
 
         for join in &self.joins {
-            lines.push(join.clone());
+            lines.push(join.to_sql());
         }
 
         for (i, filter) in self.filters.iter().enumerate() {
@@ -4726,7 +4777,7 @@ impl Select {
         lines.push(r#"SELECT COUNT(1) AS "count""#.to_string());
         lines.push(format!(r#"FROM "{}""#, self.table_name));
         for join in self.joins.clone() {
-            lines.push(join);
+            lines.push(join.to_sql());
         }
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
@@ -4875,6 +4926,13 @@ impl Select {
             .into());
         }
         let table_name = format!("{base}/{table_name}{format}");
+
+        if self.joins.len() > 0 {
+            return Err(RelatableError::InputError(
+                "Joins are unsupported in to_url()".to_string(),
+            )
+            .into());
+        }
 
         let params = &self.to_params()?.clone();
         if params.len() > 0 {

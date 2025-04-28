@@ -430,7 +430,9 @@ async fn joined_query(
 
     sel.table_name = json_row.get_string("table").unwrap();
     for json_row in json_rows.iter().skip(1) {
-        sel.left_join_using(
+        sel.left_join(
+            &mut sel.table_name.clone(),
+            &json_row.get_string("using").unwrap(),
             &json_row.get_string("table").unwrap(),
             &json_row.get_string("using").unwrap(),
         );
