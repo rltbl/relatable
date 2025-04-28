@@ -1,6 +1,6 @@
 ```console tesh-session="test"
 $ echo "Created a demonstration database in '$RLTBL_CONNECTION'" > expected_output.txt
-$ rltbl -v demo --force | diff - expected_output.txt
+$ rltbl -v demo --force --size 10 | diff - expected_output.txt
 $ rm -f expected_output.txt
 $ rltbl_test -v joined-query penguin individual_id egg N1
 to_sql (joined_select)): SELECT *
@@ -14,7 +14,7 @@ WHERE "individual_id" IN (
 )
 ORDER BY "penguin"._order ASC [String("N1")]
 ...
-to_sql_count (joined_select)): SELECT COUNT(*) AS "count"
+to_sql_count (joined_select)): SELECT COUNT(1) AS "count"
 FROM "penguin"
 WHERE "individual_id" IN (
   SELECT

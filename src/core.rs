@@ -489,7 +489,25 @@ impl Relatable {
         if select.select.len() > 0 {
             columns = columns
                 .iter()
-                .filter(|c| select.select.contains(&c.name))
+                .filter(|column| {
+                    select.select.iter().any(|sel| match sel {
+                        SelectField::Column {
+                            table: select_table,
+                            column: select_column,
+                            ..
+                        } => {
+                            *select_column == column.name
+                                && (select_table == "" || *select_table == table.name)
+                        }
+                        _ => {
+                            tracing::warn!(
+                                "Expressions are not supported. Ignoring '{}'",
+                                column.name
+                            );
+                            false
+                        }
+                    })
+                })
                 .map(|c| c.clone())
                 .collect();
         }
@@ -3841,12 +3859,75 @@ impl Filter {
     }
 }
 
+/// TODO: Add docstring
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum SelectField {
+    Column {
+        table: String,
+        column: String,
+        alias: String,
+    },
+    Expression {
+        expression: String,
+        alias: String,
+    },
+}
+
+impl SelectField {
+    fn to_sql(&self) -> String {
+        match self {
+            SelectField::Column {
+                table,
+                column,
+                alias,
+            } => {
+                format!(
+                    "{table}{column}{alias}",
+                    table = match table.as_str() {
+                        "" => "".to_string(),
+                        _ => format!(r#""{table}"."#),
+                    },
+                    column = format!(r#""{column}""#),
+                    alias = match alias.as_str() {
+                        "" => "".to_string(),
+                        _ => format!(r#" AS "{alias}""#),
+                    }
+                )
+            }
+            _ => todo!(),
+        }
+    }
+
+    fn to_url(&self) -> String {
+        match self {
+            SelectField::Column {
+                table,
+                column,
+                alias,
+            } => {
+                if alias != "" {
+                    tracing::warn!("Alias '{alias}' unsupported in to_url()");
+                }
+                format!(
+                    "{table}{column}",
+                    table = match table.as_str() {
+                        "" => "".to_string(),
+                        _ => format!("{table}."),
+                    },
+                    column = format!("{column}")
+                )
+            }
+            _ => todo!(),
+        }
+    }
+}
+
 /// Represents a SELECT statement.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Select {
     pub table_name: String,
     pub view_name: String,
-    pub select: Vec<String>,
+    pub select: Vec<SelectField>,
     pub joins: Vec<String>,
     pub limit: usize,
     pub offset: usize,
@@ -3888,6 +3969,15 @@ impl Select {
         let mut query_params = query_params.clone();
         let mut filters = Vec::new();
         let mut order_by = Vec::new();
+
+        let mut select = vec![];
+        if let Some(s) = query_params.get("select") {
+            select.push(SelectField::Column {
+                table: String::new(),
+                column: s.to_string(),
+                alias: String::new(),
+            });
+        }
 
         let limit: usize = query_params
             .get("limit")
@@ -4113,6 +4203,7 @@ impl Select {
         }
         Self {
             table_name: table.to_string(),
+            select,
             view_name: format!("{table}_default_view"),
             limit,
             offset,
@@ -4471,6 +4562,67 @@ impl Select {
         Ok(self)
     }
 
+    pub fn select_column(&mut self, column: &str) -> &Self {
+        self.select.push(SelectField::Column {
+            table: String::new(),
+            column: column.to_string(),
+            alias: String::new(),
+        });
+        self
+    }
+
+    pub fn select_columns(&mut self, columns: &Vec<&str>) -> &Self {
+        for column in columns {
+            self.select_column(column);
+        }
+        self
+    }
+
+    pub fn select_table_column(&mut self, table: &str, column: &str) -> &Self {
+        self.select.push(SelectField::Column {
+            table: table.to_string(),
+            column: column.to_string(),
+            alias: String::new(),
+        });
+        self
+    }
+
+    pub fn select_table_columns(&mut self, table: &str, columns: &Vec<&str>) -> &Self {
+        for column in columns {
+            self.select_table_column(table, column);
+        }
+        self
+    }
+
+    pub fn select_alias(&mut self, table: &str, column: &str, alias: &str) -> &Self {
+        self.select.push(SelectField::Column {
+            table: table.to_string(),
+            column: column.to_string(),
+            alias: alias.to_string(),
+        });
+        self
+    }
+
+    pub fn select_expression(&mut self, expression: &str, alias: &str) -> &Self {
+        self.select.push(SelectField::Expression {
+            expression: expression.to_string(),
+            alias: alias.to_string(),
+        });
+        self
+    }
+
+    pub fn select_all(&mut self, table: &Table) -> &Self {
+        for (column_name, _) in table.columns.iter() {
+            // or something
+            self.select.push(SelectField::Column {
+                table: String::new(),
+                column: column_name.to_string(),
+                alias: String::new(),
+            });
+        }
+        self
+    }
+
     pub fn left_join_using(&mut self, table: &str, column: &str) {
         self.joins
             .push(format!(r#"LEFT JOIN "{table}" USING ("{column}")"#));
@@ -4520,7 +4672,7 @@ impl Select {
                 }
             }
             for column in &self.select {
-                if column == "" {
+                if column.to_sql() == "" {
                     return Err(RelatableError::InputError("Empty column name".to_string()).into());
                 }
                 let mut t = ",";
@@ -4528,12 +4680,9 @@ impl Select {
                 if column == self.select.last().unwrap() {
                     t = "";
                 }
-                lines.push(format!(r#"  "{column}"{t}"#));
+                lines.push(format!(r#"  {}{t}"#, column.to_sql()));
             }
         }
-        // the real table name
-        //params.push(json!(self.table_name));
-        // // the view name, which may differ
         let target = match self.view_name.as_str() {
             "" => &self.table_name,
             _ => &self.view_name,
@@ -4574,7 +4723,7 @@ impl Select {
         tracing::trace!("Select::to_sql_count({self:?}, {kind:?})");
         let mut lines = Vec::new();
         let mut params = Vec::new();
-        lines.push(r#"SELECT COUNT(*) AS "count""#.to_string());
+        lines.push(r#"SELECT COUNT(1) AS "count""#.to_string());
         lines.push(format!(r#"FROM "{}""#, self.table_name));
         for join in self.joins.clone() {
             lines.push(join);
@@ -4582,7 +4731,6 @@ impl Select {
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let (s, p) = filter.to_sql_count(kind)?;
-            //tracing::info!("S&P ARE: {s}, {p:?}");
             lines.push(format!("{keyword} {s}"));
             params.append(&mut p.clone());
         }
@@ -4601,6 +4749,23 @@ impl Select {
         }
 
         let mut params = JsonMap::new();
+        if self.select.len() > 0 {
+            let mut select_cols = vec![];
+            for sfield in self.select.iter() {
+                match sfield {
+                    SelectField::Column { .. } => {
+                        select_cols.push(sfield.to_url());
+                    }
+                    SelectField::Expression { .. } => {
+                        return Err(RelatableError::InputError(
+                            "Expressions are not supported as input to to_params()".to_string(),
+                        )
+                        .into())
+                    }
+                };
+            }
+            params.insert("select".to_string(), select_cols.join(",").into());
+        }
         if self.filters.len() > 0 {
             for filter in &self.filters {
                 let (table, column) = match &filter {

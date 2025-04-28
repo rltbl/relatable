@@ -420,7 +420,7 @@ async fn joined_query(
             pkey = json_row.get_string("distinct").unwrap();
         }
     }
-    sel.select = vec![pkey.clone()];
+    sel.select_column(&pkey);
     if table_name == json_rows.last().unwrap().get_string("table").unwrap() {
         sel = sel.order_by(&pkey);
     } else {
