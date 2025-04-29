@@ -57,7 +57,7 @@ pub enum Command {
         max_length: usize,
     },
     /// Test a joined query
-    SelectJoin {
+    SelectTest {
         #[arg(action = ArgAction::Set)]
         table1: String,
 
@@ -467,7 +467,7 @@ async fn main() {
                 .expect("Could not connect to relatable database");
             generate_operation_sequence(&cli, &rltbl, table, *min_length, *max_length).await;
         }
-        Command::SelectJoin {
+        Command::SelectTest {
             table1,
             table2,
             column,

@@ -103,11 +103,6 @@ impl SqlParam {
         self.get(amount).join(", ")
     }
 
-    /// Update the index
-    pub fn set_index(&mut self, index: usize) {
-        self.index = index;
-    }
-
     /// Resets the index
     pub fn reset(&mut self) {
         self.index = 0;

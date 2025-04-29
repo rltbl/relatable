@@ -4,7 +4,7 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Format, Relatable},
+    core::{Change, ChangeAction, ChangeSet, Format, Relatable, Select},
     sql,
     sql::{JsonRow, SqlParam, VecInto},
     web::{serve, serve_cgi},
@@ -356,8 +356,7 @@ pub async fn print_table(
     // Currently, for instance, 37 is displayed as 37.0 in SQLite and 37 in PostgreSQL.
     tracing::debug!("print_table {table_name}");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
-    let select = rltbl
-        .from(table_name)
+    let select = Select::from(table_name)
         .filters(filters)
         .unwrap()
         .limit(limit)
@@ -393,7 +392,7 @@ pub async fn print_table(
 pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
     tracing::trace!("print_rows({cli:?}, {table_name}, {limit}, {offset})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
-    let select = rltbl.from(table_name).limit(limit).offset(offset);
+    let select = Select::from(table_name).limit(limit).offset(offset);
     let rows = rltbl.fetch_rows(&select).await.unwrap().vec_into();
     print_text(&rows);
 }

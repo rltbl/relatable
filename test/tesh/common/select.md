@@ -2,7 +2,7 @@
 $ echo "Created a demonstration database in '$RLTBL_CONNECTION'" > expected_output.txt
 $ rltbl -v demo --force --size 10 | diff - expected_output.txt
 $ rm -f expected_output.txt
-$ rltbl_test -v select-join penguin individual_id egg N1
+$ rltbl_test -v select-test penguin individual_id egg N1
 TO_SQL (SELECT_1): SELECT *
 FROM "penguin"
 WHERE "individual_id" IN (
