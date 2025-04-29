@@ -1,8 +1,8 @@
 //! API tests
 
 use rltbl::{
-    core::{Relatable, RLTBL_DEFAULT_DB},
-    sql::DbKind,
+    core::{render_values, Filter, QueryParams, Relatable, Select, RLTBL_DEFAULT_DB},
+    sql::{DbKind, SqlParam},
 };
 
 use clap::{ArgAction, Parser, Subcommand};
@@ -57,7 +57,7 @@ pub enum Command {
         max_length: usize,
     },
     /// Test a joined query
-    JoinedQuery {
+    SelectJoin {
         #[arg(action = ArgAction::Set)]
         table1: String,
 
@@ -321,11 +321,7 @@ pub async fn build_egg_demo(cli: &Cli) -> Relatable {
 }
 
 /// TODO: Add a docstring and then move this to web.rs
-async fn joined_query(
-    rltbl: &rltbl::core::Relatable,
-    tableset_name: &str,
-    select: &rltbl::core::Select,
-) -> rltbl::core::Select {
+async fn create_subquery(rltbl: &Relatable, tableset_name: &str, select: &Select) -> Select {
     let mut tables = HashSet::new();
     tables.insert(json!(select.table_name));
     for filter in &select.filters {
@@ -375,16 +371,13 @@ async fn joined_query(
     rltbl.connection.query(sql, None).await.unwrap();
 
     let tables: Vec<serde_json::Value> = tables.into_iter().collect();
-    let mut sql_param = rltbl::sql::SqlParam::new(&rltbl.connection.kind());
+    let mut sql_param = SqlParam::new(&rltbl.connection.kind());
     let mut values = vec![];
-    let (placeholder_list_1, mut these_values) =
-        rltbl::core::render_values(&tables, &mut sql_param).unwrap();
+    let (placeholder_list_1, mut these_values) = render_values(&tables, &mut sql_param).unwrap();
     values.append(&mut these_values);
-    let (placeholder_list_2, mut these_values) =
-        rltbl::core::render_values(&tables, &mut sql_param).unwrap();
+    let (placeholder_list_2, mut these_values) = render_values(&tables, &mut sql_param).unwrap();
     values.append(&mut these_values);
-    let (placeholder_list_3, mut these_values) =
-        rltbl::core::render_values(&tables, &mut sql_param).unwrap();
+    let (placeholder_list_3, mut these_values) = render_values(&tables, &mut sql_param).unwrap();
     values.append(&mut these_values);
 
     let sql = format!(
@@ -438,9 +431,9 @@ async fn joined_query(
         );
     }
 
-    rltbl::core::Select {
+    Select {
         table_name,
-        filters: vec![rltbl::core::Filter::InSubquery {
+        filters: vec![Filter::InSubquery {
             table: String::new(),
             column: pkey.clone(),
             subquery: sel.clone(),
@@ -474,7 +467,7 @@ async fn main() {
                 .expect("Could not connect to relatable database");
             generate_operation_sequence(&cli, &rltbl, table, *min_length, *max_length).await;
         }
-        Command::JoinedQuery {
+        Command::SelectJoin {
             table1,
             table2,
             column,
@@ -482,27 +475,150 @@ async fn main() {
         } => {
             let rltbl = build_egg_demo(&cli).await;
 
-            let select = rltbl::core::Select {
-                table_name: table1.to_string(),
-                filters: vec![rltbl::core::Filter::Equal {
-                    table: table2.to_string(),
-                    column: column.to_string(),
-                    value: serde_json::to_value(value).expect("Error parsing value"),
-                }],
-                ..Default::default()
-            };
-            let joined_select = joined_query(&rltbl, table1, &select).await;
+            // Test subqueries:
+            {
+                let select = Select {
+                    table_name: table1.to_string(),
+                    filters: vec![Filter::Equal {
+                        table: table2.to_string(),
+                        column: column.to_string(),
+                        value: serde_json::to_value(value).expect("Error parsing value"),
+                    }],
+                    ..Default::default()
+                };
+                let select_1 = create_subquery(&rltbl, table1, &select).await;
 
-            let (sql, params) = joined_select.to_sql(&rltbl.connection.kind()).unwrap();
-            println!("to_sql (joined_select)): {sql} {params:?}\n");
+                let (sql, params) = select_1.to_sql(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL (SELECT_1): {sql} {params:?}\n");
 
-            let (sql, params) = joined_select
-                .to_sql_count(&rltbl.connection.kind())
-                .unwrap();
-            println!("to_sql_count (joined_select)): {sql} {params:?}\n");
+                let (sql, params) = select_1.to_sql_count(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL_COUNT (SELECT_1): {sql} {params:?}\n");
 
-            let count = rltbl.count(&joined_select).await.unwrap();
-            println!("count (joined_select): {count}\n");
+                let result_set = rltbl.fetch(&select_1).await.unwrap();
+                println!("ROWS (SELECT_1): {:#?}", result_set.rows);
+
+                let count = rltbl.count(&select_1).await.unwrap();
+                println!("COUNT (SELECT_1): {count}\n");
+            }
+
+            // Test select fields:
+            {
+                let mut query_params = QueryParams::new();
+                query_params.insert("sample_number".to_string(), "eq.5".to_string());
+                let select_2 = Select::from_path_and_query(&rltbl, "penguin.tsv", &query_params);
+
+                let (sql, params) = select_2.to_sql(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL (SELECT_2): {sql} {params:?}\n");
+
+                let (sql, params) = select_2.to_sql_count(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL_COUNT (SELECT_2): {sql} {params:?}\n");
+
+                let result_set = rltbl.fetch(&select_2).await.unwrap();
+                println!("ROWS (SELECT_2): {:#?}", result_set.rows);
+
+                let count = rltbl.count(&select_2).await.unwrap();
+                println!("COUNT (SELECT_2): {count}\n");
+            }
+            {
+                let mut query_params = QueryParams::new();
+                query_params.insert("sample_number".to_string(), "eq.9".to_string());
+                let mut select_3 =
+                    Select::from_path_and_query(&rltbl, "penguin.tsv", &query_params);
+                select_3.select_column("species");
+
+                let (sql, params) = select_3.to_sql(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL (SELECT_3): {sql} {params:?}\n");
+
+                let (sql, params) = select_3.to_sql_count(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL_COUNT (SELECT_3): {sql} {params:?}\n");
+
+                let result_set = rltbl.fetch(&select_3).await.unwrap();
+                println!("ROWS (SELECT_3): {:#?}", result_set.rows);
+
+                let count = rltbl.count(&select_3).await.unwrap();
+                println!("COUNT (SELECT_3): {count}\n");
+            }
+            {
+                let mut query_params = QueryParams::new();
+                query_params.insert("island".to_string(), "eq.Biscoe".to_string());
+                let mut select_4 =
+                    Select::from_path_and_query(&rltbl, "penguin.tsv", &query_params);
+                select_4.select_table_columns("penguin", &vec!["species", "island"]);
+                select_4.select_columns(&vec!["study_name", "body_mass"]);
+
+                let (sql, params) = select_4.to_sql(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL (SELECT_4): {sql} {params:?}\n");
+
+                let (sql, params) = select_4.to_sql_count(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL_COUNT (SELECT_4): {sql} {params:?}\n");
+
+                let result_set = rltbl.fetch(&select_4).await.unwrap();
+                println!("ROWS (SELECT_4): {:#?}", result_set.rows);
+
+                let count = rltbl.count(&select_4).await.unwrap();
+                println!("COUNT (SELECT_4): {count}\n");
+            }
+
+            {
+                let mut query_params = QueryParams::new();
+                query_params.insert("sample_number".to_string(), "eq.9".to_string());
+                let mut select_5 =
+                    Select::from_path_and_query(&rltbl, "penguin.tsv", &query_params);
+                select_5.select_alias("penguin", "island", "location");
+
+                let (sql, params) = select_5.to_sql(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL (SELECT_5): {sql} {params:?}\n");
+
+                let (sql, params) = select_5.to_sql_count(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL_COUNT (SELECT_5): {sql} {params:?}\n");
+
+                let result_set = rltbl.fetch(&select_5).await.unwrap();
+                println!("ROWS (SELECT_5): {:#?}", result_set.rows);
+
+                let count = rltbl.count(&select_5).await.unwrap();
+                println!("COUNT (SELECT_5): {count}\n");
+            }
+
+            {
+                let mut query_params = QueryParams::new();
+                query_params.insert("sample_number".to_string(), "eq.9".to_string());
+                let mut select_6 =
+                    Select::from_path_and_query(&rltbl, "penguin.tsv", &query_params);
+                select_6
+                    .select_expression("CASE WHEN island = 'Biscoe' THEN 'BISCOE' END", "location");
+
+                let (sql, params) = select_6.to_sql(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL (SELECT_6): {sql} {params:?}\n");
+
+                let (sql, params) = select_6.to_sql_count(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL_COUNT (SELECT_6): {sql} {params:?}\n");
+
+                let result_set = rltbl.fetch(&select_6).await.unwrap();
+                println!("ROWS (SELECT_6): {:#?}", result_set.rows);
+
+                let count = rltbl.count(&select_6).await.unwrap();
+                println!("COUNT (SELECT_6): {count}\n");
+            }
+
+            {
+                let mut query_params = QueryParams::new();
+                query_params.insert("sample_number".to_string(), "eq.9".to_string());
+                let mut select_7 =
+                    Select::from_path_and_query(&rltbl, "penguin.tsv", &query_params);
+                select_7.select_all(&rltbl, "penguin").await.unwrap();
+
+                let (sql, params) = select_7.to_sql(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL (SELECT_7): {sql} {params:?}\n");
+
+                let (sql, params) = select_7.to_sql_count(&rltbl.connection.kind()).unwrap();
+                println!("TO_SQL_COUNT (SELECT_7): {sql} {params:?}\n");
+
+                let result_set = rltbl.fetch(&select_7).await.unwrap();
+                println!("ROWS (SELECT_7): {:#?}", result_set.rows);
+
+                let count = rltbl.count(&select_7).await.unwrap();
+                println!("COUNT (SELECT_7): {count}\n");
+            }
         }
     }
 }

@@ -499,13 +499,7 @@ impl Relatable {
                             *select_column == column.name
                                 && (select_table == "" || *select_table == table.name)
                         }
-                        _ => {
-                            tracing::warn!(
-                                "Expressions are not supported. Ignoring '{}'",
-                                column.name
-                            );
-                            false
-                        }
+                        _ => false,
                     })
                 })
                 .map(|c| c.clone())
@@ -3479,6 +3473,80 @@ pub fn render_values(
 }
 
 impl Filter {
+    pub fn get_table(&self) -> String {
+        match self {
+            Filter::Like { table, .. }
+            | Filter::Equal { table, .. }
+            | Filter::NotEqual { table, .. }
+            | Filter::GreaterThan { table, .. }
+            | Filter::GreaterThanOrEqual { table, .. }
+            | Filter::LessThan { table, .. }
+            | Filter::LessThanOrEqual { table, .. }
+            | Filter::Is { table, .. }
+            | Filter::IsNot { table, .. }
+            | Filter::In { table, .. }
+            | Filter::NotIn { table, .. }
+            | Filter::InSubquery { table, .. }
+            | Filter::NotInSubquery { table, .. } => table.to_string(),
+        }
+    }
+
+    pub fn set_table(&mut self, new_name: &str) -> &Self {
+        match self {
+            Filter::Like { table, .. }
+            | Filter::Equal { table, .. }
+            | Filter::NotEqual { table, .. }
+            | Filter::GreaterThan { table, .. }
+            | Filter::GreaterThanOrEqual { table, .. }
+            | Filter::LessThan { table, .. }
+            | Filter::LessThanOrEqual { table, .. }
+            | Filter::Is { table, .. }
+            | Filter::IsNot { table, .. }
+            | Filter::In { table, .. }
+            | Filter::NotIn { table, .. }
+            | Filter::InSubquery { table, .. }
+            | Filter::NotInSubquery { table, .. } => *table = new_name.to_string(),
+        };
+        self
+    }
+
+    pub fn get_column(&self) -> String {
+        match self {
+            Filter::Like { column, .. }
+            | Filter::Equal { column, .. }
+            | Filter::NotEqual { column, .. }
+            | Filter::GreaterThan { column, .. }
+            | Filter::GreaterThanOrEqual { column, .. }
+            | Filter::LessThan { column, .. }
+            | Filter::LessThanOrEqual { column, .. }
+            | Filter::Is { column, .. }
+            | Filter::IsNot { column, .. }
+            | Filter::In { column, .. }
+            | Filter::NotIn { column, .. }
+            | Filter::InSubquery { column, .. }
+            | Filter::NotInSubquery { column, .. } => column.to_string(),
+        }
+    }
+
+    pub fn set_column(&mut self, new_name: &str) -> &Self {
+        match self {
+            Filter::Like { column, .. }
+            | Filter::Equal { column, .. }
+            | Filter::NotEqual { column, .. }
+            | Filter::GreaterThan { column, .. }
+            | Filter::GreaterThanOrEqual { column, .. }
+            | Filter::LessThan { column, .. }
+            | Filter::LessThanOrEqual { column, .. }
+            | Filter::Is { column, .. }
+            | Filter::IsNot { column, .. }
+            | Filter::In { column, .. }
+            | Filter::NotIn { column, .. }
+            | Filter::InSubquery { column, .. }
+            | Filter::NotInSubquery { column, .. } => *column = new_name.to_string(),
+        };
+        self
+    }
+
     pub fn parts(&self) -> (String, String, String, JsonValue) {
         tracing::trace!("Filter::parts()");
         let (table, column, operator, value) = match self {
@@ -3927,7 +3995,9 @@ impl SelectField {
                     }
                 )
             }
-            _ => todo!(),
+            SelectField::Expression { expression, alias } => {
+                format!(r#"{expression} AS "{alias}""#)
+            }
         }
     }
 
@@ -4244,6 +4314,82 @@ impl Select {
             filters,
             ..Default::default()
         }
+    }
+
+    pub fn select_column(&mut self, column: &str) -> &Self {
+        self.select.push(SelectField::Column {
+            table: String::new(),
+            column: column.to_string(),
+            alias: String::new(),
+        });
+        self
+    }
+
+    pub fn select_columns(&mut self, columns: &Vec<&str>) -> &Self {
+        for column in columns {
+            self.select_column(column);
+        }
+        self
+    }
+
+    pub fn select_table_column(&mut self, table: &str, column: &str) -> &Self {
+        self.select.push(SelectField::Column {
+            table: table.to_string(),
+            column: column.to_string(),
+            alias: String::new(),
+        });
+        self
+    }
+
+    pub fn select_table_columns(&mut self, table: &str, columns: &Vec<&str>) -> &Self {
+        for column in columns {
+            self.select_table_column(table, column);
+        }
+        self
+    }
+
+    pub fn select_alias(&mut self, table: &str, column: &str, alias: &str) -> &Self {
+        self.select.push(SelectField::Column {
+            table: table.to_string(),
+            column: column.to_string(),
+            alias: alias.to_string(),
+        });
+        self
+    }
+
+    pub fn select_expression(&mut self, expression: &str, alias: &str) -> &Self {
+        self.select.push(SelectField::Expression {
+            expression: expression.to_string(),
+            alias: alias.to_string(),
+        });
+        self
+    }
+
+    pub async fn select_all(&mut self, rltbl: &Relatable, table: &str) -> Result<&Self> {
+        for column in rltbl.get_db_table_columns(&table).await? {
+            self.select.push(SelectField::Column {
+                table: String::new(),
+                column: column.get_string("name")?,
+                alias: String::new(),
+            });
+        }
+        Ok(self)
+    }
+
+    pub fn left_join(
+        &mut self,
+        left_table: &str,
+        left_column: &str,
+        right_table: &str,
+        right_column: &str,
+    ) -> &Self {
+        self.joins.push(Join::LeftJoin {
+            left_table: left_table.to_string(),
+            left_column: left_column.to_string(),
+            right_table: right_table.to_string(),
+            right_column: right_column.to_string(),
+        });
+        self
     }
 
     /// Order (ascending) this select by the given column
@@ -4595,83 +4741,6 @@ impl Select {
         Ok(self)
     }
 
-    pub fn select_column(&mut self, column: &str) -> &Self {
-        self.select.push(SelectField::Column {
-            table: String::new(),
-            column: column.to_string(),
-            alias: String::new(),
-        });
-        self
-    }
-
-    pub fn select_columns(&mut self, columns: &Vec<&str>) -> &Self {
-        for column in columns {
-            self.select_column(column);
-        }
-        self
-    }
-
-    pub fn select_table_column(&mut self, table: &str, column: &str) -> &Self {
-        self.select.push(SelectField::Column {
-            table: table.to_string(),
-            column: column.to_string(),
-            alias: String::new(),
-        });
-        self
-    }
-
-    pub fn select_table_columns(&mut self, table: &str, columns: &Vec<&str>) -> &Self {
-        for column in columns {
-            self.select_table_column(table, column);
-        }
-        self
-    }
-
-    pub fn select_alias(&mut self, table: &str, column: &str, alias: &str) -> &Self {
-        self.select.push(SelectField::Column {
-            table: table.to_string(),
-            column: column.to_string(),
-            alias: alias.to_string(),
-        });
-        self
-    }
-
-    pub fn select_expression(&mut self, expression: &str, alias: &str) -> &Self {
-        self.select.push(SelectField::Expression {
-            expression: expression.to_string(),
-            alias: alias.to_string(),
-        });
-        self
-    }
-
-    pub fn select_all(&mut self, table: &Table) -> &Self {
-        for (column_name, _) in table.columns.iter() {
-            // or something
-            self.select.push(SelectField::Column {
-                table: String::new(),
-                column: column_name.to_string(),
-                alias: String::new(),
-            });
-        }
-        self
-    }
-
-    pub fn left_join(
-        &mut self,
-        left_table: &str,
-        left_column: &str,
-        right_table: &str,
-        right_column: &str,
-    ) -> &Self {
-        self.joins.push(Join::LeftJoin {
-            left_table: left_table.to_string(),
-            left_column: left_column.to_string(),
-            right_table: right_table.to_string(),
-            right_column: right_column.to_string(),
-        });
-        self
-    }
-
     /// Convert the filter to a tuple consisting of an SQL string supported by the given database
     /// kind, and a vector of parameters that must be bound to the string before executing it.
     pub fn to_sql(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
@@ -4679,6 +4748,10 @@ impl Select {
         let mut sql_param_gen = SqlParam::new(kind);
         let mut lines = Vec::new();
         let mut params = Vec::new();
+        let target = match self.view_name.as_str() {
+            "" => &self.table_name,
+            _ => &self.view_name,
+        };
 
         let get_change_sql = |sql_param_gen: &mut SqlParam| -> String {
             format!(
@@ -4693,10 +4766,6 @@ impl Select {
 
         if self.select.len() == 0 {
             if self.joins.len() > 0 {
-                let target = match self.view_name.as_str() {
-                    "" => &self.table_name,
-                    _ => &self.view_name,
-                };
                 lines.push(format!(r#"SELECT "{target}".*,"#));
             } else {
                 lines.push("SELECT *".to_string());
@@ -4715,29 +4784,25 @@ impl Select {
                     lines.push(get_change_sql(&mut sql_param_gen));
                 }
             }
-            for column in &self.select {
-                if column.to_sql() == "" {
-                    return Err(RelatableError::InputError("Empty column name".to_string()).into());
+            for field in &self.select {
+                if field.to_sql() == "" {
+                    return Err(RelatableError::InputError("Empty field name".to_string()).into());
                 }
                 let mut t = ",";
                 // TODO: Remove unwraps
-                if column == self.select.last().unwrap() {
+                if field == self.select.last().unwrap() {
                     t = "";
                 }
-                lines.push(format!(
-                    r#"  {table}{column}{t}"#,
-                    table = match self.table_name.as_str() {
-                        "" => "".to_string(),
-                        _ => format!(r#""{}"."#, self.table_name),
-                    },
-                    column = column.to_sql()
-                ));
+
+                // Replace the table with the view name in the SelectField if necessary:
+                let mut field = field.clone();
+                if let SelectField::Column { ref mut table, .. } = field {
+                    *table = target.to_string();
+                }
+
+                lines.push(format!(r#"  {field}{t}"#, field = field.to_sql()));
             }
         }
-        let target = match self.view_name.as_str() {
-            "" => &self.table_name,
-            _ => &self.view_name,
-        };
         lines.push(format!(r#"FROM "{target}""#));
 
         for join in &self.joins {
@@ -4745,16 +4810,16 @@ impl Select {
         }
 
         for (i, filter) in self.filters.iter().enumerate() {
+            let mut filter = filter.clone();
+            if filter.get_table() != "" {
+                filter.set_table(&target);
+            }
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
             lines.push(format!("{keyword} {filter_sql}"));
             params.append(&mut filter_params);
         }
         if self.order_by.len() == 0 && self.joins.len() == 0 {
-            let target = match self.view_name.as_str() {
-                "" => &self.table_name,
-                _ => &self.view_name,
-            };
             lines.push(format!(r#"ORDER BY "{target}"._order ASC"#));
         }
         for (column, order) in &self.order_by {
