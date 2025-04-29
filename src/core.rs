@@ -508,7 +508,7 @@ impl Relatable {
         self.connection.query(&statement, Some(&params)).await
     }
 
-    /// TODO: Add a docstring here.
+    /// Get the number of rows returned by this [Select]
     pub async fn count(&self, select: &Select) -> Result<usize> {
         tracing::trace!("Relatable::count({select:?})");
         let (statement, params) = select.to_sql_count(&self.connection.kind())?;
