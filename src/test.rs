@@ -489,16 +489,87 @@ async fn main() {
                 let select_1 = create_subquery(&rltbl, table1, &select).await;
 
                 let (sql, params) = select_1.to_sql(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL (SELECT_1): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT *
+FROM "penguin"
+WHERE "individual_id" IN (
+  SELECT
+    "penguin"."individual_id"
+  FROM "penguin"
+  LEFT JOIN "egg" ON "penguin"."individual_id" = "egg"."individual_id"
+  WHERE "penguin"."individual_id" = ?
+)
+ORDER BY "penguin"._order ASC"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("N1")]"#);
 
                 let (sql, params) = select_1.to_sql_count(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL_COUNT (SELECT_1): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "individual_id" IN (
+  SELECT
+    "penguin"."individual_id"
+  FROM "penguin"
+  LEFT JOIN "egg" ON "penguin"."individual_id" = "egg"."individual_id"
+  WHERE "penguin"."individual_id" = ?
+)"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("N1")]"#);
 
                 let result_set = rltbl.fetch(&select_1).await.unwrap();
-                println!("ROWS (SELECT_1): {:#?}", result_set.rows);
+                assert_eq!(
+                    format!("{:#?}", result_set.rows),
+                    r#"[
+    Row {
+        id: 1,
+        order: 1000,
+        change_id: 0,
+        cells: {
+            "study_name": Cell {
+                value: String("FAKE123"),
+                text: "FAKE123",
+                messages: [],
+            },
+            "sample_number": Cell {
+                value: String("1"),
+                text: "1",
+                messages: [],
+            },
+            "species": Cell {
+                value: String("Pygoscelis adeliae"),
+                text: "Pygoscelis adeliae",
+                messages: [],
+            },
+            "island": Cell {
+                value: String("Torgersen"),
+                text: "Torgersen",
+                messages: [],
+            },
+            "individual_id": Cell {
+                value: String("N1"),
+                text: "N1",
+                messages: [],
+            },
+            "culmen_length": Cell {
+                value: String("44.6"),
+                text: "44.6",
+                messages: [],
+            },
+            "body_mass": Cell {
+                value: String("3221"),
+                text: "3221",
+                messages: [],
+            },
+        },
+    },
+]"#
+                );
 
                 let count = rltbl.count(&select_1).await.unwrap();
-                println!("COUNT (SELECT_1): {count}\n");
+                assert_eq!(count, 1);
             }
 
             // Test select fields:
@@ -508,16 +579,76 @@ async fn main() {
                 let select_2 = Select::from_path_and_query(&rltbl, "penguin.tsv", &query_params);
 
                 let (sql, params) = select_2.to_sql(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL (SELECT_2): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT *
+FROM "penguin_default_view"
+WHERE "sample_number" = ?
+ORDER BY "penguin_default_view"._order ASC
+LIMIT 100"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("5")]"#);
 
                 let (sql, params) = select_2.to_sql_count(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL_COUNT (SELECT_2): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "sample_number" = ?"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("5")]"#);
 
                 let result_set = rltbl.fetch(&select_2).await.unwrap();
-                println!("ROWS (SELECT_2): {:#?}", result_set.rows);
+                assert_eq!(
+                    format!("{:#?}", result_set.rows),
+                    r#"[
+    Row {
+        id: 5,
+        order: 5000,
+        change_id: 0,
+        cells: {
+            "study_name": Cell {
+                value: String("FAKE123"),
+                text: "FAKE123",
+                messages: [],
+            },
+            "sample_number": Cell {
+                value: String("5"),
+                text: "5",
+                messages: [],
+            },
+            "species": Cell {
+                value: String("Pygoscelis adeliae"),
+                text: "Pygoscelis adeliae",
+                messages: [],
+            },
+            "island": Cell {
+                value: String("Torgersen"),
+                text: "Torgersen",
+                messages: [],
+            },
+            "individual_id": Cell {
+                value: String("N5"),
+                text: "N5",
+                messages: [],
+            },
+            "culmen_length": Cell {
+                value: String("45.8"),
+                text: "45.8",
+                messages: [],
+            },
+            "body_mass": Cell {
+                value: String("3469"),
+                text: "3469",
+                messages: [],
+            },
+        },
+    },
+]"#
+                );
 
                 let count = rltbl.count(&select_2).await.unwrap();
-                println!("COUNT (SELECT_2): {count}\n");
+                assert_eq!(count, 1);
             }
             {
                 let mut query_params = QueryParams::new();
@@ -527,16 +658,47 @@ async fn main() {
                 select_3.select_column("species");
 
                 let (sql, params) = select_3.to_sql(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL (SELECT_3): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT
+  "penguin_default_view"."species"
+FROM "penguin_default_view"
+WHERE "sample_number" = ?
+ORDER BY "penguin_default_view"._order ASC
+LIMIT 100"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let (sql, params) = select_3.to_sql_count(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL_COUNT (SELECT_3): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "sample_number" = ?"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let result_set = rltbl.fetch(&select_3).await.unwrap();
-                println!("ROWS (SELECT_3): {:#?}", result_set.rows);
+                assert_eq!(
+                    format!("{:#?}", result_set.rows),
+                    r#"[
+    Row {
+        id: 0,
+        order: 0,
+        change_id: 0,
+        cells: {
+            "species": Cell {
+                value: String("Pygoscelis adeliae"),
+                text: "Pygoscelis adeliae",
+                messages: [],
+            },
+        },
+    },
+]"#
+                );
 
                 let count = rltbl.count(&select_3).await.unwrap();
-                println!("COUNT (SELECT_3): {count}\n");
+                assert_eq!(count, 1);
             }
             {
                 let mut query_params = QueryParams::new();
@@ -547,16 +709,92 @@ async fn main() {
                 select_4.select_columns(&vec!["study_name", "body_mass"]);
 
                 let (sql, params) = select_4.to_sql(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL (SELECT_4): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT
+  "penguin_default_view"."species",
+  "penguin_default_view"."island",
+  "penguin_default_view"."study_name",
+  "penguin_default_view"."body_mass"
+FROM "penguin_default_view"
+WHERE "island" = ?
+ORDER BY "penguin_default_view"._order ASC
+LIMIT 100"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("Biscoe")]"#);
 
                 let (sql, params) = select_4.to_sql_count(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL_COUNT (SELECT_4): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "island" = ?"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("Biscoe")]"#);
 
                 let result_set = rltbl.fetch(&select_4).await.unwrap();
-                println!("ROWS (SELECT_4): {:#?}", result_set.rows);
+                assert_eq!(
+                    format!("{:#?}", result_set.rows),
+                    r#"[
+    Row {
+        id: 0,
+        order: 0,
+        change_id: 0,
+        cells: {
+            "species": Cell {
+                value: String("Pygoscelis adeliae"),
+                text: "Pygoscelis adeliae",
+                messages: [],
+            },
+            "island": Cell {
+                value: String("Biscoe"),
+                text: "Biscoe",
+                messages: [],
+            },
+            "study_name": Cell {
+                value: String("FAKE123"),
+                text: "FAKE123",
+                messages: [],
+            },
+            "body_mass": Cell {
+                value: String("1451"),
+                text: "1451",
+                messages: [],
+            },
+        },
+    },
+    Row {
+        id: 0,
+        order: 0,
+        change_id: 0,
+        cells: {
+            "species": Cell {
+                value: String("Pygoscelis adeliae"),
+                text: "Pygoscelis adeliae",
+                messages: [],
+            },
+            "island": Cell {
+                value: String("Biscoe"),
+                text: "Biscoe",
+                messages: [],
+            },
+            "study_name": Cell {
+                value: String("FAKE123"),
+                text: "FAKE123",
+                messages: [],
+            },
+            "body_mass": Cell {
+                value: String("2702"),
+                text: "2702",
+                messages: [],
+            },
+        },
+    },
+]"#
+                );
 
                 let count = rltbl.count(&select_4).await.unwrap();
-                println!("COUNT (SELECT_4): {count}\n");
+                assert_eq!(count, 2);
             }
 
             {
@@ -567,16 +805,47 @@ async fn main() {
                 select_5.select_alias("penguin", "island", "location");
 
                 let (sql, params) = select_5.to_sql(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL (SELECT_5): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT
+  "penguin_default_view"."island" AS "location"
+FROM "penguin_default_view"
+WHERE "sample_number" = ?
+ORDER BY "penguin_default_view"._order ASC
+LIMIT 100"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let (sql, params) = select_5.to_sql_count(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL_COUNT (SELECT_5): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "sample_number" = ?"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let result_set = rltbl.fetch(&select_5).await.unwrap();
-                println!("ROWS (SELECT_5): {:#?}", result_set.rows);
+                assert_eq!(
+                    format!("{:#?}", result_set.rows),
+                    r#"[
+    Row {
+        id: 0,
+        order: 0,
+        change_id: 0,
+        cells: {
+            "location": Cell {
+                value: String("Biscoe"),
+                text: "Biscoe",
+                messages: [],
+            },
+        },
+    },
+]"#
+                );
 
                 let count = rltbl.count(&select_5).await.unwrap();
-                println!("COUNT (SELECT_5): {count}\n");
+                assert_eq!(count, 1);
             }
 
             {
@@ -588,16 +857,47 @@ async fn main() {
                     .select_expression("CASE WHEN island = 'Biscoe' THEN 'BISCOE' END", "location");
 
                 let (sql, params) = select_6.to_sql(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL (SELECT_6): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT
+  CASE WHEN island = 'Biscoe' THEN 'BISCOE' END AS "location"
+FROM "penguin_default_view"
+WHERE "sample_number" = ?
+ORDER BY "penguin_default_view"._order ASC
+LIMIT 100"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let (sql, params) = select_6.to_sql_count(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL_COUNT (SELECT_6): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "sample_number" = ?"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let result_set = rltbl.fetch(&select_6).await.unwrap();
-                println!("ROWS (SELECT_6): {:#?}", result_set.rows);
+                assert_eq!(
+                    format!("{:#?}", result_set.rows),
+                    r#"[
+    Row {
+        id: 0,
+        order: 0,
+        change_id: 0,
+        cells: {
+            "location": Cell {
+                value: String("BISCOE"),
+                text: "BISCOE",
+                messages: [],
+            },
+        },
+    },
+]"#
+                );
 
                 let count = rltbl.count(&select_6).await.unwrap();
-                println!("COUNT (SELECT_6): {count}\n");
+                assert_eq!(count, 1);
             }
 
             {
@@ -608,16 +908,85 @@ async fn main() {
                 select_7.select_all(&rltbl, "penguin").await.unwrap();
 
                 let (sql, params) = select_7.to_sql(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL (SELECT_7): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT
+  "penguin_default_view"."_id",
+  "penguin_default_view"."_order",
+  "penguin_default_view"."study_name",
+  "penguin_default_view"."sample_number",
+  "penguin_default_view"."species",
+  "penguin_default_view"."island",
+  "penguin_default_view"."individual_id",
+  "penguin_default_view"."culmen_length",
+  "penguin_default_view"."body_mass"
+FROM "penguin_default_view"
+WHERE "sample_number" = ?
+ORDER BY "penguin_default_view"._order ASC
+LIMIT 100"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let (sql, params) = select_7.to_sql_count(&rltbl.connection.kind()).unwrap();
-                println!("TO_SQL_COUNT (SELECT_7): {sql} {params:?}\n");
+                assert_eq!(
+                    sql,
+                    r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "sample_number" = ?"#
+                );
+                assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let result_set = rltbl.fetch(&select_7).await.unwrap();
-                println!("ROWS (SELECT_7): {:#?}", result_set.rows);
+                assert_eq!(
+                    format!("{:#?}", result_set.rows),
+                    r#"[
+    Row {
+        id: 9,
+        order: 9000,
+        change_id: 0,
+        cells: {
+            "study_name": Cell {
+                value: String("FAKE123"),
+                text: "FAKE123",
+                messages: [],
+            },
+            "sample_number": Cell {
+                value: String("9"),
+                text: "9",
+                messages: [],
+            },
+            "species": Cell {
+                value: String("Pygoscelis adeliae"),
+                text: "Pygoscelis adeliae",
+                messages: [],
+            },
+            "island": Cell {
+                value: String("Biscoe"),
+                text: "Biscoe",
+                messages: [],
+            },
+            "individual_id": Cell {
+                value: String("N9"),
+                text: "N9",
+                messages: [],
+            },
+            "culmen_length": Cell {
+                value: String("38.6"),
+                text: "38.6",
+                messages: [],
+            },
+            "body_mass": Cell {
+                value: String("2702"),
+                text: "2702",
+                messages: [],
+            },
+        },
+    },
+]"#
+                );
 
                 let count = rltbl.count(&select_7).await.unwrap();
-                println!("COUNT (SELECT_7): {count}\n");
+                assert_eq!(count, 1);
             }
         }
     }
