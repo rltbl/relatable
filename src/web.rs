@@ -279,7 +279,8 @@ async fn joined_query(rltbl: &Relatable, tableset_name: &str, select: &Select) -
         sel.left_join_using(
             &json_row.get_string("table").unwrap(),
             &json_row.get_string("using").unwrap(),
-        );
+        )
+        .unwrap();
     }
     Ok(crate::core::Select {
         table_name,

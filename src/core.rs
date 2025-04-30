@@ -2448,6 +2448,7 @@ impl From<&JsonValue> for Cell {
             value: value.clone(),
             text: match value {
                 JsonValue::String(value) => value.to_string(),
+                JsonValue::Null => String::new(),
                 value => format!("{value}"),
             },
             messages: vec![],
@@ -3835,9 +3836,10 @@ impl Select {
         Ok(self)
     }
 
-    pub fn left_join_using(&mut self, table: &str, column: &str) {
+    pub fn left_join_using(&mut self, table: &str, column: &str) -> Result<&Self> {
         self.joins
             .push(format!(r#"LEFT JOIN "{table}" USING ("{column}")"#));
+        Ok(self)
     }
 
     pub fn to_sqlite(&self) -> Result<(String, Vec<JsonValue>)> {
