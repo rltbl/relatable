@@ -4059,7 +4059,6 @@ impl Select {
     /// query parameters.
     pub fn from_path_and_query(rltbl: &Relatable, path: &str, query_params: &QueryParams) -> Self {
         tracing::trace!("Select::from_path_and_query({rltbl:?}, {path:?}, {query_params:?})");
-        let table = path.split(".").next().unwrap_or_default();
         let mut query_params = query_params.clone();
         let mut filters = Vec::new();
         let mut order_by = Vec::new();
@@ -4100,10 +4099,12 @@ impl Select {
         query_params.shift_remove("offset");
         query_params.shift_remove("order");
 
-        for (column, pattern) in query_params {
+        for (lhs, pattern) in query_params {
+            let (table, column) = match lhs.split_once(".") {
+                Some((table, column)) => (table.to_string(), column.to_string()),
+                None => (String::new(), lhs),
+            };
             if pattern.starts_with("like.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let value = &pattern.replace("like.", "");
                 match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::Like {
@@ -4118,8 +4119,6 @@ impl Select {
                     }),
                 }
             } else if pattern.starts_with("eq.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let value = &pattern.replace("eq.", "");
                 match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::Equal {
@@ -4134,8 +4133,6 @@ impl Select {
                     }),
                 }
             } else if pattern.starts_with("not_eq.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let value = &pattern.replace("not_eq.", "");
                 match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::NotEqual {
@@ -4150,8 +4147,6 @@ impl Select {
                     }),
                 }
             } else if pattern.starts_with("gt.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let value = &pattern.replace("gt.", "");
                 match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::GreaterThan {
@@ -4166,8 +4161,6 @@ impl Select {
                     }),
                 }
             } else if pattern.starts_with("gte.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let value = &pattern.replace("gte.", "");
                 match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::GreaterThanOrEqual {
@@ -4182,8 +4175,6 @@ impl Select {
                     }),
                 }
             } else if pattern.starts_with("lt.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let value = &pattern.replace("lt.", "");
                 match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::LessThan {
@@ -4198,8 +4189,6 @@ impl Select {
                     }),
                 }
             } else if pattern.starts_with("lte.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let value = &pattern.replace("lte.", "");
                 match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::LessThanOrEqual {
@@ -4214,8 +4203,6 @@ impl Select {
                     }),
                 }
             } else if pattern.starts_with("is.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let value = pattern.replace("is.", "");
                 match value.to_lowercase().as_str() {
                     "null" => filters.push(Filter::Is {
@@ -4233,8 +4220,6 @@ impl Select {
                     },
                 };
             } else if pattern.starts_with("is_not.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let value = pattern.replace("is_not.", "");
                 match value.to_lowercase().as_str() {
                     "null" => filters.push(Filter::IsNot {
@@ -4252,8 +4237,6 @@ impl Select {
                     },
                 };
             } else if pattern.starts_with("in.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let separator = Regex::new(r"\s*,\s*").unwrap();
                 let values = pattern.replace("in.", "");
                 let values = match values.strip_prefix("(").and_then(|s| s.strip_suffix(")")) {
@@ -4273,8 +4256,6 @@ impl Select {
                     value: json!(values),
                 })
             } else if pattern.starts_with("not_in.") {
-                let table = table.to_string();
-                let column = column.to_string();
                 let separator = Regex::new(r"\s*,\s*").unwrap();
                 let values = pattern.replace("not_in.", "");
                 let values = match values.strip_prefix("(").and_then(|s| s.strip_suffix(")")) {
@@ -4295,10 +4276,12 @@ impl Select {
                 })
             }
         }
+
+        let table_name = path.split(".").next().unwrap_or_default();
         Self {
-            table_name: table.to_string(),
+            table_name: table_name.to_string(),
             select,
-            view_name: format!("{table}_default_view"),
+            view_name: format!("{table_name}_default_view"),
             limit,
             offset,
             order_by,
