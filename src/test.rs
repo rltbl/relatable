@@ -12,7 +12,7 @@ use rand::{
     rngs::StdRng,
     SeedableRng as _,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::json;
 use std::collections::HashSet;
 
 #[derive(Parser, Debug)]
@@ -57,19 +57,7 @@ pub enum Command {
         max_length: usize,
     },
     /// Test a joined query
-    SelectTest {
-        #[arg(action = ArgAction::Set)]
-        table1: String,
-
-        #[arg(action = ArgAction::Set)]
-        column: String,
-
-        #[arg(action = ArgAction::Set)]
-        table2: String,
-
-        #[arg(action = ArgAction::Set)]
-        value: JsonValue,
-    },
+    SelectTest {},
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -467,13 +455,14 @@ async fn main() {
                 .expect("Could not connect to relatable database");
             generate_operation_sequence(&cli, &rltbl, table, *min_length, *max_length).await;
         }
-        Command::SelectTest {
-            table1,
-            table2,
-            column,
-            value,
-        } => {
+        Command::SelectTest {} => {
             let rltbl = build_egg_demo(&cli).await;
+            let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
+
+            let table1 = "penguin";
+            let table2 = "egg";
+            let column = "individual_id";
+            let value = "N1";
 
             // Test subqueries:
             {
@@ -491,31 +480,35 @@ async fn main() {
                 let (sql, params) = select_1.to_sql(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT *
+                    format!(
+                        r#"SELECT *
 FROM "penguin"
 WHERE "individual_id" IN (
   SELECT
     "penguin"."individual_id"
   FROM "penguin"
   LEFT JOIN "egg" ON "penguin"."individual_id" = "egg"."individual_id"
-  WHERE "penguin"."individual_id" = ?
+  WHERE "penguin"."individual_id" = {sql_param}
 )
 ORDER BY "penguin"._order ASC"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("N1")]"#);
 
                 let (sql, params) = select_1.to_sql_count(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT COUNT(1) AS "count"
+                    format!(
+                        r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
 WHERE "individual_id" IN (
   SELECT
     "penguin"."individual_id"
   FROM "penguin"
   LEFT JOIN "egg" ON "penguin"."individual_id" = "egg"."individual_id"
-  WHERE "penguin"."individual_id" = ?
+  WHERE "penguin"."individual_id" = {sql_param}
 )"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("N1")]"#);
 
@@ -581,20 +574,24 @@ WHERE "individual_id" IN (
                 let (sql, params) = select_2.to_sql(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT *
+                    format!(
+                        r#"SELECT *
 FROM "penguin_default_view"
-WHERE "sample_number" = ?
+WHERE "sample_number" = {sql_param}
 ORDER BY "penguin_default_view"._order ASC
 LIMIT 100"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("5")]"#);
 
                 let (sql, params) = select_2.to_sql_count(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT COUNT(1) AS "count"
+                    format!(
+                        r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "sample_number" = ?"#
+WHERE "sample_number" = {sql_param}"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("5")]"#);
 
@@ -660,21 +657,25 @@ WHERE "sample_number" = ?"#
                 let (sql, params) = select_3.to_sql(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT
+                    format!(
+                        r#"SELECT
   "penguin_default_view"."species"
 FROM "penguin_default_view"
-WHERE "sample_number" = ?
+WHERE "sample_number" = {sql_param}
 ORDER BY "penguin_default_view"._order ASC
 LIMIT 100"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let (sql, params) = select_3.to_sql_count(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT COUNT(1) AS "count"
+                    format!(
+                        r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "sample_number" = ?"#
+WHERE "sample_number" = {sql_param}"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
@@ -711,24 +712,28 @@ WHERE "sample_number" = ?"#
                 let (sql, params) = select_4.to_sql(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT
+                    format!(
+                        r#"SELECT
   "penguin_default_view"."species",
   "penguin_default_view"."island",
   "penguin_default_view"."study_name",
   "penguin_default_view"."body_mass"
 FROM "penguin_default_view"
-WHERE "island" = ?
+WHERE "island" = {sql_param}
 ORDER BY "penguin_default_view"._order ASC
 LIMIT 100"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("Biscoe")]"#);
 
                 let (sql, params) = select_4.to_sql_count(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT COUNT(1) AS "count"
+                    format!(
+                        r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "island" = ?"#
+WHERE "island" = {sql_param}"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("Biscoe")]"#);
 
@@ -807,21 +812,25 @@ WHERE "island" = ?"#
                 let (sql, params) = select_5.to_sql(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT
+                    format!(
+                        r#"SELECT
   "penguin_default_view"."island" AS "location"
 FROM "penguin_default_view"
-WHERE "sample_number" = ?
+WHERE "sample_number" = {sql_param}
 ORDER BY "penguin_default_view"._order ASC
 LIMIT 100"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let (sql, params) = select_5.to_sql_count(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT COUNT(1) AS "count"
+                    format!(
+                        r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "sample_number" = ?"#
+WHERE "sample_number" = {sql_param}"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
@@ -859,21 +868,25 @@ WHERE "sample_number" = ?"#
                 let (sql, params) = select_6.to_sql(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT
+                    format!(
+                        r#"SELECT
   CASE WHEN island = 'Biscoe' THEN 'BISCOE' END AS "location"
 FROM "penguin_default_view"
-WHERE "sample_number" = ?
+WHERE "sample_number" = {sql_param}
 ORDER BY "penguin_default_view"._order ASC
 LIMIT 100"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let (sql, params) = select_6.to_sql_count(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT COUNT(1) AS "count"
+                    format!(
+                        r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "sample_number" = ?"#
+WHERE "sample_number" = {sql_param}"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
@@ -910,7 +923,8 @@ WHERE "sample_number" = ?"#
                 let (sql, params) = select_7.to_sql(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT
+                    format!(
+                        r#"SELECT
   "penguin_default_view"."_id",
   "penguin_default_view"."_order",
   "penguin_default_view"."study_name",
@@ -921,18 +935,21 @@ WHERE "sample_number" = ?"#
   "penguin_default_view"."culmen_length",
   "penguin_default_view"."body_mass"
 FROM "penguin_default_view"
-WHERE "sample_number" = ?
+WHERE "sample_number" = {sql_param}
 ORDER BY "penguin_default_view"._order ASC
 LIMIT 100"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
                 let (sql, params) = select_7.to_sql_count(&rltbl.connection.kind()).unwrap();
                 assert_eq!(
                     sql,
-                    r#"SELECT COUNT(1) AS "count"
+                    format!(
+                        r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "sample_number" = ?"#
+WHERE "sample_number" = {sql_param}"#
+                    )
                 );
                 assert_eq!(format!("{params:?}"), r#"[String("9")]"#);
 
