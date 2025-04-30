@@ -988,6 +988,8 @@ WHERE "sample_number" = ?"#
                 let count = rltbl.count(&select_7).await.unwrap();
                 assert_eq!(count, 1);
             }
+
+            println!("Select test successful");
         }
     }
 }
