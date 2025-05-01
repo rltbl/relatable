@@ -5,7 +5,7 @@ use enquote::unquote;
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, to_value, Map as JsonMap, Value as JsonValue};
+use serde_json::{json, to_value, Value as JsonValue};
 
 /// Represents a SELECT statement.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,7 +42,6 @@ impl Select {
         tracing::trace!("Select::from({table_name:?})");
         Self {
             table_name: table_name.to_string(),
-            view_name: format!("{table_name}_default_view"),
             limit: DEFAULT_LIMIT,
             ..Default::default()
         }
@@ -50,8 +49,8 @@ impl Select {
 
     /// Construct a [Select] for the given [relatable](crate) instance from the given path and
     /// query parameters.
-    pub fn from_path_and_query(rltbl: &Relatable, path: &str, query_params: &QueryParams) -> Self {
-        tracing::trace!("Select::from_path_and_query({rltbl:?}, {path:?}, {query_params:?})");
+    pub fn from_path_and_query(path: &str, query_params: &QueryParams) -> Self {
+        tracing::trace!("Select::from_path_and_query({path:?}, {query_params:?})");
         let mut query_params = query_params.clone();
         let mut filters = Vec::new();
         let mut order_by = Vec::new();
@@ -68,8 +67,7 @@ impl Select {
         let limit: usize = query_params
             .get("limit")
             .and_then(|x| x.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_LIMIT)
-            .min(rltbl.max_limit);
+            .unwrap_or(DEFAULT_LIMIT);
         let offset: usize = query_params
             .get("offset")
             .and_then(|x| x.parse::<usize>().ok())
@@ -274,7 +272,6 @@ impl Select {
         Self {
             table_name: table_name.to_string(),
             select,
-            view_name: format!("{table_name}_default_view"),
             limit,
             offset,
             order_by,
@@ -577,7 +574,7 @@ impl Select {
     }
 
     /// Add an equals filter on the given column and value.
-    pub fn eq<T>(mut self, column: &str, value: &T) -> Result<Self>
+    pub fn eq<T>(&mut self, column: &str, value: &T) -> Result<&Self>
     where
         T: Serialize,
     {
@@ -716,6 +713,17 @@ impl Select {
         Ok(self)
     }
 
+    /// Add an in filter on the given column and value.
+    pub fn is_in_subquery(&mut self, column: &str, subquery: &Select) -> &Self {
+        tracing::trace!("Select::is_in_subquery({column:?}, {subquery:?})");
+        self.filters.push(Filter::InSubquery {
+            table: "".to_string(),
+            column: column.to_string(),
+            subquery: subquery.clone(),
+        });
+        self
+    }
+
     /// Convert the filter to a tuple consisting of an SQL string supported by the given database
     /// kind, and a vector of parameters that must be bound to the string before executing it.
     pub fn to_sql(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
@@ -787,10 +795,6 @@ impl Select {
 
         // The WHERE clause:
         for (i, filter) in self.filters.iter().enumerate() {
-            let mut filter = filter.clone();
-            if filter.get_table() != "" {
-                filter.set_table(&target);
-            }
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
             lines.push(format!("{keyword} {filter_sql}"));
@@ -835,7 +839,7 @@ impl Select {
 
     /// Converts this select's filters to a map from column names to URL representations of their
     /// associated filters represented as [JsonValue]s
-    pub fn to_params(&self) -> Result<JsonMap<String, JsonValue>> {
+    pub fn to_params(&self) -> Result<IndexMap<String, JsonValue>> {
         tracing::trace!("Select::to_params()");
         if self.table_name.is_empty() {
             return Err(RelatableError::InputError(
@@ -844,7 +848,7 @@ impl Select {
             .into());
         }
 
-        let mut params = JsonMap::new();
+        let mut params = IndexMap::new();
         if self.select.len() > 0 {
             let mut select_cols = vec![];
             for sfield in self.select.iter() {
@@ -864,93 +868,34 @@ impl Select {
         }
         if self.filters.len() > 0 {
             for filter in &self.filters {
-                let (table, column) = match &filter {
-                    Filter::Like {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::Equal {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::NotEqual {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::GreaterThan {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::GreaterThanOrEqual {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::LessThan {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::LessThanOrEqual {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::Is {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::IsNot {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::In {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::NotIn {
-                        table,
-                        column,
-                        value: _,
-                    }
-                    | Filter::InSubquery {
-                        table,
-                        column,
-                        subquery: _,
-                    }
-                    | Filter::NotInSubquery {
-                        table,
-                        column,
-                        subquery: _,
-                    } => (table, column),
-                };
+                let (table, column, _, _) = filter.parts();
 
-                let lhs = {
-                    let table = unquote(&table).unwrap_or(table.to_string());
-                    let column = unquote(&column).unwrap_or(column.to_string());
-                    match table.as_str() {
-                        "" => format!(r#""{column}""#),
-                        _ => format!(r#""{table}"."{column}""#),
+                if table != "" {
+                    if let Err(e) = sql::is_simple(&table) {
+                        return Err(RelatableError::InputError(format!(
+                            "While reading filters table name, got error: {}",
+                            e
+                        ))
+                        .into());
                     }
-                };
-                if let Err(e) = sql::is_simple(&lhs) {
+                }
+                if let Err(e) = sql::is_simple(&column) {
                     return Err(RelatableError::InputError(format!(
-                        "While reading filters, got error: {}",
+                        "While reading filters column name, got error: {}",
                         e
                     ))
                     .into());
                 }
+                let lhs = {
+                    match table.as_str() {
+                        "" => format!(r#"{column}"#),
+                        _ => format!(r#"{table}.{column}"#),
+                    }
+                };
                 params.insert(lhs, format!("{}", filter.to_url()?).into());
             }
         }
-        if self.limit > 0 {
+        if self.limit > 0 && self.limit != DEFAULT_LIMIT {
             params.insert("limit".into(), self.limit.into());
         }
         if self.offset > 0 {
@@ -962,7 +907,7 @@ impl Select {
     /// Convert the select to a URL
     pub fn to_url(&self, base: &str, format: &Format) -> Result<String> {
         tracing::trace!("Select::to_url({base:?}, format)");
-        let table_name = unquote(&self.table_name).unwrap_or(self.table_name.to_string());
+        let table_name = self.table_name.to_string();
         if let Err(e) = sql::is_simple(&table_name) {
             return Err(RelatableError::InputError(format!(
                 "While reading table name, got error: {}",
@@ -970,7 +915,7 @@ impl Select {
             ))
             .into());
         }
-        let table_name = format!("{base}/{table_name}{format}");
+        let path = format!("{base}/{table_name}{format}");
 
         if self.joins.len() > 0 {
             return Err(RelatableError::InputError(
@@ -989,9 +934,9 @@ impl Select {
                 };
                 parts.push(format!("{column}={s}"));
             }
-            Ok(format!("{}?{}", table_name, parts.join("&")))
+            Ok(format!("{}?{}", path, parts.join("&")))
         } else {
-            Ok(table_name.to_string())
+            Ok(path.to_string())
         }
     }
 }
@@ -1721,4 +1666,274 @@ pub fn render_values(
         };
     }
     Ok((format!("({})", sql_params.join(", ")), values))
+}
+
+// Tests
+
+#[cfg(test)]
+mod tests {
+    use async_std::task::block_on;
+
+    use super::*;
+
+    #[test]
+    fn test_select_from_path_and_query() {
+        let rltbl = block_on(Relatable::connect(None)).unwrap();
+        let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
+
+        fn test(
+            rltbl: &Relatable,
+            expected_url: &str,
+            table: &str,
+            format: &Format,
+            query_params: &JsonValue,
+            expected_sql: &str,
+            expected_sql_count: &str,
+            expected_params: Vec<JsonValue>,
+        ) {
+            let base = "http://example.com";
+
+            let query_params = serde_json::from_value(query_params.clone()).unwrap();
+            let select = Select::from_path_and_query(&table, &query_params);
+            println!("SELECT {select:?}");
+
+            let actual_url = select.to_url(&base, &format).unwrap();
+            assert_eq!(actual_url, expected_url);
+
+            let (actual_sql, actual_params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+            assert_eq!(actual_sql, expected_sql);
+            assert_eq!(actual_params, expected_params);
+
+            let (actual_sql_count, actual_params) =
+                select.to_sql_count(&rltbl.connection.kind()).unwrap();
+            assert_eq!(actual_sql_count, expected_sql_count);
+            assert_eq!(actual_params, expected_params);
+        }
+
+        test(
+            &rltbl,
+            "http://example.com/penguin",
+            "penguin",
+            &Format::Default,
+            &json!({}),
+            &format!(
+                r#"SELECT *
+FROM "penguin"
+ORDER BY "penguin"._order ASC
+LIMIT 100"#
+            ),
+            &format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "penguin""#
+            ),
+            vec![],
+        );
+
+        test(
+            &rltbl,
+            "http://example.com/penguin.json?sample_number=eq.5&limit=1&offset=2",
+            "penguin",
+            &Format::Json,
+            &json!({
+               "sample_number": "eq.5",
+               "limit": "1",
+               "offset": "2",
+            }),
+            &format!(
+                r#"SELECT *
+FROM "penguin"
+WHERE "sample_number" = {sql_param}
+ORDER BY "penguin"._order ASC
+LIMIT 1
+OFFSET 2"#
+            ),
+            &format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "sample_number" = {sql_param}"#
+            ),
+            vec![json!("5")],
+        );
+
+        test(
+            &rltbl,
+            "http://example.com/penguin?foo.bar=eq.5&limit=1",
+            "penguin",
+            &Format::Default,
+            &json!({
+               "foo.bar": "eq.5",
+               "limit": "1",
+            }),
+            &format!(
+                r#"SELECT *
+FROM "penguin"
+WHERE "foo"."bar" = {sql_param}
+ORDER BY "penguin"._order ASC
+LIMIT 1"#
+            ),
+            &format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "foo"."bar" = {sql_param}"#
+            ),
+            vec![json!("5")],
+        );
+    }
+
+    #[test]
+    fn test_select_methods() {
+        let rltbl = block_on(Relatable::connect(None)).unwrap();
+        let empty: Vec<JsonValue> = vec![];
+
+        // select_columns
+        let mut select = Select::from("penguin");
+        select.select_table_columns("penguin", &vec!["species", "island"]);
+        select.select_columns(&vec!["study_name", "body_mass"]);
+
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT
+  "penguin"."species",
+  "penguin"."island",
+  "penguin"."study_name",
+  "penguin"."body_mass"
+FROM "penguin"
+ORDER BY "penguin"._order ASC
+LIMIT 100"#
+        );
+        assert_eq!(params, empty);
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT COUNT(1) AS "count"
+FROM "penguin""#
+        );
+        assert_eq!(params, empty);
+
+        // select_alias
+        let mut select = Select::from("penguin");
+        select.select_alias("penguin", "island", "location");
+
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT
+  "penguin"."island" AS "location"
+FROM "penguin"
+ORDER BY "penguin"._order ASC
+LIMIT 100"#
+        );
+        assert_eq!(params, empty);
+
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT COUNT(1) AS "count"
+FROM "penguin""#
+        );
+        assert_eq!(params, empty);
+
+        // select_expression
+        let mut select = Select::from("penguin");
+        select.select_expression("CASE WHEN island = 'Biscoe' THEN 'BISCOE' END", "location");
+
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT
+  CASE WHEN island = 'Biscoe' THEN 'BISCOE' END AS "location"
+FROM "penguin"
+ORDER BY "penguin"._order ASC
+LIMIT 100"#
+        );
+        assert_eq!(params, empty);
+
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT COUNT(1) AS "count"
+FROM "penguin""#
+        );
+        assert_eq!(params, empty);
+
+        // select_all
+        let mut select = Select::from("penguin");
+        block_on(select.select_all(&rltbl, "penguin")).unwrap();
+
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT
+  "penguin"."_id",
+  "penguin"."_order",
+  "penguin"."study_name",
+  "penguin"."sample_number",
+  "penguin"."species",
+  "penguin"."island",
+  "penguin"."individual_id",
+  "penguin"."culmen_length",
+  "penguin"."body_mass"
+FROM "penguin"
+ORDER BY "penguin"._order ASC
+LIMIT 100"#
+        );
+        assert_eq!(params, empty);
+
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT COUNT(1) AS "count"
+FROM "penguin""#
+        );
+        assert_eq!(params, empty);
+    }
+
+    #[test]
+    fn test_subquery() {
+        let rltbl = block_on(Relatable::connect(None)).unwrap();
+        let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
+
+        let mut inner_select = Select::from("penguin").limit(&0);
+        inner_select.select_table_column("penguin", "individual_id");
+        inner_select.left_join("penguin", "individual_id", "egg", "individual_id");
+        inner_select.eq("individual_id", &"N1").unwrap();
+        let mut outer_select = Select::from("penguin").limit(&0);
+        outer_select.is_in_subquery("individual_id", &inner_select);
+
+        let (sql, params) = outer_select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT *
+FROM "penguin"
+WHERE "individual_id" IN (
+  SELECT
+    "penguin"."individual_id"
+  FROM "penguin"
+  LEFT JOIN "egg" ON "penguin"."individual_id" = "egg"."individual_id"
+  WHERE "individual_id" = {sql_param}
+)
+ORDER BY "penguin"._order ASC"#
+            )
+        );
+        assert_eq!(format!("{params:?}"), r#"[String("N1")]"#);
+
+        let (sql, params) = outer_select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "individual_id" IN (
+  SELECT
+    "penguin"."individual_id"
+  FROM "penguin"
+  LEFT JOIN "egg" ON "penguin"."individual_id" = "egg"."individual_id"
+  WHERE "individual_id" = {sql_param}
+)"#
+            )
+        );
+        assert_eq!(format!("{params:?}"), r#"[String("N1")]"#);
+    }
 }
