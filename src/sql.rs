@@ -6,7 +6,10 @@
 //! elements of the API that are particularly database-specific.
 
 use crate as rltbl;
-use rltbl::core::{Column, RelatableError, Table, NEW_ORDER_MULTIPLIER};
+use rltbl::{
+    core::{RelatableError, NEW_ORDER_MULTIPLIER},
+    table::{Column, Table},
+};
 
 use anyhow::Result;
 use indexmap::IndexMap;

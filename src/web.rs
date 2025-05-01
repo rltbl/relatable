@@ -5,10 +5,11 @@
 use crate as rltbl;
 use rltbl::{
     cli::Cli,
-    core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet, Row},
+    core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet},
     select::{Format, QueryParams, Select},
     sql,
     sql::JsonRow,
+    table::Row,
 };
 use std::io::Write;
 

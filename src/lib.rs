@@ -15,6 +15,9 @@ pub mod select;
 /// Git interface
 pub mod git;
 
+/// Structs for representing tables, contents, changes, results
+pub mod table;
+
 /// Core functionality
 pub mod core;
 
