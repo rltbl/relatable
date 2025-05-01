@@ -1,7 +1,8 @@
 //! API tests
 
 use rltbl::{
-    core::{render_values, Filter, QueryParams, Relatable, Select, RLTBL_DEFAULT_DB},
+    core::{Relatable, RLTBL_DEFAULT_DB},
+    select::{render_values, Filter, QueryParams, Select},
     sql::{DbKind, SqlParam},
 };
 

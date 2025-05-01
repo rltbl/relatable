@@ -4,7 +4,8 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Format, Relatable, Select},
+    core::{Change, ChangeAction, ChangeSet, Relatable},
+    select::{Format, Select},
     sql,
     sql::{JsonRow, SqlParam, VecInto},
     web::{serve, serve_cgi},

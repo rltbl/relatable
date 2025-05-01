@@ -5,9 +5,8 @@
 use crate as rltbl;
 use rltbl::{
     cli::Cli,
-    core::{
-        ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Row, Select,
-    },
+    core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet, Row},
+    select::{Format, QueryParams, Select},
     sql,
     sql::JsonRow,
 };
