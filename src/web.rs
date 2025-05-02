@@ -5,11 +5,11 @@
 use crate as rltbl;
 use rltbl::{
     cli::Cli,
-    core::{
-        ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, ResultSet, Row, Select,
-    },
+    core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet},
+    select::{Format, QueryParams, Select},
     sql,
     sql::JsonRow,
+    table::Row,
 };
 use std::io::Write;
 
@@ -36,6 +36,7 @@ fn forbid() -> Response<Body> {
 }
 
 fn get_404(error: &anyhow::Error) -> Response<Body> {
+    tracing::error!("404 {error:?}");
     (
         StatusCode::NOT_FOUND,
         Html(format!("404 Not Found: {error}")),
@@ -44,6 +45,7 @@ fn get_404(error: &anyhow::Error) -> Response<Body> {
 }
 
 fn get_500(error: &anyhow::Error) -> Response<Body> {
+    tracing::error!("500 {error:?}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Html(format!("500 Internal Server Error: {error}")),
@@ -153,7 +155,7 @@ async fn get_table(
         init_user(&rltbl, &username).await;
     }
     // tracing::info!("USERNAME {username}");
-    let select = Select::from_path_and_query(&rltbl, &path, &query_params);
+    let select = Select::from_path_and_query(&path, &query_params);
     let format = match Format::try_from(&path) {
         Ok(format) => format,
         Err(error) => return get_404(&error),
@@ -342,7 +344,7 @@ async fn get_column_menu(
 ) -> Response<Body> {
     tracing::info!("get_column_menu({table_name}, {column})");
     let username = get_username(session);
-    let select = Select::from_path_and_query(&rltbl, &table_name, &query_params);
+    let select = Select::from_path_and_query(&table_name, &query_params);
     let mut operator = String::new();
     let mut value = json!("");
     let mut order = String::new();

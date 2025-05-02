@@ -4,7 +4,6 @@ use rltbl::core::{Relatable, RLTBL_DEFAULT_DB};
 
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
-
 use rand::{
     distributions::{Distribution as _, Uniform},
     rngs::StdRng,
@@ -229,6 +228,8 @@ async fn generate_operation_sequence(
             })
     );
 }
+
+/// TODO: Add a docstring and then move this to web.rs
 
 #[async_std::main]
 async fn main() {

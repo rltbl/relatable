@@ -6,20 +6,26 @@
 // Sub-modules
 ///////////////////////////////////////////////////////////////////////////////
 
-/// Command line interface
-pub mod cli;
+/// An abstraction over SQL engines
+pub mod sql;
+
+/// An abstraction over SQL Select statements
+pub mod select;
+
+/// Git interface
+pub mod git;
+
+/// Structs for representing tables, contents, changes, results
+pub mod table;
 
 /// Core functionality
 pub mod core;
 
+/// Command line interface
+pub mod cli;
+
 /// Web server
 pub mod web;
-
-/// An abstraction over SQL engines
-pub mod sql;
-
-/// Git interface
-pub mod git;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Global constants and other lookups

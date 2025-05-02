@@ -4,9 +4,10 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Format, Relatable, NEW_ORDER_MULTIPLIER},
+    core::{Change, ChangeAction, ChangeSet, Relatable},
+    select::{Format, Select},
     sql,
-    sql::{DbKind, JsonRow, SqlParam, VecInto},
+    sql::{JsonRow, SqlParam, VecInto},
     web::{serve, serve_cgi},
 };
 
@@ -15,7 +16,6 @@ use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use promptly::prompt_opt;
-use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 use regex::Regex;
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
 use std::{io, io::Write, path::Path};
@@ -357,8 +357,7 @@ pub async fn print_table(
     // Currently, for instance, 37 is displayed as 37.0 in SQLite and 37 in PostgreSQL.
     tracing::debug!("print_table {table_name}");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
-    let select = rltbl
-        .from(table_name)
+    let select = Select::from(table_name)
         .filters(filters)
         .unwrap()
         .limit(limit)
@@ -394,8 +393,8 @@ pub async fn print_table(
 pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
     tracing::trace!("print_rows({cli:?}, {table_name}, {limit}, {offset})");
     let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
-    let select = rltbl.from(table_name).limit(limit).offset(offset);
-    let rows = rltbl.fetch_json_rows(&select).await.unwrap().vec_into();
+    let select = Select::from(table_name).limit(limit).offset(offset);
+    let rows = rltbl.fetch_rows(&select).await.unwrap().vec_into();
     print_text(&rows);
 }
 
@@ -800,171 +799,10 @@ pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
-    tracing::trace!("build_demo({cli:?}");
-
-    let rltbl = Relatable::init(force, cli.database.as_deref())
+    tracing::trace!("build_demo({cli:?}, {force}, {size})");
+    Relatable::build_demo(cli.database.as_deref(), force, size)
         .await
-        .expect("Database was initialized");
-
-    if *force {
-        if let DbKind::Postgres = rltbl.connection.kind() {
-            rltbl
-                .connection
-                .query(r#"DROP TABLE IF EXISTS "column" CASCADE"#, None)
-                .await
-                .expect("Error dropping column table");
-            rltbl
-                .connection
-                .query(r#"DROP TABLE IF EXISTS "penguin" CASCADE"#, None)
-                .await
-                .expect("Error dropping penguin table");
-        }
-    }
-
-    let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('penguin', 'penguin.tsv')"#;
-    rltbl.connection.query(sql, None).await.unwrap();
-
-    let pkey_clause = match rltbl.connection.kind() {
-        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        DbKind::Postgres => "SERIAL PRIMARY KEY",
-    };
-
-    // Create and populate a column table:
-    let sql = format!(
-        r#"CREATE TABLE "column" (
-             _id {pkey_clause},
-             _order INTEGER UNIQUE,
-             "table" TEXT,
-             "column" TEXT,
-             "label" TEXT,
-             "description" TEXT,
-             "nulltype" TEXT
-           )"#,
-    );
-    rltbl.connection.query(&sql, None).await.unwrap();
-
-    let sql = r#"INSERT INTO "column"
-                        ("table",   "column",        "label",      "description", "nulltype")
-                 VALUES ('penguin', 'study_name',    'muddy_name', NULL,              NULL),
-                        ('penguin', 'sample_number', NULL,         'a sample number', NULL),
-                        ('penguin', 'maple_syrup',   'maple syrup', NULL,             NULL),
-                        ('penguin', 'species',       NULL,          NULL,             'empty')"#;
-    rltbl.connection.query(sql, None).await.unwrap();
-
-    // TODO Don't explicitly execute any create table/trigger etc. statements here. Save the
-    // generated values to a TSV file first in a demo/ directory instead and then load it.
-
-    // Create a data table called penguin:
-    let sql = format!(
-        r#"CREATE TABLE penguin (
-             _id {pkey_clause},
-             _order INTEGER UNIQUE,
-             study_name TEXT,
-             sample_number TEXT,
-             species TEXT,
-             island TEXT,
-             individual_id TEXT,
-             culmen_length TEXT,
-             body_mass TEXT
-           )"#,
-    );
-    rltbl.connection.query(&sql, None).await.unwrap();
-
-    if rltbl.connection.kind() == DbKind::Postgres {
-        // This is required, because in PostgreSQL, assiging SERIAL PRIMARY KEY to a column is
-        // equivalent to:
-        //   CREATE SEQUENCE table_name_id_seq;
-        //   CREATE TABLE table_name (
-        //     id integer NOT NULL DEFAULT nextval('table_name_id_seq')
-        //   );
-        //   ALTER SEQUENCE table_name_id_seq OWNED BY table_name.id;
-        // This means that such a column is only ever auto-incremented when it is explicitly left
-        // out of an INSERT statement. To replicate SQLite's more sane behaviour, we define the
-        // following trigger to *always* update the last value of the sequence to the currently
-        // inserted row number. A similar trigger is also defined generically for postgresql tables
-        // in [rltbl::core].
-        let sql = format!(
-            r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_penguin"()
-                 RETURNS TRIGGER
-                 LANGUAGE PLPGSQL
-                 AS
-               $$
-               BEGIN
-                 IF NEW._id > (SELECT MAX(last_value) FROM "penguin__id_seq") THEN
-                   PERFORM setval('penguin__id_seq', NEW._id);
-                 END IF;
-                 RETURN NEW;
-               END;
-               $$"#,
-        );
-        rltbl.connection.query(&sql, None).await.unwrap();
-
-        let sql = format!(
-            r#"CREATE TRIGGER "penguin_order"
-                 AFTER INSERT ON "penguin"
-                 FOR EACH ROW
-                 EXECUTE FUNCTION "update_order_and_nextval_penguin"()"#,
-        );
-        rltbl.connection.query(&sql, None).await.unwrap();
-    }
-
-    // Populate the penguin table with random data.
-    let islands = vec!["Biscoe", "Dream", "Torgersen"];
-    let mut rng = StdRng::seed_from_u64(0);
-    let sql_first_part = r#"INSERT INTO "penguin" VALUES "#;
-    let mut sql_value_parts = vec![];
-    let mut sql_param = SqlParam::new(&rltbl.connection.kind());
-    let mut params = vec![];
-    let max_params = match rltbl.connection.kind() {
-        DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
-        DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
-    };
-    for i in 1..=size {
-        if (params.len() + 7) >= max_params {
-            let sql = format!(
-                "{sql_first_part} {sql_value_part}",
-                sql_value_part = sql_value_parts.join(", ")
-            );
-            let params_so_far = json!(params);
-            rltbl
-                .connection
-                .query(&sql, Some(&params_so_far))
-                .await
-                .unwrap();
-            tracing::info!("{num_rows} rows loaded to table penguin", num_rows = i - 1);
-            params.clear();
-            sql_value_parts.clear();
-            sql_param.reset();
-        }
-
-        let id = i;
-        let order = i * NEW_ORDER_MULTIPLIER;
-        let island = islands.iter().choose(&mut rng).unwrap();
-        let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
-        let body_mass = rng.gen_range(1000..5000);
-        sql_value_parts.push(format!(
-            "({sql_param_list_1}, 'FAKE123', {lone_sql_param}, 'Pygoscelis adeliae', \
-             {sql_param_list_2})",
-            sql_param_list_1 = sql_param.get_as_list(2),
-            lone_sql_param = sql_param.next(),
-            sql_param_list_2 = sql_param.get_as_list(4),
-        ));
-        params.push(json!(id));
-        params.push(json!(order));
-        params.push(json!(id));
-        params.push(json!(island));
-        params.push(json!(format!("N{id}")));
-        params.push(json!(culmen_length));
-        params.push(json!(body_mass));
-    }
-    if params.len() > 0 {
-        let sql = format!(
-            "{sql_first_part} {sql_value_part}",
-            sql_value_part = sql_value_parts.join(", ")
-        );
-        let params = json!(params);
-        rltbl.connection.query(&sql, Some(&params)).await.unwrap();
-    }
+        .expect("Error building demonstration database");
     println!(
         "Created a demonstration database in '{}'",
         match &cli.database {

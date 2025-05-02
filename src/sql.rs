@@ -6,7 +6,10 @@
 //! elements of the API that are particularly database-specific.
 
 use crate as rltbl;
-use rltbl::core::{Column, RelatableError, Table, NEW_ORDER_MULTIPLIER};
+use rltbl::{
+    core::{RelatableError, NEW_ORDER_MULTIPLIER},
+    table::{Column, Table},
+};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -103,11 +106,6 @@ impl SqlParam {
         self.get(amount).join(", ")
     }
 
-    /// Update the index
-    pub fn set_index(&mut self, index: usize) {
-        self.index = index;
-    }
-
     /// Resets the index
     pub fn reset(&mut self) {
         self.index = 0;
@@ -157,28 +155,12 @@ impl DbConnection {
                 #[cfg(feature = "sqlx")]
                 {
                     sqlx::any::install_default_drivers();
-                    let connection_options;
-                    let db_kind;
-                    if database.starts_with("postgresql://") {
-                        connection_options = AnyConnectOptions::from_str(database)?;
-                        db_kind = DbKind::Postgres;
-                    } else {
-                        let connection_string;
-                        if !database.starts_with("sqlite://") {
-                            connection_string = format!("sqlite://{}?mode=rwc", database);
-                        } else {
-                            connection_string = database.to_string();
-                        }
-                        connection_options =
-                            AnyConnectOptions::from_str(connection_string.as_str())?;
-                        db_kind = DbKind::Sqlite;
-                    }
-
+                    let connection_options = AnyConnectOptions::from_str(database)?;
+                    let db_kind = DbKind::Postgres;
                     let pool = AnyPoolOptions::new()
                         .max_connections(MAX_DB_CONNECTIONS)
                         .connect_with(connection_options)
                         .await?;
-
                     let connection = Self::Sqlx(pool, db_kind);
                     Ok((connection, None))
                 }
@@ -206,15 +188,9 @@ impl DbConnection {
                             format!("sqlite://{database}?mode=rwc")
                         }
                     };
-                    let kind = {
-                        if url.starts_with("sqlite://") {
-                            DbKind::Sqlite
-                        } else {
-                            DbKind::Postgres
-                        }
-                    };
                     sqlx::any::install_default_drivers();
-                    let connection = Self::Sqlx(sqlx::AnyPool::connect(&url).await?, kind);
+                    let connection =
+                        Self::Sqlx(sqlx::AnyPool::connect(&url).await?, DbKind::Sqlite);
                     (connection, None)
                 };
 
@@ -319,7 +295,7 @@ impl DbConnection {
     ) -> Result<Option<JsonValue>> {
         tracing::trace!("DbConnection::query_value({statement}, {params:?})");
         let rows = self.query(statement, params).await?;
-        extract_value(&rows)
+        Ok(extract_value(&rows))
     }
 }
 
@@ -413,7 +389,7 @@ impl DbTransaction<'_> {
     ) -> Result<Option<JsonValue>> {
         tracing::trace!("DbTransaction::query_value({statement}, {params:?})");
         let rows = self.query(statement, params)?;
-        extract_value(&rows)
+        Ok(extract_value(&rows))
     }
 }
 
@@ -623,14 +599,14 @@ pub fn valid_params(params: Option<&JsonValue>) -> bool {
     }
 }
 
-pub fn extract_value(rows: &Vec<JsonRow>) -> Result<Option<JsonValue>> {
+pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
     tracing::trace!("extract_value({rows:?})");
     match rows.iter().next() {
         Some(row) => match row.content.values().next() {
-            Some(value) => Ok(Some(value.clone())),
-            None => Ok(None),
+            Some(value) => Some(value.clone()),
+            None => None,
         },
-        None => Ok(None),
+        None => None,
     }
 }
 
@@ -681,8 +657,11 @@ pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Resul
     }
 
     if force {
-        if let DbKind::Postgres = db_kind {
-            ddl.push(format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, table.name));
+        match db_kind {
+            DbKind::Postgres => {
+                ddl.push(format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, table.name))
+            }
+            DbKind::Sqlite => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}""#, table.name)),
         }
     }
 

@@ -6,15 +6,7 @@ $ rltbl demo --size 10 --force
 Created a demonstration database in 'postgresql:///rltbl_db'
 $ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
 $ echo '{"level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 4 species
-$ rltbl -vvv get table penguin
-...
-... INFO rltbl::core: Received 10 rows.
-... DEBUG rltbl::core: The first 4 are: [
-    {"_id": "1", "_order": "1000", "_history": "", "_message": "", "study_name": "FAKE123", "sample_number": "1", "species": "Pygoscelis adeliae", "island": "Torgersen", "individual_id": "N1", "culmen_length": "44.6", "body_mass": "3221", "_total": "10", "_change_id": ""},
-    {"_id": "2", "_order": "2000", "_history": "", "_message": "", "study_name": "FAKE123", "sample_number": "2", "species": "Pygoscelis adeliae", "island": "Torgersen", "individual_id": "N2", "culmen_length": "30.5", "body_mass": "3685", "_total": "10", "_change_id": ""},
-    {"_id": "3", "_order": "3000", "_history": "", "_message": "[{\"column\":\"species\",\"value\":\"Pygoscelis adeliae\",\"level\":\"error\",\"rule\":\"custom-a\",\"message\":\"this is not a good species\"}]", "study_name": "FAKE123", "sample_number": "3", "species": "Pygoscelis adeliae", "island": "Torgersen", "individual_id": "N3", "culmen_length": "35.2", "body_mass": "1491", "_total": "10", "_change_id": ""},
-    {"_id": "4", "_order": "4000", "_history": "", "_message": "[{\"column\":\"species\",\"value\":\"Pygoscelis adeliae\",\"level\":\"error\",\"rule\":\"custom-b\",\"message\":\"this is a terrible species\"}]", "study_name": "FAKE123", "sample_number": "4", "species": "Pygoscelis adeliae", "island": "Torgersen", "individual_id": "N4", "culmen_length": "31.4", "body_mass": "1874", "_total": "10", "_change_id": ""},
-]
+$ rltbl -v get table penguin
 Rows 1-10 of 10
 study_name  sample_number  species             island     individual_id  culmen_length  body_mass
 FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.6           3221
@@ -27,7 +19,6 @@ FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9   
 FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
 FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
-... DEBUG rltbl::cli: Processed: /table/penguin?limit=100
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row | column  |       value        | level |   rule   |          message
 ------------+----------+---------+-----+---------+--------------------+-------+----------+----------------------------
