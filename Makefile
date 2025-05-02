@@ -41,7 +41,7 @@ rusqlite_release:
 
 .PHONY: debug-serve
 debug-serve: target/debug/rltbl
-	$< serve --port 3000
+	$< serve --port 3000 -vvv
 
 src/resources/:
 	mkdir -p $@
@@ -72,6 +72,12 @@ cleanall: clean
 .PHONY: test_code
 test_code:
 	cargo fmt --check
+	cargo test
+
+.PHONY: test_code_postgres
+test_code_postgres:
+	cargo fmt --check
+	RLTBL_CONNECTION="$(PG_DB)" cargo test --features sqlx
 
 # Documentation tests
 
@@ -157,30 +163,30 @@ perf_test_size = 100000
 
 # SQLite performance (rusqlite and sqlx)
 
-sqlite_db = ".relatable/relatable.db"
-pg_db = "postgresql:///rltbl_db"
+SQLITE_DB = ".relatable/relatable.db"
+PG_DB = "postgresql:///rltbl_db"
 
 .PHONY: test_perf_sqlite
 test_perf_sqlite: test/perf/tsv/penguin.tsv debug
-	target/debug/rltbl --database $(sqlite_db) init --force
-	@echo "target/debug/rltbl --database $(sqlite_db) -vv load table --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(sqlite_db) -vv load table --force $< || \
+	target/debug/rltbl --database $(SQLITE_DB) init --force
+	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 .PHONY: test_perf_sqlx_sqlite
 test_perf_sqlx_sqlite: test/perf/tsv/penguin.tsv sqlx_debug
-	target/debug/rltbl --database $(sqlite_db) init --force
-	@echo "target/debug/rltbl --database $(sqlite_db) -vv load table --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(sqlite_db) -vv load table --force $< || \
+	target/debug/rltbl --database $(SQLITE_DB) init --force
+	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 # Postgres performance (rusqlite and sqlx)
 
 .PHONY: test_perf_sqlx_postgres
 test_perf_sqlx_postgres: test/perf/tsv/penguin.tsv sqlx_debug
-	target/debug/rltbl --database $(pg_db) init --force
-	@echo "target/debug/rltbl --database $(pg_db) -vv load table --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(pg_db) -vv load table --force $< || \
+	target/debug/rltbl --database $(PG_DB) init --force
+	@echo "target/debug/rltbl --database $(PG_DB) -vv load table --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(PG_DB) -vv load table --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 # Combined tests
@@ -192,7 +198,7 @@ test_rusqlite: src/resources/main.js src/resources/main.css test_code test_tesh_
 test_sqlx_sqlite: src/resources/main.js src/resources/main.css test_code test_tesh_doc_sqlx test_tesh_sqlx_common_as_sqlite test_tesh_sqlx_sqlite_only test_random_sqlx_sqlite test_perf_sqlx_sqlite
 
 .PHONY: test_sqlx_postgres
-test_sqlx_postgres: src/resources/main.js src/resources/main.css test_code test_tesh_doc_sqlx test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres
+test_sqlx_postgres: src/resources/main.js src/resources/main.css test_code_postgres test_tesh_doc_sqlx test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres
 
 .PHONY: test
 test: test_rusqlite

@@ -1783,23 +1783,37 @@ WHERE "foo"."bar" = {sql_param}"#
     #[test]
     fn test_select_methods() {
         let rltbl = block_on(Relatable::connect(None)).unwrap();
+        let drop_sql = r#"DROP TABLE IF EXISTS "penguin_test""#;
+        let create_sql = r#"CREATE TABLE "penguin_test" (
+    _id INTEGER,
+    _order INTEGER,
+    study_name TEXT,
+    sample_number TEXT,
+    species TEXT,
+    island TEXT,
+    individual_id TEXT,
+    culmen_length TEXT,
+    body_mass TEXT
+)"#;
+        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
+        block_on(rltbl.connection.query(create_sql, None)).unwrap();
         let empty: Vec<JsonValue> = vec![];
 
         // select_columns
-        let mut select = Select::from("penguin");
-        select.select_table_columns("penguin", &vec!["species", "island"]);
+        let mut select = Select::from("penguin_test");
+        select.select_table_columns("penguin_test", &vec!["species", "island"]);
         select.select_columns(&vec!["study_name", "body_mass"]);
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT
-  "penguin"."species",
-  "penguin"."island",
-  "penguin"."study_name",
-  "penguin"."body_mass"
-FROM "penguin"
-ORDER BY "penguin"._order ASC
+  "penguin_test"."species",
+  "penguin_test"."island",
+  "penguin_test"."study_name",
+  "penguin_test"."body_mass"
+FROM "penguin_test"
+ORDER BY "penguin_test"._order ASC
 LIMIT 100"#
         );
         assert_eq!(params, empty);
@@ -1807,21 +1821,21 @@ LIMIT 100"#
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
-FROM "penguin""#
+FROM "penguin_test""#
         );
         assert_eq!(params, empty);
 
         // select_alias
-        let mut select = Select::from("penguin");
-        select.select_alias("penguin", "island", "location");
+        let mut select = Select::from("penguin_test");
+        select.select_alias("penguin_test", "island", "location");
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT
-  "penguin"."island" AS "location"
-FROM "penguin"
-ORDER BY "penguin"._order ASC
+  "penguin_test"."island" AS "location"
+FROM "penguin_test"
+ORDER BY "penguin_test"._order ASC
 LIMIT 100"#
         );
         assert_eq!(params, empty);
@@ -1830,12 +1844,12 @@ LIMIT 100"#
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
-FROM "penguin""#
+FROM "penguin_test""#
         );
         assert_eq!(params, empty);
 
         // select_expression
-        let mut select = Select::from("penguin");
+        let mut select = Select::from("penguin_test");
         select.select_expression("CASE WHEN island = 'Biscoe' THEN 'BISCOE' END", "location");
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -1843,8 +1857,8 @@ FROM "penguin""#
             sql,
             r#"SELECT
   CASE WHEN island = 'Biscoe' THEN 'BISCOE' END AS "location"
-FROM "penguin"
-ORDER BY "penguin"._order ASC
+FROM "penguin_test"
+ORDER BY "penguin_test"._order ASC
 LIMIT 100"#
         );
         assert_eq!(params, empty);
@@ -1853,29 +1867,29 @@ LIMIT 100"#
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
-FROM "penguin""#
+FROM "penguin_test""#
         );
         assert_eq!(params, empty);
 
         // select_all
-        let mut select = Select::from("penguin");
-        block_on(select.select_all(&rltbl, "penguin")).unwrap();
+        let mut select = Select::from("penguin_test");
+        block_on(select.select_all(&rltbl, "penguin_test")).unwrap();
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT
-  "penguin"."_id",
-  "penguin"."_order",
-  "penguin"."study_name",
-  "penguin"."sample_number",
-  "penguin"."species",
-  "penguin"."island",
-  "penguin"."individual_id",
-  "penguin"."culmen_length",
-  "penguin"."body_mass"
-FROM "penguin"
-ORDER BY "penguin"._order ASC
+  "penguin_test"."_id",
+  "penguin_test"."_order",
+  "penguin_test"."study_name",
+  "penguin_test"."sample_number",
+  "penguin_test"."species",
+  "penguin_test"."island",
+  "penguin_test"."individual_id",
+  "penguin_test"."culmen_length",
+  "penguin_test"."body_mass"
+FROM "penguin_test"
+ORDER BY "penguin_test"._order ASC
 LIMIT 100"#
         );
         assert_eq!(params, empty);
@@ -1884,9 +1898,11 @@ LIMIT 100"#
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
-FROM "penguin""#
+FROM "penguin_test""#
         );
         assert_eq!(params, empty);
+
+        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
     }
 
     #[test]
