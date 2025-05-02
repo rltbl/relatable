@@ -69,13 +69,13 @@ cleanall: clean
 
 # Code format test
 
-.PHONY: test_code
-test_code:
+.PHONY: test_fmt_and_unittest
+test_fmt_and_unittest:
 	cargo fmt --check
 	cargo test
 
-.PHONY: test_code_postgres
-test_code_postgres:
+.PHONY: test_fmt_and_unittest_postgres
+test_fmt_and_unittest_postgres:
 	cargo fmt --check
 	RLTBL_CONNECTION="$(PG_DB)" cargo test --features sqlx
 
@@ -192,13 +192,13 @@ test_perf_sqlx_postgres: test/perf/tsv/penguin.tsv sqlx_debug
 # Combined tests
 
 .PHONY: test_rusqlite
-test_rusqlite: src/resources/main.js src/resources/main.css test_code test_tesh_doc test_tesh_common_as_sqlite test_tesh_sqlite_only test_random_sqlite test_perf_sqlite
+test_rusqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc test_tesh_common_as_sqlite test_tesh_sqlite_only test_random_sqlite test_perf_sqlite
 
 .PHONY: test_sqlx_sqlite
-test_sqlx_sqlite: src/resources/main.js src/resources/main.css test_code test_tesh_doc_sqlx test_tesh_sqlx_common_as_sqlite test_tesh_sqlx_sqlite_only test_random_sqlx_sqlite test_perf_sqlx_sqlite
+test_sqlx_sqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc_sqlx test_tesh_sqlx_common_as_sqlite test_tesh_sqlx_sqlite_only test_random_sqlx_sqlite test_perf_sqlx_sqlite
 
 .PHONY: test_sqlx_postgres
-test_sqlx_postgres: src/resources/main.js src/resources/main.css test_code_postgres test_tesh_doc_sqlx test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres
+test_sqlx_postgres: src/resources/main.js src/resources/main.css test_fmt_and_unittest_postgres test_tesh_doc_sqlx test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres
 
 .PHONY: test
 test: test_rusqlite
