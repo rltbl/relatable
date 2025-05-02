@@ -1678,7 +1678,11 @@ mod tests {
 
     #[test]
     fn test_select_from_path_and_query() {
-        let rltbl = block_on(Relatable::connect(None)).unwrap();
+        let rltbl = block_on(Relatable::init(
+            &true,
+            Some("build/test_select_from_path_and_query.db"),
+        ))
+        .unwrap();
         let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
 
         fn test(
@@ -1782,7 +1786,7 @@ WHERE "foo"."bar" = {sql_param}"#
 
     #[test]
     fn test_select_methods() {
-        let rltbl = block_on(Relatable::connect(None)).unwrap();
+        let rltbl = block_on(Relatable::init(&true, Some("build/test_select_methods.db"))).unwrap();
         let drop_sql = r#"DROP TABLE IF EXISTS "penguin_test""#;
         let create_sql = r#"CREATE TABLE "penguin_test" (
     _id INTEGER,
@@ -1907,7 +1911,7 @@ FROM "penguin_test""#
 
     #[test]
     fn test_subquery() {
-        let rltbl = block_on(Relatable::connect(None)).unwrap();
+        let rltbl = block_on(Relatable::init(&true, Some("build/test_subquery.db"))).unwrap();
         let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
 
         let mut inner_select = Select::from("penguin").limit(&0);
