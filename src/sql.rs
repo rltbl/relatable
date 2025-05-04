@@ -335,37 +335,41 @@ impl DbConnection {
 
     pub async fn cache(
         &self,
-        statement: &str,
+        sql: &str,
         params: Option<&JsonValue>,
         strategy: CachingStrategy,
     ) -> Result<Vec<JsonRow>> {
+        tracing::trace!("cache({sql}, {params:?}, {strategy:?})");
         match strategy {
-            CachingStrategy::NoCache => self.query(statement, params).await,
-            CachingStrategy::Naive => {
+            CachingStrategy::NoCache => self.query(sql, params).await,
+            CachingStrategy::Naive | CachingStrategy::Truncate => {
                 let sql2 = format!(
-                    r#"SELECT value FROM "cache" WHERE key = {param} LIMIT 1"#,
+                    r#"SELECT "value" FROM "cache" WHERE "key" = {param} LIMIT 1"#,
                     param = SqlParam::new(&self.kind()).next()
                 );
-                let params2 = json!([statement]);
+                let params2 = json!([sql]);
                 match self.query_one(&sql2, Some(&params2)).await? {
                     Some(json_row) => {
+                        tracing::debug!("Cache hit");
                         let value = json_row.get_string("value")?;
-                        // tracing::warn!("CACHED VALUE: {value:?}");
                         let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
-                        tracing::debug!("USED CACHE: {json_rows:?}");
                         Ok(json_rows)
                     }
                     None => {
-                        let json_rows = self.query(statement, params).await?;
-                        let sql3 = r#"INSERT INTO "cache" VALUES ($1, $2)"#;
-                        let params3 = json!([statement, json_rows]);
+                        tracing::debug!("Cache miss");
+                        let json_rows = self.query(sql, params).await?;
+                        let mut param = SqlParam::new(&self.kind());
+                        let sql3 = format!(
+                            r#"INSERT INTO "cache" VALUES ({param1}, {param2})"#,
+                            param1 = param.next(),
+                            param2 = param.next()
+                        );
+                        let params3 = json!([sql, json_rows]);
                         self.query(&sql3, Some(&params3)).await?;
-                        tracing::debug!("UPDATED CACHE: {json_rows:?}");
                         Ok(json_rows)
                     }
                 }
             }
-            CachingStrategy::Truncate => todo!(),
             CachingStrategy::MaxChange => todo!(),
             CachingStrategy::Metadata => todo!(),
             CachingStrategy::Trigger => todo!(),
@@ -464,45 +468,6 @@ impl DbTransaction<'_> {
         tracing::trace!("DbTransaction::query_value({statement}, {params:?})");
         let rows = self.query(statement, params)?;
         Ok(extract_value(&rows))
-    }
-
-    pub fn cache(
-        &mut self,
-        statement: &str,
-        params: Option<&JsonValue>,
-        strategy: CachingStrategy,
-    ) -> Result<Vec<JsonRow>> {
-        match strategy {
-            CachingStrategy::NoCache => self.query(statement, params),
-            CachingStrategy::Naive => {
-                let sql2 = format!(
-                    r#"SELECT value FROM "cache" WHERE key = {param} LIMIT 1"#,
-                    param = SqlParam::new(&self.kind()).next()
-                );
-                let params2 = json!([statement]);
-                match self.query_one(&sql2, Some(&params2))? {
-                    Some(json_row) => {
-                        let value = json_row.get_string("value")?;
-                        // tracing::warn!("CACHED VALUE: {value:?}");
-                        let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
-                        tracing::debug!("USED CACHE: {json_rows:?}");
-                        Ok(json_rows)
-                    }
-                    None => {
-                        let json_rows = self.query(statement, params)?;
-                        let sql3 = r#"INSERT INTO "cache" VALUES ($1, $2)"#;
-                        let params3 = json!([statement, json_rows]);
-                        self.query(&sql3, Some(&params3))?;
-                        tracing::debug!("UPDATED CACHE: {json_rows:?}");
-                        Ok(json_rows)
-                    }
-                }
-            }
-            CachingStrategy::Truncate => todo!(),
-            CachingStrategy::MaxChange => todo!(),
-            CachingStrategy::Metadata => todo!(),
-            CachingStrategy::Trigger => todo!(),
-        }
     }
 }
 

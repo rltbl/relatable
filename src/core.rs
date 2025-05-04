@@ -804,7 +804,7 @@ impl Relatable {
         let author = match std::env::var("RLTBL_GIT_AUTHOR") {
             Err(err) => match err {
                 std::env::VarError::NotPresent => {
-                    tracing::info!("Not committing to git because RLTBL_GIT_AUTHOR not defined");
+                    tracing::debug!("Not committing to git because RLTBL_GIT_AUTHOR not defined");
                     return Ok(());
                 }
                 _ => {
@@ -1058,6 +1058,11 @@ impl Relatable {
                 }
             };
         }
+
+        tracing::debug!("Truncating cache");
+        let sql = r#"DELETE FROM "cache""#;
+        tx.query_value(&sql, None)?;
+
         Ok(())
     }
 
@@ -2200,7 +2205,7 @@ impl Relatable {
 
         // Add the row to the table:
         let (sql, params) = new_row.as_insert(&table.name, &tx.kind());
-        tracing::info!("_add_row {sql} {params:?}");
+        tracing::debug!("_add_row {sql} {params:?}");
         tx.query(&sql, Some(&params))?;
 
         let after_id = match after_id {

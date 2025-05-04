@@ -3,7 +3,7 @@
 use rltbl::{
     core::{Relatable, RLTBL_DEFAULT_DB},
     select::Select,
-    sql::CachingStrategy,
+    sql::{CachingStrategy, JsonRow},
 };
 
 use clap::{ArgAction, Parser, Subcommand};
@@ -13,7 +13,11 @@ use rand::{
     rngs::StdRng,
     SeedableRng as _,
 };
-use std::{str::FromStr, time::Instant};
+use std::{
+    str::FromStr,
+    thread,
+    time::{Duration, Instant},
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Relatable (rltbl): Connect your data!", long_about = None)]
@@ -26,7 +30,7 @@ pub struct Cli {
     database: String,
 
     #[arg(long, default_value="", action = ArgAction::Set, env = "RLTBL_USER")]
-    user: String,
+    user: Option<String>,
 
     #[command(flatten)]
     verbose: Verbosity,
@@ -69,6 +73,9 @@ pub enum Command {
         fetches: usize,
 
         #[arg(action = ArgAction::Set)]
+        edit_rate: usize,
+
+        #[arg(action = ArgAction::Set)]
         fail_after_secs: u64,
 
         /// Overwrite an existing database
@@ -104,6 +111,17 @@ impl std::fmt::Display for DbOperation {
     }
 }
 
+fn random_between(min: usize, max: usize, seed: &mut i64) -> usize {
+    let between = Uniform::from(min..max);
+    let mut rng = if *seed < 0 {
+        StdRng::from_entropy()
+    } else {
+        *seed += 10;
+        StdRng::seed_from_u64(*seed as u64)
+    };
+    between.sample(&mut rng)
+}
+
 async fn generate_operation_sequence(
     cli: &Cli,
     rltbl: &Relatable,
@@ -128,17 +146,6 @@ async fn generate_operation_sequence(
 
     After this function returns, the database should be in the same logical state as it was before.
      */
-
-    fn random_between(min: usize, max: usize, seed: &mut i64) -> usize {
-        let between = Uniform::from(min..max);
-        let mut rng = if *seed < 0 {
-            StdRng::from_entropy()
-        } else {
-            *seed += 10;
-            StdRng::seed_from_u64(*seed as u64)
-        };
-        between.sample(&mut rng)
-    }
 
     let mut seed: i64 = match cli.seed {
         None => -1,
@@ -287,6 +294,7 @@ async fn main() {
             table,
             size,
             fetches,
+            edit_rate,
             fail_after_secs,
             caching_strategy,
             force,
@@ -310,6 +318,23 @@ async fn main() {
                 if elapsed > *fail_after_secs {
                     panic!("Taking longer than {fail_after_secs}s. Timing out.");
                 }
+                if *edit_rate != 0 && random_between(0, *edit_rate, &mut -1) == 1 {
+                    let user = match &cli.user {
+                        Some(user) => user.clone(),
+                        None => whoami::username(),
+                    };
+                    let after_id = random_between(1, *size, &mut -1);
+                    let row = rltbl
+                        .add_row(table, &user, Some(after_id), &JsonRow::new())
+                        .await
+                        .unwrap();
+                    tracing::debug!("Added row {} (order {})", row.id, row.order);
+                } else {
+                    tracing::debug!("Not making any edits");
+                }
+
+                // A small sleep to prevent over-taxing the CPU
+                thread::sleep(Duration::from_millis(2));
                 i += 1;
             }
             elapsed = now.elapsed().as_secs();
