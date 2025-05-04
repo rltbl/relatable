@@ -8,8 +8,8 @@ use rltbl::{
     git,
     select::{Select, SelectField},
     sql::{
-        self, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow, SqlParam,
-        VecInto as _,
+        self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
+        SqlParam, VecInto as _,
     },
     table::{Column, Message, Row, Table},
 };
@@ -512,10 +512,23 @@ impl Relatable {
     /// Get the number of rows returned by this [Select]
     pub async fn count(&self, select: &Select) -> Result<usize> {
         tracing::trace!("Relatable::count({select:?})");
+        self.count_with_strategy(select, CachingStrategy::NoCache)
+            .await
+    }
+
+    /// Get the number of rows returned by this [Select] using the given caching strategy.
+    pub async fn count_with_strategy(
+        &self,
+        select: &Select,
+        strategy: CachingStrategy,
+    ) -> Result<usize> {
+        tracing::trace!("Relatable::count_with_strategy({select:?}, {strategy:?})");
         let (statement, params) = select.to_sql_count(&self.connection.kind())?;
         let params = json!(params);
-        // TODO: Implement caching.
-        let json_rows = self.connection.query(&statement, Some(&params)).await?;
+        let json_rows = self
+            .connection
+            .cache(&statement, Some(&params), strategy)
+            .await?;
         match json_rows.get(0) {
             Some(json_row) => json_row.get_unsigned("count"),
             None => Ok(0),

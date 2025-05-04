@@ -18,8 +18,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
-#[cfg(feature = "sqlx")]
-use std::str::FromStr as _;
+use std::str::FromStr;
 
 #[cfg(feature = "rusqlite")]
 use rusqlite;
@@ -51,6 +50,40 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 /// The [maximum number of parameters](https://www.postgresql.org/docs/current/limits.html)
 /// that can be bound to a Postgres query
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
+
+// TODO: Read the below comment and consider whether it is time to get rid of this
+// It's possible that will only useful up until when we decide upon our final caching strategy.
+// In the meantime, it is useful to define the following struct, which lets us compare the
+// performance of various caching strategies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CachingStrategy {
+    NoCache,
+    Truncate,
+    MaxChange,
+    Metadata,
+    Trigger,
+}
+
+impl FromStr for CachingStrategy {
+    type Err = anyhow::Error;
+
+    fn from_str(strategy: &str) -> Result<Self> {
+        tracing::trace!("CachingStrategy::from_str({strategy:?})");
+        match strategy.to_lowercase().as_str() {
+            "none" => Ok(Self::NoCache),
+            "truncate" => Ok(Self::Truncate),
+            "max_change" => Ok(Self::MaxChange),
+            "metadata" => Ok(Self::Metadata),
+            "trigger" => Ok(Self::Trigger),
+            _ => {
+                return Err(RelatableError::InputError(format!(
+                    "Unrecognized strategy: {strategy}"
+                ))
+                .into());
+            }
+        }
+    }
+}
 
 /// Represents the kind of database being managed
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -297,6 +330,21 @@ impl DbConnection {
         let rows = self.query(statement, params).await?;
         Ok(extract_value(&rows))
     }
+
+    pub async fn cache(
+        &self,
+        statement: &str,
+        params: Option<&JsonValue>,
+        strategy: CachingStrategy,
+    ) -> Result<Vec<JsonRow>> {
+        match strategy {
+            CachingStrategy::NoCache => self.query(statement, params).await,
+            CachingStrategy::Truncate => todo!(),
+            CachingStrategy::MaxChange => todo!(),
+            CachingStrategy::Metadata => todo!(),
+            CachingStrategy::Trigger => todo!(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -390,6 +438,21 @@ impl DbTransaction<'_> {
         tracing::trace!("DbTransaction::query_value({statement}, {params:?})");
         let rows = self.query(statement, params)?;
         Ok(extract_value(&rows))
+    }
+
+    pub fn cache(
+        &mut self,
+        statement: &str,
+        params: Option<&JsonValue>,
+        strategy: CachingStrategy,
+    ) -> Result<Vec<JsonRow>> {
+        match strategy {
+            CachingStrategy::NoCache => self.query(statement, params),
+            CachingStrategy::Truncate => todo!(),
+            CachingStrategy::MaxChange => todo!(),
+            CachingStrategy::Metadata => todo!(),
+            CachingStrategy::Trigger => todo!(),
+        }
     }
 }
 

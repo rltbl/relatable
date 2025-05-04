@@ -166,6 +166,14 @@ perf_test_size = 100000
 SQLITE_DB = ".relatable/relatable.db"
 PG_DB = "postgresql:///rltbl_db"
 
+.PHONY: test_caching_sqlite
+test_caching_sqlite: debug
+	target/debug/rltbl_test --database $(SQLITE_DB) -vv test-read-perf penguin 100000 2000 20 --force
+
+.PHONY: test_caching_postgres
+test_caching_postgres: sqlx_debug
+	target/debug/rltbl_test --database $(PG_DB) -vv test-read-perf penguin 100000 2000 30 --force
+
 .PHONY: test_perf_sqlite
 test_perf_sqlite: test/perf/tsv/penguin.tsv debug
 	target/debug/rltbl --database $(SQLITE_DB) init --force
@@ -192,13 +200,13 @@ test_perf_sqlx_postgres: test/perf/tsv/penguin.tsv sqlx_debug
 # Combined tests
 
 .PHONY: test_rusqlite
-test_rusqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc test_tesh_common_as_sqlite test_tesh_sqlite_only test_random_sqlite test_perf_sqlite
+test_rusqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc test_tesh_common_as_sqlite test_tesh_sqlite_only test_random_sqlite test_perf_sqlite test_caching_sqlite
 
 .PHONY: test_sqlx_sqlite
-test_sqlx_sqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc_sqlx test_tesh_sqlx_common_as_sqlite test_tesh_sqlx_sqlite_only test_random_sqlx_sqlite test_perf_sqlx_sqlite
+test_sqlx_sqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc_sqlx test_tesh_sqlx_common_as_sqlite test_tesh_sqlx_sqlite_only test_random_sqlx_sqlite test_perf_sqlx_sqlite test_caching_sqlite
 
 .PHONY: test_sqlx_postgres
-test_sqlx_postgres: src/resources/main.js src/resources/main.css test_fmt_and_unittest_postgres test_tesh_doc_sqlx test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres
+test_sqlx_postgres: src/resources/main.js src/resources/main.css test_fmt_and_unittest_postgres test_tesh_doc_sqlx test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres test_caching_postgres
 
 .PHONY: test
 test: test_rusqlite

@@ -1,6 +1,10 @@
 //! API tests
 
-use rltbl::core::{Relatable, RLTBL_DEFAULT_DB};
+use rltbl::{
+    core::{Relatable, RLTBL_DEFAULT_DB},
+    select::Select,
+    sql::CachingStrategy,
+};
 
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
@@ -9,6 +13,7 @@ use rand::{
     rngs::StdRng,
     SeedableRng as _,
 };
+use std::{str::FromStr, time::Instant};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Relatable (rltbl): Connect your data!", long_about = None)]
@@ -50,6 +55,29 @@ pub enum Command {
 
         #[arg(long, default_value = "15", action = ArgAction::Set)]
         max_length: usize,
+    },
+    /// Test database read performance by repeatedly counting the number of rows in a given
+    /// table.
+    TestReadPerf {
+        #[arg(action = ArgAction::Set)]
+        table: String,
+
+        #[arg(action = ArgAction::Set)]
+        size: usize,
+
+        #[arg(action = ArgAction::Set)]
+        fetches: usize,
+
+        #[arg(action = ArgAction::Set)]
+        fail_after_secs: u64,
+
+        /// Overwrite an existing database
+        #[arg(long, action = ArgAction::SetTrue)]
+        force: bool,
+
+        /// One of: none, truncate, max_change, metadata, trigger
+        #[arg(long, default_value = "none", action = ArgAction::Set)]
+        caching_strategy: String,
     },
 }
 
@@ -254,6 +282,40 @@ async fn main() {
                 .await
                 .expect("Could not connect to relatable database");
             generate_operation_sequence(&cli, &rltbl, table, *min_length, *max_length).await;
+        }
+        Command::TestReadPerf {
+            table,
+            size,
+            fetches,
+            fail_after_secs,
+            caching_strategy,
+            force,
+        } => {
+            tracing::info!("Building demonstration database with {size} rows ...");
+            let rltbl = Relatable::build_demo(Some(&cli.database), force, *size)
+                .await
+                .unwrap();
+            tracing::info!("Demonstration database built and loaded.");
+
+            tracing::info!("Counting the number of rows in table {table} ...");
+            let now = Instant::now();
+            let select = Select::from(table);
+            let strategy = CachingStrategy::from_str(&caching_strategy.to_lowercase()).unwrap();
+            let mut i = 0;
+            let mut count = 0;
+            let mut elapsed;
+            while i < *fetches {
+                count = rltbl.count_with_strategy(&select, strategy).await.unwrap();
+                elapsed = now.elapsed().as_secs();
+                if elapsed > *fail_after_secs {
+                    panic!("Taking longer than {fail_after_secs}s. Timing out.");
+                }
+                i += 1;
+            }
+            elapsed = now.elapsed().as_secs();
+            tracing::info!(
+                "Counted {count} rows from table '{table}' {fetches} times in {elapsed}s"
+            );
         }
     }
 }
