@@ -58,6 +58,7 @@ pub static MAX_PARAMS_POSTGRES: usize = 65535;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CachingStrategy {
     NoCache,
+    Naive,
     Truncate,
     MaxChange,
     Metadata,
@@ -71,6 +72,7 @@ impl FromStr for CachingStrategy {
         tracing::trace!("CachingStrategy::from_str({strategy:?})");
         match strategy.to_lowercase().as_str() {
             "none" => Ok(Self::NoCache),
+            "naive" => Ok(Self::Naive),
             "truncate" => Ok(Self::Truncate),
             "max_change" => Ok(Self::MaxChange),
             "metadata" => Ok(Self::Metadata),
@@ -339,6 +341,30 @@ impl DbConnection {
     ) -> Result<Vec<JsonRow>> {
         match strategy {
             CachingStrategy::NoCache => self.query(statement, params).await,
+            CachingStrategy::Naive => {
+                let sql2 = format!(
+                    r#"SELECT value FROM "cache" WHERE key = {param} LIMIT 1"#,
+                    param = SqlParam::new(&self.kind()).next()
+                );
+                let params2 = json!([statement]);
+                match self.query_one(&sql2, Some(&params2)).await? {
+                    Some(json_row) => {
+                        let value = json_row.get_string("value")?;
+                        // tracing::warn!("CACHED VALUE: {value:?}");
+                        let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
+                        tracing::debug!("USED CACHE: {json_rows:?}");
+                        Ok(json_rows)
+                    }
+                    None => {
+                        let json_rows = self.query(statement, params).await?;
+                        let sql3 = r#"INSERT INTO "cache" VALUES ($1, $2)"#;
+                        let params3 = json!([statement, json_rows]);
+                        self.query(&sql3, Some(&params3)).await?;
+                        tracing::debug!("UPDATED CACHE: {json_rows:?}");
+                        Ok(json_rows)
+                    }
+                }
+            }
             CachingStrategy::Truncate => todo!(),
             CachingStrategy::MaxChange => todo!(),
             CachingStrategy::Metadata => todo!(),
@@ -448,6 +474,30 @@ impl DbTransaction<'_> {
     ) -> Result<Vec<JsonRow>> {
         match strategy {
             CachingStrategy::NoCache => self.query(statement, params),
+            CachingStrategy::Naive => {
+                let sql2 = format!(
+                    r#"SELECT value FROM "cache" WHERE key = {param} LIMIT 1"#,
+                    param = SqlParam::new(&self.kind()).next()
+                );
+                let params2 = json!([statement]);
+                match self.query_one(&sql2, Some(&params2))? {
+                    Some(json_row) => {
+                        let value = json_row.get_string("value")?;
+                        // tracing::warn!("CACHED VALUE: {value:?}");
+                        let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
+                        tracing::debug!("USED CACHE: {json_rows:?}");
+                        Ok(json_rows)
+                    }
+                    None => {
+                        let json_rows = self.query(statement, params)?;
+                        let sql3 = r#"INSERT INTO "cache" VALUES ($1, $2)"#;
+                        let params3 = json!([statement, json_rows]);
+                        self.query(&sql3, Some(&params3))?;
+                        tracing::debug!("UPDATED CACHE: {json_rows:?}");
+                        Ok(json_rows)
+                    }
+                }
+            }
             CachingStrategy::Truncate => todo!(),
             CachingStrategy::MaxChange => todo!(),
             CachingStrategy::Metadata => todo!(),
@@ -918,6 +968,33 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     generate_table_ddl(&table, force, db_kind).unwrap()
 }
 
+pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    tracing::trace!("generate_cache_table_ddl({force}, {db_kind:?})");
+    let mut table = Table {
+        name: "cache".to_string(),
+        has_meta: false,
+        ..Default::default()
+    };
+    table.columns.insert(
+        "key".into(),
+        Column {
+            table: "cache".into(),
+            name: "key".into(),
+            primary_key: true,
+            ..Default::default()
+        },
+    );
+    table.columns.insert(
+        "value".into(),
+        Column {
+            table: "cache".into(),
+            name: "value".into(),
+            ..Default::default()
+        },
+    );
+    generate_table_ddl(&table, force, db_kind).unwrap()
+}
+
 // TODO: When the Table struct is rich enough to support different datatypes, foreign keys,
 // and defaults, create these other meta tables in a similar way to the table table above.
 
@@ -1068,6 +1145,7 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
 pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_meta_tables_ddl({force}, {db_kind:?})");
     let mut ddl = generate_table_table_ddl(force, db_kind);
+    ddl.append(&mut generate_cache_table_ddl(force, db_kind));
     ddl.append(&mut generate_user_table_ddl(force, db_kind));
     ddl.append(&mut generate_change_table_ddl(force, db_kind));
     ddl.append(&mut generate_history_table_ddl(force, db_kind));
