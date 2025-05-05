@@ -1,7 +1,7 @@
 //! API tests
 
 use rltbl::{
-    core::{Relatable, RLTBL_DEFAULT_DB},
+    core::{Change, ChangeAction, ChangeSet, Relatable, RLTBL_DEFAULT_DB},
     select::Select,
     sql::{CachingStrategy, JsonRow},
 };
@@ -13,6 +13,7 @@ use rand::{
     rngs::StdRng,
     SeedableRng as _,
 };
+use serde_json::json;
 use std::{
     str::FromStr,
     thread,
@@ -305,6 +306,15 @@ async fn main() {
                 .unwrap();
             tracing::info!("Demonstration database built and loaded.");
 
+            fn random_op<'a>() -> &'a str {
+                match random_between(0, 3, &mut -1) {
+                    0 => "add",
+                    1 => "update",
+                    2 => "move",
+                    _ => unreachable!(),
+                }
+            }
+
             tracing::info!("Counting the number of rows in table {table} ...");
             let now = Instant::now();
             let select = Select::from(table);
@@ -319,18 +329,58 @@ async fn main() {
                     panic!("Taking longer than {fail_after_secs}s. Timing out.");
                 }
                 if *edit_rate != 0 && random_between(0, *edit_rate, &mut -1) == 1 {
-                    // TODO: Don't always do the same operation. Mix it up a little (updates,
-                    // adds, deletes, etc.)
                     let user = match &cli.user {
                         Some(user) => user.clone(),
                         None => whoami::username(),
                     };
-                    let after_id = random_between(1, *size, &mut -1);
-                    let row = rltbl
-                        .add_row(table, &user, Some(after_id), &JsonRow::new())
-                        .await
-                        .unwrap();
-                    tracing::debug!("Added row {} (order {})", row.id, row.order);
+                    match random_op() {
+                        "add" => {
+                            let after_id = random_between(1, *size, &mut -1);
+                            let row = rltbl
+                                .add_row(table, &user, Some(after_id), &JsonRow::new())
+                                .await
+                                .unwrap();
+                            tracing::debug!("Added row {} (order {})", row.id, row.order);
+                        }
+                        "update" => {
+                            let row_to_update = random_between(1, *size, &mut -1);
+                            let num_changes = rltbl
+                                .set_values(&ChangeSet {
+                                    user,
+                                    action: ChangeAction::Do,
+                                    table: table.to_string(),
+                                    description: "Set one value".to_string(),
+                                    changes: vec![Change::Update {
+                                        row: row_to_update,
+                                        column: "study_name".to_string(),
+                                        before: json!("FAKE123"),
+                                        after: json!("PHONY123"),
+                                    }],
+                                })
+                                .await
+                                .unwrap()
+                                .changes
+                                .len();
+                            if num_changes < 1 {
+                                panic!("No changes made");
+                            }
+                            tracing::debug!("Updated row {row_to_update}");
+                        }
+                        "move" => {
+                            let after_id = random_between(1, *size, &mut -1);
+                            let row = random_between(1, *size, &mut -1);
+                            let new_order = rltbl
+                                .move_row(table, &user, row, after_id)
+                                .await
+                                .expect("Failed to move row");
+                            if new_order > 0 {
+                                tracing::debug!("Moved row {row} after row {after_id}");
+                            } else {
+                                panic!("No changes made");
+                            }
+                        }
+                        operation => panic!("Unrecognized operation: {operation}"),
+                    }
                 } else {
                     tracing::debug!("Not making any edits");
                 }
