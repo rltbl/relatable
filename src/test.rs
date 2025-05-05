@@ -319,6 +319,8 @@ async fn main() {
                     panic!("Taking longer than {fail_after_secs}s. Timing out.");
                 }
                 if *edit_rate != 0 && random_between(0, *edit_rate, &mut -1) == 1 {
+                    // TODO: Don't always do the same operation. Mix it up a little (updates,
+                    // adds, deletes, etc.)
                     let user = match &cli.user {
                         Some(user) => user.clone(),
                         None => whoami::username(),

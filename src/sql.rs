@@ -356,11 +356,11 @@ impl DbConnection {
                         Ok(json_rows)
                     }
                     None => {
-                        tracing::debug!("Cache miss");
+                        tracing::info!("Cache miss");
                         let json_rows = self.query(sql, params).await?;
                         let mut param = SqlParam::new(&self.kind());
                         let sql3 = format!(
-                            r#"INSERT INTO "cache" VALUES ({param1}, {param2})"#,
+                            r#"INSERT INTO "cache" VALUES ({param1}, {param2}, NULL)"#,
                             param1 = param.next(),
                             param2 = param.next()
                         );
@@ -370,7 +370,51 @@ impl DbConnection {
                     }
                 }
             }
-            CachingStrategy::MaxChange => todo!(),
+            CachingStrategy::MaxChange => {
+                let sql2 = format!(
+                    r#"SELECT "value" FROM "cache" WHERE "key" = {param} LIMIT 1"#,
+                    param = SqlParam::new(&self.kind()).next()
+                );
+                let params2 = json!([sql]);
+                match self.query_one(&sql2, Some(&params2)).await? {
+                    Some(json_row) => {
+                        tracing::debug!("Cache hit");
+                        let value = json_row.get_string("value")?;
+                        let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
+                        Ok(json_rows)
+                    }
+                    None => {
+                        // Get the last change_id
+                        let change_id = match self
+                            .query_value(
+                                r#"SELECT MAX("change_id") AS "change_id" FROM "change""#,
+                                None,
+                            )
+                            .await?
+                        {
+                            None => json!(0),
+                            Some(change_id) if change_id.to_string().to_lowercase() == "null" => {
+                                json!(0)
+                            }
+                            Some(change_id) => change_id,
+                        };
+                        tracing::info!("Cache miss. Adding to cache with change_id: {change_id}");
+
+                        let json_rows = self.query(sql, params).await?;
+                        let mut param = SqlParam::new(&self.kind());
+                        let sql3 = format!(
+                            r#"INSERT INTO "cache" ("key", "value", "change_id")
+                               VALUES ({param1}, {param2}, {param3})"#,
+                            param1 = param.next(),
+                            param2 = param.next(),
+                            param3 = param.next(),
+                        );
+                        let params3 = json!([sql, json_rows, change_id]);
+                        self.query(&sql3, Some(&params3)).await?;
+                        Ok(json_rows)
+                    }
+                }
+            }
             CachingStrategy::Metadata => todo!(),
             CachingStrategy::Trigger => todo!(),
         }
@@ -935,29 +979,21 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 
 pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_cache_table_ddl({force}, {db_kind:?})");
-    let mut table = Table {
-        name: "cache".to_string(),
-        has_meta: false,
-        ..Default::default()
-    };
-    table.columns.insert(
-        "key".into(),
-        Column {
-            table: "cache".into(),
-            name: "key".into(),
-            primary_key: true,
-            ..Default::default()
-        },
-    );
-    table.columns.insert(
-        "value".into(),
-        Column {
-            table: "cache".into(),
-            name: "value".into(),
-            ..Default::default()
-        },
-    );
-    generate_table_ddl(&table, force, db_kind).unwrap()
+    let mut ddl = vec![];
+    if force {
+        if let DbKind::Postgres = db_kind {
+            ddl.push(format!(r#"DROP TABLE IF EXISTS "cache" CASCADE"#));
+        }
+    }
+
+    ddl.push(format!(
+        r#"CREATE TABLE "cache" (
+             "key" TEXT PRIMARY KEY,
+             "value" TEXT,
+             "change_id" INTEGER
+           )"#
+    ));
+    ddl
 }
 
 // TODO: When the Table struct is rich enough to support different datatypes, foreign keys,

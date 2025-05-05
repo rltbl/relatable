@@ -1059,9 +1059,13 @@ impl Relatable {
             };
         }
 
-        tracing::debug!("Truncating cache");
-        let sql = r#"DELETE FROM "cache""#;
-        tx.query_value(&sql, None)?;
+        tracing::info!("Deleting entries earlier than change_id {change_id} from cache");
+        let sql = format!(
+            r#"DELETE FROM "cache" WHERE "change_id" < {}"#,
+            SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([change_id]);
+        tx.query(&sql, Some(&params))?;
 
         Ok(())
     }
