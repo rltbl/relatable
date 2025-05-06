@@ -57,10 +57,10 @@ pub static MAX_PARAMS_POSTGRES: usize = 65535;
 // performance of various caching strategies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CachingStrategy {
-    NoCache,
+    None,
     Naive,
-    Truncate,
-    MaxChange,
+    TruncateAll,
+    TruncateForTable,
     Metadata,
     Trigger,
 }
@@ -71,10 +71,10 @@ impl FromStr for CachingStrategy {
     fn from_str(strategy: &str) -> Result<Self> {
         tracing::trace!("CachingStrategy::from_str({strategy:?})");
         match strategy.to_lowercase().as_str() {
-            "none" => Ok(Self::NoCache),
+            "none" => Ok(Self::None),
             "naive" => Ok(Self::Naive),
-            "truncate" => Ok(Self::Truncate),
-            "max_change" => Ok(Self::MaxChange),
+            "truncate_all" => Ok(Self::TruncateAll),
+            "truncate" => Ok(Self::TruncateForTable),
             "metadata" => Ok(Self::Metadata),
             "trigger" => Ok(Self::Trigger),
             _ => {
@@ -337,18 +337,28 @@ impl DbConnection {
         &self,
         sql: &str,
         params: Option<&JsonValue>,
-        strategy: CachingStrategy,
+        table: &str,
+        strategy: &CachingStrategy,
     ) -> Result<Vec<JsonRow>> {
         tracing::trace!("cache({sql}, {params:?}, {strategy:?})");
         match strategy {
-            CachingStrategy::NoCache => self.query(sql, params).await,
-            CachingStrategy::Naive | CachingStrategy::Truncate => {
-                let sql2 = format!(
-                    r#"SELECT "value" FROM "cache" WHERE "key" = {param} LIMIT 1"#,
-                    param = SqlParam::new(&self.kind()).next()
-                );
-                let params2 = json!([sql]);
-                match self.query_one(&sql2, Some(&params2)).await? {
+            CachingStrategy::None => self.query(sql, params).await,
+            CachingStrategy::Naive
+            | CachingStrategy::TruncateAll
+            | CachingStrategy::TruncateForTable => {
+                let query_cache_sql = {
+                    let mut sql_param = SqlParam::new(&self.kind());
+                    format!(
+                        r#"SELECT "value" FROM "cache" WHERE "table" = {} AND "key" = {} LIMIT 1"#,
+                        sql_param.next(),
+                        sql_param.next()
+                    )
+                };
+                let query_cache_params = json!([table, sql]);
+                match self
+                    .query_one(&query_cache_sql, Some(&query_cache_params))
+                    .await?
+                {
                     Some(json_row) => {
                         tracing::debug!("Cache hit");
                         let value = json_row.get_string("value")?;
@@ -358,59 +368,17 @@ impl DbConnection {
                     None => {
                         tracing::info!("Cache miss");
                         let json_rows = self.query(sql, params).await?;
-                        let mut param = SqlParam::new(&self.kind());
-                        let sql3 = format!(
-                            r#"INSERT INTO "cache" VALUES ({param1}, {param2}, NULL)"#,
-                            param1 = param.next(),
-                            param2 = param.next()
+                        let mut sql_param = SqlParam::new(&self.kind());
+                        let update_cache_sql = format!(
+                            r#"INSERT INTO "cache" ("table", "key", "value")
+                               VALUES ({}, {}, {})"#,
+                            sql_param.next(),
+                            sql_param.next(),
+                            sql_param.next(),
                         );
-                        let params3 = json!([sql, json_rows]);
-                        self.query(&sql3, Some(&params3)).await?;
-                        Ok(json_rows)
-                    }
-                }
-            }
-            CachingStrategy::MaxChange => {
-                let sql2 = format!(
-                    r#"SELECT "value" FROM "cache" WHERE "key" = {param} LIMIT 1"#,
-                    param = SqlParam::new(&self.kind()).next()
-                );
-                let params2 = json!([sql]);
-                match self.query_one(&sql2, Some(&params2)).await? {
-                    Some(json_row) => {
-                        tracing::debug!("Cache hit");
-                        let value = json_row.get_string("value")?;
-                        let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
-                        Ok(json_rows)
-                    }
-                    None => {
-                        // Get the last change_id
-                        let change_id = match self
-                            .query_value(
-                                r#"SELECT MAX("change_id") AS "change_id" FROM "change""#,
-                                None,
-                            )
-                            .await?
-                        {
-                            None => json!(0),
-                            Some(change_id) if change_id.to_string().to_lowercase() == "null" => {
-                                json!(0)
-                            }
-                            Some(change_id) => change_id,
-                        };
-                        tracing::info!("Cache miss. Adding to cache with change_id: {change_id}");
-
-                        let json_rows = self.query(sql, params).await?;
-                        let mut param = SqlParam::new(&self.kind());
-                        let sql3 = format!(
-                            r#"INSERT INTO "cache" ("key", "value", "change_id")
-                               VALUES ({param1}, {param2}, {param3})"#,
-                            param1 = param.next(),
-                            param2 = param.next(),
-                            param3 = param.next(),
-                        );
-                        let params3 = json!([sql, json_rows, change_id]);
-                        self.query(&sql3, Some(&params3)).await?;
+                        let update_cache_params = json!([table, sql, json_rows]);
+                        self.query(&update_cache_sql, Some(&update_cache_params))
+                            .await?;
                         Ok(json_rows)
                     }
                 }
@@ -987,10 +955,13 @@ pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     }
 
     ddl.push(format!(
+        // TODO: Generalize the "table" field to support an array of table names (for join
+        // purposes)
         r#"CREATE TABLE "cache" (
-             "key" TEXT PRIMARY KEY,
+             "table" TEXT,
+             "key" TEXT,
              "value" TEXT,
-             "change_id" INTEGER
+              PRIMARY KEY ("table", "key")
            )"#
     ));
     ddl

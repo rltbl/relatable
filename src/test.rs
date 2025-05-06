@@ -265,8 +265,6 @@ async fn generate_operation_sequence(
     );
 }
 
-/// TODO: Add a docstring and then move this to web.rs
-
 #[async_std::main]
 async fn main() {
     let cli = Cli::parse();
@@ -301,10 +299,11 @@ async fn main() {
             force,
         } => {
             tracing::info!("Building demonstration database with {size} rows ...");
-            let rltbl = Relatable::build_demo(Some(&cli.database), force, *size)
+            let mut rltbl = Relatable::build_demo(Some(&cli.database), force, *size)
                 .await
                 .unwrap();
             tracing::info!("Demonstration database built and loaded.");
+            rltbl.strategy = CachingStrategy::from_str(&caching_strategy.to_lowercase()).unwrap();
 
             fn random_op<'a>() -> &'a str {
                 match random_between(0, 3, &mut -1) {
@@ -315,15 +314,17 @@ async fn main() {
                 }
             }
 
+            // TODO: Need to query more than one table to test the performance of
+            // CachingStrategy::TruncateForTable
+
             tracing::info!("Counting the number of rows in table {table} ...");
             let now = Instant::now();
             let select = Select::from(table);
-            let strategy = CachingStrategy::from_str(&caching_strategy.to_lowercase()).unwrap();
             let mut i = 0;
             let mut count = 0;
             let mut elapsed;
             while i < *fetches {
-                count = rltbl.count_with_strategy(&select, strategy).await.unwrap();
+                count = rltbl.count(&select).await.unwrap();
                 elapsed = now.elapsed().as_secs();
                 if elapsed > *fail_after_secs {
                     panic!("Taking longer than {fail_after_secs}s. Timing out.");

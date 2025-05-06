@@ -91,6 +91,7 @@ pub struct Relatable {
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
     pub max_limit: usize,
+    pub strategy: CachingStrategy,
 }
 
 impl Relatable {
@@ -131,6 +132,7 @@ impl Relatable {
             // minijinja: env,
             default_limit: DEFAULT_LIMIT,
             max_limit: MAX_LIMIT,
+            strategy: CachingStrategy::None,
         })
     }
 
@@ -509,25 +511,19 @@ impl Relatable {
         self.connection.query(&statement, Some(&params)).await
     }
 
-    /// Get the number of rows returned by this [Select]
+    /// Get the number of rows returned by this [Select] using the given caching strategy.
     pub async fn count(&self, select: &Select) -> Result<usize> {
         tracing::trace!("Relatable::count({select:?})");
-        self.count_with_strategy(select, CachingStrategy::NoCache)
-            .await
-    }
-
-    /// Get the number of rows returned by this [Select] using the given caching strategy.
-    pub async fn count_with_strategy(
-        &self,
-        select: &Select,
-        strategy: CachingStrategy,
-    ) -> Result<usize> {
-        tracing::trace!("Relatable::count_with_strategy({select:?}, {strategy:?})");
         let (statement, params) = select.to_sql_count(&self.connection.kind())?;
         let params = json!(params);
         let json_rows = self
             .connection
-            .cache(&statement, Some(&params), strategy)
+            .cache(
+                &statement,
+                Some(&params),
+                &select.table_name,
+                &self.strategy,
+            )
             .await?;
         match json_rows.get(0) {
             Some(json_row) => json_row.get_unsigned("count"),
@@ -1059,13 +1055,25 @@ impl Relatable {
             };
         }
 
-        tracing::info!("Deleting entries earlier than change_id {change_id} from cache");
-        let sql = format!(
-            r#"DELETE FROM "cache" WHERE "change_id" < {}"#,
-            SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([change_id]);
-        tx.query(&sql, Some(&params))?;
+        match self.strategy {
+            CachingStrategy::None | CachingStrategy::Naive => (),
+            CachingStrategy::TruncateAll => {
+                tracing::info!("Truncating cache");
+                let sql = r#"DELETE FROM "cache""#;
+                tx.query(&sql, None)?;
+            }
+            CachingStrategy::TruncateForTable => {
+                tracing::info!("Deleting entries for table '{table}' from cache");
+                let sql = format!(
+                    r#"DELETE FROM "cache" WHERE "table" = {}"#,
+                    SqlParam::new(&tx.kind()).next(),
+                );
+                let params = json!([table]);
+                tx.query(&sql, Some(&params))?;
+            }
+            CachingStrategy::Metadata => todo!(),
+            CachingStrategy::Trigger => todo!(),
+        };
 
         Ok(())
     }

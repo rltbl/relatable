@@ -168,13 +168,13 @@ PG_DB = "postgresql:///rltbl_db"
 
 .PHONY: test_caching_sqlite
 test_caching_sqlite: debug
-	target/debug/rltbl_test --database $(SQLITE_DB) -vv test-read-perf penguin 100000 5000 100 25 --force --caching-strategy max_change
+	target/debug/rltbl_test --database $(SQLITE_DB) -vv test-read-perf penguin 100000 5000 100 25 --force --caching-strategy truncate_all
 	target/debug/rltbl_test --database $(SQLITE_DB) -vv test-read-perf penguin 100000 5000 100 25 --force --caching-strategy truncate
 	target/debug/rltbl_test --database $(SQLITE_DB) -vv test-read-perf penguin 100000 5000 0 35 --force --caching-strategy none
 
 .PHONY: test_caching_postgres
 test_caching_postgres: sqlx_debug
-	target/debug/rltbl_test --database $(SQLITE_DB) -vv test-read-perf penguin 100000 5000 100 25 --force --caching-strategy max_change
+	target/debug/rltbl_test --database $(SQLITE_DB) -vv test-read-perf penguin 100000 5000 100 25 --force --caching-strategy truncate_all
 	target/debug/rltbl_test --database $(PG_DB) -vv test-read-perf penguin 100000 5000 100 25 --force --caching-strategy truncate
 	target/debug/rltbl_test --database $(PG_DB) -vv test-read-perf penguin 100000 5000 0 60 --force --caching-strategy none
 
