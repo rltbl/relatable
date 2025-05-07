@@ -386,7 +386,7 @@ async fn main() {
                     tracing::debug!("Not making any edits");
                 }
 
-                // A small sleep to prevent over-taxing the CPU
+                // A small sleep to prevent over-taxing the CPU:
                 thread::sleep(Duration::from_millis(2));
                 i += 1;
             }

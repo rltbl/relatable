@@ -18,7 +18,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
-use std::str::FromStr;
+use std::{fmt::Display, str::FromStr};
 
 #[cfg(feature = "rusqlite")]
 use rusqlite;
@@ -61,7 +61,7 @@ pub enum CachingStrategy {
     Naive,
     TruncateAll,
     TruncateForTable,
-    Metadata,
+    Metatable,
     Trigger,
 }
 
@@ -75,7 +75,7 @@ impl FromStr for CachingStrategy {
             "naive" => Ok(Self::Naive),
             "truncate_all" => Ok(Self::TruncateAll),
             "truncate" => Ok(Self::TruncateForTable),
-            "metadata" => Ok(Self::Metadata),
+            "metadata" => Ok(Self::Metatable),
             "trigger" => Ok(Self::Trigger),
             _ => {
                 return Err(RelatableError::InputError(format!(
@@ -83,6 +83,19 @@ impl FromStr for CachingStrategy {
                 ))
                 .into());
             }
+        }
+    }
+}
+
+impl Display for CachingStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CachingStrategy::None => write!(f, "none"),
+            CachingStrategy::Naive => write!(f, "naive"),
+            CachingStrategy::TruncateAll => write!(f, "truncate_all"),
+            CachingStrategy::TruncateForTable => write!(f, "truncate"),
+            CachingStrategy::Metatable => write!(f, "metadata"),
+            CachingStrategy::Trigger => write!(f, "trigger"),
         }
     }
 }
@@ -341,50 +354,114 @@ impl DbConnection {
         strategy: &CachingStrategy,
     ) -> Result<Vec<JsonRow>> {
         tracing::trace!("cache({sql}, {params:?}, {strategy:?})");
+
+        async fn query_cache(
+            conn: &DbConnection,
+            table: &str,
+            sql: &str,
+            params: Option<&JsonValue>,
+        ) -> Result<Vec<JsonRow>> {
+            let query_cache_sql = {
+                let mut sql_param = SqlParam::new(&conn.kind());
+                format!(
+                    r#"SELECT "value" FROM "cache" WHERE "table" = {} AND "key" = {} LIMIT 1"#,
+                    sql_param.next(),
+                    sql_param.next()
+                )
+            };
+            let query_cache_params = json!([table, sql]);
+            match conn
+                .query_one(&query_cache_sql, Some(&query_cache_params))
+                .await?
+            {
+                Some(json_row) => {
+                    tracing::debug!("Cache hit");
+                    let value = json_row.get_string("value")?;
+                    let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
+                    Ok(json_rows)
+                }
+                None => {
+                    tracing::info!("Cache miss");
+                    let json_rows = conn.query(sql, params).await?;
+                    let mut sql_param = SqlParam::new(&conn.kind());
+                    let update_cache_sql = format!(
+                        r#"INSERT INTO "cache" ("table", "key", "value")
+                               VALUES ({}, {}, {})"#,
+                        sql_param.next(),
+                        sql_param.next(),
+                        sql_param.next(),
+                    );
+                    let update_cache_params = json!([table, sql, json_rows]);
+                    conn.query(&update_cache_sql, Some(&update_cache_params))
+                        .await?;
+                    Ok(json_rows)
+                }
+            }
+        }
+
         match strategy {
             CachingStrategy::None => self.query(sql, params).await,
             CachingStrategy::Naive
             | CachingStrategy::TruncateAll
-            | CachingStrategy::TruncateForTable => {
-                let query_cache_sql = {
-                    let mut sql_param = SqlParam::new(&self.kind());
-                    format!(
-                        r#"SELECT "value" FROM "cache" WHERE "table" = {} AND "key" = {} LIMIT 1"#,
-                        sql_param.next(),
-                        sql_param.next()
-                    )
-                };
-                let query_cache_params = json!([table, sql]);
-                match self
-                    .query_one(&query_cache_sql, Some(&query_cache_params))
-                    .await?
-                {
-                    Some(json_row) => {
-                        tracing::debug!("Cache hit");
-                        let value = json_row.get_string("value")?;
-                        let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
-                        Ok(json_rows)
-                    }
-                    None => {
-                        tracing::info!("Cache miss");
-                        let json_rows = self.query(sql, params).await?;
-                        let mut sql_param = SqlParam::new(&self.kind());
-                        let update_cache_sql = format!(
-                            r#"INSERT INTO "cache" ("table", "key", "value")
-                               VALUES ({}, {}, {})"#,
-                            sql_param.next(),
-                            sql_param.next(),
-                            sql_param.next(),
+            | CachingStrategy::TruncateForTable
+            | CachingStrategy::Trigger => query_cache(self, table, sql, params).await,
+            CachingStrategy::Metatable => {
+                // Unfortunately, the meta table strategy has a big loophole, since commit times
+                // are only recorded per row and not per table. This is fine unless the last
+                // operation was a delete. In that case, since the row is gone, you won't get the
+                // correct last modified time. So we need to get rid of this strategy. But just
+                // leave it for now.
+                match self.kind() {
+                    DbKind::Postgres => {
+                        let sql = format!(
+                            r#"SELECT
+                                 last_known_modified::TEXT AS "last_modified_by_rltbl",
+                                 last_actual_modified::TEXT AS "last_modified",
+                                 last_actual_modified > last_known_modified AS "dirty"
+                               FROM (
+                                 SELECT date_trunc(
+                                   'seconds',
+                                   pg_xact_commit_timestamp(t.xmin) AT TIME ZONE 'UTC'
+                                 ) AS modified_ts
+                                 FROM "{table}" t
+                                 ORDER  BY modified_ts
+                                 DESC NULLS LAST limit 1
+                               ) as last_actual_modified,
+                               (
+                                 SELECT date_trunc('seconds', "last_modified"::TIMESTAMP)
+                                 FROM "table"
+                                 WHERE "table" = {}
+                               ) as "last_known_modified""#,
+                            SqlParam::new(&self.kind()).next()
                         );
-                        let update_cache_params = json!([table, sql, json_rows]);
-                        self.query(&update_cache_sql, Some(&update_cache_params))
-                            .await?;
-                        Ok(json_rows)
+                        let params = json!([table]);
+                        let row = self.query_one(&sql, Some(&params)).await?.unwrap();
+                        tracing::info!("ROW: {row:?}");
+                        let last_rltbl_mod = row.get_string("last_modified_by_rltbl")?;
+                        match row.get_value("dirty")? {
+                            JsonValue::Bool(is_dirty) => {
+                                if last_rltbl_mod == "()" || is_dirty {
+                                    tracing::info!("Cache dirty. Cleaning it ...");
+                                    let mut conn = self.reconnect()?;
+                                    let mut tx = self.begin(&mut conn).await?;
+                                    delete_from_cache(&mut tx, Some(table))?;
+                                    tx.commit()?;
+                                } else {
+                                    tracing::info!("Cache is clean");
+                                }
+                            }
+                            _ => panic!("Unexpected Value type"),
+                        };
                     }
-                }
+                    DbKind::Sqlite => {
+                        tracing::warn!(
+                            "Metatable caching strategy not supported for SQLite. \
+                             Skipping this step."
+                        );
+                    }
+                };
+                query_cache(self, table, sql, params).await
             }
-            CachingStrategy::Metadata => todo!(),
-            CachingStrategy::Trigger => todo!(),
         }
     }
 }
@@ -942,6 +1019,14 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
             ..Default::default()
         },
     );
+    table.columns.insert(
+        "last_modified".into(),
+        Column {
+            table: "table".into(),
+            name: "last_modified".into(),
+            ..Default::default()
+        },
+    );
     generate_table_ddl(&table, force, db_kind).unwrap()
 }
 
@@ -1123,6 +1208,39 @@ pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl.append(&mut generate_history_table_ddl(force, db_kind));
     ddl.append(&mut generate_message_table_ddl(force, db_kind));
     ddl
+}
+
+// TODO: Make sure this is the right spot to place this function.
+pub fn delete_from_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
+    let mut sql = r#"DELETE FROM "cache""#.to_string();
+    if let Some(table) = table {
+        tracing::info!("Deleting entries for table '{table}' from cache");
+        sql.push_str(&format!(
+            r#" WHERE "table" = {}"#,
+            SqlParam::new(&tx.kind()).next()
+        ));
+        let params = json!([table]);
+        tx.query(&sql, Some(&params))?;
+    } else {
+        tracing::info!("Truncating cache");
+        tx.query(&sql, None)?;
+    }
+
+    let mut sql = r#"UPDATE "table" SET "last_modified" = CURRENT_TIMESTAMP::TEXT"#.to_string();
+    if let Some(table) = table {
+        tracing::info!("Updating last_modified time for table '{table}' in table table");
+        sql.push_str(&format!(
+            r#" WHERE "table" = {}"#,
+            SqlParam::new(&tx.kind()).next()
+        ));
+        let params = json!([table]);
+        tx.query(&sql, Some(&params))?;
+    } else {
+        tracing::info!("Updating last_modified times in table table");
+        tx.query(&sql, None)?;
+    }
+
+    Ok(())
 }
 
 ///////////////////////////////////////////////////////////////////////////////

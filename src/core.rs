@@ -8,8 +8,8 @@ use rltbl::{
     git,
     select::{Select, SelectField},
     sql::{
-        self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
-        SqlParam, VecInto as _,
+        self, delete_from_cache, CachingStrategy, DbActiveConnection, DbConnection, DbKind,
+        DbTransaction, JsonRow, SqlParam, VecInto as _,
     },
     table::{Column, Message, Row, Table},
 };
@@ -74,7 +74,7 @@ pub enum RelatableError {
     UserError(String),
 }
 
-impl std::fmt::Display for RelatableError {
+impl Display for RelatableError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
     }
@@ -132,7 +132,7 @@ impl Relatable {
             // minijinja: env,
             default_limit: DEFAULT_LIMIT,
             max_limit: MAX_LIMIT,
-            strategy: CachingStrategy::None,
+            strategy: CachingStrategy::Metatable,
         })
     }
 
@@ -1055,24 +1055,15 @@ impl Relatable {
             };
         }
 
+        // Possibly delete dirty entries from the cache in accordance with our caching strategy:
         match self.strategy {
-            CachingStrategy::None | CachingStrategy::Naive => (),
-            CachingStrategy::TruncateAll => {
-                tracing::info!("Truncating cache");
-                let sql = r#"DELETE FROM "cache""#;
-                tx.query(&sql, None)?;
+            // Trigger has the same behaviour as None here, since the database will be triggering
+            // this step automatically everytime the table is edited in that case.
+            CachingStrategy::None | CachingStrategy::Naive | CachingStrategy::Trigger => (),
+            CachingStrategy::TruncateAll => delete_from_cache(tx, None)?,
+            CachingStrategy::TruncateForTable | CachingStrategy::Metatable => {
+                delete_from_cache(tx, Some(&table))?
             }
-            CachingStrategy::TruncateForTable => {
-                tracing::info!("Deleting entries for table '{table}' from cache");
-                let sql = format!(
-                    r#"DELETE FROM "cache" WHERE "table" = {}"#,
-                    SqlParam::new(&tx.kind()).next(),
-                );
-                let params = json!([table]);
-                tx.query(&sql, Some(&params))?;
-            }
-            CachingStrategy::Metadata => todo!(),
-            CachingStrategy::Trigger => todo!(),
         };
 
         Ok(())
