@@ -454,10 +454,10 @@ impl DbConnection {
                         };
                     }
                     DbKind::Sqlite => {
-                        tracing::warn!(
-                            "Metatable caching strategy not supported for SQLite. \
-                             Skipping this step."
-                        );
+                        //tracing::warn!(
+                        //    "Metatable caching strategy not supported for SQLite. \
+                        //     Skipping this step."
+                        //);
                     }
                 };
                 query_cache(self, table, sql, params).await
@@ -1226,7 +1226,11 @@ pub fn delete_from_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Res
         tx.query(&sql, None)?;
     }
 
-    let mut sql = r#"UPDATE "table" SET "last_modified" = CURRENT_TIMESTAMP::TEXT"#.to_string();
+    let cast = match tx.kind() {
+        DbKind::Sqlite => "",
+        DbKind::Postgres => "::TEXT",
+    };
+    let mut sql = format!(r#"UPDATE "table" SET "last_modified" = CURRENT_TIMESTAMP{cast}"#);
     if let Some(table) = table {
         tracing::info!("Updating last_modified time for table '{table}' in table table");
         sql.push_str(&format!(
