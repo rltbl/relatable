@@ -948,7 +948,35 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
                    END"#
             ));
         }
-        DbKind::Postgres => todo!(),
+        DbKind::Postgres => {
+            ddl.push(format!(
+                r#"CREATE OR REPLACE FUNCTION "clean_cache_for_{table}"()
+                     RETURNS TRIGGER
+                     LANGUAGE PLPGSQL
+                   AS
+                   $$
+                   BEGIN
+                     DELETE FROM "cache" WHERE "table" = '{table}';
+                     RETURN NEW;
+                   END;
+                   $$"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_insert"
+                   AFTER INSERT ON "{table}"
+                   EXECUTE FUNCTION "clean_cache_for_{table}"()"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_update"
+                   AFTER UPDATE ON "{table}"
+                   EXECUTE FUNCTION "clean_cache_for_{table}"()"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_delete"
+                   AFTER DELETE ON "{table}"
+                   EXECUTE FUNCTION "clean_cache_for_{table}"()"#
+            ));
+        }
     };
 }
 
