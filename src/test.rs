@@ -299,11 +299,11 @@ async fn main() {
             force,
         } => {
             tracing::info!("Building demonstration database with {size} rows ...");
-            let mut rltbl = Relatable::build_demo(Some(&cli.database), force, *size)
+            let strategy = CachingStrategy::from_str(&caching_strategy.to_lowercase()).unwrap();
+            let rltbl = Relatable::build_demo(Some(&cli.database), force, *size, &strategy)
                 .await
                 .unwrap();
             tracing::info!("Demonstration database built and loaded.");
-            rltbl.strategy = CachingStrategy::from_str(&caching_strategy.to_lowercase()).unwrap();
 
             fn random_op<'a>() -> &'a str {
                 match random_between(0, 3, &mut -1) {

@@ -7,7 +7,7 @@ use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Relatable},
     select::{Format, Select},
     sql,
-    sql::{JsonRow, SqlParam, VecInto},
+    sql::{CachingStrategy, JsonRow, SqlParam, VecInto},
     web::{serve, serve_cgi},
 };
 
@@ -800,9 +800,14 @@ pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
 
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     tracing::trace!("build_demo({cli:?}, {force}, {size})");
-    Relatable::build_demo(cli.database.as_deref(), force, size)
-        .await
-        .expect("Error building demonstration database");
+    Relatable::build_demo(
+        cli.database.as_deref(),
+        force,
+        size,
+        &CachingStrategy::TruncateForTable,
+    )
+    .await
+    .expect("Error building demonstration database");
     println!(
         "Created a demonstration database in '{}'",
         match &cli.database {

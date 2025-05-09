@@ -187,8 +187,15 @@ impl Relatable {
     }
 
     /// Build a demonstration database
-    pub async fn build_demo(database: Option<&str>, force: &bool, size: usize) -> Result<Self> {
-        let rltbl = Relatable::init(force, database.as_deref()).await?;
+    pub async fn build_demo(
+        database: Option<&str>,
+        force: &bool,
+        size: usize,
+        caching_strategy: &CachingStrategy,
+    ) -> Result<Self> {
+        let mut rltbl = Relatable::init(force, database.as_deref()).await?;
+        // TODO: Add this as an argument to init()
+        rltbl.strategy = *caching_strategy;
 
         if *force {
             if let DbKind::Postgres = rltbl.connection.kind() {
@@ -251,7 +258,9 @@ impl Relatable {
 
         let mut ddl = vec![];
         sql::add_metacolumn_trigger_ddl(&mut ddl, "penguin", &rltbl.connection.kind());
-        sql::add_caching_trigger_ddl(&mut ddl, "penguin", &rltbl.connection.kind());
+        if let CachingStrategy::Trigger = caching_strategy {
+            sql::add_caching_trigger_ddl(&mut ddl, "penguin", &rltbl.connection.kind());
+        }
         for sql in ddl {
             rltbl.connection.query(&sql, None).await?;
         }
@@ -498,24 +507,6 @@ impl Relatable {
             tx.query(&sql, Some(&params))?;
         } else {
             tracing::info!("Truncating cache");
-            tx.query(&sql, None)?;
-        }
-
-        let cast = match tx.kind() {
-            DbKind::Sqlite => "",
-            DbKind::Postgres => "::TEXT",
-        };
-        let mut sql = format!(r#"UPDATE "table" SET "last_modified" = CURRENT_TIMESTAMP{cast}"#);
-        if let Some(table) = table {
-            tracing::info!("Updating last_modified time for table '{table}' in table table");
-            sql.push_str(&format!(
-                r#" WHERE "table" = {}"#,
-                SqlParam::new(&tx.kind()).next()
-            ));
-            let params = json!([table]);
-            tx.query(&sql, Some(&params))?;
-        } else {
-            tracing::info!("Updating last_modified times in table table");
             tx.query(&sql, None)?;
         }
 
@@ -1052,11 +1043,9 @@ impl Relatable {
         match self.strategy {
             // Trigger has the same behaviour as None here, since the database will be triggering
             // this step automatically every time the table is edited in that case.
-            CachingStrategy::None | CachingStrategy::Naive | CachingStrategy::Trigger => (),
+            CachingStrategy::None | CachingStrategy::Trigger => (),
             CachingStrategy::TruncateAll => Self::clean_cache(tx, None)?,
-            CachingStrategy::TruncateForTable | CachingStrategy::Metatable => {
-                Self::clean_cache(tx, Some(&table))?
-            }
+            CachingStrategy::TruncateForTable => Self::clean_cache(tx, Some(&table))?,
         };
 
         Ok(())

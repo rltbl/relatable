@@ -7,7 +7,7 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Relatable, RelatableError, NEW_ORDER_MULTIPLIER},
+    core::{RelatableError, NEW_ORDER_MULTIPLIER},
     table::{Column, Table},
 };
 
@@ -58,10 +58,8 @@ pub static MAX_PARAMS_POSTGRES: usize = 65535;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CachingStrategy {
     None,
-    Naive,
     TruncateAll,
     TruncateForTable,
-    Metatable,
     Trigger,
 }
 
@@ -72,10 +70,8 @@ impl FromStr for CachingStrategy {
         tracing::trace!("CachingStrategy::from_str({strategy:?})");
         match strategy.to_lowercase().as_str() {
             "none" => Ok(Self::None),
-            "naive" => Ok(Self::Naive),
             "truncate_all" => Ok(Self::TruncateAll),
             "truncate" => Ok(Self::TruncateForTable),
-            "metadata" => Ok(Self::Metatable),
             "trigger" => Ok(Self::Trigger),
             _ => {
                 return Err(RelatableError::InputError(format!(
@@ -91,10 +87,8 @@ impl Display for CachingStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CachingStrategy::None => write!(f, "none"),
-            CachingStrategy::Naive => write!(f, "naive"),
             CachingStrategy::TruncateAll => write!(f, "truncate_all"),
             CachingStrategy::TruncateForTable => write!(f, "truncate"),
-            CachingStrategy::Metatable => write!(f, "metadata"),
             CachingStrategy::Trigger => write!(f, "trigger"),
         }
     }
@@ -401,67 +395,9 @@ impl DbConnection {
 
         match strategy {
             CachingStrategy::None => self.query(sql, params).await,
-            CachingStrategy::Naive
-            | CachingStrategy::TruncateAll
+            CachingStrategy::TruncateAll
             | CachingStrategy::TruncateForTable
             | CachingStrategy::Trigger => query_cache(self, table, sql, params).await,
-            CachingStrategy::Metatable => {
-                // Unfortunately, the meta table strategy has a big loophole, since commit times
-                // are only recorded per row and not per table. This is fine unless the last
-                // operation was a delete. In that case, since the row is gone, you won't get the
-                // correct last modified time. So we need to get rid of this strategy. But just
-                // leave it for now.
-                match self.kind() {
-                    DbKind::Postgres => {
-                        let sql = format!(
-                            r#"SELECT
-                                 last_known_modified::TEXT AS "last_modified_by_rltbl",
-                                 last_actual_modified::TEXT AS "last_modified",
-                                 last_actual_modified > last_known_modified AS "dirty"
-                               FROM (
-                                 SELECT date_trunc(
-                                   'seconds',
-                                   pg_xact_commit_timestamp(t.xmin) AT TIME ZONE 'UTC'
-                                 ) AS modified_ts
-                                 FROM "{table}" t
-                                 ORDER  BY modified_ts
-                                 DESC NULLS LAST limit 1
-                               ) as last_actual_modified,
-                               (
-                                 SELECT date_trunc('seconds', "last_modified"::TIMESTAMP)
-                                 FROM "table"
-                                 WHERE "table" = {}
-                               ) as "last_known_modified""#,
-                            SqlParam::new(&self.kind()).next()
-                        );
-                        let params = json!([table]);
-                        let row = self.query_one(&sql, Some(&params)).await?.unwrap();
-                        tracing::info!("ROW: {row:?}");
-                        let last_rltbl_mod = row.get_string("last_modified_by_rltbl")?;
-                        match row.get_value("dirty")? {
-                            JsonValue::Bool(is_dirty) => {
-                                if last_rltbl_mod == "()" || is_dirty {
-                                    tracing::info!("Cache dirty. Cleaning it ...");
-                                    let mut conn = self.reconnect()?;
-                                    let mut tx = self.begin(&mut conn).await?;
-                                    Relatable::clean_cache(&mut tx, Some(table))?;
-                                    tx.commit()?;
-                                } else {
-                                    tracing::info!("Cache is clean");
-                                }
-                            }
-                            _ => panic!("Unexpected Value type"),
-                        };
-                    }
-                    DbKind::Sqlite => {
-                        //tracing::warn!(
-                        //    "Metatable caching strategy not supported for SQLite. \
-                        //     Skipping this step."
-                        //);
-                    }
-                };
-                query_cache(self, table, sql, params).await
-            }
         }
     }
 }
@@ -1089,15 +1025,12 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
         DbKind::Postgres => "SERIAL PRIMARY KEY",
     };
 
-    // TODO: Since we will not be using the Metatable caching strategy, we can remove the
-    // last_modified field.
     ddl.push(format!(
         r#"CREATE TABLE "table" (
              "_id" {pkey_clause},
              "_order" INTEGER UNIQUE,
              "table" TEXT UNIQUE,
-             "path" TEXT UNIQUE,
-             "last_modified" TEXT
+             "path" TEXT UNIQUE
            )"#
     ));
 
