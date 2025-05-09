@@ -723,7 +723,7 @@ pub fn generate_table_ddl(
     db_kind: &DbKind,
     caching_strategy: &CachingStrategy,
 ) -> Result<Vec<String>> {
-    tracing::trace!("generate_table_ddl({table:?}, {force}, {db_kind:?})");
+    tracing::trace!("generate_table_ddl({table:?}, {force}, {db_kind:?}, {caching_strategy:?})");
     if table.has_meta {
         for (cname, col) in table.columns.iter() {
             if cname == "_id" || cname == "_order" {
@@ -859,6 +859,7 @@ pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &
     };
 }
 
+/// TODO: Add docstring
 pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
     match db_kind {
         DbKind::Sqlite => {

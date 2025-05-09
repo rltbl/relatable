@@ -47,6 +47,10 @@ pub struct Cli {
     #[command(flatten)]
     verbose: Verbosity,
 
+    /// One of: none, truncate, truncate_all, trigger
+    #[arg(long, default_value = "trigger", action = ArgAction::Set)]
+    pub caching_strategy: CachingStrategy,
+
     // Subcommand:
     #[command(subcommand)]
     pub command: Command,
@@ -308,9 +312,9 @@ pub enum LoadSubcommand {
     },
 }
 
-pub async fn init(_cli: &Cli, force: &bool, path: Option<&str>) {
-    tracing::trace!("init({_cli:?}, {force}, {path:?})");
-    match Relatable::init(force, path).await {
+pub async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
+    tracing::trace!("init({cli:?}, {force}, {path:?})");
+    match Relatable::init(force, path, &cli.caching_strategy).await {
         Ok(_) => println!(
             "Initialized a relatable database in '{}'",
             match path {
@@ -356,7 +360,9 @@ pub async fn print_table(
     // TODO: We need to ouput round numbers consistently between PostgreSQL and SQLite.
     // Currently, for instance, 37 is displayed as 37.0 in SQLite and 37 in PostgreSQL.
     tracing::debug!("print_table {table_name}");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let select = Select::from(table_name)
         .filters(filters)
         .unwrap()
@@ -392,7 +398,9 @@ pub async fn print_table(
 // Print rows of a table, without column header.
 pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
     tracing::trace!("print_rows({cli:?}, {table_name}, {limit}, {offset})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let select = Select::from(table_name).limit(limit).offset(offset);
     let rows = rltbl.fetch_rows(&select).await.unwrap().vec_into();
     print_text(&rows);
@@ -400,7 +408,9 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
 
 pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::trace!("print_value({cli:?}, {table}, {row}, {column})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let statement = format!(
         r#"SELECT "{column}" FROM "{table}" WHERE _id = {sql_param}"#,
         sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next(),
@@ -433,7 +443,9 @@ pub async fn print_history(cli: &Cli, context: usize) {
     }
 
     let user = get_username(&cli);
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let history = rltbl
         .get_user_history(
             &user,
@@ -510,7 +522,9 @@ pub fn get_username(cli: &Cli) -> String {
 
 pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: &str) {
     tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
 
     // Fetch the current value from the db:
     let sql = format!(
@@ -631,7 +645,9 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
 /// from STDIN, either interactively or in JSON format.
 pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::trace!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let json_message = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
@@ -670,7 +686,9 @@ pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
 
 pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
     tracing::trace!("add_row({cli:?}, {table}, {after_id:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let json_row = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
@@ -693,7 +711,9 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
 
 pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
     tracing::trace!("move_row({cli:?}, {table}, {row}, {after_id})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let user = get_username(&cli);
     let new_order = rltbl
         .move_row(table, &user, row, after_id)
@@ -708,7 +728,9 @@ pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
 
 pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
     tracing::trace!("delete_row({cli:?}, {table}, {row})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let user = get_username(&cli);
     let num_deleted = rltbl
         .delete_row(table, &user, row)
@@ -732,7 +754,9 @@ pub async fn delete_message(
     tracing::trace!(
         "delete_message({cli:?}, {target_rule:?}, {target_user:?}, {table}, {row:?}, {column:?})"
     );
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let num_deleted = rltbl
         .delete_message(table, row, column, target_rule, target_user)
         .await
@@ -746,7 +770,9 @@ pub async fn delete_message(
 
 pub async fn undo(cli: &Cli) {
     tracing::trace!("undo({cli:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let user = get_username(&cli);
     let changeset = rltbl.undo(&user).await.expect("Failed to undo");
     if let None = changeset {
@@ -757,7 +783,9 @@ pub async fn undo(cli: &Cli) {
 
 pub async fn redo(cli: &Cli) {
     tracing::trace!("redo({cli:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     let user = get_username(&cli);
     let changeset = rltbl.redo(&user).await.expect("Failed to redo");
     if let None = changeset {
@@ -775,7 +803,9 @@ pub async fn load_tables(cli: &Cli, paths: &Vec<String>, force: bool) {
 
 pub async fn load_table(cli: &Cli, path: &str, force: bool) {
     tracing::trace!("load_table({cli:?}, {path})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
 
     // We will use this pattern to normalize the table name:
     let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
@@ -794,20 +824,17 @@ pub async fn load_table(cli: &Cli, path: &str, force: bool) {
 
 pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
     tracing::trace!("save_all({cli:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref()).await.unwrap();
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching_strategy)
+        .await
+        .unwrap();
     rltbl.save_all(save_dir).await.expect("Error saving all");
 }
 
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     tracing::trace!("build_demo({cli:?}, {force}, {size})");
-    Relatable::build_demo(
-        cli.database.as_deref(),
-        force,
-        size,
-        &CachingStrategy::TruncateForTable,
-    )
-    .await
-    .expect("Error building demonstration database");
+    Relatable::build_demo(cli.database.as_deref(), force, size, &cli.caching_strategy)
+        .await
+        .expect("Error building demonstration database");
     println!(
         "Created a demonstration database in '{}'",
         match &cli.database {

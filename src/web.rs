@@ -8,7 +8,7 @@ use rltbl::{
     core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet},
     select::{Format, QueryParams, Select},
     sql,
-    sql::JsonRow,
+    sql::{CachingStrategy, JsonRow},
     table::Row,
 };
 use std::io::Write;
@@ -644,9 +644,9 @@ pub async fn app(rltbl: Relatable, host: &str, port: &u16, timeout: &usize) -> R
     Ok("Stopping Relatable server...".into())
 }
 
-pub async fn serve(_cli: &Cli, host: &str, port: &u16, timeout: &usize) -> Result<()> {
+pub async fn serve(cli: &Cli, host: &str, port: &u16, timeout: &usize) -> Result<()> {
     tracing::debug!("serve({host}, {port})");
-    let rltbl = Relatable::connect(None).await?;
+    let rltbl = Relatable::connect(None, &cli.caching_strategy).await?;
     app(rltbl, host, port, timeout)?;
     Ok(())
 }
@@ -733,7 +733,9 @@ pub async fn serve_cgi() {
         .unwrap();
     tracing::debug!("REQUEST {request:?}");
 
-    let rltbl = Relatable::connect(None).await.expect("Database connection");
+    let rltbl = Relatable::connect(None, &CachingStrategy::Trigger)
+        .await
+        .expect("Database connection");
     let shared_state = Arc::new(rltbl);
     let mut router = build_app(shared_state).await;
     let response = router.call(request).await;

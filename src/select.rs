@@ -1672,6 +1672,7 @@ pub fn render_values(
 
 #[cfg(test)]
 mod tests {
+    use crate::sql::CachingStrategy;
     use async_std::task::block_on;
 
     use super::*;
@@ -1681,6 +1682,7 @@ mod tests {
         let rltbl = block_on(Relatable::init(
             &true,
             Some("build/test_select_from_path_and_query.db"),
+            &CachingStrategy::Trigger,
         ))
         .unwrap();
         let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
@@ -1786,7 +1788,12 @@ WHERE "foo"."bar" = {sql_param}"#
 
     #[test]
     fn test_select_methods() {
-        let rltbl = block_on(Relatable::init(&true, Some("build/test_select_methods.db"))).unwrap();
+        let rltbl = block_on(Relatable::init(
+            &true,
+            Some("build/test_select_methods.db"),
+            &CachingStrategy::Trigger,
+        ))
+        .unwrap();
         let drop_sql = r#"DROP TABLE IF EXISTS "penguin_test""#;
         let create_sql = r#"CREATE TABLE "penguin_test" (
     _id INTEGER,
@@ -1911,7 +1918,12 @@ FROM "penguin_test""#
 
     #[test]
     fn test_subquery() {
-        let rltbl = block_on(Relatable::init(&true, Some("build/test_subquery.db"))).unwrap();
+        let rltbl = block_on(Relatable::init(
+            &true,
+            Some("build/test_subquery.db"),
+            &CachingStrategy::Trigger,
+        ))
+        .unwrap();
         let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
 
         let mut inner_select = Select::from("penguin").limit(&0);

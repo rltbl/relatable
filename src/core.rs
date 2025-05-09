@@ -91,15 +91,15 @@ pub struct Relatable {
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
     pub max_limit: usize,
-    pub strategy: CachingStrategy,
+    pub caching_strategy: CachingStrategy,
 }
 
 impl Relatable {
     /// Connect to a relatable database at the given path, or, if not given, at the location
     /// indicated by the environment variable RLTBL_CONNECTION, or, if that is not given,
     /// at [RLTBL_DEFAULT_DB]
-    pub async fn connect(path: Option<&str>) -> Result<Self> {
-        tracing::trace!("Relatable::connect({path:?})");
+    pub async fn connect(path: Option<&str>, caching_strategy: &CachingStrategy) -> Result<Self> {
+        tracing::trace!("Relatable::connect({path:?}, {caching_strategy:?})");
         let root = std::env::var("RLTBL_ROOT").unwrap_or_default();
         // Set up database connection.
         let readonly = match std::env::var("RLTBL_READONLY") {
@@ -132,15 +132,19 @@ impl Relatable {
             // minijinja: env,
             default_limit: DEFAULT_LIMIT,
             max_limit: MAX_LIMIT,
-            strategy: CachingStrategy::Trigger,
+            caching_strategy: *caching_strategy,
         })
     }
 
     /// Initialize a [relatable](crate) database at the given path, or, if not given, at
     /// the location indicated by the environment variable RLTBL_CONNECTION, or, if that is not
     /// given, at [RLTBL_DEFAULT_DB]. Overwrites an existing database if `force` is set to true.
-    pub async fn init(force: &bool, path: Option<&str>) -> Result<Self> {
-        tracing::trace!("Relatable::init({force:?}, {path:?})");
+    pub async fn init(
+        force: &bool,
+        path: Option<&str>,
+        caching_strategy: &CachingStrategy,
+    ) -> Result<Self> {
+        tracing::trace!("Relatable::init({force:?}, {path:?}, {caching_strategy:?})");
         let path = match path {
             Some(path) => path.to_string(),
             None => {
@@ -177,7 +181,7 @@ impl Relatable {
         }
 
         // Create the meta tables:
-        let rltbl = Relatable::connect(Some(&path)).await?;
+        let rltbl = Relatable::connect(Some(&path), caching_strategy).await?;
         let ddl = sql::generate_meta_tables_ddl(*force, &rltbl.connection.kind());
         for sql in ddl {
             rltbl.connection.query(&sql, None).await?;
@@ -193,9 +197,10 @@ impl Relatable {
         size: usize,
         caching_strategy: &CachingStrategy,
     ) -> Result<Self> {
-        let mut rltbl = Relatable::init(force, database.as_deref()).await?;
-        // TODO: Add this as an argument to init()
-        rltbl.strategy = *caching_strategy;
+        tracing::trace!(
+            "Relatable::build_demo({database:?}, {force}, {size}, {caching_strategy:?})"
+        );
+        let rltbl = Relatable::init(force, database.as_deref(), caching_strategy).await?;
 
         if *force {
             if let DbKind::Postgres = rltbl.connection.kind() {
@@ -258,7 +263,7 @@ impl Relatable {
 
         let mut ddl = vec![];
         sql::add_metacolumn_trigger_ddl(&mut ddl, "penguin", &rltbl.connection.kind());
-        if let CachingStrategy::Trigger = caching_strategy {
+        if let CachingStrategy::Trigger = rltbl.caching_strategy {
             sql::add_caching_trigger_ddl(&mut ddl, "penguin", &rltbl.connection.kind());
         }
         for sql in ddl {
@@ -485,7 +490,7 @@ impl Relatable {
                 &statement,
                 Some(&params),
                 &select.table_name,
-                &self.strategy,
+                &self.caching_strategy,
             )
             .await?;
         match json_rows.get(0) {
@@ -588,7 +593,7 @@ impl Relatable {
         };
 
         // Generate the SQL statements needed to create the table and execute them:
-        for sql in sql::generate_table_ddl(&table, force, &db_kind, &self.strategy)
+        for sql in sql::generate_table_ddl(&table, force, &db_kind, &self.caching_strategy)
             .expect("Error getting DDL")
         {
             self.connection
@@ -1040,7 +1045,7 @@ impl Relatable {
         }
 
         // Possibly delete dirty entries from the cache in accordance with our caching strategy:
-        match self.strategy {
+        match self.caching_strategy {
             // Trigger has the same behaviour as None here, since the database will be triggering
             // this step automatically every time the table is edited in that case.
             CachingStrategy::None | CachingStrategy::Trigger => (),

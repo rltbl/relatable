@@ -15,7 +15,6 @@ use rand::{
 };
 use serde_json::json;
 use std::{
-    str::FromStr,
     thread,
     time::{Duration, Instant},
 };
@@ -41,6 +40,10 @@ pub struct Cli {
 
     #[arg(long, action = ArgAction::Set)]
     seed: Option<u64>,
+
+    /// One of: none, truncate, truncate_all, trigger
+    #[arg(long, default_value = "trigger", action = ArgAction::Set)]
+    caching_strategy: CachingStrategy,
 
     // Subcommand:
     #[command(subcommand)]
@@ -82,10 +85,6 @@ pub enum Command {
         /// Overwrite an existing database
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
-
-        /// One of: none, truncate, max_change, metadata, trigger
-        #[arg(long, default_value = "none", action = ArgAction::Set)]
-        caching_strategy: String,
     },
 }
 
@@ -284,7 +283,7 @@ async fn main() {
             min_length,
             max_length,
         } => {
-            let rltbl = Relatable::connect(Some(&cli.database))
+            let rltbl = Relatable::connect(Some(&cli.database), &cli.caching_strategy)
                 .await
                 .expect("Could not connect to relatable database");
             generate_operation_sequence(&cli, &rltbl, table, *min_length, *max_length).await;
@@ -295,14 +294,13 @@ async fn main() {
             fetches,
             edit_rate,
             fail_after_secs,
-            caching_strategy,
             force,
         } => {
             tracing::info!("Building demonstration database with {size} rows ...");
-            let strategy = CachingStrategy::from_str(&caching_strategy.to_lowercase()).unwrap();
-            let rltbl = Relatable::build_demo(Some(&cli.database), force, *size, &strategy)
-                .await
-                .unwrap();
+            let rltbl =
+                Relatable::build_demo(Some(&cli.database), force, *size, &cli.caching_strategy)
+                    .await
+                    .unwrap();
             tracing::info!("Demonstration database built and loaded.");
 
             fn random_op<'a>() -> &'a str {
@@ -315,7 +313,7 @@ async fn main() {
             }
 
             // TODO: Need to query more than one table to test the performance of
-            // CachingStrategy::TruncateForTable
+            // CachingStrategy::TruncateForTable as opposed to CachingStrategy::Truncate
 
             tracing::info!("Counting the number of rows in table {table} ...");
             let now = Instant::now();
@@ -341,7 +339,7 @@ async fn main() {
                                 .add_row(table, &user, Some(after_id), &JsonRow::new())
                                 .await
                                 .unwrap();
-                            tracing::debug!("Added row {} (order {})", row.id, row.order);
+                            tracing::info!("Added row {} (order {})", row.id, row.order);
                         }
                         "update" => {
                             let row_to_update = random_between(1, *size, &mut -1);
@@ -365,7 +363,7 @@ async fn main() {
                             if num_changes < 1 {
                                 panic!("No changes made");
                             }
-                            tracing::debug!("Updated row {row_to_update}");
+                            tracing::info!("Updated row {row_to_update}");
                         }
                         "move" => {
                             let after_id = random_between(1, *size, &mut -1);
@@ -375,7 +373,7 @@ async fn main() {
                                 .await
                                 .expect("Failed to move row");
                             if new_order > 0 {
-                                tracing::debug!("Moved row {row} after row {after_id}");
+                                tracing::info!("Moved row {row} after row {after_id}");
                             } else {
                                 panic!("No changes made");
                             }
