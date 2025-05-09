@@ -7,7 +7,7 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{RelatableError, NEW_ORDER_MULTIPLIER},
+    core::{Relatable, RelatableError, NEW_ORDER_MULTIPLIER},
     table::{Column, Table},
 };
 
@@ -444,7 +444,7 @@ impl DbConnection {
                                     tracing::info!("Cache dirty. Cleaning it ...");
                                     let mut conn = self.reconnect()?;
                                     let mut tx = self.begin(&mut conn).await?;
-                                    delete_from_cache(&mut tx, Some(table))?;
+                                    Relatable::clean_cache(&mut tx, Some(table))?;
                                     tx.commit()?;
                                 } else {
                                     tracing::info!("Cache is clean");
@@ -781,7 +781,12 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
 // Functions for generating DDL
 ////////////////
 
-pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Result<Vec<String>> {
+pub fn generate_table_ddl(
+    table: &Table,
+    force: bool,
+    db_kind: &DbKind,
+    caching_strategy: &CachingStrategy,
+) -> Result<Vec<String>> {
     tracing::trace!("generate_table_ddl({table:?}, {force}, {db_kind:?})");
     if table.has_meta {
         for (cname, col) in table.columns.iter() {
@@ -848,55 +853,103 @@ pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Resul
     sql.push_str(&format!(" {})", column_clauses.join(", ")));
     ddl.push(sql);
 
+    // Add triggers for metacolumns if they are present:
     if table.has_meta {
-        let update_stmt = format!(
-            r#"UPDATE "{table}" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
-                WHERE _id = NEW._id;"#,
-            table = table.name,
-        );
-        match db_kind {
-            DbKind::Sqlite => {
-                ddl.push(format!(
-                    r#"CREATE TRIGGER "{table}_order"
-                         AFTER INSERT ON "{table}"
-                         WHEN NEW._order IS NULL
-                           BEGIN
-                             {update_stmt}
-                           END"#,
-                    table = table.name,
-                ));
-            }
-            DbKind::Postgres => {
-                ddl.push(format!(
-                    r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_{table}"()
-                         RETURNS TRIGGER
-                         LANGUAGE PLPGSQL
-                         AS
-                       $$
-                       BEGIN
-                         IF NEW._order IS NOT DISTINCT FROM NULL THEN
-                           {update_stmt}
-                         END IF;
-                         IF NEW._id > (SELECT MAX(last_value) FROM "{table}__id_seq") THEN
-                           PERFORM setval('{table}__id_seq', NEW._id);
-                         END IF;
-                         RETURN NEW;
-                       END;
-                       $$"#,
-                    table = table.name,
-                ));
-                ddl.push(format!(
-                    r#"CREATE TRIGGER "{table}_order"
-                         AFTER INSERT ON "{table}"
-                         FOR EACH ROW
-                         EXECUTE FUNCTION "update_order_and_nextval_{table}"()"#,
-                    table = table.name,
-                ));
-            }
-        };
+        add_metacolumn_trigger_ddl(&mut ddl, &table.name, db_kind);
+    }
+
+    // Add triggers for updating the "cache" and "table" tables whenever this table is
+    // changed, if the Trigger caching strategy has been specified:
+    if let CachingStrategy::Trigger = caching_strategy {
+        add_caching_trigger_ddl(&mut ddl, &table.name, db_kind);
     }
 
     Ok(ddl)
+}
+
+pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
+    let update_stmt = format!(
+        r#"UPDATE "{table}" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
+           WHERE _id = NEW._id;"#
+    );
+    match db_kind {
+        DbKind::Sqlite => {
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_order"
+                   AFTER INSERT ON "{table}"
+                   WHEN NEW._order IS NULL
+                     BEGIN
+                       {update_stmt}
+                     END"#
+            ));
+        }
+        DbKind::Postgres => {
+            // This is required, because in PostgreSQL, assigning SERIAL PRIMARY KEY to a column is
+            // equivalent to:
+            //   CREATE SEQUENCE table_name_id_seq;
+            //   CREATE TABLE table_name (
+            //     id integer NOT NULL DEFAULT nextval('table_name_id_seq')
+            //   );
+            //   ALTER SEQUENCE table_name_id_seq OWNED BY table_name.id;
+            // This means that such a column is only ever auto-incremented when it is explicitly
+            // left out of an INSERT statement. To replicate SQLite's more sane behaviour, we define
+            // the following trigger to *always* update the last value of the sequence to the
+            // currently inserted row number. A similar trigger is also defined generically for
+            // postgresql tables in [rltbl::core].
+            ddl.push(format!(
+                r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_{table}"()
+                     RETURNS TRIGGER
+                     LANGUAGE PLPGSQL
+                   AS
+                   $$
+                   BEGIN
+                     IF NEW._order IS NOT DISTINCT FROM NULL THEN
+                       {update_stmt}
+                     END IF;
+                     IF NEW._id > (SELECT MAX(last_value) FROM "{table}__id_seq") THEN
+                       PERFORM setval('{table}__id_seq', NEW._id);
+                     END IF;
+                     RETURN NEW;
+                   END;
+                   $$"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_order"
+                   AFTER INSERT ON "{table}"
+                   FOR EACH ROW
+                   EXECUTE FUNCTION "update_order_and_nextval_{table}"()"#
+            ));
+        }
+    };
+}
+
+pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
+    match db_kind {
+        DbKind::Sqlite => {
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_insert"
+                   AFTER INSERT ON "{table}"
+                   BEGIN
+                     DELETE FROM "cache" WHERE "table" = '{table}';
+                   END"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_update"
+                   AFTER UPDATE ON "{table}"
+                   BEGIN
+                     DELETE FROM "cache" WHERE "table" = '{table}';
+                   END"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_delete"
+                   AFTER DELETE ON "{table}"
+                   BEGIN
+                     DELETE FROM "cache" WHERE "table" = '{table}';
+                   END"#
+            ));
+        }
+        DbKind::Postgres => todo!(),
+    };
 }
 
 pub fn generate_view_ddl(
@@ -997,37 +1050,32 @@ pub fn generate_view_ddl(
 
 pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_table_table_ddl({force}, {db_kind:?})");
-    let mut table = Table {
-        name: "table".to_string(),
-        ..Default::default()
+    let mut ddl = vec![];
+    if force {
+        if let DbKind::Postgres = db_kind {
+            ddl.push(format!(r#"DROP TABLE IF EXISTS "table" CASCADE"#));
+        }
+    }
+    let pkey_clause = match db_kind {
+        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        DbKind::Postgres => "SERIAL PRIMARY KEY",
     };
-    table.columns.insert(
-        "table".into(),
-        Column {
-            table: "table".into(),
-            name: "table".into(),
-            unique: true,
-            ..Default::default()
-        },
-    );
-    table.columns.insert(
-        "path".into(),
-        Column {
-            table: "table".into(),
-            name: "path".into(),
-            unique: true,
-            ..Default::default()
-        },
-    );
-    table.columns.insert(
-        "last_modified".into(),
-        Column {
-            table: "table".into(),
-            name: "last_modified".into(),
-            ..Default::default()
-        },
-    );
-    generate_table_ddl(&table, force, db_kind).unwrap()
+
+    // TODO: Since we will not be using the Metatable caching strategy, we can remove the
+    // last_modified field.
+    ddl.push(format!(
+        r#"CREATE TABLE "table" (
+             "_id" {pkey_clause},
+             "_order" INTEGER UNIQUE,
+             "table" TEXT UNIQUE,
+             "path" TEXT UNIQUE,
+             "last_modified" TEXT
+           )"#
+    ));
+
+    // Add metacolumn triggers before returning the DDL:
+    add_metacolumn_trigger_ddl(&mut ddl, "table", db_kind);
+    ddl
 }
 
 pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
@@ -1208,43 +1256,6 @@ pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl.append(&mut generate_history_table_ddl(force, db_kind));
     ddl.append(&mut generate_message_table_ddl(force, db_kind));
     ddl
-}
-
-// TODO: Make sure this is the right spot to place this function.
-pub fn delete_from_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
-    let mut sql = r#"DELETE FROM "cache""#.to_string();
-    if let Some(table) = table {
-        tracing::info!("Deleting entries for table '{table}' from cache");
-        sql.push_str(&format!(
-            r#" WHERE "table" = {}"#,
-            SqlParam::new(&tx.kind()).next()
-        ));
-        let params = json!([table]);
-        tx.query(&sql, Some(&params))?;
-    } else {
-        tracing::info!("Truncating cache");
-        tx.query(&sql, None)?;
-    }
-
-    let cast = match tx.kind() {
-        DbKind::Sqlite => "",
-        DbKind::Postgres => "::TEXT",
-    };
-    let mut sql = format!(r#"UPDATE "table" SET "last_modified" = CURRENT_TIMESTAMP{cast}"#);
-    if let Some(table) = table {
-        tracing::info!("Updating last_modified time for table '{table}' in table table");
-        sql.push_str(&format!(
-            r#" WHERE "table" = {}"#,
-            SqlParam::new(&tx.kind()).next()
-        ));
-        let params = json!([table]);
-        tx.query(&sql, Some(&params))?;
-    } else {
-        tracing::info!("Updating last_modified times in table table");
-        tx.query(&sql, None)?;
-    }
-
-    Ok(())
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -8,8 +8,8 @@ use rltbl::{
     git,
     select::{Select, SelectField},
     sql::{
-        self, delete_from_cache, CachingStrategy, DbActiveConnection, DbConnection, DbKind,
-        DbTransaction, JsonRow, SqlParam, VecInto as _,
+        self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
+        SqlParam, VecInto as _,
     },
     table::{Column, Message, Row, Table},
 };
@@ -132,7 +132,7 @@ impl Relatable {
             // minijinja: env,
             default_limit: DEFAULT_LIMIT,
             max_limit: MAX_LIMIT,
-            strategy: CachingStrategy::Metatable,
+            strategy: CachingStrategy::Trigger,
         })
     }
 
@@ -249,58 +249,12 @@ impl Relatable {
         );
         rltbl.connection.query(&sql, None).await?;
 
-        // TODO (maybe) Don't explicitly execute any create table/trigger etc. statements here.
-        // Save the generated values to a TSV file first in a demo/ directory instead and then load
-        // it.
-        if rltbl.connection.kind() == DbKind::Postgres {
-            // This is required, because in PostgreSQL, assigning SERIAL PRIMARY KEY to a column is
-            // equivalent to:
-            //   CREATE SEQUENCE table_name_id_seq;
-            //   CREATE TABLE table_name (
-            //     id integer NOT NULL DEFAULT nextval('table_name_id_seq')
-            //   );
-            //   ALTER SEQUENCE table_name_id_seq OWNED BY table_name.id;
-            // This means that such a column is only ever auto-incremented when it is explicitly
-            // left out of an INSERT statement. To replicate SQLite's more sane behaviour, we define
-            // the following trigger to *always* update the last value of the sequence to the
-            // currently inserted row number. A similar trigger is also defined generically for
-            // postgresql tables in [rltbl::core].
-            let sql = format!(
-                r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_penguin"()
-                 RETURNS TRIGGER
-                 LANGUAGE PLPGSQL
-                 AS
-               $$
-               BEGIN
-                 IF NEW._id > (SELECT MAX(last_value) FROM "penguin__id_seq") THEN
-                   PERFORM setval('penguin__id_seq', NEW._id);
-                 END IF;
-                 RETURN NEW;
-               END;
-               $$"#,
-            );
-            rltbl.connection.query(&sql, None).await?;
-
-            let sql = format!(
-                r#"CREATE TRIGGER "penguin_order"
-                 AFTER INSERT ON "penguin"
-                 FOR EACH ROW
-                 EXECUTE FUNCTION "update_order_and_nextval_penguin"()"#,
-            );
-            rltbl.connection.query(&sql, None).await?;
-        } else {
-            let sql = format!(
-                r#"CREATE TRIGGER "update_order_penguin"
-                   AFTER INSERT ON "penguin"
-                   WHEN NEW._order IS NULL
-                   BEGIN
-                     UPDATE "penguin" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
-                     WHERE _id = NEW._id;
-                   END"#,
-            );
+        let mut ddl = vec![];
+        sql::add_metacolumn_trigger_ddl(&mut ddl, "penguin", &rltbl.connection.kind());
+        sql::add_caching_trigger_ddl(&mut ddl, "penguin", &rltbl.connection.kind());
+        for sql in ddl {
             rltbl.connection.query(&sql, None).await?;
         }
-
         // Populate the penguin table with random data.
         let islands = vec!["Biscoe", "Dream", "Torgersen"];
         let mut rng = StdRng::seed_from_u64(0);
@@ -531,6 +485,43 @@ impl Relatable {
         }
     }
 
+    /// TODO: Add docstring
+    pub fn clean_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
+        let mut sql = r#"DELETE FROM "cache""#.to_string();
+        if let Some(table) = table {
+            tracing::info!("Deleting entries for table '{table}' from cache");
+            sql.push_str(&format!(
+                r#" WHERE "table" = {}"#,
+                SqlParam::new(&tx.kind()).next()
+            ));
+            let params = json!([table]);
+            tx.query(&sql, Some(&params))?;
+        } else {
+            tracing::info!("Truncating cache");
+            tx.query(&sql, None)?;
+        }
+
+        let cast = match tx.kind() {
+            DbKind::Sqlite => "",
+            DbKind::Postgres => "::TEXT",
+        };
+        let mut sql = format!(r#"UPDATE "table" SET "last_modified" = CURRENT_TIMESTAMP{cast}"#);
+        if let Some(table) = table {
+            tracing::info!("Updating last_modified time for table '{table}' in table table");
+            sql.push_str(&format!(
+                r#" WHERE "table" = {}"#,
+                SqlParam::new(&tx.kind()).next()
+            ));
+            let params = json!([table]);
+            tx.query(&sql, Some(&params))?;
+        } else {
+            tracing::info!("Updating last_modified times in table table");
+            tx.query(&sql, None)?;
+        }
+
+        Ok(())
+    }
+
     /// Loads the given table from the given path. When `force` is set to true, deletes any
     /// existing table of the same name in the database first. Note that this function may panic.
     pub async fn load_table(&self, table_name: &str, path: &str, force: bool) {
@@ -606,7 +597,9 @@ impl Relatable {
         };
 
         // Generate the SQL statements needed to create the table and execute them:
-        for sql in sql::generate_table_ddl(&table, force, &db_kind).expect("Error getting DDL") {
+        for sql in sql::generate_table_ddl(&table, force, &db_kind, &self.strategy)
+            .expect("Error getting DDL")
+        {
             self.connection
                 .query(&sql, None)
                 .await
@@ -1058,11 +1051,11 @@ impl Relatable {
         // Possibly delete dirty entries from the cache in accordance with our caching strategy:
         match self.strategy {
             // Trigger has the same behaviour as None here, since the database will be triggering
-            // this step automatically everytime the table is edited in that case.
+            // this step automatically every time the table is edited in that case.
             CachingStrategy::None | CachingStrategy::Naive | CachingStrategy::Trigger => (),
-            CachingStrategy::TruncateAll => delete_from_cache(tx, None)?,
+            CachingStrategy::TruncateAll => Self::clean_cache(tx, None)?,
             CachingStrategy::TruncateForTable | CachingStrategy::Metatable => {
-                delete_from_cache(tx, Some(&table))?
+                Self::clean_cache(tx, Some(&table))?
             }
         };
 
