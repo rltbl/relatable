@@ -201,31 +201,40 @@ impl Relatable {
             "Relatable::build_demo({database:?}, {force}, {size}, {caching_strategy:?})"
         );
         let rltbl = Relatable::init(force, database.as_deref(), caching_strategy).await?;
-
         if *force {
             if let DbKind::Postgres = rltbl.connection.kind() {
                 rltbl
                     .connection
                     .query(r#"DROP TABLE IF EXISTS "column" CASCADE"#, None)
                     .await?;
-                rltbl
-                    .connection
-                    .query(r#"DROP TABLE IF EXISTS "penguin" CASCADE"#, None)
+            }
+        }
+        rltbl.create_demo_table("penguin", force, size).await?;
+        Ok(rltbl)
+    }
+
+    /// TODO: Add docstring
+    pub async fn create_demo_table(&self, table: &str, force: &bool, size: usize) -> Result<()> {
+        if *force {
+            if let DbKind::Postgres = self.connection.kind() {
+                self.connection
+                    .query(&format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#), None)
                     .await?;
             }
         }
 
-        let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('penguin', 'penguin.tsv')"#;
-        rltbl.connection.query(sql, None).await?;
+        let sql =
+            format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
+        self.connection.query(&sql, None).await?;
 
-        let pkey_clause = match rltbl.connection.kind() {
+        let pkey_clause = match self.connection.kind() {
             DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
             DbKind::Postgres => "SERIAL PRIMARY KEY",
         };
 
         // Create and populate a column table:
         let sql = format!(
-            r#"CREATE TABLE "column" (
+            r#"CREATE TABLE IF NOT EXISTS "column" (
              _id {pkey_clause},
              _order INTEGER UNIQUE,
              "table" TEXT,
@@ -235,19 +244,21 @@ impl Relatable {
              "nulltype" TEXT
            )"#,
         );
-        rltbl.connection.query(&sql, None).await?;
+        self.connection.query(&sql, None).await?;
 
-        let sql = r#"INSERT INTO "column"
-                        ("table",   "column",        "label",      "description", "nulltype")
-                 VALUES ('penguin', 'study_name',    'muddy_name', NULL,              NULL),
-                        ('penguin', 'sample_number', NULL,         'a sample number', NULL),
-                        ('penguin', 'maple_syrup',   'maple syrup', NULL,             NULL),
-                        ('penguin', 'species',       NULL,          NULL,             'empty')"#;
-        rltbl.connection.query(sql, None).await?;
-
-        // Create a data table called penguin:
         let sql = format!(
-            r#"CREATE TABLE penguin (
+            r#"INSERT INTO "column"
+                      ("table",   "column",        "label",      "description", "nulltype")
+               VALUES ('{table}', 'study_name',    'muddy_name', NULL,              NULL),
+                      ('{table}', 'sample_number', NULL,         'a sample number', NULL),
+                      ('{table}', 'maple_syrup',   'maple syrup', NULL,             NULL),
+                      ('{table}', 'species',       NULL,          NULL,             'empty')"#
+        );
+        self.connection.query(&sql, None).await?;
+
+        // Create the demo table:
+        let sql = format!(
+            r#"CREATE TABLE "{table}" (
              _id {pkey_clause},
              _order INTEGER UNIQUE,
              study_name TEXT,
@@ -259,24 +270,24 @@ impl Relatable {
              body_mass TEXT
            )"#,
         );
-        rltbl.connection.query(&sql, None).await?;
+        self.connection.query(&sql, None).await?;
 
         let mut ddl = vec![];
-        sql::add_metacolumn_trigger_ddl(&mut ddl, "penguin", &rltbl.connection.kind());
-        if let CachingStrategy::Trigger = rltbl.caching_strategy {
-            sql::add_caching_trigger_ddl(&mut ddl, "penguin", &rltbl.connection.kind());
+        sql::add_metacolumn_trigger_ddl(&mut ddl, table, &self.connection.kind());
+        if let CachingStrategy::Trigger = self.caching_strategy {
+            sql::add_caching_trigger_ddl(&mut ddl, table, &self.connection.kind());
         }
         for sql in ddl {
-            rltbl.connection.query(&sql, None).await?;
+            self.connection.query(&sql, None).await?;
         }
-        // Populate the penguin table with random data.
+        // Populate the demo table with random data.
         let islands = vec!["Biscoe", "Dream", "Torgersen"];
         let mut rng = StdRng::seed_from_u64(0);
-        let sql_first_part = r#"INSERT INTO "penguin" VALUES "#;
+        let sql_first_part = format!(r#"INSERT INTO "{table}" VALUES "#);
         let mut sql_value_parts = vec![];
-        let mut sql_param = SqlParam::new(&rltbl.connection.kind());
+        let mut sql_param = SqlParam::new(&self.connection.kind());
         let mut param_values = vec![];
-        let max_params = match rltbl.connection.kind() {
+        let max_params = match self.connection.kind() {
             DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
             DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
         };
@@ -287,8 +298,11 @@ impl Relatable {
                     sql_value_part = sql_value_parts.join(", ")
                 );
                 let values_so_far = json!(param_values);
-                rltbl.connection.query(&sql, Some(&values_so_far)).await?;
-                tracing::info!("{num_rows} rows loaded to table penguin", num_rows = i - 1);
+                self.connection.query(&sql, Some(&values_so_far)).await?;
+                tracing::info!(
+                    "{num_rows} rows loaded to table '{table}'",
+                    num_rows = i - 1
+                );
                 param_values.clear();
                 sql_value_parts.clear();
                 sql_param.reset();
@@ -320,9 +334,10 @@ impl Relatable {
                 sql_value_part = sql_value_parts.join(", ")
             );
             let param_values = json!(param_values);
-            rltbl.connection.query(&sql, Some(&param_values)).await?;
+            self.connection.query(&sql, Some(&param_values)).await?;
         }
-        Ok(rltbl)
+
+        Ok(())
     }
 
     pub fn render<T: Serialize>(&self, template: &str, context: T) -> Result<String> {

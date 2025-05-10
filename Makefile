@@ -168,17 +168,25 @@ PG_DB = "postgresql:///rltbl_db"
 
 .PHONY: test_caching_sqlite
 test_caching_sqlite: debug
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching-strategy trigger -vv test-read-perf penguin 100000 5000 100 60 --force
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching-strategy truncate -vv test-read-perf penguin 100000 5000 100 60 --force
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching-strategy truncate_all -vv test-read-perf penguin 100000 5000 100 60 --force
-	# target/debug/rltbl_test --database $(SQLITE_DB) --caching-strategy none -vv test-read-perf penguin 100000 5000 0 60 --force
+	target/debug/rltbl_test --database $(SQLITE_DB) --caching trigger -vv test-read-perf 100000 5000 50 30 --force
+	@echo "--------------------"
+	target/debug/rltbl_test --database $(SQLITE_DB) --caching truncate -vv test-read-perf 100000 5000 50 30 --force
+	@echo "--------------------"
+	target/debug/rltbl_test --database $(SQLITE_DB) --caching truncate_all -vv test-read-perf 100000 5000 50 30 --force
+	@echo "--------------------"
+	target/debug/rltbl_test --database $(SQLITE_DB) --caching none -vv test-read-perf 100000 5000 50 60 --force
+	@echo "--------------------"
 
 .PHONY: test_caching_postgres
 test_caching_postgres: sqlx_debug
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching-strategy trigger -vv test-read-perf penguin 100000 5000 100 60 --force
-	target/debug/rltbl_test --database $(PG_DB) --caching-strategy truncate -vv test-read-perf penguin 100000 5000 100 60 --force
-	target/debug/rltbl_test --database $(PG_DB) --caching-strategy truncate_all -vv test-read-perf penguin 100000 5000 100 60 --force
-	# target/debug/rltbl_test --database $(PG_DB) --caching-strategy none -vv test-read-perf penguin 100000 5000 0 90 --force
+	target/debug/rltbl_test --database $(PG_DB) --caching trigger -vv test-read-perf 100000 5000 50 30 --force
+	@echo "--------------------"
+	target/debug/rltbl_test --database $(PG_DB) --caching truncate -vv test-read-perf 100000 5000 50 30 --force
+	@echo "--------------------"
+	target/debug/rltbl_test --database $(PG_DB) --caching truncate_all -vv test-read-perf 100000 5000 50 30 --force
+	@echo "--------------------"
+	target/debug/rltbl_test --database $(PG_DB) --caching none -vv test-read-perf 100000 5000 50 60 --force
+	@echo "--------------------"
 
 .PHONY: test_perf_sqlite
 test_perf_sqlite: test/perf/tsv/penguin.tsv debug

@@ -646,7 +646,7 @@ pub async fn app(rltbl: Relatable, host: &str, port: &u16, timeout: &usize) -> R
 
 pub async fn serve(cli: &Cli, host: &str, port: &u16, timeout: &usize) -> Result<()> {
     tracing::debug!("serve({host}, {port})");
-    let rltbl = Relatable::connect(None, &cli.caching_strategy).await?;
+    let rltbl = Relatable::connect(None, &cli.caching).await?;
     app(rltbl, host, port, timeout)?;
     Ok(())
 }

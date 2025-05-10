@@ -43,7 +43,7 @@ pub struct Cli {
 
     /// One of: none, truncate, truncate_all, trigger
     #[arg(long, default_value = "trigger", action = ArgAction::Set)]
-    caching_strategy: CachingStrategy,
+    caching: CachingStrategy,
 
     // Subcommand:
     #[command(subcommand)]
@@ -68,10 +68,7 @@ pub enum Command {
     /// table.
     TestReadPerf {
         #[arg(action = ArgAction::Set)]
-        table: String,
-
-        #[arg(action = ArgAction::Set)]
-        size: usize,
+        table_size: usize,
 
         #[arg(action = ArgAction::Set)]
         fetches: usize,
@@ -283,24 +280,32 @@ async fn main() {
             min_length,
             max_length,
         } => {
-            let rltbl = Relatable::connect(Some(&cli.database), &cli.caching_strategy)
+            let rltbl = Relatable::connect(Some(&cli.database), &cli.caching)
                 .await
                 .expect("Could not connect to relatable database");
             generate_operation_sequence(&cli, &rltbl, table, *min_length, *max_length).await;
         }
         Command::TestReadPerf {
-            table,
-            size,
+            table_size,
             fetches,
             edit_rate,
             fail_after_secs,
             force,
         } => {
-            tracing::info!("Building demonstration database with {size} rows ...");
+            tracing::info!("Building demonstration database with {table_size} rows per table ...");
             let rltbl =
-                Relatable::build_demo(Some(&cli.database), force, *size, &cli.caching_strategy)
+                Relatable::build_demo(Some(&cli.database), force, *table_size, &cli.caching)
                     .await
                     .unwrap();
+            let tables_to_choose_from = vec!["penguin", "qenguin", "renguin", "senguin"];
+            for table in tables_to_choose_from.iter() {
+                if *table != "penguin" {
+                    rltbl
+                        .create_demo_table(table, force, *table_size)
+                        .await
+                        .unwrap();
+                }
+            }
             tracing::info!("Demonstration database built and loaded.");
 
             fn random_op<'a>() -> &'a str {
@@ -312,17 +317,25 @@ async fn main() {
                 }
             }
 
-            // TODO: Need to query more than one table to test the performance of
-            // CachingStrategy::TruncateForTable as opposed to CachingStrategy::Truncate
+            fn random_table<'a>(tables_to_choose_from: &'a Vec<&str>) -> &'a str {
+                match random_between(0, 4, &mut -1) {
+                    0 => tables_to_choose_from[0],
+                    1 => tables_to_choose_from[1],
+                    2 => tables_to_choose_from[2],
+                    3 => tables_to_choose_from[3],
+                    _ => unreachable!(),
+                }
+            }
 
-            tracing::info!("Counting the number of rows in table {table} ...");
+            tracing::info!("Counting rows from tables {tables_to_choose_from:?} ...");
             let now = Instant::now();
-            let select = Select::from(table);
             let mut i = 0;
-            let mut count = 0;
             let mut elapsed;
             while i < *fetches {
-                count = rltbl.count(&select).await.unwrap();
+                let table = random_table(&tables_to_choose_from);
+                let select = Select::from(table);
+                let count = rltbl.count(&select).await.unwrap();
+                tracing::debug!("Counted {count} rows from table '{table}'");
                 elapsed = now.elapsed().as_secs();
                 if elapsed > *fail_after_secs {
                     panic!("Taking longer than {fail_after_secs}s. Timing out.");
@@ -334,15 +347,15 @@ async fn main() {
                     };
                     match random_op() {
                         "add" => {
-                            let after_id = random_between(1, *size, &mut -1);
+                            let after_id = random_between(1, *table_size, &mut -1);
                             let row = rltbl
                                 .add_row(table, &user, Some(after_id), &JsonRow::new())
                                 .await
                                 .unwrap();
-                            tracing::info!("Added row {} (order {})", row.id, row.order);
+                            tracing::info!("Added row {} (order {}) to {table}", row.id, row.order);
                         }
                         "update" => {
-                            let row_to_update = random_between(1, *size, &mut -1);
+                            let row_to_update = random_between(1, *table_size, &mut -1);
                             let num_changes = rltbl
                                 .set_values(&ChangeSet {
                                     user,
@@ -361,27 +374,27 @@ async fn main() {
                                 .changes
                                 .len();
                             if num_changes < 1 {
-                                panic!("No changes made");
+                                panic!("No changes made to {table}");
                             }
-                            tracing::info!("Updated row {row_to_update}");
+                            tracing::info!("Updated row {row_to_update} in {table}");
                         }
                         "move" => {
-                            let after_id = random_between(1, *size, &mut -1);
-                            let row = random_between(1, *size, &mut -1);
+                            let after_id = random_between(1, *table_size, &mut -1);
+                            let row = random_between(1, *table_size, &mut -1);
                             let new_order = rltbl
                                 .move_row(table, &user, row, after_id)
                                 .await
-                                .expect("Failed to move row");
+                                .expect("Failed to move row within {table}");
                             if new_order > 0 {
-                                tracing::info!("Moved row {row} after row {after_id}");
+                                tracing::info!("Moved row {row} after row {after_id} in {table}");
                             } else {
-                                panic!("No changes made");
+                                panic!("No changes made to {table}");
                             }
                         }
                         operation => panic!("Unrecognized operation: {operation}"),
                     }
                 } else {
-                    tracing::debug!("Not making any edits");
+                    tracing::debug!("Not making any edits to {table}");
                 }
 
                 // A small sleep to prevent over-taxing the CPU:
@@ -390,7 +403,8 @@ async fn main() {
             }
             elapsed = now.elapsed().as_secs();
             tracing::info!(
-                "Counted {count} rows from table '{table}' {fetches} times in {elapsed}s"
+                "Performed {fetches} counts using strategy {} on tables {tables_to_choose_from:?} in {elapsed}s",
+                cli.caching
             );
         }
     }

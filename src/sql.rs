@@ -369,13 +369,13 @@ impl DbConnection {
                 .await?
             {
                 Some(json_row) => {
-                    tracing::debug!("Cache hit");
+                    tracing::debug!("Cache hit for table '{table}'");
                     let value = json_row.get_string("value")?;
                     let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
                     Ok(json_rows)
                 }
                 None => {
-                    tracing::info!("Cache miss");
+                    tracing::info!("Cache miss for table '{table}'");
                     let json_rows = conn.query(sql, params).await?;
                     let mut sql_param = SqlParam::new(&conn.kind());
                     let update_cache_sql = format!(
