@@ -331,6 +331,7 @@ async fn main() {
             let now = Instant::now();
             let mut i = 0;
             let mut elapsed;
+            let table_to_edit = tables_to_choose_from[0];
             while i < *fetches {
                 let table = random_table(&tables_to_choose_from);
                 let select = Select::from(table);
@@ -345,6 +346,7 @@ async fn main() {
                         Some(user) => user.clone(),
                         None => whoami::username(),
                     };
+                    let table = table_to_edit;
                     match random_op() {
                         "add" => {
                             let after_id = random_between(1, *table_size, &mut -1);
@@ -403,7 +405,8 @@ async fn main() {
             }
             elapsed = now.elapsed().as_secs();
             tracing::info!(
-                "Performed {fetches} counts using strategy {} on tables {tables_to_choose_from:?} in {elapsed}s",
+                "Performed {fetches} counts using strategy {} on tables {tables_to_choose_from:?} \
+                 in {elapsed}s",
                 cli.caching
             );
         }

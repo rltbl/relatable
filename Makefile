@@ -168,22 +168,22 @@ PG_DB = "postgresql:///rltbl_db"
 
 .PHONY: test_caching_sqlite
 test_caching_sqlite: debug
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching trigger -vv test-read-perf 100000 5000 50 30 --force
+	target/debug/rltbl_test --database $(SQLITE_DB) --caching trigger -vv test-read-perf 100000 5000 50 35 --force
 	@echo "--------------------"
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching truncate -vv test-read-perf 100000 5000 50 30 --force
+	target/debug/rltbl_test --database $(SQLITE_DB) --caching truncate -vv test-read-perf 100000 5000 50 35 --force
 	@echo "--------------------"
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching truncate_all -vv test-read-perf 100000 5000 50 30 --force
+	target/debug/rltbl_test --database $(SQLITE_DB) --caching truncate_all -vv test-read-perf 100000 5000 50 45 --force
 	@echo "--------------------"
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching none -vv test-read-perf 100000 5000 50 60 --force
+	target/debug/rltbl_test --database $(SQLITE_DB) --caching none -vv test-read-perf 100000 5000 50 45 --force
 	@echo "--------------------"
 
 .PHONY: test_caching_postgres
 test_caching_postgres: sqlx_debug
-	target/debug/rltbl_test --database $(PG_DB) --caching trigger -vv test-read-perf 100000 5000 50 30 --force
+	target/debug/rltbl_test --database $(PG_DB) --caching trigger -vv test-read-perf 100000 5000 50 35 --force
 	@echo "--------------------"
-	target/debug/rltbl_test --database $(PG_DB) --caching truncate -vv test-read-perf 100000 5000 50 30 --force
+	target/debug/rltbl_test --database $(PG_DB) --caching truncate -vv test-read-perf 100000 5000 50 35 --force
 	@echo "--------------------"
-	target/debug/rltbl_test --database $(PG_DB) --caching truncate_all -vv test-read-perf 100000 5000 50 30 --force
+	target/debug/rltbl_test --database $(PG_DB) --caching truncate_all -vv test-read-perf 100000 5000 50 40 --force
 	@echo "--------------------"
 	target/debug/rltbl_test --database $(PG_DB) --caching none -vv test-read-perf 100000 5000 50 60 --force
 	@echo "--------------------"
