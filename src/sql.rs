@@ -18,8 +18,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
-#[cfg(feature = "sqlx")]
-use std::str::FromStr as _;
+use std::{fmt::Display, str::FromStr};
 
 #[cfg(feature = "rusqlite")]
 use rusqlite;
@@ -51,6 +50,46 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 /// The [maximum number of parameters](https://www.postgresql.org/docs/current/limits.html)
 /// that can be bound to a Postgres query
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
+
+/// Strategy to use for caching
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CachingStrategy {
+    None,
+    TruncateAll,
+    TruncateForTable,
+    Trigger,
+}
+
+impl FromStr for CachingStrategy {
+    type Err = anyhow::Error;
+
+    fn from_str(strategy: &str) -> Result<Self> {
+        tracing::trace!("CachingStrategy::from_str({strategy:?})");
+        match strategy.to_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "truncate_all" => Ok(Self::TruncateAll),
+            "truncate" => Ok(Self::TruncateForTable),
+            "trigger" => Ok(Self::Trigger),
+            _ => {
+                return Err(RelatableError::InputError(format!(
+                    "Unrecognized strategy: {strategy}"
+                ))
+                .into());
+            }
+        }
+    }
+}
+
+impl Display for CachingStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CachingStrategy::None => write!(f, "none"),
+            CachingStrategy::TruncateAll => write!(f, "truncate_all"),
+            CachingStrategy::TruncateForTable => write!(f, "truncate"),
+            CachingStrategy::Trigger => write!(f, "trigger"),
+        }
+    }
+}
 
 /// Represents the kind of database being managed
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,6 +335,67 @@ impl DbConnection {
         tracing::trace!("DbConnection::query_value({statement}, {params:?})");
         let rows = self.query(statement, params).await?;
         Ok(extract_value(&rows))
+    }
+
+    pub async fn cache(
+        &self,
+        sql: &str,
+        params: Option<&JsonValue>,
+        table: &str,
+        strategy: &CachingStrategy,
+    ) -> Result<Vec<JsonRow>> {
+        tracing::trace!("cache({sql}, {params:?}, {strategy:?})");
+
+        async fn query_cache(
+            conn: &DbConnection,
+            table: &str,
+            sql: &str,
+            params: Option<&JsonValue>,
+        ) -> Result<Vec<JsonRow>> {
+            let query_cache_sql = {
+                let mut sql_param = SqlParam::new(&conn.kind());
+                format!(
+                    r#"SELECT "value" FROM "cache" WHERE "table" = {} AND "key" = {} LIMIT 1"#,
+                    sql_param.next(),
+                    sql_param.next()
+                )
+            };
+            let query_cache_params = json!([table, sql]);
+            match conn
+                .query_one(&query_cache_sql, Some(&query_cache_params))
+                .await?
+            {
+                Some(json_row) => {
+                    tracing::debug!("Cache hit for table '{table}'");
+                    let value = json_row.get_string("value")?;
+                    let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
+                    Ok(json_rows)
+                }
+                None => {
+                    tracing::info!("Cache miss for table '{table}'");
+                    let json_rows = conn.query(sql, params).await?;
+                    let mut sql_param = SqlParam::new(&conn.kind());
+                    let update_cache_sql = format!(
+                        r#"INSERT INTO "cache" ("table", "key", "value")
+                               VALUES ({}, {}, {})"#,
+                        sql_param.next(),
+                        sql_param.next(),
+                        sql_param.next(),
+                    );
+                    let update_cache_params = json!([table, sql, json_rows]);
+                    conn.query(&update_cache_sql, Some(&update_cache_params))
+                        .await?;
+                    Ok(json_rows)
+                }
+            }
+        }
+
+        match strategy {
+            CachingStrategy::None => self.query(sql, params).await,
+            CachingStrategy::TruncateAll
+            | CachingStrategy::TruncateForTable
+            | CachingStrategy::Trigger => query_cache(self, table, sql, params).await,
+        }
     }
 }
 
@@ -614,8 +714,13 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
 // Functions for generating DDL
 ////////////////
 
-pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Result<Vec<String>> {
-    tracing::trace!("generate_table_ddl({table:?}, {force}, {db_kind:?})");
+pub fn generate_table_ddl(
+    table: &Table,
+    force: bool,
+    db_kind: &DbKind,
+    caching_strategy: &CachingStrategy,
+) -> Result<Vec<String>> {
+    tracing::trace!("generate_table_ddl({table:?}, {force}, {db_kind:?}, {caching_strategy:?})");
     if table.has_meta {
         for (cname, col) in table.columns.iter() {
             if cname == "_id" || cname == "_order" {
@@ -681,55 +786,132 @@ pub fn generate_table_ddl(table: &Table, force: bool, db_kind: &DbKind) -> Resul
     sql.push_str(&format!(" {})", column_clauses.join(", ")));
     ddl.push(sql);
 
+    // Add triggers for metacolumns if they are present:
     if table.has_meta {
-        let update_stmt = format!(
-            r#"UPDATE "{table}" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
-                WHERE _id = NEW._id;"#,
-            table = table.name,
-        );
-        match db_kind {
-            DbKind::Sqlite => {
-                ddl.push(format!(
-                    r#"CREATE TRIGGER "{table}_order"
-                         AFTER INSERT ON "{table}"
-                         WHEN NEW._order IS NULL
-                           BEGIN
-                             {update_stmt}
-                           END"#,
-                    table = table.name,
-                ));
-            }
-            DbKind::Postgres => {
-                ddl.push(format!(
-                    r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_{table}"()
-                         RETURNS TRIGGER
-                         LANGUAGE PLPGSQL
-                         AS
-                       $$
-                       BEGIN
-                         IF NEW._order IS NOT DISTINCT FROM NULL THEN
-                           {update_stmt}
-                         END IF;
-                         IF NEW._id > (SELECT MAX(last_value) FROM "{table}__id_seq") THEN
-                           PERFORM setval('{table}__id_seq', NEW._id);
-                         END IF;
-                         RETURN NEW;
-                       END;
-                       $$"#,
-                    table = table.name,
-                ));
-                ddl.push(format!(
-                    r#"CREATE TRIGGER "{table}_order"
-                         AFTER INSERT ON "{table}"
-                         FOR EACH ROW
-                         EXECUTE FUNCTION "update_order_and_nextval_{table}"()"#,
-                    table = table.name,
-                ));
-            }
-        };
+        add_metacolumn_trigger_ddl(&mut ddl, &table.name, db_kind);
+    }
+
+    // Add triggers for updating the "cache" and "table" tables whenever this table is
+    // changed, if the Trigger caching strategy has been specified:
+    if let CachingStrategy::Trigger = caching_strategy {
+        add_caching_trigger_ddl(&mut ddl, &table.name, db_kind);
     }
 
     Ok(ddl)
+}
+
+pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
+    let update_stmt = format!(
+        r#"UPDATE "{table}" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
+           WHERE _id = NEW._id;"#
+    );
+    match db_kind {
+        DbKind::Sqlite => {
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_order"
+                   AFTER INSERT ON "{table}"
+                   WHEN NEW._order IS NULL
+                     BEGIN
+                       {update_stmt}
+                     END"#
+            ));
+        }
+        DbKind::Postgres => {
+            // This is required, because in PostgreSQL, assigning SERIAL PRIMARY KEY to a column is
+            // equivalent to:
+            //   CREATE SEQUENCE table_name_id_seq;
+            //   CREATE TABLE table_name (
+            //     id integer NOT NULL DEFAULT nextval('table_name_id_seq')
+            //   );
+            //   ALTER SEQUENCE table_name_id_seq OWNED BY table_name.id;
+            // This means that such a column is only ever auto-incremented when it is explicitly
+            // left out of an INSERT statement. To replicate SQLite's more sane behaviour, we define
+            // the following trigger to *always* update the last value of the sequence to the
+            // currently inserted row number. A similar trigger is also defined generically for
+            // postgresql tables in [rltbl::core].
+            ddl.push(format!(
+                r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_{table}"()
+                     RETURNS TRIGGER
+                     LANGUAGE PLPGSQL
+                   AS
+                   $$
+                   BEGIN
+                     IF NEW._order IS NOT DISTINCT FROM NULL THEN
+                       {update_stmt}
+                     END IF;
+                     IF NEW._id > (SELECT MAX(last_value) FROM "{table}__id_seq") THEN
+                       PERFORM setval('{table}__id_seq', NEW._id);
+                     END IF;
+                     RETURN NEW;
+                   END;
+                   $$"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_order"
+                   AFTER INSERT ON "{table}"
+                   FOR EACH ROW
+                   EXECUTE FUNCTION "update_order_and_nextval_{table}"()"#
+            ));
+        }
+    };
+}
+
+/// TODO: Add docstring
+pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
+    match db_kind {
+        DbKind::Sqlite => {
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_insert"
+                   AFTER INSERT ON "{table}"
+                   BEGIN
+                     DELETE FROM "cache" WHERE "table" = '{table}';
+                   END"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_update"
+                   AFTER UPDATE ON "{table}"
+                   BEGIN
+                     DELETE FROM "cache" WHERE "table" = '{table}';
+                   END"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_delete"
+                   AFTER DELETE ON "{table}"
+                   BEGIN
+                     DELETE FROM "cache" WHERE "table" = '{table}';
+                   END"#
+            ));
+        }
+        DbKind::Postgres => {
+            ddl.push(format!(
+                r#"CREATE OR REPLACE FUNCTION "clean_cache_for_{table}"()
+                     RETURNS TRIGGER
+                     LANGUAGE PLPGSQL
+                   AS
+                   $$
+                   BEGIN
+                     DELETE FROM "cache" WHERE "table" = '{table}';
+                     RETURN NEW;
+                   END;
+                   $$"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_insert"
+                   AFTER INSERT ON "{table}"
+                   EXECUTE FUNCTION "clean_cache_for_{table}"()"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_update"
+                   AFTER UPDATE ON "{table}"
+                   EXECUTE FUNCTION "clean_cache_for_{table}"()"#
+            ));
+            ddl.push(format!(
+                r#"CREATE TRIGGER "{table}_cache_after_delete"
+                   AFTER DELETE ON "{table}"
+                   EXECUTE FUNCTION "clean_cache_for_{table}"()"#
+            ));
+        }
+    };
 }
 
 pub fn generate_view_ddl(
@@ -830,29 +1012,49 @@ pub fn generate_view_ddl(
 
 pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_table_table_ddl({force}, {db_kind:?})");
-    let mut table = Table {
-        name: "table".to_string(),
-        ..Default::default()
+    let mut ddl = vec![];
+    if force {
+        if let DbKind::Postgres = db_kind {
+            ddl.push(format!(r#"DROP TABLE IF EXISTS "table" CASCADE"#));
+        }
+    }
+    let pkey_clause = match db_kind {
+        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        DbKind::Postgres => "SERIAL PRIMARY KEY",
     };
-    table.columns.insert(
-        "table".into(),
-        Column {
-            table: "table".into(),
-            name: "table".into(),
-            unique: true,
-            ..Default::default()
-        },
-    );
-    table.columns.insert(
-        "path".into(),
-        Column {
-            table: "table".into(),
-            name: "path".into(),
-            unique: true,
-            ..Default::default()
-        },
-    );
-    generate_table_ddl(&table, force, db_kind).unwrap()
+
+    ddl.push(format!(
+        r#"CREATE TABLE "table" (
+             "_id" {pkey_clause},
+             "_order" INTEGER UNIQUE,
+             "table" TEXT UNIQUE,
+             "path" TEXT UNIQUE
+           )"#
+    ));
+
+    // Add metacolumn triggers before returning the DDL:
+    add_metacolumn_trigger_ddl(&mut ddl, "table", db_kind);
+    ddl
+}
+
+pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    tracing::trace!("generate_cache_table_ddl({force}, {db_kind:?})");
+    let mut ddl = vec![];
+    if force {
+        if let DbKind::Postgres = db_kind {
+            ddl.push(format!(r#"DROP TABLE IF EXISTS "cache" CASCADE"#));
+        }
+    }
+
+    ddl.push(format!(
+        r#"CREATE TABLE "cache" (
+             "table" TEXT,
+             "key" TEXT,
+             "value" TEXT,
+              PRIMARY KEY ("table", "key")
+           )"#
+    ));
+    ddl
 }
 
 // TODO: When the Table struct is rich enough to support different datatypes, foreign keys,
@@ -1005,6 +1207,7 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
 pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_meta_tables_ddl({force}, {db_kind:?})");
     let mut ddl = generate_table_table_ddl(force, db_kind);
+    ddl.append(&mut generate_cache_table_ddl(force, db_kind));
     ddl.append(&mut generate_user_table_ddl(force, db_kind));
     ddl.append(&mut generate_change_table_ddl(force, db_kind));
     ddl.append(&mut generate_history_table_ddl(force, db_kind));

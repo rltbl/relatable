@@ -8,8 +8,8 @@ use rltbl::{
     git,
     select::{Select, SelectField},
     sql::{
-        self, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow, SqlParam,
-        VecInto as _,
+        self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
+        SqlParam, VecInto as _,
     },
     table::{Column, Message, Row, Table},
 };
@@ -74,7 +74,7 @@ pub enum RelatableError {
     UserError(String),
 }
 
-impl std::fmt::Display for RelatableError {
+impl Display for RelatableError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
     }
@@ -91,14 +91,15 @@ pub struct Relatable {
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
     pub max_limit: usize,
+    pub caching_strategy: CachingStrategy,
 }
 
 impl Relatable {
     /// Connect to a relatable database at the given path, or, if not given, at the location
     /// indicated by the environment variable RLTBL_CONNECTION, or, if that is not given,
     /// at [RLTBL_DEFAULT_DB]
-    pub async fn connect(path: Option<&str>) -> Result<Self> {
-        tracing::trace!("Relatable::connect({path:?})");
+    pub async fn connect(path: Option<&str>, caching_strategy: &CachingStrategy) -> Result<Self> {
+        tracing::trace!("Relatable::connect({path:?}, {caching_strategy:?})");
         let root = std::env::var("RLTBL_ROOT").unwrap_or_default();
         // Set up database connection.
         let readonly = match std::env::var("RLTBL_READONLY") {
@@ -131,14 +132,19 @@ impl Relatable {
             // minijinja: env,
             default_limit: DEFAULT_LIMIT,
             max_limit: MAX_LIMIT,
+            caching_strategy: *caching_strategy,
         })
     }
 
     /// Initialize a [relatable](crate) database at the given path, or, if not given, at
     /// the location indicated by the environment variable RLTBL_CONNECTION, or, if that is not
     /// given, at [RLTBL_DEFAULT_DB]. Overwrites an existing database if `force` is set to true.
-    pub async fn init(force: &bool, path: Option<&str>) -> Result<Self> {
-        tracing::trace!("Relatable::init({force:?}, {path:?})");
+    pub async fn init(
+        force: &bool,
+        path: Option<&str>,
+        caching_strategy: &CachingStrategy,
+    ) -> Result<Self> {
+        tracing::trace!("Relatable::init({force:?}, {path:?}, {caching_strategy:?})");
         let path = match path {
             Some(path) => path.to_string(),
             None => {
@@ -175,7 +181,7 @@ impl Relatable {
         }
 
         // Create the meta tables:
-        let rltbl = Relatable::connect(Some(&path)).await?;
+        let rltbl = Relatable::connect(Some(&path), caching_strategy).await?;
         let ddl = sql::generate_meta_tables_ddl(*force, &rltbl.connection.kind());
         for sql in ddl {
             rltbl.connection.query(&sql, None).await?;
@@ -185,33 +191,50 @@ impl Relatable {
     }
 
     /// Build a demonstration database
-    pub async fn build_demo(database: Option<&str>, force: &bool, size: usize) -> Result<Self> {
-        let rltbl = Relatable::init(force, database.as_deref()).await?;
-
+    pub async fn build_demo(
+        database: Option<&str>,
+        force: &bool,
+        size: usize,
+        caching_strategy: &CachingStrategy,
+    ) -> Result<Self> {
+        tracing::trace!(
+            "Relatable::build_demo({database:?}, {force}, {size}, {caching_strategy:?})"
+        );
+        let rltbl = Relatable::init(force, database.as_deref(), caching_strategy).await?;
         if *force {
             if let DbKind::Postgres = rltbl.connection.kind() {
                 rltbl
                     .connection
                     .query(r#"DROP TABLE IF EXISTS "column" CASCADE"#, None)
                     .await?;
-                rltbl
-                    .connection
-                    .query(r#"DROP TABLE IF EXISTS "penguin" CASCADE"#, None)
+            }
+        }
+        rltbl.create_demo_table("penguin", force, size).await?;
+        Ok(rltbl)
+    }
+
+    /// TODO: Add docstring
+    pub async fn create_demo_table(&self, table: &str, force: &bool, size: usize) -> Result<()> {
+        if *force {
+            if let DbKind::Postgres = self.connection.kind() {
+                self.connection
+                    .query(&format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#), None)
                     .await?;
             }
         }
 
-        let sql = r#"INSERT INTO "table" ("table", "path") VALUES ('penguin', 'penguin.tsv')"#;
-        rltbl.connection.query(sql, None).await?;
+        let sql =
+            format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
+        self.connection.query(&sql, None).await?;
 
-        let pkey_clause = match rltbl.connection.kind() {
+        let pkey_clause = match self.connection.kind() {
             DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
             DbKind::Postgres => "SERIAL PRIMARY KEY",
         };
 
         // Create and populate a column table:
         let sql = format!(
-            r#"CREATE TABLE "column" (
+            r#"CREATE TABLE IF NOT EXISTS "column" (
              _id {pkey_clause},
              _order INTEGER UNIQUE,
              "table" TEXT,
@@ -221,19 +244,21 @@ impl Relatable {
              "nulltype" TEXT
            )"#,
         );
-        rltbl.connection.query(&sql, None).await?;
+        self.connection.query(&sql, None).await?;
 
-        let sql = r#"INSERT INTO "column"
-                        ("table",   "column",        "label",      "description", "nulltype")
-                 VALUES ('penguin', 'study_name',    'muddy_name', NULL,              NULL),
-                        ('penguin', 'sample_number', NULL,         'a sample number', NULL),
-                        ('penguin', 'maple_syrup',   'maple syrup', NULL,             NULL),
-                        ('penguin', 'species',       NULL,          NULL,             'empty')"#;
-        rltbl.connection.query(sql, None).await?;
-
-        // Create a data table called penguin:
         let sql = format!(
-            r#"CREATE TABLE penguin (
+            r#"INSERT INTO "column"
+                      ("table",   "column",        "label",      "description", "nulltype")
+               VALUES ('{table}', 'study_name',    'muddy_name', NULL,              NULL),
+                      ('{table}', 'sample_number', NULL,         'a sample number', NULL),
+                      ('{table}', 'maple_syrup',   'maple syrup', NULL,             NULL),
+                      ('{table}', 'species',       NULL,          NULL,             'empty')"#
+        );
+        self.connection.query(&sql, None).await?;
+
+        // Create the demo table:
+        let sql = format!(
+            r#"CREATE TABLE "{table}" (
              _id {pkey_clause},
              _order INTEGER UNIQUE,
              study_name TEXT,
@@ -245,68 +270,24 @@ impl Relatable {
              body_mass TEXT
            )"#,
         );
-        rltbl.connection.query(&sql, None).await?;
+        self.connection.query(&sql, None).await?;
 
-        // TODO (maybe) Don't explicitly execute any create table/trigger etc. statements here.
-        // Save the generated values to a TSV file first in a demo/ directory instead and then load
-        // it.
-        if rltbl.connection.kind() == DbKind::Postgres {
-            // This is required, because in PostgreSQL, assigning SERIAL PRIMARY KEY to a column is
-            // equivalent to:
-            //   CREATE SEQUENCE table_name_id_seq;
-            //   CREATE TABLE table_name (
-            //     id integer NOT NULL DEFAULT nextval('table_name_id_seq')
-            //   );
-            //   ALTER SEQUENCE table_name_id_seq OWNED BY table_name.id;
-            // This means that such a column is only ever auto-incremented when it is explicitly
-            // left out of an INSERT statement. To replicate SQLite's more sane behaviour, we define
-            // the following trigger to *always* update the last value of the sequence to the
-            // currently inserted row number. A similar trigger is also defined generically for
-            // postgresql tables in [rltbl::core].
-            let sql = format!(
-                r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_penguin"()
-                 RETURNS TRIGGER
-                 LANGUAGE PLPGSQL
-                 AS
-               $$
-               BEGIN
-                 IF NEW._id > (SELECT MAX(last_value) FROM "penguin__id_seq") THEN
-                   PERFORM setval('penguin__id_seq', NEW._id);
-                 END IF;
-                 RETURN NEW;
-               END;
-               $$"#,
-            );
-            rltbl.connection.query(&sql, None).await?;
-
-            let sql = format!(
-                r#"CREATE TRIGGER "penguin_order"
-                 AFTER INSERT ON "penguin"
-                 FOR EACH ROW
-                 EXECUTE FUNCTION "update_order_and_nextval_penguin"()"#,
-            );
-            rltbl.connection.query(&sql, None).await?;
-        } else {
-            let sql = format!(
-                r#"CREATE TRIGGER "update_order_penguin"
-                   AFTER INSERT ON "penguin"
-                   WHEN NEW._order IS NULL
-                   BEGIN
-                     UPDATE "penguin" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
-                     WHERE _id = NEW._id;
-                   END"#,
-            );
-            rltbl.connection.query(&sql, None).await?;
+        let mut ddl = vec![];
+        sql::add_metacolumn_trigger_ddl(&mut ddl, table, &self.connection.kind());
+        if let CachingStrategy::Trigger = self.caching_strategy {
+            sql::add_caching_trigger_ddl(&mut ddl, table, &self.connection.kind());
         }
-
-        // Populate the penguin table with random data.
+        for sql in ddl {
+            self.connection.query(&sql, None).await?;
+        }
+        // Populate the demo table with random data.
         let islands = vec!["Biscoe", "Dream", "Torgersen"];
         let mut rng = StdRng::seed_from_u64(0);
-        let sql_first_part = r#"INSERT INTO "penguin" VALUES "#;
+        let sql_first_part = format!(r#"INSERT INTO "{table}" VALUES "#);
         let mut sql_value_parts = vec![];
-        let mut sql_param = SqlParam::new(&rltbl.connection.kind());
+        let mut sql_param = SqlParam::new(&self.connection.kind());
         let mut param_values = vec![];
-        let max_params = match rltbl.connection.kind() {
+        let max_params = match self.connection.kind() {
             DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
             DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
         };
@@ -317,8 +298,11 @@ impl Relatable {
                     sql_value_part = sql_value_parts.join(", ")
                 );
                 let values_so_far = json!(param_values);
-                rltbl.connection.query(&sql, Some(&values_so_far)).await?;
-                tracing::info!("{num_rows} rows loaded to table penguin", num_rows = i - 1);
+                self.connection.query(&sql, Some(&values_so_far)).await?;
+                tracing::info!(
+                    "{num_rows} rows loaded to table '{table}'",
+                    num_rows = i - 1
+                );
                 param_values.clear();
                 sql_value_parts.clear();
                 sql_param.reset();
@@ -350,9 +334,10 @@ impl Relatable {
                 sql_value_part = sql_value_parts.join(", ")
             );
             let param_values = json!(param_values);
-            rltbl.connection.query(&sql, Some(&param_values)).await?;
+            self.connection.query(&sql, Some(&param_values)).await?;
         }
-        Ok(rltbl)
+
+        Ok(())
     }
 
     pub fn render<T: Serialize>(&self, template: &str, context: T) -> Result<String> {
@@ -509,17 +494,43 @@ impl Relatable {
         self.connection.query(&statement, Some(&params)).await
     }
 
-    /// Get the number of rows returned by this [Select]
+    /// Get the number of rows returned by this [Select] using the given caching strategy.
     pub async fn count(&self, select: &Select) -> Result<usize> {
         tracing::trace!("Relatable::count({select:?})");
         let (statement, params) = select.to_sql_count(&self.connection.kind())?;
         let params = json!(params);
-        // TODO: Implement caching.
-        let json_rows = self.connection.query(&statement, Some(&params)).await?;
+        let json_rows = self
+            .connection
+            .cache(
+                &statement,
+                Some(&params),
+                &select.table_name,
+                &self.caching_strategy,
+            )
+            .await?;
         match json_rows.get(0) {
             Some(json_row) => json_row.get_unsigned("count"),
             None => Ok(0),
         }
+    }
+
+    /// TODO: Add docstring
+    pub fn clean_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
+        let mut sql = r#"DELETE FROM "cache""#.to_string();
+        if let Some(table) = table {
+            tracing::info!("Deleting entries for table '{table}' from cache");
+            sql.push_str(&format!(
+                r#" WHERE "table" = {}"#,
+                SqlParam::new(&tx.kind()).next()
+            ));
+            let params = json!([table]);
+            tx.query(&sql, Some(&params))?;
+        } else {
+            tracing::info!("Truncating cache");
+            tx.query(&sql, None)?;
+        }
+
+        Ok(())
     }
 
     /// Loads the given table from the given path. When `force` is set to true, deletes any
@@ -597,7 +608,9 @@ impl Relatable {
         };
 
         // Generate the SQL statements needed to create the table and execute them:
-        for sql in sql::generate_table_ddl(&table, force, &db_kind).expect("Error getting DDL") {
+        for sql in sql::generate_table_ddl(&table, force, &db_kind, &self.caching_strategy)
+            .expect("Error getting DDL")
+        {
             self.connection
                 .query(&sql, None)
                 .await
@@ -791,7 +804,7 @@ impl Relatable {
         let author = match std::env::var("RLTBL_GIT_AUTHOR") {
             Err(err) => match err {
                 std::env::VarError::NotPresent => {
-                    tracing::info!("Not committing to git because RLTBL_GIT_AUTHOR not defined");
+                    tracing::debug!("Not committing to git because RLTBL_GIT_AUTHOR not defined");
                     return Ok(());
                 }
                 _ => {
@@ -1045,6 +1058,16 @@ impl Relatable {
                 }
             };
         }
+
+        // Possibly delete dirty entries from the cache in accordance with our caching strategy:
+        match self.caching_strategy {
+            // Trigger has the same behaviour as None here, since the database will be triggering
+            // this step automatically every time the table is edited in that case.
+            CachingStrategy::None | CachingStrategy::Trigger => (),
+            CachingStrategy::TruncateAll => Self::clean_cache(tx, None)?,
+            CachingStrategy::TruncateForTable => Self::clean_cache(tx, Some(&table))?,
+        };
+
         Ok(())
     }
 
@@ -2187,7 +2210,7 @@ impl Relatable {
 
         // Add the row to the table:
         let (sql, params) = new_row.as_insert(&table.name, &tx.kind());
-        tracing::info!("_add_row {sql} {params:?}");
+        tracing::debug!("_add_row {sql} {params:?}");
         tx.query(&sql, Some(&params))?;
 
         let after_id = match after_id {
