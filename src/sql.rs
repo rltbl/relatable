@@ -51,10 +51,7 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 /// that can be bound to a Postgres query
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
 
-// TODO: Read the below comment and consider whether it is time to get rid of this
-// It's possible that will only useful up until when we decide upon our final caching strategy.
-// In the meantime, it is useful to define the following struct, which lets us compare the
-// performance of various caching strategies.
+/// Strategy to use for caching
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CachingStrategy {
     None,
@@ -1050,8 +1047,6 @@ pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     }
 
     ddl.push(format!(
-        // TODO: Generalize the "table" field to support an array of table names (for join
-        // purposes)
         r#"CREATE TABLE "cache" (
              "table" TEXT,
              "key" TEXT,
