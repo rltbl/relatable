@@ -241,6 +241,7 @@ impl Relatable {
              "column" TEXT,
              "label" TEXT,
              "description" TEXT,
+             "datatype" TEXT,
              "nulltype" TEXT
            )"#,
         );
@@ -248,11 +249,12 @@ impl Relatable {
 
         let sql = format!(
             r#"INSERT INTO "column"
-                      ("table",   "column",        "label",      "description", "nulltype")
-               VALUES ('{table}', 'study_name',    'muddy_name', NULL,              NULL),
-                      ('{table}', 'sample_number', NULL,         'a sample number', NULL),
-                      ('{table}', 'maple_syrup',   'maple syrup', NULL,             NULL),
-                      ('{table}', 'species',       NULL,          NULL,             'empty')"#
+               ("table",   "column",        "label",      "description", "nulltype",  "datatype")
+               VALUES
+               ('{table}', 'study_name',    'muddy_name', NULL,              NULL,    NULL),
+               ('{table}', 'sample_number', NULL,         'a sample number', NULL,    'integer'),
+               ('{table}', 'maple_syrup',   'maple syrup', NULL,             NULL,    'text'),
+               ('{table}', 'species',       NULL,          NULL,             'empty', 'text')"#
         );
         self.connection.query(&sql, None).await?;
 
@@ -262,7 +264,7 @@ impl Relatable {
              _id {pkey_clause},
              _order INTEGER UNIQUE,
              study_name TEXT,
-             sample_number TEXT,
+             sample_number INTEGER,
              species TEXT,
              island TEXT,
              individual_id TEXT,
@@ -768,6 +770,7 @@ impl Relatable {
                     for (column, value) in data_row.content.iter() {
                         match value {
                             JsonValue::String(s) => str_values.push(s.to_string()),
+                            JsonValue::Number(n) => str_values.push(n.to_string()),
                             JsonValue::Null => {
                                 let nulltype = {
                                     table
@@ -783,7 +786,7 @@ impl Relatable {
                             }
                             _ => {
                                 return Err(RelatableError::DataError(
-                                    "Not a string or a NULL".to_string(),
+                                    "Not a string, integer or NULL".to_string(),
                                 )
                                 .into());
                             }

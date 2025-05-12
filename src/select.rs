@@ -1799,7 +1799,7 @@ WHERE "foo"."bar" = {sql_param}"#
     _id INTEGER,
     _order INTEGER,
     study_name TEXT,
-    sample_number TEXT,
+    sample_number INTEGER,
     species TEXT,
     island TEXT,
     individual_id TEXT,
