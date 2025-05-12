@@ -571,6 +571,39 @@ pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<V
     }
 }
 
+/// TODO: Add dosctring
+pub async fn get_db_column_attribute(
+    table: &str,
+    column: &str,
+    attribute: &str,
+    conn: &DbConnection,
+) -> Result<Option<String>> {
+    let mut sql_param = SqlParam::new(&conn.kind());
+    let is_not_clause = is_not_clause(&conn.kind());
+    let sql = format!(
+        r#"SELECT "{attribute}"
+           FROM "column"
+           WHERE "{attribute}" {is_not_clause} NULL
+           AND "table" = {}
+           AND "column" = {}"#,
+        sql_param.next(),
+        sql_param.next(),
+    );
+    let params = json!([table, column]);
+    let value = match conn.query_one(&sql, Some(&params)).await {
+        Ok(Some(row)) => Some(row.get_string(attribute)?),
+        Ok(None) => None,
+        Err(err) => {
+            // We assume that any database errors encountered here are because the (optional)
+            // column table does not exist. But we log a debug message in case we need to
+            // troubleshoot.
+            tracing::debug!("Received message: '{err}' from database. Returning None");
+            None
+        }
+    };
+    Ok(value)
+}
+
 /// Query the database for what the id of the next created row of the given table will be
 pub fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
     tracing::trace!("get_next_id({table:?}, tx)");
@@ -751,8 +784,21 @@ pub fn generate_table_ddl(
             ))
             .into());
         }
+
+        let sql_type = match &col.datatype {
+            None => "TEXT",
+            Some(datatype) if datatype.to_lowercase() == "text" => "TEXT",
+            Some(datatype) if datatype.to_lowercase() == "integer" => "INTEGER",
+            Some(unsupported) => {
+                return Err(RelatableError::InputError(format!(
+                    "Unsupported datatype: '{unsupported}'"
+                ))
+                .into());
+            }
+        };
+
         let clause = format!(
-            r#""{cname}" TEXT{unique}"#,
+            r#""{cname}" {sql_type}{unique}"#,
             unique = match col.unique {
                 true => " UNIQUE",
                 false => "",

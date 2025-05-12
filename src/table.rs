@@ -86,6 +86,11 @@ impl Table {
                 Some(description) if description == "" => None,
                 Some(_) => col.description.clone(),
             },
+            "datatype" => match &col.datatype {
+                None => None,
+                Some(datatype) if datatype == "" => None,
+                Some(_) => col.datatype.clone(),
+            },
             "nulltype" => match &col.nulltype {
                 None => None,
                 Some(nulltype) if nulltype == "" => None,
@@ -97,12 +102,13 @@ impl Table {
 }
 
 /// Represents a column from some table
-#[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Column {
     pub name: String,
     pub table: String,
     pub label: Option<String>,
     pub description: Option<String>,
+    pub datatype: Option<String>,
     pub nulltype: Option<String>,
     pub primary_key: bool,
     pub unique: bool,

@@ -404,6 +404,7 @@ impl Relatable {
                     label: table.get_column_attribute(&name.as_str(), "label"),
                     description: table.get_column_attribute(&name.as_str(), "description"),
                     nulltype: table.get_column_attribute(&name.as_str(), "nulltype"),
+                    datatype: table.get_column_attribute(&name.as_str(), "datatype"),
                     name,
                     table: table.name.to_string(),
                     ..Default::default()
@@ -596,18 +597,40 @@ impl Relatable {
                 name: table_name.to_string(),
                 ..Default::default()
             };
-            for header in headers.iter() {
+            for column_name in headers.iter() {
                 table.columns.insert(
-                    header.to_string(),
+                    column_name.to_string(),
                     Column {
-                        name: header.to_string(),
+                        name: column_name.to_string(),
                         table: table_name.to_string(),
+                        datatype: sql::get_db_column_attribute(
+                            table_name,
+                            column_name,
+                            "datatype",
+                            &self.connection,
+                        )
+                        .await
+                        .expect(&format!(
+                            "Error getting datatype for column: {table_name}.{column_name}"
+                        )),
+                        nulltype: sql::get_db_column_attribute(
+                            table_name,
+                            column_name,
+                            "nulltype",
+                            &self.connection,
+                        )
+                        .await
+                        .expect(&format!(
+                            "Error getting nulltype for column: {table_name}.{column_name}"
+                        )),
                         ..Default::default()
                     },
                 );
             }
             table
         };
+
+        tracing::info!("TABLE: {table:#?}");
 
         // Generate the SQL statements needed to create the table and execute them:
         for sql in sql::generate_table_ddl(&table, force, &db_kind, &self.caching_strategy)
@@ -675,6 +698,7 @@ impl Relatable {
             sql_params.push(sql_param_gen.next());
             let sql_params = {
                 for (i, value) in row.iter().enumerate() {
+                    // TODO: Be aware of the column datatype
                     let nulltype = {
                         if value == "" {
                             // We add 2 here because of _id and _order:
@@ -1140,6 +1164,7 @@ impl Relatable {
                     table: json_col.get_string("table")?,
                     label: json_col.get_string("label").ok(),
                     description: json_col.get_string("description").ok(),
+                    datatype: json_col.get_string("datatype").ok(),
                     nulltype: json_col.get_string("nulltype").ok(),
                     ..Default::default()
                 },
