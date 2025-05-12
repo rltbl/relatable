@@ -381,6 +381,7 @@ async fn main() {
                             tracing::info!("Updated row {row_to_update} in {table}");
                         }
                         "move" => {
+                            // TODO: Don't move rows after ones that have been deleted.
                             let after_id = random_between(1, *table_size, &mut -1);
                             let row = random_between(1, *table_size, &mut -1);
                             let new_order = rltbl
