@@ -124,6 +124,7 @@ impl Relatable {
                 .into());
             }
         }
+
         let (connection, _) = DbConnection::connect(&path).await?;
         Ok(Self {
             root,
@@ -504,7 +505,7 @@ impl Relatable {
             .cache(
                 &statement,
                 Some(&params),
-                &select.table_name,
+                &select.get_tables().into_iter().collect(),
                 &self.caching_strategy,
             )
             .await?;
@@ -515,14 +516,28 @@ impl Relatable {
     }
 
     /// TODO: Add docstring
-    pub fn clean_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
+    pub fn clear_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
         let mut sql = r#"DELETE FROM "cache""#.to_string();
         if let Some(table) = table {
+            let mut table = table.to_string();
             tracing::info!("Deleting entries for table '{table}' from cache");
-            sql.push_str(&format!(
-                r#" WHERE "table" = {}"#,
-                SqlParam::new(&tx.kind()).next()
-            ));
+            match tx.kind() {
+                DbKind::Postgres => {
+                    // Note that the '?' is *not* being used as a parameter placeholder here
+                    // but a JSONB operator.
+                    sql.push_str(&format!(
+                        r#" WHERE "table" ? {}"#,
+                        SqlParam::new(&tx.kind()).next()
+                    ));
+                }
+                DbKind::Sqlite => {
+                    sql.push_str(&format!(
+                        r#" WHERE "table" LIKE {}"#,
+                        SqlParam::new(&tx.kind()).next()
+                    ));
+                    table = format!(r#"%"{table}"%"#);
+                }
+            };
             let params = json!([table]);
             tx.query(&sql, Some(&params))?;
         } else {
@@ -1062,10 +1077,12 @@ impl Relatable {
         // Possibly delete dirty entries from the cache in accordance with our caching strategy:
         match self.caching_strategy {
             // Trigger has the same behaviour as None here, since the database will be triggering
-            // this step automatically every time the table is edited in that case.
-            CachingStrategy::None | CachingStrategy::Trigger => (),
-            CachingStrategy::TruncateAll => Self::clean_cache(tx, None)?,
-            CachingStrategy::TruncateForTable => Self::clean_cache(tx, Some(&table))?,
+            // this step automatically every time the table is edited in that case. Similarly for
+            // Memory: in this case the LFU cache will take care of removing the least frequently
+            // used entry when the cache is full
+            CachingStrategy::None | CachingStrategy::Trigger | CachingStrategy::Memory(_) => (),
+            CachingStrategy::TruncateAll => Self::clear_cache(tx, None)?,
+            CachingStrategy::Truncate => Self::clear_cache(tx, Some(&table))?,
         };
 
         Ok(())

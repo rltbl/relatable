@@ -17,7 +17,6 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
-
 use std::{fmt::Display, str::FromStr};
 
 #[cfg(feature = "rusqlite")]
@@ -51,13 +50,17 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 /// that can be bound to a Postgres query
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
 
+/// The default size of the in-memory cache
+pub static DEFAULT_MEM_CACHE_SIZE: usize = 10000;
+
 /// Strategy to use for caching
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CachingStrategy {
     None,
     TruncateAll,
-    TruncateForTable,
+    Truncate,
     Trigger,
+    Memory(usize),
 }
 
 impl FromStr for CachingStrategy {
@@ -68,8 +71,9 @@ impl FromStr for CachingStrategy {
         match strategy.to_lowercase().as_str() {
             "none" => Ok(Self::None),
             "truncate_all" => Ok(Self::TruncateAll),
-            "truncate" => Ok(Self::TruncateForTable),
+            "truncate" => Ok(Self::Truncate),
             "trigger" => Ok(Self::Trigger),
+            "memory" => Ok(Self::Memory(DEFAULT_MEM_CACHE_SIZE)),
             _ => {
                 return Err(RelatableError::InputError(format!(
                     "Unrecognized strategy: {strategy}"
@@ -85,8 +89,9 @@ impl Display for CachingStrategy {
         match self {
             CachingStrategy::None => write!(f, "none"),
             CachingStrategy::TruncateAll => write!(f, "truncate_all"),
-            CachingStrategy::TruncateForTable => write!(f, "truncate"),
+            CachingStrategy::Truncate => write!(f, "truncate"),
             CachingStrategy::Trigger => write!(f, "trigger"),
+            CachingStrategy::Memory(_) => write!(f, "memory"),
         }
     }
 }
@@ -545,45 +550,91 @@ impl DbConnection {
         &self,
         sql: &str,
         params: Option<&JsonValue>,
-        table: &str,
+        tables: &Vec<String>,
         strategy: &CachingStrategy,
     ) -> Result<Vec<SqlRow>> {
         tracing::trace!("cache({sql}, {params:?}, {strategy:?})");
 
         async fn _cache(
             conn: &DbConnection,
-            table: &str,
+            tables: &Vec<String>,
             sql: &str,
             params: Option<&JsonValue>,
         ) -> Result<Vec<SqlRow>> {
-            let cache_sql = {
+            let tables = tables
+                .iter()
+                .map(|t| json!(t).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let (cache_sql, tables) = {
                 let mut sql_param = SqlParam::new(&conn.kind());
-                format!(
-                    r#"SELECT "value" FROM "cache" WHERE "table" = {} AND "key" = {} LIMIT 1"#,
-                    sql_param.next(),
-                    sql_param.next()
-                )
+                match conn.kind() {
+                    DbKind::Postgres => {
+                        let sql = format!(
+                            r#"SELECT {}||rtrim(ltrim("value", '['), ']')||{} AS "value"
+                               FROM "cache"
+                               WHERE "tables"::TEXT = {}
+                               AND "key" = {} LIMIT 1"#,
+                            sql_param.next(),
+                            sql_param.next(),
+                            sql_param.next(),
+                            sql_param.next()
+                        );
+                        (sql, format!("[{tables}]"))
+                    }
+                    DbKind::Sqlite => {
+                        let sql = format!(
+                            r#"SELECT {}||rtrim(ltrim("value", '['), ']')||{} AS "value"
+                               FROM "cache"
+                               WHERE CAST("tables" AS TEXT) = {}
+                               AND "key" = {} LIMIT 1"#,
+                            sql_param.next(),
+                            sql_param.next(),
+                            sql_param.next(),
+                            sql_param.next()
+                        );
+                        (sql, format!("[{tables}]"))
+                    }
+                }
             };
-            let cache_params = json!([table, sql]);
+            let cache_params = json!([r#"[{"content": "#, "}]", tables, sql]);
             match conn.query_one(&cache_sql, Some(&cache_params)).await? {
                 Some(json_row) => {
-                    tracing::debug!("Cache hit for table '{table}'");
+                    // TODO: Change this back to debug!
+                    tracing::info!("Cache hit for tables {tables}");
                     let value = json_row.get_string("value")?;
                     let json_rows: Vec<SqlRow> = serde_json::from_str(&value)?;
                     Ok(json_rows)
                 }
                 None => {
-                    tracing::info!("Cache miss for table '{table}'");
+                    tracing::info!("Cache miss for tables {tables}");
                     let json_rows = conn.query(sql, params).await?;
+                    let json_rows_content = json_rows
+                        .iter()
+                        .map(|r| r.content.clone())
+                        .collect::<Vec<_>>();
                     let mut sql_param = SqlParam::new(&conn.kind());
-                    let update_cache_sql = format!(
-                        r#"INSERT INTO "cache" ("table", "key", "value")
-                               VALUES ({}, {}, {})"#,
-                        sql_param.next(),
-                        sql_param.next(),
-                        sql_param.next(),
-                    );
-                    let update_cache_params = json!([table, sql, json_rows]);
+                    let update_cache_sql = match conn.kind() {
+                        DbKind::Postgres => {
+                            format!(
+                                r#"INSERT INTO "cache" ("tables", "key", "value")
+                                   VALUES ({}::JSONB, {}, {})"#,
+                                sql_param.next(),
+                                sql_param.next(),
+                                sql_param.next(),
+                            )
+                        }
+                        DbKind::Sqlite => {
+                            format!(
+                                r#"INSERT INTO "cache" ("tables", "key", "value")
+                                   VALUES ({}, {}, {})"#,
+                                sql_param.next(),
+                                sql_param.next(),
+                                sql_param.next(),
+                            )
+                        }
+                    };
+                    let update_cache_params = json!([tables, sql, json_rows_content]);
                     conn.query(&update_cache_sql, Some(&update_cache_params))
                         .await?;
                     Ok(json_rows)
@@ -593,9 +644,12 @@ impl DbConnection {
 
         match strategy {
             CachingStrategy::None => self.query(sql, params).await,
-            CachingStrategy::TruncateAll
-            | CachingStrategy::TruncateForTable
-            | CachingStrategy::Trigger => _cache(self, table, sql, params).await,
+            CachingStrategy::TruncateAll | CachingStrategy::Truncate | CachingStrategy::Trigger => {
+                _cache(self, tables, sql, params).await
+            }
+            CachingStrategy::Memory(_) => {
+                todo!()
+            }
         }
     }
 }
@@ -1117,25 +1171,27 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
                 r#"CREATE TRIGGER "{table}_cache_after_insert"
                    AFTER INSERT ON "{table}"
                    BEGIN
-                     DELETE FROM "cache" WHERE "table" = '{table}';
+                     DELETE FROM "cache" WHERE "tables" LIKE '%"{table}"%';
                    END"#
             ));
             ddl.push(format!(
                 r#"CREATE TRIGGER "{table}_cache_after_update"
                    AFTER UPDATE ON "{table}"
                    BEGIN
-                     DELETE FROM "cache" WHERE "table" = '{table}';
+                     DELETE FROM "cache" WHERE "tables" LIKE '%"{table}"%';
                    END"#
             ));
             ddl.push(format!(
                 r#"CREATE TRIGGER "{table}_cache_after_delete"
                    AFTER DELETE ON "{table}"
                    BEGIN
-                     DELETE FROM "cache" WHERE "table" = '{table}';
+                     DELETE FROM "cache" WHERE "tables" LIKE '%"{table}"%';
                    END"#
             ));
         }
         DbKind::Postgres => {
+            // Note that the '?' is *not* being used as a parameter placeholder here
+            // but a JSONB operator.
             ddl.push(format!(
                 r#"CREATE OR REPLACE FUNCTION "clean_cache_for_{table}"()
                      RETURNS TRIGGER
@@ -1143,7 +1199,7 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
                    AS
                    $$
                    BEGIN
-                     DELETE FROM "cache" WHERE "table" = '{table}';
+                     DELETE FROM "cache" WHERE "tables" ? '{table}';
                      RETURN NEW;
                    END;
                    $$"#
@@ -1302,12 +1358,17 @@ pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
         }
     }
 
+    let json_type = match db_kind {
+        DbKind::Postgres => "JSONB",
+        DbKind::Sqlite => "JSON",
+    };
+
     ddl.push(format!(
         r#"CREATE TABLE "cache" (
-             "table" TEXT,
+             "tables" {json_type},
              "key" TEXT,
              "value" TEXT,
-              PRIMARY KEY ("table", "key")
+              PRIMARY KEY ("tables", "key")
            )"#
     ));
     ddl

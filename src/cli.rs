@@ -47,7 +47,7 @@ pub struct Cli {
     #[command(flatten)]
     verbose: Verbosity,
 
-    /// One of: none, truncate, truncate_all, trigger
+    /// One of: none, truncate, truncate_all, trigger, memory
     #[arg(long, default_value = "trigger", action = ArgAction::Set)]
     pub caching: CachingStrategy,
 

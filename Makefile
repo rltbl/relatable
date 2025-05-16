@@ -84,6 +84,9 @@ test_fmt_and_unittest_postgres:
 .PHONY: crate_docs
 crate_docs:
 	RUSTDOCFLAGS="-D warnings" cargo doc
+
+.PHONY: crate_docs_sqlx
+crate_docs_sqlx:
 	RUSTDOCFLAGS="-D warnings" cargo doc --features sqlx
 
 .PHONY: test_tesh_doc
@@ -170,6 +173,18 @@ perf_test_size = 100000
 
 SQLITE_DB = ".relatable/relatable.db"
 PG_DB = "postgresql:///rltbl_db"
+
+.PHONY: test_caching_sqlite
+test_caching_sqlite: debug
+	target/debug/rltbl_test --database $(SQLITE_DB) --caching trigger -vv test-read-perf 100 100 10 60 --force
+
+.PHONY: test_caching_postgres
+test_caching_postgres: sqlx_debug
+	target/debug/rltbl_test --database $(PG_DB) --caching trigger -vv test-read-perf 100 100 10 60 --force
+
+.PHONY: test_caching_memory
+test_caching_memory: debug
+	target/debug/rltbl_test --database $(SQLITE_DB) --caching memory -vv test-read-perf 100 100 10 60 --force
 
 .PHONY: test_perf_sqlite
 test_perf_sqlite: test/perf/tsv/penguin.tsv debug
