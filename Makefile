@@ -67,7 +67,7 @@ cleanall: clean
 
 ### Tests
 
-# Code format test
+# Code format and unit test
 
 .PHONY: test_fmt_and_unittest
 test_fmt_and_unittest:
@@ -80,6 +80,11 @@ test_fmt_and_unittest_postgres:
 	RLTBL_CONNECTION="$(PG_DB)" cargo test --features sqlx
 
 # Documentation tests
+
+.PHONY: crate_docs
+crate_docs:
+	RUSTDOCFLAGS="-D warnings" cargo doc
+	RUSTDOCFLAGS="-D warnings" cargo doc --features sqlx
 
 .PHONY: test_tesh_doc
 test_tesh_doc: debug

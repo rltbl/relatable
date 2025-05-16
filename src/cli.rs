@@ -7,7 +7,7 @@ use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Relatable},
     select::{Format, Select},
     sql,
-    sql::{CachingStrategy, JsonRow, SqlParam, VecInto},
+    sql::{CachingStrategy, SqlParam, SqlRow, VecInto},
     web::{serve, serve_cgi},
 };
 
@@ -432,7 +432,7 @@ pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
 
 pub async fn print_history(cli: &Cli, context: usize) {
     tracing::trace!("print_history({cli:?}, {context})");
-    fn get_content_as_string(change_json: &JsonRow) -> String {
+    fn get_content_as_string(change_json: &SqlRow) -> String {
         let content = change_json.get_string("content").expect("No content found");
         let content = Change::many_from_str(&content).expect("Could not parse content");
         content
@@ -563,7 +563,7 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
     }
 }
 
-pub fn input_json_row() -> JsonRow {
+pub fn input_json_row() -> SqlRow {
     tracing::trace!("input_json_row()");
     let mut json_row = String::new();
     io::stdin()
@@ -574,7 +574,7 @@ pub fn input_json_row() -> JsonRow {
         .as_object()
         .expect(&format!("{json_row} is not a JSON object"))
         .clone();
-    JsonRow { content: json_row }
+    SqlRow { content: json_row }
 }
 
 pub fn prompt_for_column_value(column: &str) -> JsonValue {
@@ -592,7 +592,7 @@ pub async fn prompt_for_json_message(
     table: &str,
     row: usize,
     column: &str,
-) -> Result<JsonRow> {
+) -> Result<SqlRow> {
     tracing::trace!("prompt_for_json_message({rltbl:?}, {table}, {row}, {column})");
     let columns = rltbl
         .fetch_columns("message")
@@ -602,7 +602,7 @@ pub async fn prompt_for_json_message(
         .map(|c| c.name.to_string())
         .collect::<Vec<_>>();
     let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
-    let mut json_row = JsonRow::from_strings(&columns);
+    let mut json_row = SqlRow::from_strings(&columns);
 
     json_row.content.insert("table".to_string(), json!(table));
     json_row.content.insert("row".to_string(), json!(row));
@@ -620,7 +620,7 @@ pub async fn prompt_for_json_message(
     Ok(json_row)
 }
 
-pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<JsonRow> {
+pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<SqlRow> {
     tracing::trace!("prompt_for_json_row({rltbl:?}, {table_name})");
     let columns = rltbl
         .fetch_columns(table_name)
@@ -629,7 +629,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
         .map(|c| c.name.to_string())
         .collect::<Vec<_>>();
     let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
-    let mut json_row = JsonRow::from_strings(&columns);
+    let mut json_row = SqlRow::from_strings(&columns);
 
     for column in &columns {
         json_row
@@ -641,7 +641,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
 }
 
 /// Use Relatable, in conformity with the given command-line parameters, to add a row representing
-/// a [Message](rltbl::core::Message) to the message table. The details of the message are read
+/// a [Message](rltbl::table::Message) to the message table. The details of the message are read
 /// from STDIN, either interactively or in JSON format.
 pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::trace!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");

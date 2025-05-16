@@ -3,7 +3,7 @@
 use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Relatable, RLTBL_DEFAULT_DB},
     select::Select,
-    sql::{CachingStrategy, JsonRow},
+    sql::{CachingStrategy, SqlRow},
 };
 
 use clap::{ArgAction, Parser, Subcommand};
@@ -351,7 +351,7 @@ async fn main() {
                         "add" => {
                             let after_id = random_between(1, *table_size, &mut -1);
                             let row = rltbl
-                                .add_row(table, &user, Some(after_id), &JsonRow::new())
+                                .add_row(table, &user, Some(after_id), &SqlRow::new())
                                 .await
                                 .unwrap();
                             tracing::info!("Added row {} (order {}) to {table}", row.id, row.order);

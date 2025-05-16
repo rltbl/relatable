@@ -151,12 +151,209 @@ impl SqlParam {
     }
 }
 
+// From https://stackoverflow.com/a/78372188
+pub trait VecInto<D> {
+    fn vec_into(self) -> Vec<D>;
+}
+
+impl<E, D> VecInto<D> for Vec<E>
+where
+    D: From<E>,
+{
+    fn vec_into(self) -> Vec<D> {
+        self.into_iter().map(std::convert::Into::into).collect()
+    }
+}
+
+/// TODO: Add docstring
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SqlRow {
+    pub content: JsonMap<String, JsonValue>,
+}
+
+impl SqlRow {
+    /// TODO: Add docstring
+    pub fn new() -> Self {
+        Self {
+            content: JsonMap::new(),
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn nullified(row: &Self, table: &Table) -> Self {
+        tracing::debug!("nullified({row:?}, {table:?})");
+        let mut nullified_row = Self::new();
+        for (column, value) in row.content.iter() {
+            let nulltype = table
+                .get_column_attribute(&column, "nulltype")
+                .unwrap_or("".to_string());
+            match value {
+                JsonValue::String(s) if s == "" && nulltype == "empty" => {
+                    nullified_row
+                        .content
+                        .insert(column.to_string(), JsonValue::Null);
+                }
+                value => {
+                    nullified_row
+                        .content
+                        .insert(column.to_string(), value.clone());
+                }
+            };
+        }
+        tracing::debug!("Nullified row: {nullified_row:?}");
+        nullified_row
+    }
+
+    /// TODO: Add docstring
+    pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
+        let value = self.content.get(column_name);
+        match value {
+            Some(value) => Ok(value.clone()),
+            None => Err(RelatableError::DataError("missing value".to_string()).into()),
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn get_string(&self, column_name: &str) -> Result<String> {
+        let value = self.content.get(column_name);
+        match value {
+            Some(value) => Ok(json_to_string(&value)),
+            None => Err(RelatableError::DataError("missing value".to_string()).into()),
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn get_unsigned(&self, column_name: &str) -> Result<usize> {
+        let value = self.content.get(column_name);
+        match value {
+            Some(value) => json_to_unsigned(&value),
+            None => Err(RelatableError::DataError("missing value".to_string()).into()),
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn from_strings(strings: &Vec<&str>) -> Self {
+        let mut json_row = Self::new();
+        for string in strings {
+            json_row.content.insert(string.to_string(), JsonValue::Null);
+        }
+        json_row
+    }
+
+    /// TODO: Add docstring
+    pub fn to_strings(&self) -> Vec<String> {
+        let mut result = vec![];
+        for column_name in self.content.keys() {
+            // The logic of this implies that this should not fail, so an expect() is
+            // appropriate here.
+            result.push(self.get_string(column_name).expect("Column not found"));
+        }
+        result
+    }
+
+    /// TODO: Add docstring
+    pub fn to_string_map(&self) -> IndexMap<String, String> {
+        let mut result = IndexMap::new();
+        for column_name in self.content.keys() {
+            result.insert(
+                column_name.clone(),
+                self.get_string(column_name).expect("Column not found"),
+            );
+        }
+        result
+    }
+
+    /// TODO: Add docstring
+    #[cfg(feature = "rusqlite")]
+    pub fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
+        let mut content = JsonMap::new();
+        for column_name in column_names {
+            let value = match row.get_ref(*column_name) {
+                Ok(value) => match value {
+                    rusqlite::types::ValueRef::Null => JsonValue::Null,
+                    rusqlite::types::ValueRef::Integer(value) => JsonValue::from(value),
+                    rusqlite::types::ValueRef::Real(value) => JsonValue::from(value),
+                    rusqlite::types::ValueRef::Text(value)
+                    | rusqlite::types::ValueRef::Blob(value) => {
+                        let value = std::str::from_utf8(value).unwrap_or_default();
+                        JsonValue::from(value)
+                    }
+                },
+                Err(_) => JsonValue::Null,
+            };
+            content.insert(column_name.to_string(), value);
+        }
+        Self { content }
+    }
+}
+
+#[cfg(feature = "sqlx")]
+impl TryFrom<sqlx::any::AnyRow> for SqlRow {
+    fn try_from(row: sqlx::any::AnyRow) -> Result<Self> {
+        let mut content = JsonMap::new();
+        for column in row.columns() {
+            // I had problems getting a type for columns that are not in the schema,
+            // e.g. "SELECT COUNT() AS count".
+            // So now I start with Null and try INTEGER, NUMBER, STRING, BOOL.
+            let mut value: JsonValue = JsonValue::Null;
+            if value.is_null() {
+                let x: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
+                }
+            }
+            if value.is_null() {
+                let x: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
+                }
+            }
+            if value.is_null() {
+                let x: Result<String, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
+                }
+            }
+            if value.is_null() {
+                let x: Result<bool, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
+                }
+            }
+            content.insert(column.name().into(), value);
+        }
+        Ok(Self { content })
+    }
+
+    type Error = anyhow::Error;
+}
+
+impl std::fmt::Display for SqlRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.to_strings().join("\t"))
+    }
+}
+
+impl std::fmt::Debug for SqlRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.to_string_map())
+    }
+}
+
+impl From<SqlRow> for Vec<String> {
+    fn from(row: SqlRow) -> Self {
+        row.to_strings()
+    }
+}
+
+/// TODO: Add docstring
 #[derive(Debug)]
 pub enum DbActiveConnection {
     #[cfg(feature = "rusqlite")]
     Rusqlite(rusqlite::Connection),
 }
 
+/// TODO: Add docstring
 #[derive(Debug)]
 pub enum DbConnection {
     #[cfg(feature = "sqlx")]
@@ -167,6 +364,7 @@ pub enum DbConnection {
 }
 
 impl DbConnection {
+    /// TODO: Add docstring
     pub fn kind(&self) -> DbKind {
         tracing::trace!("DbConnection::kind()");
         match self {
@@ -177,6 +375,7 @@ impl DbConnection {
         }
     }
 
+    /// TODO: Add docstring
     pub async fn connect(database: &str) -> Result<(Self, Option<DbActiveConnection>)> {
         tracing::trace!("DbConnection::connect({database})");
         let is_postgresql = database.starts_with("postgresql://");
@@ -238,6 +437,7 @@ impl DbConnection {
         }
     }
 
+    /// TODO: Add docstring
     pub fn reconnect(&self) -> Result<Option<DbActiveConnection>> {
         tracing::trace!("DbConnection::reconnect()");
         match self {
@@ -250,6 +450,7 @@ impl DbConnection {
         }
     }
 
+    /// TODO: Add docstring
     pub async fn begin<'a>(
         &self,
         conn: &'a mut Option<DbActiveConnection>,
@@ -277,11 +478,11 @@ impl DbConnection {
         }
     }
 
-    // Given a connection and a SQL string, return a vector of JsonRows.
-    // This is intended as a low-level function that abstracts over the SQL engine,
-    // and whatever result types it returns.
-    // Since it uses a vector, statements should be limited to a sane number of rows.
-    pub async fn query(&self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
+    /// Given a connection and a generic SQL string with placeholders and a list of parameters
+    /// to interpolate into the string, return a vector of [SqlRow]s.
+    /// Note that since this returns a vector, statements should be limited to those that will
+    /// return a sane number of rows.
+    pub async fn query(&self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<SqlRow>> {
         tracing::trace!("DbConnection::query({statement}, {params:?})");
         if !valid_params(params) {
             tracing::warn!("invalid parameter argument");
@@ -293,7 +494,7 @@ impl DbConnection {
                 let query = prepare_sqlx_query(&statement, params)?;
                 let mut rows = vec![];
                 for row in query.fetch_all(pool).await? {
-                    rows.push(JsonRow::try_from(row)?);
+                    rows.push(SqlRow::try_from(row)?);
                 }
                 Ok(rows)
             }
@@ -314,11 +515,12 @@ impl DbConnection {
         }
     }
 
+    /// TODO: Add docstring
     pub async fn query_one(
         &self,
         statement: &str,
         params: Option<&JsonValue>,
-    ) -> Result<Option<JsonRow>> {
+    ) -> Result<Option<SqlRow>> {
         tracing::trace!("DbConnection::query_one({statement}, {params:?})");
         let rows = self.query(&statement, params).await?;
         match rows.iter().next() {
@@ -327,6 +529,7 @@ impl DbConnection {
         }
     }
 
+    /// TODO: Add docstring
     pub async fn query_value(
         &self,
         statement: &str,
@@ -337,22 +540,23 @@ impl DbConnection {
         Ok(extract_value(&rows))
     }
 
+    /// TODO: Add docstring
     pub async fn cache(
         &self,
         sql: &str,
         params: Option<&JsonValue>,
         table: &str,
         strategy: &CachingStrategy,
-    ) -> Result<Vec<JsonRow>> {
+    ) -> Result<Vec<SqlRow>> {
         tracing::trace!("cache({sql}, {params:?}, {strategy:?})");
 
-        async fn query_cache(
+        async fn _cache(
             conn: &DbConnection,
             table: &str,
             sql: &str,
             params: Option<&JsonValue>,
-        ) -> Result<Vec<JsonRow>> {
-            let query_cache_sql = {
+        ) -> Result<Vec<SqlRow>> {
+            let cache_sql = {
                 let mut sql_param = SqlParam::new(&conn.kind());
                 format!(
                     r#"SELECT "value" FROM "cache" WHERE "table" = {} AND "key" = {} LIMIT 1"#,
@@ -360,15 +564,12 @@ impl DbConnection {
                     sql_param.next()
                 )
             };
-            let query_cache_params = json!([table, sql]);
-            match conn
-                .query_one(&query_cache_sql, Some(&query_cache_params))
-                .await?
-            {
+            let cache_params = json!([table, sql]);
+            match conn.query_one(&cache_sql, Some(&cache_params)).await? {
                 Some(json_row) => {
                     tracing::debug!("Cache hit for table '{table}'");
                     let value = json_row.get_string("value")?;
-                    let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
+                    let json_rows: Vec<SqlRow> = serde_json::from_str(&value)?;
                     Ok(json_rows)
                 }
                 None => {
@@ -394,11 +595,12 @@ impl DbConnection {
             CachingStrategy::None => self.query(sql, params).await,
             CachingStrategy::TruncateAll
             | CachingStrategy::TruncateForTable
-            | CachingStrategy::Trigger => query_cache(self, table, sql, params).await,
+            | CachingStrategy::Trigger => _cache(self, table, sql, params).await,
         }
     }
 }
 
+/// TODO: Add docstring
 #[derive(Debug)]
 pub enum DbTransaction<'a> {
     #[cfg(feature = "sqlx")]
@@ -409,6 +611,7 @@ pub enum DbTransaction<'a> {
 }
 
 impl DbTransaction<'_> {
+    /// TODO: Add docstring
     pub fn kind(&self) -> DbKind {
         tracing::trace!("DbTransaction::kind()");
         match self {
@@ -419,6 +622,7 @@ impl DbTransaction<'_> {
         }
     }
 
+    /// TODO: Add docstring
     pub fn commit(self) -> Result<()> {
         tracing::trace!("DbTransaction::commit()");
         match self {
@@ -430,6 +634,7 @@ impl DbTransaction<'_> {
         Ok(())
     }
 
+    /// TODO: Add docstring
     pub fn rollback(self) -> Result<()> {
         tracing::trace!("DbTransaction::rollback()");
         match self {
@@ -441,11 +646,11 @@ impl DbTransaction<'_> {
         Ok(())
     }
 
-    // Given a connection and a SQL string, return a vector of JsonRows.
-    // This is intended as a low-level function that abstracts over the SQL engine,
-    // and whatever result types it returns.
-    // Since it uses a vector, statements should be limited to a sane number of rows.
-    pub fn query(&mut self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
+    /// Given a connection and a generic SQL string with placeholders and a list of parameters
+    /// to interpolate into the string, return a vector of [SqlRow]s.
+    /// Note that since this returns a vector, statements should be limited to those that will
+    /// return a sane number of rows.
+    pub fn query(&mut self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<SqlRow>> {
         tracing::trace!("DbTransaction::query({statement}, {params:?})");
         if !valid_params(params) {
             tracing::warn!("invalid parameter argument");
@@ -457,7 +662,7 @@ impl DbTransaction<'_> {
                 let query = prepare_sqlx_query(&statement, params)?;
                 let mut rows = vec![];
                 for row in block_on(query.fetch_all(block_on(tx.acquire())?))? {
-                    rows.push(JsonRow::try_from(row)?);
+                    rows.push(SqlRow::try_from(row)?);
                 }
                 Ok(rows)
             }
@@ -469,11 +674,12 @@ impl DbTransaction<'_> {
         }
     }
 
+    /// TODO: Add docstring
     pub fn query_one(
         &mut self,
         statement: &str,
         params: Option<&JsonValue>,
-    ) -> Result<Option<JsonRow>> {
+    ) -> Result<Option<SqlRow>> {
         tracing::trace!("DbTransaction::query_one({statement}, {params:?})");
         let rows = self.query(&statement, params)?;
         match rows.iter().next() {
@@ -482,6 +688,7 @@ impl DbTransaction<'_> {
         }
     }
 
+    /// TODO: Add docstring
     pub fn query_value(
         &mut self,
         statement: &str,
@@ -497,6 +704,7 @@ impl DbTransaction<'_> {
 // Database-specific utilities and functions
 ///////////////////////////////////////////////////////////////////////////////
 
+/// TODO: Add docstring
 pub async fn table_exists(table: &str, conn: &DbConnection) -> Result<bool> {
     tracing::trace!("table_exists({table}, {conn:?})");
     let sql_param = SqlParam::new(&conn.kind()).next();
@@ -549,7 +757,7 @@ pub fn view_exists_for(table: &str, tx: &mut DbTransaction<'_>) -> Result<bool> 
 }
 
 /// Query the database for the columns associated with the given table
-pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<Vec<JsonRow>> {
+pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<Vec<SqlRow>> {
     tracing::trace!("get_db_table_columns({table:?}, tx)");
     match tx.kind() {
         DbKind::Sqlite => {
@@ -655,11 +863,12 @@ pub fn prepare_sqlx_query<'a>(
     Ok(query)
 }
 
+/// TODO: Add docstring
 #[cfg(feature = "rusqlite")]
 pub fn submit_rusqlite_statement(
     stmt: &mut rusqlite::Statement<'_>,
     params: Option<&JsonValue>,
-) -> Result<Vec<JsonRow>> {
+) -> Result<Vec<SqlRow>> {
     tracing::trace!("submit_rusqlite_statement({stmt:?}, {params:?})");
     let column_names = stmt
         .column_names()
@@ -682,11 +891,12 @@ pub fn submit_rusqlite_statement(
 
     let mut result = Vec::new();
     while let Some(row) = rows.next()? {
-        result.push(JsonRow::from_rusqlite(&column_names, row));
+        result.push(SqlRow::from_rusqlite(&column_names, row));
     }
     Ok(result)
 }
 
+/// TODO: Add docstring
 pub fn valid_params(params: Option<&JsonValue>) -> bool {
     tracing::trace!("valid_params({params:?})");
     if let Some(params) = params {
@@ -699,7 +909,8 @@ pub fn valid_params(params: Option<&JsonValue>) -> bool {
     }
 }
 
-pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
+/// TODO: Add docstring
+pub fn extract_value(rows: &Vec<SqlRow>) -> Option<JsonValue> {
     tracing::trace!("extract_value({rows:?})");
     match rows.iter().next() {
         Some(row) => match row.content.values().next() {
@@ -710,10 +921,51 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
     }
 }
 
+// WARN: This needs to be thought through.
+/// TODO: Add docstring
+pub fn json_to_string(value: &JsonValue) -> String {
+    match value {
+        JsonValue::Null => "".to_string(),
+        JsonValue::Bool(value) => value.to_string(),
+        JsonValue::Number(value) => value.to_string(),
+        JsonValue::String(value) => value.to_string(),
+        JsonValue::Array(value) => format!("{value:?}"),
+        JsonValue::Object(value) => format!("{value:?}"),
+    }
+}
+
+/// TODO: Add docstring
+pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
+    match value {
+        JsonValue::Bool(flag) => match flag {
+            true => Ok(1),
+            false => Ok(0),
+        },
+        JsonValue::Number(value) => match value.as_u64() {
+            Some(unsigned) => Ok(unsigned as usize),
+            None => Err(
+                RelatableError::InputError(format!("{value} is not an unsigned integer")).into(),
+            ),
+        },
+        JsonValue::String(value_str) => match value_str.parse::<usize>() {
+            Ok(unsigned) => Ok(unsigned),
+            Err(err) => Err(RelatableError::InputError(format!(
+                "{value} could not be parsed as an unsigned integer: {err}"
+            ))
+            .into()),
+        },
+        _ => Err(RelatableError::InputError(format!(
+            "{value} could not be parsed as an unsigned integer"
+        ))
+        .into()),
+    }
+}
+
 /////////////////
 // Functions for generating DDL
 ////////////////
 
+/// TODO: Add docstring
 pub fn generate_table_ddl(
     table: &Table,
     force: bool,
@@ -800,6 +1052,7 @@ pub fn generate_table_ddl(
     Ok(ddl)
 }
 
+/// TODO: Add docstring
 pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
     let update_stmt = format!(
         r#"UPDATE "{table}" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
@@ -914,6 +1167,7 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
     };
 }
 
+/// TODO: Add docstring
 pub fn generate_view_ddl(
     table_name: &str,
     view_name: &str,
@@ -1010,6 +1264,7 @@ pub fn generate_view_ddl(
     }
 }
 
+/// TODO: Add docstring
 pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_table_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1037,6 +1292,7 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl
 }
 
+/// TODO: Add docstring
 pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_cache_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1060,6 +1316,7 @@ pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 // TODO: When the Table struct is rich enough to support different datatypes, foreign keys,
 // and defaults, create these other meta tables in a similar way to the table table above.
 
+/// TODO: Add docstring
 pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_user_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1080,6 +1337,7 @@ pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl
 }
 
+/// TODO: Add docstring
 pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_change_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1120,6 +1378,7 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     }
 }
 
+/// TODO: Add docstring
 pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_history_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1160,6 +1419,7 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     }
 }
 
+/// TODO: Add docstring
 pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_message_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1204,6 +1464,7 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     }
 }
 
+/// TODO: Add docstring
 pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_meta_tables_ddl({force}, {db_kind:?})");
     let mut ddl = generate_table_table_ddl(force, db_kind);
@@ -1213,235 +1474,4 @@ pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl.append(&mut generate_history_table_ddl(force, db_kind));
     ddl.append(&mut generate_message_table_ddl(force, db_kind));
     ddl
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Utilities for dealing with JSON representations of rows. The reason these
-// are located here instead of in core.rs is because the implementation of
-// JsonRow is dependent, in part, on whether the sqlx or rusqlite crate feature
-// is enabled. Encapsulating the handling of that crate feature from the rest of
-// the API is the other purpose of this module.
-///////////////////////////////////////////////////////////////////////////////
-
-// WARN: This needs to be thought through.
-pub fn json_to_string(value: &JsonValue) -> String {
-    match value {
-        JsonValue::Null => "".to_string(),
-        JsonValue::Bool(value) => value.to_string(),
-        JsonValue::Number(value) => value.to_string(),
-        JsonValue::String(value) => value.to_string(),
-        JsonValue::Array(value) => format!("{value:?}"),
-        JsonValue::Object(value) => format!("{value:?}"),
-    }
-}
-
-pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
-    match value {
-        JsonValue::Bool(flag) => match flag {
-            true => Ok(1),
-            false => Ok(0),
-        },
-        JsonValue::Number(value) => match value.as_u64() {
-            Some(unsigned) => Ok(unsigned as usize),
-            None => Err(
-                RelatableError::InputError(format!("{value} is not an unsigned integer")).into(),
-            ),
-        },
-        JsonValue::String(value_str) => match value_str.parse::<usize>() {
-            Ok(unsigned) => Ok(unsigned),
-            Err(err) => Err(RelatableError::InputError(format!(
-                "{value} could not be parsed as an unsigned integer: {err}"
-            ))
-            .into()),
-        },
-        _ => Err(RelatableError::InputError(format!(
-            "{value} could not be parsed as an unsigned integer"
-        ))
-        .into()),
-    }
-}
-
-// From https://stackoverflow.com/a/78372188
-pub trait VecInto<D> {
-    fn vec_into(self) -> Vec<D>;
-}
-
-impl<E, D> VecInto<D> for Vec<E>
-where
-    D: From<E>,
-{
-    fn vec_into(self) -> Vec<D> {
-        self.into_iter().map(std::convert::Into::into).collect()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct JsonRow {
-    pub content: JsonMap<String, JsonValue>,
-}
-
-impl JsonRow {
-    pub fn new() -> Self {
-        Self {
-            content: JsonMap::new(),
-        }
-    }
-
-    pub fn nullified(row: &Self, table: &Table) -> Self {
-        tracing::debug!("nullified({row:?}, {table:?})");
-        let mut nullified_row = Self::new();
-        for (column, value) in row.content.iter() {
-            let nulltype = table
-                .get_column_attribute(&column, "nulltype")
-                .unwrap_or("".to_string());
-            match value {
-                JsonValue::String(s) if s == "" && nulltype == "empty" => {
-                    nullified_row
-                        .content
-                        .insert(column.to_string(), JsonValue::Null);
-                }
-                value => {
-                    nullified_row
-                        .content
-                        .insert(column.to_string(), value.clone());
-                }
-            };
-        }
-        tracing::debug!("Nullified row: {nullified_row:?}");
-        nullified_row
-    }
-
-    pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
-        let value = self.content.get(column_name);
-        match value {
-            Some(value) => Ok(value.clone()),
-            None => Err(RelatableError::DataError("missing value".to_string()).into()),
-        }
-    }
-
-    pub fn get_string(&self, column_name: &str) -> Result<String> {
-        let value = self.content.get(column_name);
-        match value {
-            Some(value) => Ok(json_to_string(&value)),
-            None => Err(RelatableError::DataError("missing value".to_string()).into()),
-        }
-    }
-
-    pub fn get_unsigned(&self, column_name: &str) -> Result<usize> {
-        let value = self.content.get(column_name);
-        match value {
-            Some(value) => json_to_unsigned(&value),
-            None => Err(RelatableError::DataError("missing value".to_string()).into()),
-        }
-    }
-
-    pub fn from_strings(strings: &Vec<&str>) -> Self {
-        let mut json_row = Self::new();
-        for string in strings {
-            json_row.content.insert(string.to_string(), JsonValue::Null);
-        }
-        json_row
-    }
-
-    pub fn to_strings(&self) -> Vec<String> {
-        let mut result = vec![];
-        for column_name in self.content.keys() {
-            // The logic of this implies that this should not fail, so an expect() is
-            // appropriate here.
-            result.push(self.get_string(column_name).expect("Column not found"));
-        }
-        result
-    }
-
-    pub fn to_string_map(&self) -> IndexMap<String, String> {
-        let mut result = IndexMap::new();
-        for column_name in self.content.keys() {
-            result.insert(
-                column_name.clone(),
-                self.get_string(column_name).expect("Column not found"),
-            );
-        }
-        result
-    }
-
-    #[cfg(feature = "rusqlite")]
-    fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
-        let mut content = JsonMap::new();
-        for column_name in column_names {
-            let value = match row.get_ref(*column_name) {
-                Ok(value) => match value {
-                    rusqlite::types::ValueRef::Null => JsonValue::Null,
-                    rusqlite::types::ValueRef::Integer(value) => JsonValue::from(value),
-                    rusqlite::types::ValueRef::Real(value) => JsonValue::from(value),
-                    rusqlite::types::ValueRef::Text(value)
-                    | rusqlite::types::ValueRef::Blob(value) => {
-                        let value = std::str::from_utf8(value).unwrap_or_default();
-                        JsonValue::from(value)
-                    }
-                },
-                Err(_) => JsonValue::Null,
-            };
-            content.insert(column_name.to_string(), value);
-        }
-        Self { content }
-    }
-}
-
-#[cfg(feature = "sqlx")]
-impl TryFrom<sqlx::any::AnyRow> for JsonRow {
-    fn try_from(row: sqlx::any::AnyRow) -> Result<Self> {
-        let mut content = JsonMap::new();
-        for column in row.columns() {
-            // I had problems getting a type for columns that are not in the schema,
-            // e.g. "SELECT COUNT() AS count".
-            // So now I start with Null and try INTEGER, NUMBER, STRING, BOOL.
-            let mut value: JsonValue = JsonValue::Null;
-            if value.is_null() {
-                let x: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            if value.is_null() {
-                let x: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            if value.is_null() {
-                let x: Result<String, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            if value.is_null() {
-                let x: Result<bool, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            content.insert(column.name().into(), value);
-        }
-        Ok(Self { content })
-    }
-
-    type Error = anyhow::Error;
-}
-
-impl std::fmt::Display for JsonRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.to_strings().join("\t"))
-    }
-}
-
-impl std::fmt::Debug for JsonRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.to_string_map())
-    }
-}
-
-impl From<JsonRow> for Vec<String> {
-    fn from(row: JsonRow) -> Self {
-        row.to_strings()
-    }
 }

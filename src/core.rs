@@ -8,8 +8,8 @@ use rltbl::{
     git,
     select::{Select, SelectField},
     sql::{
-        self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
-        SqlParam, VecInto as _,
+        self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, SqlParam,
+        SqlRow, VecInto as _,
     },
     table::{Column, Message, Row, Table},
 };
@@ -31,7 +31,7 @@ pub static NEW_ORDER_MULTIPLIER: usize = 1000;
 
 // The maximum length of the list of previously (un)done commands to fetch when retrieving a user's
 // history.
-static HISTORY_MAX: usize = 1000;
+pub static HISTORY_MAX: usize = 1000;
 
 /// The default limit on the number of rows to return in a fetch.
 pub static DEFAULT_LIMIT: usize = 100;
@@ -487,7 +487,7 @@ impl Relatable {
     }
 
     /// Use the given [Select] to fetch data from the database.
-    pub async fn fetch_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
+    pub async fn fetch_rows(&self, select: &Select) -> Result<Vec<SqlRow>> {
         tracing::trace!("Relatable::fetch_rows({select:?})");
         let (statement, params) = select.to_sql(&self.connection.kind())?;
         let params = json!(params);
@@ -998,7 +998,7 @@ impl Relatable {
                                         .into());
                                     }
                                 };
-                                JsonRow { content: before }
+                                SqlRow { content: before }
                             }
                             None => {
                                 return Err(RelatableError::DataError(format!(
@@ -1125,8 +1125,8 @@ impl Relatable {
         Ok(users)
     }
 
-    /// Converts a vector of [JsonRow](JsonRow)s to a map from column names to [Column]s.
-    fn json_to_columns_map(json_cols: &Vec<JsonRow>) -> Result<IndexMap<String, Column>> {
+    /// Converts a vector of [SqlRow](SqlRow)s to a map from column names to [Column]s.
+    fn json_to_columns_map(json_cols: &Vec<SqlRow>) -> Result<IndexMap<String, Column>> {
         tracing::trace!("Relatable::json_to_columns_map({json_cols:?})");
         let mut columns = IndexMap::new();
         for json_col in json_cols {
@@ -1273,7 +1273,7 @@ impl Relatable {
     }
 
     /// Query the database for the columns associated with the given table
-    pub async fn get_db_table_columns(&self, table: &str) -> Result<Vec<JsonRow>> {
+    pub async fn get_db_table_columns(&self, table: &str) -> Result<Vec<SqlRow>> {
         tracing::trace!("Relatable::get_db_table_columns({table:?})");
         let mut conn = self.connection.reconnect()?;
         // Begin a transaction:
@@ -1359,14 +1359,14 @@ impl Relatable {
         }
     }
 
-    /// Return a [JsonRow](JsonRow) representing the given row of the given table, using the
+    /// Return a [SqlRow](SqlRow) representing the given row of the given table, using the
     /// given transaction.
     fn _get_row(
         &self,
         table: &str,
         row: usize,
         tx: &mut DbTransaction<'_>,
-    ) -> Result<Option<JsonRow>> {
+    ) -> Result<Option<SqlRow>> {
         tracing::trace!("Relatable::_get_row({table:}?, {row}, tx)");
         let sql = format!(
             r#"SELECT * FROM "{table}" WHERE "_id" = {sql_param}"#,
@@ -1500,7 +1500,7 @@ impl Relatable {
     /// is not given) undoable and/or redoable previous changes.
     pub async fn get_user_history(&self, user: &str, context: Option<usize>) -> Result<History> {
         tracing::trace!("Relatable::get_user_history({user:?}, {context:?})");
-        fn content_to_json_row(content: &str) -> Result<JsonRow> {
+        fn content_to_json_row(content: &str) -> Result<SqlRow> {
             tracing::debug!("Entering content_to_json_row(content: {content})");
             match serde_json::from_str::<JsonValue>(content) {
                 Ok(content) => match content
@@ -1508,7 +1508,7 @@ impl Relatable {
                     .and_then(|a| a.first())
                     .and_then(|o| o.as_object())
                 {
-                    Some(object) => Ok(JsonRow {
+                    Some(object) => Ok(SqlRow {
                         content: object.clone(),
                     }),
                     None => {
@@ -1527,7 +1527,7 @@ impl Relatable {
             }
         }
 
-        fn on_the_same_target(change1: &JsonRow, change2: &JsonRow) -> Result<bool> {
+        fn on_the_same_target(change1: &SqlRow, change2: &SqlRow) -> Result<bool> {
             tracing::trace!("Relatable::on_the_same_target({change1:?}, {change2:?})");
             let change1 = content_to_json_row(&change1.get_string("content")?)?;
             let change2 = content_to_json_row(&change2.get_string("content")?)?;
@@ -1545,23 +1545,23 @@ impl Relatable {
         }
 
         fn prune_stacks(
-            changes_done_stack: &Vec<JsonRow>,
-            changes_undone_stack: &Vec<JsonRow>,
-        ) -> (Vec<JsonRow>, Vec<JsonRow>) {
+            changes_done_stack: &Vec<SqlRow>,
+            changes_undone_stack: &Vec<SqlRow>,
+        ) -> (Vec<SqlRow>, Vec<SqlRow>) {
             tracing::trace!(
                 "Relatable::prune_stacks({changes_done_stack:?}, {changes_undone_stack:?})"
             );
             let mut pruned_dones = vec![];
             let mut pruned_undones = vec![];
             for change in changes_done_stack.iter() {
-                if !pruned_dones.iter().any(|done: &JsonRow| {
+                if !pruned_dones.iter().any(|done: &SqlRow| {
                     on_the_same_target(&done, &change).expect("Error looking for a common target")
                 }) {
                     pruned_dones.push(change.clone());
                 }
             }
             for change in changes_undone_stack.iter() {
-                if !pruned_undones.iter().any(|undone: &JsonRow| {
+                if !pruned_undones.iter().any(|undone: &SqlRow| {
                     on_the_same_target(&undone, &change).expect("Error looking for a common target")
                 }) {
                     pruned_undones.push(change.clone());
@@ -1911,7 +1911,7 @@ impl Relatable {
                                         .into());
                                     }
                                 };
-                                let before = JsonRow { content: before };
+                                let before = SqlRow { content: before };
                                 tracing::debug!(
                                     "Re-adding row '{before}' to table '{}'",
                                     changeset.table
@@ -2173,7 +2173,7 @@ impl Relatable {
         user: &str,
         new_row_id: Option<usize>,
         after_id: Option<usize>,
-        row: &JsonRow,
+        row: &SqlRow,
     ) -> Result<Row> {
         tracing::trace!(
             "Relatable::_add_row(conn, {action:?}, {user:?}, {new_row_id:?}, \
@@ -2193,7 +2193,7 @@ impl Relatable {
 
         // Nullify the JSON row by setting any column values whose content matches the column's
         // nulltype to Null:
-        let row = JsonRow::nullified(row, &table);
+        let row = SqlRow::nullified(row, &table);
 
         // Prepare a new row to be inserted using the JSON row as a base:
         let mut new_row = Row::prepare_new(&table, Some(&row), &mut tx)?;
@@ -2265,7 +2265,7 @@ impl Relatable {
         table_name: &str,
         user: &str,
         after_id: Option<usize>,
-        row: &JsonRow,
+        row: &SqlRow,
     ) -> Result<Row> {
         tracing::trace!("Relatable::add_row({table_name:?}, {user:?}, {after_id:?}, {row:?})");
         let conn = self.connection.reconnect()?;
@@ -2869,7 +2869,7 @@ impl Change {
         let mut changes = vec![];
         for change_json in json_content.iter() {
             let change_json = match change_json.as_object() {
-                Some(change_object) => JsonRow {
+                Some(change_object) => SqlRow {
                     content: change_object.clone(),
                 },
                 None => {
@@ -2913,8 +2913,8 @@ impl Change {
         Ok(changes)
     }
 
-    /// Convers a [JsonRow](JsonRow) to a [Change]
-    pub fn from_json_row(json_row: &JsonRow) -> Result<Self> {
+    /// Convers a [SqlRow] to a [Change]
+    pub fn from_json_row(json_row: &SqlRow) -> Result<Self> {
         tracing::trace!("Change::from_json_row({json_row:?})");
         match json_row.get_string("type")?.as_str() {
             "Update" => Ok(Self::Update {
@@ -2949,8 +2949,8 @@ impl Change {
 /// Describes a history of changes that have been done and undone.
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct History {
-    pub changes_done_stack: Vec<JsonRow>,
-    pub changes_undone_stack: Vec<JsonRow>,
+    pub changes_done_stack: Vec<SqlRow>,
+    pub changes_undone_stack: Vec<SqlRow>,
 }
 
 impl Display for Change {
