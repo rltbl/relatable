@@ -7,13 +7,14 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{RelatableError, NEW_ORDER_MULTIPLIER},
+    core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
     table::{Column, Table},
 };
 
 use anyhow::Result;
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
+use lfu_cache::LfuCache;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
@@ -22,7 +23,7 @@ use std::{fmt::Display, str::FromStr};
 #[cfg(feature = "rusqlite")]
 use rusqlite;
 
-#[cfg(feature = "sqlx")]
+//#[cfg(feature = "sqlx")]
 use async_std::task::block_on;
 
 #[cfg(feature = "sqlx")]
@@ -50,8 +51,9 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 /// that can be bound to a Postgres query
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
 
-/// The default size of the in-memory cache
-pub static DEFAULT_MEM_CACHE_SIZE: usize = 10000;
+// TODO: Is it possible to enforce a global maximum?
+/// The default size of the in-memory cache dedicated to each managed table.
+pub static DEFAULT_MEM_TABLE_CACHE_SIZE: usize = 10000;
 
 /// Strategy to use for caching
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +75,10 @@ impl FromStr for CachingStrategy {
             "truncate_all" => Ok(Self::TruncateAll),
             "truncate" => Ok(Self::Truncate),
             "trigger" => Ok(Self::Trigger),
-            "memory" => Ok(Self::Memory(DEFAULT_MEM_CACHE_SIZE)),
+            strategy if strategy.starts_with("memory:") => {
+                let foo = strategy.split(":").collect::<Vec<_>>()[1];
+                Ok(Self::Memory(foo.parse::<usize>().unwrap()))
+            }
             _ => {
                 return Err(RelatableError::InputError(format!(
                     "Unrecognized strategy: {strategy}"
@@ -647,8 +652,37 @@ impl DbConnection {
             CachingStrategy::TruncateAll | CachingStrategy::Truncate | CachingStrategy::Trigger => {
                 _cache(self, tables, sql, params).await
             }
-            CachingStrategy::Memory(_) => {
-                todo!()
+            CachingStrategy::Memory(cache_size) => {
+                let mut cache = core::CACHE.lock().unwrap();
+                let tables = tables
+                    .iter()
+                    .map(|t| json!(t).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let table_cache: &mut LfuCache<String, Vec<SqlRow>> = {
+                    // TODO: remove unwrap()
+                    if !cache.contains_key(&tables) {
+                        tracing::info!(
+                            "Adding cache entry for tables {tables} of size {cache_size}"
+                        );
+                        cache.insert(tables.to_string(), LfuCache::with_capacity(*cache_size));
+                    }
+                    cache.get_mut(&tables).unwrap()
+                };
+
+                match table_cache.get(&sql.to_string()) {
+                    Some(json_rows) => {
+                        tracing::info!("Cache hit for tables {tables}");
+                        Ok(json_rows.to_vec())
+                    }
+                    None => {
+                        tracing::info!("Cache miss for tables {tables}");
+                        // Why is a block_on() call needed here but not above?
+                        let json_rows = block_on(self.query(sql, params)).unwrap();
+                        table_cache.insert(sql.to_string(), json_rows.to_vec());
+                        Ok(json_rows)
+                    }
+                }
             }
         }
     }
