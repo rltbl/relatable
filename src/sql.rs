@@ -14,7 +14,7 @@ use rltbl::{
 use anyhow::Result;
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
-use lfu_cache::LfuCache;
+//use lfu_cache::LfuCache;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
@@ -50,10 +50,6 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 /// The [maximum number of parameters](https://www.postgresql.org/docs/current/limits.html)
 /// that can be bound to a Postgres query
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
-
-// TODO: Is it possible to enforce a global maximum?
-/// The default size of the in-memory cache dedicated to each managed table.
-pub static DEFAULT_MEM_TABLE_CACHE_SIZE: usize = 10000;
 
 /// Strategy to use for caching
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,7 +92,7 @@ impl Display for CachingStrategy {
             CachingStrategy::TruncateAll => write!(f, "truncate_all"),
             CachingStrategy::Truncate => write!(f, "truncate"),
             CachingStrategy::Trigger => write!(f, "trigger"),
-            CachingStrategy::Memory(_) => write!(f, "memory"),
+            CachingStrategy::Memory(size) => write!(f, "memory:{size}"),
         }
     }
 }
@@ -654,32 +650,32 @@ impl DbConnection {
             }
             CachingStrategy::Memory(cache_size) => {
                 let mut cache = core::CACHE.lock().unwrap();
+                let keys = cache
+                    .iter()
+                    .map(|(k1, k2, _)| (k1.clone(), k2.clone()))
+                    .collect::<Vec<_>>();
+                for (i, (key1, key2)) in keys.into_iter().enumerate() {
+                    if i >= *cache_size {
+                        tracing::debug!("Removing {key1}:{key2} ({i}th entry) from cache");
+                        cache.remove_keys(&key1, &key2);
+                    }
+                }
+
                 let tables = tables
                     .iter()
                     .map(|t| json!(t).to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
-                let table_cache: &mut LfuCache<String, Vec<SqlRow>> = {
-                    // TODO: remove unwrap()
-                    if !cache.contains_key(&tables) {
-                        tracing::info!(
-                            "Adding cache entry for tables {tables} of size {cache_size}"
-                        );
-                        cache.insert(tables.to_string(), LfuCache::with_capacity(*cache_size));
-                    }
-                    cache.get_mut(&tables).unwrap()
-                };
-
-                match table_cache.get(&sql.to_string()) {
+                match cache.get_keys_value(&tables, &sql.to_string()) {
                     Some(json_rows) => {
                         tracing::info!("Cache hit for tables {tables}");
-                        Ok(json_rows.to_vec())
+                        Ok(json_rows.2.to_vec())
                     }
                     None => {
                         tracing::info!("Cache miss for tables {tables}");
                         // Why is a block_on() call needed here but not above?
                         let json_rows = block_on(self.query(sql, params)).unwrap();
-                        table_cache.insert(sql.to_string(), json_rows.to_vec());
+                        cache.insert(tables.to_string(), sql.to_string(), json_rows.to_vec());
                         Ok(json_rows)
                     }
                 }
