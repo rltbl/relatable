@@ -219,7 +219,7 @@ test_perf_sqlx_postgres: test/perf/tsv/penguin.tsv sqlx_debug
 # Combined tests
 
 .PHONY: test_rusqlite
-test_rusqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc test_tesh_common_as_sqlite test_tesh_sqlite_only test_random_sqlite test_perf_sqlite
+test_rusqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc test_tesh_common_as_sqlite test_tesh_sqlite_only test_random_sqlite test_perf_sqlite test_caching_sqlite
 
 .PHONY: test_sqlx_sqlite
 test_sqlx_sqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc_sqlx test_tesh_sqlx_common_as_sqlite test_tesh_sqlx_sqlite_only test_random_sqlx_sqlite test_perf_sqlx_sqlite test_caching_sqlite test_caching_memory
