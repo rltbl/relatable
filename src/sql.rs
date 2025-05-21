@@ -667,9 +667,8 @@ impl DbConnection {
                     .iter()
                     .map(|(k1, k2, _)| (k1.clone(), k2.clone()))
                     .collect::<Vec<_>>();
-                tracing::debug!("Cache currently has {} elements", cache.len());
+
                 for (i, (key1, key2)) in keys.into_iter().enumerate().rev() {
-                    tracing::debug!("Considering {i} ...");
                     if i >= *cache_size {
                         tracing::debug!("Removing {key1}:{key2} ({i}th entry) from cache");
                         cache.remove_keys(&key1, &key2);
@@ -677,7 +676,6 @@ impl DbConnection {
                         break;
                     }
                 }
-                tracing::debug!("Cache now has {} elements", cache.len());
 
                 let tables = tables
                     .iter()
