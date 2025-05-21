@@ -621,13 +621,13 @@ impl DbConnection {
             let cache_params = json!([r#"[{"content": "#, "}]", tables, sql]);
             match conn.query_one(&cache_sql, Some(&cache_params)).await? {
                 Some(json_row) => {
-                    tracing::info!("Cache hit for tables {tables}");
+                    tracing::debug!("Cache hit for tables {tables}");
                     let value = json_row.get_string("value")?;
                     let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
                     Ok(json_rows)
                 }
                 None => {
-                    tracing::info!("Cache miss for tables {tables}");
+                    tracing::debug!("Cache miss for tables {tables}");
                     let json_rows = conn.query(sql, params).await?;
                     let json_rows_content = json_rows
                         .iter()
@@ -673,7 +673,7 @@ impl DbConnection {
 
                 for (i, key) in keys.iter().enumerate().rev() {
                     if i >= *cache_size {
-                        tracing::info!("Removing {key:?} ({i}th entry) from cache");
+                        tracing::debug!("Removing {key:?} ({i}th entry) from cache");
                         cache.remove(&key);
                     } else {
                         break;
@@ -691,11 +691,11 @@ impl DbConnection {
                 };
                 match cache.get(&mem_key) {
                     Some(json_rows) => {
-                        tracing::info!("Cache hit for tables {tables}");
+                        tracing::debug!("Cache hit for tables {tables}");
                         Ok(json_rows.to_vec())
                     }
                     None => {
-                        tracing::info!("Cache miss for tables {tables}");
+                        tracing::debug!("Cache miss for tables {tables}");
                         // Why is a block_on() call needed here but not above?
                         let json_rows = block_on(self.query(sql, params))?;
                         cache.insert(

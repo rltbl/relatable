@@ -545,7 +545,7 @@ impl Relatable {
         let mut sql = r#"DELETE FROM "cache""#.to_string();
         if let Some(table) = table {
             let mut table = table.to_string();
-            tracing::info!("Deleting entries for table '{table}' from cache");
+            tracing::debug!("Deleting entries for table '{table}' from cache");
             match tx.kind() {
                 DbKind::Postgres => {
                     // Note that the '?' is *not* being used as a parameter placeholder here
@@ -566,7 +566,7 @@ impl Relatable {
             let params = json!([table]);
             tx.query(&sql, Some(&params))?;
         } else {
-            tracing::info!("Truncating cache");
+            tracing::debug!("Truncating cache");
             tx.query(&sql, None)?;
         }
 
@@ -586,7 +586,7 @@ impl Relatable {
             .collect::<Vec<_>>();
         for key in keys.iter() {
             if key.tables.contains(&table) {
-                tracing::info!("Removing {key:?} from cache");
+                tracing::debug!("Removing {key:?} from cache");
                 cache.remove(key);
             }
         }
