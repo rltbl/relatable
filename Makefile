@@ -190,6 +190,9 @@ test_caching_postgres: sqlx_debug
 test_caching_memory: debug
 	target/debug/rltbl_test --database $(SQLITE_DB) --caching memory:100 -vv test-read-perf 100 100 10 5 --force
 
+.PHONY: test_caching
+test_caching: test_caching_sqlite test_caching_postgres test_caching_memory
+
 .PHONY: test_perf_sqlite
 test_perf_sqlite: test/perf/tsv/penguin.tsv debug
 	target/debug/rltbl --database $(SQLITE_DB) init --force

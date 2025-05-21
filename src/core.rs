@@ -145,7 +145,14 @@ impl Relatable {
             max_limit: MAX_LIMIT,
             caching_strategy: *caching_strategy,
             memory_cache_size: match caching_strategy {
-                CachingStrategy::Memory(size) => *size,
+                CachingStrategy::Memory(size) => {
+                    let mut cache = CACHE.lock().expect("Could not lock cache");
+                    let current_capacity = cache.capacity();
+                    if current_capacity < *size {
+                        cache.reserve(*size - current_capacity);
+                    }
+                    *size
+                }
                 _ => 0,
             },
         })
