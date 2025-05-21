@@ -186,11 +186,11 @@ where
 
 /// TODO: Add docstring
 #[derive(Clone, Serialize, Deserialize)]
-pub struct SqlRow {
+pub struct JsonRow {
     pub content: JsonMap<String, JsonValue>,
 }
 
-impl SqlRow {
+impl JsonRow {
     /// TODO: Add docstring
     pub fn new() -> Self {
         Self {
@@ -307,7 +307,7 @@ impl SqlRow {
 }
 
 #[cfg(feature = "sqlx")]
-impl TryFrom<sqlx::any::AnyRow> for SqlRow {
+impl TryFrom<sqlx::any::AnyRow> for JsonRow {
     fn try_from(row: sqlx::any::AnyRow) -> Result<Self> {
         let mut content = JsonMap::new();
         for column in row.columns() {
@@ -347,20 +347,20 @@ impl TryFrom<sqlx::any::AnyRow> for SqlRow {
     type Error = anyhow::Error;
 }
 
-impl std::fmt::Display for SqlRow {
+impl std::fmt::Display for JsonRow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.to_strings().join("\t"))
     }
 }
 
-impl std::fmt::Debug for SqlRow {
+impl std::fmt::Debug for JsonRow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.to_string_map())
     }
 }
 
-impl From<SqlRow> for Vec<String> {
-    fn from(row: SqlRow) -> Self {
+impl From<JsonRow> for Vec<String> {
+    fn from(row: JsonRow) -> Self {
         row.to_strings()
     }
 }
@@ -498,10 +498,10 @@ impl DbConnection {
     }
 
     /// Given a connection and a generic SQL string with placeholders and a list of parameters
-    /// to interpolate into the string, return a vector of [SqlRow]s.
+    /// to interpolate into the string, return a vector of [JsonRow]s.
     /// Note that since this returns a vector, statements should be limited to those that will
     /// return a sane number of rows.
-    pub async fn query(&self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<SqlRow>> {
+    pub async fn query(&self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
         tracing::trace!("DbConnection::query({statement}, {params:?})");
         if !valid_params(params) {
             tracing::warn!("invalid parameter argument");
@@ -513,7 +513,7 @@ impl DbConnection {
                 let query = prepare_sqlx_query(&statement, params)?;
                 let mut rows = vec![];
                 for row in query.fetch_all(pool).await? {
-                    rows.push(SqlRow::try_from(row)?);
+                    rows.push(JsonRow::try_from(row)?);
                 }
                 Ok(rows)
             }
@@ -539,7 +539,7 @@ impl DbConnection {
         &self,
         statement: &str,
         params: Option<&JsonValue>,
-    ) -> Result<Option<SqlRow>> {
+    ) -> Result<Option<JsonRow>> {
         tracing::trace!("DbConnection::query_one({statement}, {params:?})");
         let rows = self.query(&statement, params).await?;
         match rows.iter().next() {
@@ -566,7 +566,7 @@ impl DbConnection {
         params: Option<&JsonValue>,
         tables: &Vec<String>,
         strategy: &CachingStrategy,
-    ) -> Result<Vec<SqlRow>> {
+    ) -> Result<Vec<JsonRow>> {
         tracing::trace!("cache({sql}, {params:?}, {strategy:?})");
 
         async fn _cache(
@@ -574,7 +574,7 @@ impl DbConnection {
             tables: &Vec<String>,
             sql: &str,
             params: Option<&JsonValue>,
-        ) -> Result<Vec<SqlRow>> {
+        ) -> Result<Vec<JsonRow>> {
             let tables = tables
                 .iter()
                 .map(|t| json!(t).to_string())
@@ -614,14 +614,13 @@ impl DbConnection {
             let cache_params = json!([r#"[{"content": "#, "}]", tables, sql]);
             match conn.query_one(&cache_sql, Some(&cache_params)).await? {
                 Some(json_row) => {
-                    // TODO: Change this back to debug!
-                    tracing::info!("Cache hit for tables {tables}");
+                    tracing::debug!("Cache hit for tables {tables}");
                     let value = json_row.get_string("value")?;
-                    let json_rows: Vec<SqlRow> = serde_json::from_str(&value)?;
+                    let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
                     Ok(json_rows)
                 }
                 None => {
-                    tracing::info!("Cache miss for tables {tables}");
+                    tracing::debug!("Cache miss for tables {tables}");
                     let json_rows = conn.query(sql, params).await?;
                     let json_rows_content = json_rows
                         .iter()
@@ -684,11 +683,11 @@ impl DbConnection {
                     .join(", ");
                 match cache.get_keys_value(&tables, &sql.to_string()) {
                     Some(json_rows) => {
-                        tracing::info!("Cache hit for tables {tables}");
+                        tracing::debug!("Cache hit for tables {tables}");
                         Ok(json_rows.2.to_vec())
                     }
                     None => {
-                        tracing::info!("Cache miss for tables {tables}");
+                        tracing::debug!("Cache miss for tables {tables}");
                         // Why is a block_on() call needed here but not above?
                         let json_rows = block_on(self.query(sql, params))?;
                         cache.insert(tables.to_string(), sql.to_string(), json_rows.to_vec());
@@ -747,10 +746,10 @@ impl DbTransaction<'_> {
     }
 
     /// Given a connection and a generic SQL string with placeholders and a list of parameters
-    /// to interpolate into the string, return a vector of [SqlRow]s.
+    /// to interpolate into the string, return a vector of [JsonRow]s.
     /// Note that since this returns a vector, statements should be limited to those that will
     /// return a sane number of rows.
-    pub fn query(&mut self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<SqlRow>> {
+    pub fn query(&mut self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
         tracing::trace!("DbTransaction::query({statement}, {params:?})");
         if !valid_params(params) {
             tracing::warn!("invalid parameter argument");
@@ -762,7 +761,7 @@ impl DbTransaction<'_> {
                 let query = prepare_sqlx_query(&statement, params)?;
                 let mut rows = vec![];
                 for row in block_on(query.fetch_all(block_on(tx.acquire())?))? {
-                    rows.push(SqlRow::try_from(row)?);
+                    rows.push(JsonRow::try_from(row)?);
                 }
                 Ok(rows)
             }
@@ -779,7 +778,7 @@ impl DbTransaction<'_> {
         &mut self,
         statement: &str,
         params: Option<&JsonValue>,
-    ) -> Result<Option<SqlRow>> {
+    ) -> Result<Option<JsonRow>> {
         tracing::trace!("DbTransaction::query_one({statement}, {params:?})");
         let rows = self.query(&statement, params)?;
         match rows.iter().next() {
@@ -857,7 +856,7 @@ pub fn view_exists_for(table: &str, tx: &mut DbTransaction<'_>) -> Result<bool> 
 }
 
 /// Query the database for the columns associated with the given table
-pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<Vec<SqlRow>> {
+pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<Vec<JsonRow>> {
     tracing::trace!("get_db_table_columns({table:?}, tx)");
     match tx.kind() {
         DbKind::Sqlite => {
@@ -968,7 +967,7 @@ pub fn prepare_sqlx_query<'a>(
 pub fn submit_rusqlite_statement(
     stmt: &mut rusqlite::Statement<'_>,
     params: Option<&JsonValue>,
-) -> Result<Vec<SqlRow>> {
+) -> Result<Vec<JsonRow>> {
     tracing::trace!("submit_rusqlite_statement({stmt:?}, {params:?})");
     let column_names = stmt
         .column_names()
@@ -991,7 +990,7 @@ pub fn submit_rusqlite_statement(
 
     let mut result = Vec::new();
     while let Some(row) = rows.next()? {
-        result.push(SqlRow::from_rusqlite(&column_names, row));
+        result.push(JsonRow::from_rusqlite(&column_names, row));
     }
     Ok(result)
 }
@@ -1010,7 +1009,7 @@ pub fn valid_params(params: Option<&JsonValue>) -> bool {
 }
 
 /// TODO: Add docstring
-pub fn extract_value(rows: &Vec<SqlRow>) -> Option<JsonValue> {
+pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
     tracing::trace!("extract_value({rows:?})");
     match rows.iter().next() {
         Some(row) => match row.content.values().next() {

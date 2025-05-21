@@ -8,7 +8,7 @@ use anyhow::Result;
 use indexmap::IndexMap;
 use rltbl::{
     core::{Relatable, RelatableError, NEW_ORDER_MULTIPLIER},
-    sql::{self, DbKind, DbTransaction, SqlParam, SqlRow},
+    sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -126,7 +126,7 @@ impl Row {
     /// [order](Row::order) fields pre-assigned with their correct next values for this table
     pub fn prepare_new(
         table: &Table,
-        json_row: Option<&SqlRow>,
+        json_row: Option<&JsonRow>,
         tx: &mut DbTransaction<'_>,
     ) -> Result<Self> {
         tracing::trace!("Row::prepare_new({table:?}, {json_row:?}, tx)");
@@ -148,7 +148,7 @@ impl Row {
                         .collect::<Vec<_>>()
                 };
                 let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
-                SqlRow::from_strings(&columns)
+                JsonRow::from_strings(&columns)
             }
             Some(json_row) => json_row.clone(),
         };
@@ -222,8 +222,8 @@ impl From<Row> for Vec<String> {
     }
 }
 
-impl From<SqlRow> for Row {
-    fn from(row: SqlRow) -> Self {
+impl From<JsonRow> for Row {
+    fn from(row: JsonRow) -> Self {
         tracing::trace!("Row::from({row:?})");
         let id = row
             .content

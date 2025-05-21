@@ -8,7 +8,7 @@ use rltbl::{
     core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet},
     select::{Format, QueryParams, Select},
     sql,
-    sql::{CachingStrategy, SqlRow},
+    sql::{CachingStrategy, JsonRow},
     table::Row,
 };
 use std::io::Write;
@@ -513,7 +513,7 @@ async fn add_row(
         Ok(columns) => columns,
         Err(error) => return get_500(&error),
     };
-    let json_row: SqlRow = SqlRow {
+    let json_row: JsonRow = JsonRow {
         content: columns
             .iter()
             .map(|c| (c.name.clone(), json!(String::new())))
