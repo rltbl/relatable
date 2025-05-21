@@ -25,7 +25,6 @@ axum_session = "0.16.0"
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 clap-verbosity-flag = { version = "3.0.2", features = ["tracing"] }
-double-map = "0.14"
 csv = "1.3"
 enquote = "1.1.0"
 futures = "0.3"

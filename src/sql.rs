@@ -62,6 +62,13 @@ pub enum CachingStrategy {
     Memory(usize),
 }
 
+/// TODO: Add docstrng
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct MemoryCacheKey {
+    pub tables: String,
+    pub sql: String,
+}
+
 impl FromStr for CachingStrategy {
     type Err = anyhow::Error;
 
@@ -614,13 +621,13 @@ impl DbConnection {
             let cache_params = json!([r#"[{"content": "#, "}]", tables, sql]);
             match conn.query_one(&cache_sql, Some(&cache_params)).await? {
                 Some(json_row) => {
-                    tracing::debug!("Cache hit for tables {tables}");
+                    tracing::info!("Cache hit for tables {tables}");
                     let value = json_row.get_string("value")?;
                     let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
                     Ok(json_rows)
                 }
                 None => {
-                    tracing::debug!("Cache miss for tables {tables}");
+                    tracing::info!("Cache miss for tables {tables}");
                     let json_rows = conn.query(sql, params).await?;
                     let json_rows_content = json_rows
                         .iter()
@@ -662,15 +669,12 @@ impl DbConnection {
             }
             CachingStrategy::Memory(cache_size) => {
                 let mut cache = core::CACHE.lock().expect("Could not lock cache");
-                let keys = cache
-                    .iter()
-                    .map(|(k1, k2, _)| (k1.clone(), k2.clone()))
-                    .collect::<Vec<_>>();
+                let keys = cache.keys().map(|key| key.clone()).collect::<Vec<_>>();
 
-                for (i, (key1, key2)) in keys.into_iter().enumerate().rev() {
+                for (i, key) in keys.iter().enumerate().rev() {
                     if i >= *cache_size {
-                        tracing::debug!("Removing {key1}:{key2} ({i}th entry) from cache");
-                        cache.remove_keys(&key1, &key2);
+                        tracing::info!("Removing {key:?} ({i}th entry) from cache");
+                        cache.remove(&key);
                     } else {
                         break;
                     }
@@ -681,16 +685,26 @@ impl DbConnection {
                     .map(|t| json!(t).to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
-                match cache.get_keys_value(&tables, &sql.to_string()) {
+                let mem_key = MemoryCacheKey {
+                    tables: tables.to_string(),
+                    sql: sql.to_string(),
+                };
+                match cache.get(&mem_key) {
                     Some(json_rows) => {
-                        tracing::debug!("Cache hit for tables {tables}");
-                        Ok(json_rows.2.to_vec())
+                        tracing::info!("Cache hit for tables {tables}");
+                        Ok(json_rows.to_vec())
                     }
                     None => {
-                        tracing::debug!("Cache miss for tables {tables}");
+                        tracing::info!("Cache miss for tables {tables}");
                         // Why is a block_on() call needed here but not above?
                         let json_rows = block_on(self.query(sql, params))?;
-                        cache.insert(tables.to_string(), sql.to_string(), json_rows.to_vec());
+                        cache.insert(
+                            MemoryCacheKey {
+                                tables: tables.to_string(),
+                                sql: sql.to_string(),
+                            },
+                            json_rows.to_vec(),
+                        );
                         Ok(json_rows)
                     }
                 }
