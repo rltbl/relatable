@@ -14,7 +14,6 @@ use rltbl::{
 use anyhow::Result;
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
-//use lfu_cache::LfuCache;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
@@ -23,7 +22,6 @@ use std::{fmt::Display, str::FromStr};
 #[cfg(feature = "rusqlite")]
 use rusqlite;
 
-//#[cfg(feature = "sqlx")]
 use async_std::task::block_on;
 
 #[cfg(feature = "sqlx")]
@@ -51,6 +49,9 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 /// that can be bound to a Postgres query
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
 
+/// TODO: Add docstring
+pub static DEFAULT_MEMORY_CACHE_SIZE: usize = 1000;
+
 /// Strategy to use for caching
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CachingStrategy {
@@ -72,8 +73,20 @@ impl FromStr for CachingStrategy {
             "truncate" => Ok(Self::Truncate),
             "trigger" => Ok(Self::Trigger),
             strategy if strategy.starts_with("memory:") => {
-                let foo = strategy.split(":").collect::<Vec<_>>()[1];
-                Ok(Self::Memory(foo.parse::<usize>().unwrap()))
+                let elems = strategy.split(":").collect::<Vec<_>>();
+                let cache_size = {
+                    if elems.len() < 2 {
+                        DEFAULT_MEMORY_CACHE_SIZE
+                    } else {
+                        let cache_size = elems[1];
+                        let cache_size = cache_size.parse::<usize>()?;
+                        match cache_size {
+                            0 => DEFAULT_MEMORY_CACHE_SIZE,
+                            size => size,
+                        }
+                    }
+                };
+                Ok(Self::Memory(cache_size))
             }
             _ => {
                 return Err(RelatableError::InputError(format!(
@@ -649,17 +662,22 @@ impl DbConnection {
                 _cache(self, tables, sql, params).await
             }
             CachingStrategy::Memory(cache_size) => {
-                let mut cache = core::CACHE.lock().unwrap();
+                let mut cache = core::CACHE.lock().expect("Could not lock cache");
                 let keys = cache
                     .iter()
                     .map(|(k1, k2, _)| (k1.clone(), k2.clone()))
                     .collect::<Vec<_>>();
-                for (i, (key1, key2)) in keys.into_iter().enumerate() {
+                tracing::debug!("Cache currently has {} elements", cache.len());
+                for (i, (key1, key2)) in keys.into_iter().enumerate().rev() {
+                    tracing::debug!("Considering {i} ...");
                     if i >= *cache_size {
                         tracing::debug!("Removing {key1}:{key2} ({i}th entry) from cache");
                         cache.remove_keys(&key1, &key2);
+                    } else {
+                        break;
                     }
                 }
+                tracing::debug!("Cache now has {} elements", cache.len());
 
                 let tables = tables
                     .iter()
@@ -674,7 +692,7 @@ impl DbConnection {
                     None => {
                         tracing::info!("Cache miss for tables {tables}");
                         // Why is a block_on() call needed here but not above?
-                        let json_rows = block_on(self.query(sql, params)).unwrap();
+                        let json_rows = block_on(self.query(sql, params))?;
                         cache.insert(tables.to_string(), sql.to_string(), json_rows.to_vec());
                         Ok(json_rows)
                     }
