@@ -177,201 +177,6 @@ impl SqlParam {
     }
 }
 
-// From https://stackoverflow.com/a/78372188
-pub trait VecInto<D> {
-    fn vec_into(self) -> Vec<D>;
-}
-
-impl<E, D> VecInto<D> for Vec<E>
-where
-    D: From<E>,
-{
-    fn vec_into(self) -> Vec<D> {
-        self.into_iter().map(std::convert::Into::into).collect()
-    }
-}
-
-/// TODO: Add docstring
-#[derive(Clone, Serialize, Deserialize)]
-pub struct JsonRow {
-    pub content: JsonMap<String, JsonValue>,
-}
-
-impl JsonRow {
-    /// TODO: Add docstring
-    pub fn new() -> Self {
-        Self {
-            content: JsonMap::new(),
-        }
-    }
-
-    /// TODO: Add docstring
-    pub fn nullified(row: &Self, table: &Table) -> Self {
-        tracing::debug!("nullified({row:?}, {table:?})");
-        let mut nullified_row = Self::new();
-        for (column, value) in row.content.iter() {
-            let nulltype = table
-                .get_column_attribute(&column, "nulltype")
-                .unwrap_or("".to_string());
-            match value {
-                JsonValue::String(s) if s == "" && nulltype == "empty" => {
-                    nullified_row
-                        .content
-                        .insert(column.to_string(), JsonValue::Null);
-                }
-                value => {
-                    nullified_row
-                        .content
-                        .insert(column.to_string(), value.clone());
-                }
-            };
-        }
-        tracing::debug!("Nullified row: {nullified_row:?}");
-        nullified_row
-    }
-
-    /// TODO: Add docstring
-    pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
-        let value = self.content.get(column_name);
-        match value {
-            Some(value) => Ok(value.clone()),
-            None => Err(RelatableError::DataError("missing value".to_string()).into()),
-        }
-    }
-
-    /// TODO: Add docstring
-    pub fn get_string(&self, column_name: &str) -> Result<String> {
-        let value = self.content.get(column_name);
-        match value {
-            Some(value) => Ok(json_to_string(&value)),
-            None => Err(RelatableError::DataError("missing value".to_string()).into()),
-        }
-    }
-
-    /// TODO: Add docstring
-    pub fn get_unsigned(&self, column_name: &str) -> Result<usize> {
-        let value = self.content.get(column_name);
-        match value {
-            Some(value) => json_to_unsigned(&value),
-            None => Err(RelatableError::DataError("missing value".to_string()).into()),
-        }
-    }
-
-    /// TODO: Add docstring
-    pub fn from_strings(strings: &Vec<&str>) -> Self {
-        let mut json_row = Self::new();
-        for string in strings {
-            json_row.content.insert(string.to_string(), JsonValue::Null);
-        }
-        json_row
-    }
-
-    /// TODO: Add docstring
-    pub fn to_strings(&self) -> Vec<String> {
-        let mut result = vec![];
-        for column_name in self.content.keys() {
-            // The logic of this implies that this should not fail, so an expect() is
-            // appropriate here.
-            result.push(self.get_string(column_name).expect("Column not found"));
-        }
-        result
-    }
-
-    /// TODO: Add docstring
-    pub fn to_string_map(&self) -> IndexMap<String, String> {
-        let mut result = IndexMap::new();
-        for column_name in self.content.keys() {
-            result.insert(
-                column_name.clone(),
-                self.get_string(column_name).expect("Column not found"),
-            );
-        }
-        result
-    }
-
-    /// TODO: Add docstring
-    #[cfg(feature = "rusqlite")]
-    pub fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
-        let mut content = JsonMap::new();
-        for column_name in column_names {
-            let value = match row.get_ref(*column_name) {
-                Ok(value) => match value {
-                    rusqlite::types::ValueRef::Null => JsonValue::Null,
-                    rusqlite::types::ValueRef::Integer(value) => JsonValue::from(value),
-                    rusqlite::types::ValueRef::Real(value) => JsonValue::from(value),
-                    rusqlite::types::ValueRef::Text(value)
-                    | rusqlite::types::ValueRef::Blob(value) => {
-                        let value = std::str::from_utf8(value).unwrap_or_default();
-                        JsonValue::from(value)
-                    }
-                },
-                Err(_) => JsonValue::Null,
-            };
-            content.insert(column_name.to_string(), value);
-        }
-        Self { content }
-    }
-}
-
-#[cfg(feature = "sqlx")]
-impl TryFrom<sqlx::any::AnyRow> for JsonRow {
-    fn try_from(row: sqlx::any::AnyRow) -> Result<Self> {
-        let mut content = JsonMap::new();
-        for column in row.columns() {
-            // I had problems getting a type for columns that are not in the schema,
-            // e.g. "SELECT COUNT() AS count".
-            // So now I start with Null and try INTEGER, NUMBER, STRING, BOOL.
-            let mut value: JsonValue = JsonValue::Null;
-            if value.is_null() {
-                let x: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            if value.is_null() {
-                let x: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            if value.is_null() {
-                let x: Result<String, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            if value.is_null() {
-                let x: Result<bool, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            content.insert(column.name().into(), value);
-        }
-        Ok(Self { content })
-    }
-
-    type Error = anyhow::Error;
-}
-
-impl std::fmt::Display for JsonRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.to_strings().join("\t"))
-    }
-}
-
-impl std::fmt::Debug for JsonRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.to_string_map())
-    }
-}
-
-impl From<JsonRow> for Vec<String> {
-    fn from(row: JsonRow) -> Self {
-        row.to_strings()
-    }
-}
-
 /// TODO: Add docstring
 #[derive(Debug)]
 pub enum DbActiveConnection {
@@ -1034,46 +839,6 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
     }
 }
 
-// WARN: This needs to be thought through.
-/// TODO: Add docstring
-pub fn json_to_string(value: &JsonValue) -> String {
-    match value {
-        JsonValue::Null => "".to_string(),
-        JsonValue::Bool(value) => value.to_string(),
-        JsonValue::Number(value) => value.to_string(),
-        JsonValue::String(value) => value.to_string(),
-        JsonValue::Array(value) => format!("{value:?}"),
-        JsonValue::Object(value) => format!("{value:?}"),
-    }
-}
-
-/// TODO: Add docstring
-pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
-    match value {
-        JsonValue::Bool(flag) => match flag {
-            true => Ok(1),
-            false => Ok(0),
-        },
-        JsonValue::Number(value) => match value.as_u64() {
-            Some(unsigned) => Ok(unsigned as usize),
-            None => Err(
-                RelatableError::InputError(format!("{value} is not an unsigned integer")).into(),
-            ),
-        },
-        JsonValue::String(value_str) => match value_str.parse::<usize>() {
-            Ok(unsigned) => Ok(unsigned),
-            Err(err) => Err(RelatableError::InputError(format!(
-                "{value} could not be parsed as an unsigned integer: {err}"
-            ))
-            .into()),
-        },
-        _ => Err(RelatableError::InputError(format!(
-            "{value} could not be parsed as an unsigned integer"
-        ))
-        .into()),
-    }
-}
-
 /////////////////
 // Functions for generating DDL
 ////////////////
@@ -1594,4 +1359,243 @@ pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl.append(&mut generate_history_table_ddl(force, db_kind));
     ddl.append(&mut generate_message_table_ddl(force, db_kind));
     ddl
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Utilities for dealing with JSON representations of database rows.
+///////////////////////////////////////////////////////////////////////////////
+
+// WARN: This needs to be thought through.
+/// TODO: Add docstring
+pub fn json_to_string(value: &JsonValue) -> String {
+    match value {
+        JsonValue::Null => "".to_string(),
+        JsonValue::Bool(value) => value.to_string(),
+        JsonValue::Number(value) => value.to_string(),
+        JsonValue::String(value) => value.to_string(),
+        JsonValue::Array(value) => format!("{value:?}"),
+        JsonValue::Object(value) => format!("{value:?}"),
+    }
+}
+
+/// TODO: Add docstring
+pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
+    match value {
+        JsonValue::Bool(flag) => match flag {
+            true => Ok(1),
+            false => Ok(0),
+        },
+        JsonValue::Number(value) => match value.as_u64() {
+            Some(unsigned) => Ok(unsigned as usize),
+            None => Err(
+                RelatableError::InputError(format!("{value} is not an unsigned integer")).into(),
+            ),
+        },
+        JsonValue::String(value_str) => match value_str.parse::<usize>() {
+            Ok(unsigned) => Ok(unsigned),
+            Err(err) => Err(RelatableError::InputError(format!(
+                "{value} could not be parsed as an unsigned integer: {err}"
+            ))
+            .into()),
+        },
+        _ => Err(RelatableError::InputError(format!(
+            "{value} could not be parsed as an unsigned integer"
+        ))
+        .into()),
+    }
+}
+
+// From https://stackoverflow.com/a/78372188
+pub trait VecInto<D> {
+    fn vec_into(self) -> Vec<D>;
+}
+
+impl<E, D> VecInto<D> for Vec<E>
+where
+    D: From<E>,
+{
+    fn vec_into(self) -> Vec<D> {
+        self.into_iter().map(std::convert::Into::into).collect()
+    }
+}
+
+/// TODO: Add docstring
+#[derive(Clone, Serialize, Deserialize)]
+pub struct JsonRow {
+    pub content: JsonMap<String, JsonValue>,
+}
+
+impl JsonRow {
+    /// TODO: Add docstring
+    pub fn new() -> Self {
+        Self {
+            content: JsonMap::new(),
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn nullified(row: &Self, table: &Table) -> Self {
+        tracing::debug!("nullified({row:?}, {table:?})");
+        let mut nullified_row = Self::new();
+        for (column, value) in row.content.iter() {
+            let nulltype = table
+                .get_column_attribute(&column, "nulltype")
+                .unwrap_or("".to_string());
+            match value {
+                JsonValue::String(s) if s == "" && nulltype == "empty" => {
+                    nullified_row
+                        .content
+                        .insert(column.to_string(), JsonValue::Null);
+                }
+                value => {
+                    nullified_row
+                        .content
+                        .insert(column.to_string(), value.clone());
+                }
+            };
+        }
+        tracing::debug!("Nullified row: {nullified_row:?}");
+        nullified_row
+    }
+
+    /// TODO: Add docstring
+    pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
+        let value = self.content.get(column_name);
+        match value {
+            Some(value) => Ok(value.clone()),
+            None => Err(RelatableError::DataError("missing value".to_string()).into()),
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn get_string(&self, column_name: &str) -> Result<String> {
+        let value = self.content.get(column_name);
+        match value {
+            Some(value) => Ok(json_to_string(&value)),
+            None => Err(RelatableError::DataError("missing value".to_string()).into()),
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn get_unsigned(&self, column_name: &str) -> Result<usize> {
+        let value = self.content.get(column_name);
+        match value {
+            Some(value) => json_to_unsigned(&value),
+            None => Err(RelatableError::DataError("missing value".to_string()).into()),
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn from_strings(strings: &Vec<&str>) -> Self {
+        let mut json_row = Self::new();
+        for string in strings {
+            json_row.content.insert(string.to_string(), JsonValue::Null);
+        }
+        json_row
+    }
+
+    /// TODO: Add docstring
+    pub fn to_strings(&self) -> Vec<String> {
+        let mut result = vec![];
+        for column_name in self.content.keys() {
+            // The logic of this implies that this should not fail, so an expect() is
+            // appropriate here.
+            result.push(self.get_string(column_name).expect("Column not found"));
+        }
+        result
+    }
+
+    /// TODO: Add docstring
+    pub fn to_string_map(&self) -> IndexMap<String, String> {
+        let mut result = IndexMap::new();
+        for column_name in self.content.keys() {
+            result.insert(
+                column_name.clone(),
+                self.get_string(column_name).expect("Column not found"),
+            );
+        }
+        result
+    }
+
+    /// TODO: Add docstring
+    #[cfg(feature = "rusqlite")]
+    pub fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
+        let mut content = JsonMap::new();
+        for column_name in column_names {
+            let value = match row.get_ref(*column_name) {
+                Ok(value) => match value {
+                    rusqlite::types::ValueRef::Null => JsonValue::Null,
+                    rusqlite::types::ValueRef::Integer(value) => JsonValue::from(value),
+                    rusqlite::types::ValueRef::Real(value) => JsonValue::from(value),
+                    rusqlite::types::ValueRef::Text(value)
+                    | rusqlite::types::ValueRef::Blob(value) => {
+                        let value = std::str::from_utf8(value).unwrap_or_default();
+                        JsonValue::from(value)
+                    }
+                },
+                Err(_) => JsonValue::Null,
+            };
+            content.insert(column_name.to_string(), value);
+        }
+        Self { content }
+    }
+}
+
+#[cfg(feature = "sqlx")]
+impl TryFrom<sqlx::any::AnyRow> for JsonRow {
+    fn try_from(row: sqlx::any::AnyRow) -> Result<Self> {
+        let mut content = JsonMap::new();
+        for column in row.columns() {
+            // I had problems getting a type for columns that are not in the schema,
+            // e.g. "SELECT COUNT() AS count".
+            // So now I start with Null and try INTEGER, NUMBER, STRING, BOOL.
+            let mut value: JsonValue = JsonValue::Null;
+            if value.is_null() {
+                let x: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
+                }
+            }
+            if value.is_null() {
+                let x: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
+                }
+            }
+            if value.is_null() {
+                let x: Result<String, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
+                }
+            }
+            if value.is_null() {
+                let x: Result<bool, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
+                }
+            }
+            content.insert(column.name().into(), value);
+        }
+        Ok(Self { content })
+    }
+
+    type Error = anyhow::Error;
+}
+
+impl std::fmt::Display for JsonRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.to_strings().join("\t"))
+    }
+}
+
+impl std::fmt::Debug for JsonRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.to_string_map())
+    }
+}
+
+impl From<JsonRow> for Vec<String> {
+    fn from(row: JsonRow) -> Self {
+        row.to_strings()
+    }
 }
