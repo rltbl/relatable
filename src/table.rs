@@ -1,3 +1,7 @@
+//! # rltbl/relatable
+//!
+//! This is [relatable](crate) (rltbl::[table](crate::table)).
+
 use crate::{self as rltbl};
 
 use anyhow::Result;

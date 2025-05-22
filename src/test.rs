@@ -41,7 +41,7 @@ pub struct Cli {
     #[arg(long, action = ArgAction::Set)]
     seed: Option<u64>,
 
-    /// One of: none, truncate, truncate_all, trigger
+    /// One of: none, truncate, truncate_all, trigger, memory
     #[arg(long, default_value = "trigger", action = ArgAction::Set)]
     caching: CachingStrategy,
 
@@ -334,7 +334,16 @@ async fn main() {
             let table_to_edit = tables_to_choose_from[0];
             while i < *fetches {
                 let table = random_table(&tables_to_choose_from);
-                let select = Select::from(table);
+                let join_table = {
+                    let mut join_table = random_table(&tables_to_choose_from);
+                    while join_table == table {
+                        join_table = random_table(&tables_to_choose_from);
+                    }
+                    join_table
+                };
+                let mut select = Select::from(table);
+                select.left_join(table, "individual_id", join_table, "individual_id");
+
                 let count = rltbl.count(&select).await.unwrap();
                 tracing::debug!("Counted {count} rows from table '{table}'");
                 elapsed = now.elapsed().as_secs();

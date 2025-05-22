@@ -1,3 +1,7 @@
+//! # rltbl/relatable
+//!
+//! This is [relatable](crate) (rltbl::[select](crate::select)).
+
 use crate::core::{Relatable, RelatableError, DEFAULT_LIMIT};
 use crate::sql::{self, DbKind, SqlParam};
 use anyhow::Result;
@@ -6,6 +10,7 @@ use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value, Value as JsonValue};
+use std::collections::BTreeSet;
 
 /// Represents a SELECT statement.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -278,6 +283,52 @@ impl Select {
             filters,
             ..Default::default()
         }
+    }
+
+    /// Get all the tables that are implicated in this select:
+    pub fn get_tables(&self) -> BTreeSet<String> {
+        let mut tables = BTreeSet::new();
+
+        fn insert_when_non_empty(tables: &mut BTreeSet<String>, table: &str) {
+            if table != "" {
+                tables.insert(table.to_string());
+            }
+        }
+
+        insert_when_non_empty(&mut tables, &self.table_name);
+        for field in &self.select {
+            match field {
+                SelectField::Column { table, .. } => {
+                    insert_when_non_empty(&mut tables, table);
+                }
+                SelectField::Expression { .. } => (),
+            };
+        }
+        for join in &self.joins {
+            match join {
+                Join::LeftJoin {
+                    left_table,
+                    right_table,
+                    ..
+                } => {
+                    insert_when_non_empty(&mut tables, &left_table);
+                    insert_when_non_empty(&mut tables, &right_table);
+                }
+            };
+        }
+        for filter in &self.filters {
+            insert_when_non_empty(&mut tables, &filter.get_table());
+            match filter {
+                Filter::InSubquery { subquery, .. } | Filter::NotInSubquery { subquery, .. } => {
+                    for table in subquery.get_tables() {
+                        insert_when_non_empty(&mut tables, &table);
+                    }
+                }
+                _ => (),
+            };
+        }
+
+        tables
     }
 
     /// Add a single column to the SELECT clause of this select
@@ -713,11 +764,30 @@ impl Select {
         Ok(self)
     }
 
-    /// Add an in filter on the given column and value.
+    /// Add an in-subquery filter on the given column and value.
     pub fn is_in_subquery(&mut self, column: &str, subquery: &Select) -> &Self {
         tracing::trace!("Select::is_in_subquery({column:?}, {subquery:?})");
+        let target = match self.view_name.as_str() {
+            "" => &self.table_name,
+            _ => &self.view_name,
+        };
         self.filters.push(Filter::InSubquery {
-            table: "".to_string(),
+            table: target.to_string(),
+            column: column.to_string(),
+            subquery: subquery.clone(),
+        });
+        self
+    }
+
+    /// Add an not-in-subquery filter on the given column and value.
+    pub fn is_not_in_subquery(&mut self, column: &str, subquery: &Select) -> &Self {
+        tracing::trace!("Select::is_not_in_subquery({column:?}, {subquery:?})");
+        let target = match self.view_name.as_str() {
+            "" => &self.table_name,
+            _ => &self.view_name,
+        };
+        self.filters.push(Filter::NotInSubquery {
+            table: target.to_string(),
             column: column.to_string(),
             subquery: subquery.clone(),
         });
@@ -795,6 +865,10 @@ impl Select {
 
         // The WHERE clause:
         for (i, filter) in self.filters.iter().enumerate() {
+            let mut filter = filter.clone();
+            if filter.get_table() == "" {
+                filter.set_table(&target);
+            }
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
             lines.push(format!("{keyword} {filter_sql}"));
@@ -821,14 +895,22 @@ impl Select {
     /// by the given [Select]
     pub fn to_sql_count(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
         tracing::trace!("Select::to_sql_count({self:?}, {kind:?})");
+        let target = match self.view_name.as_str() {
+            "" => &self.table_name,
+            _ => &self.view_name,
+        };
         let mut lines = Vec::new();
         let mut params = Vec::new();
         lines.push(r#"SELECT COUNT(1) AS "count""#.to_string());
-        lines.push(format!(r#"FROM "{}""#, self.table_name));
+        lines.push(format!(r#"FROM "{target}""#));
         for join in self.joins.clone() {
             lines.push(join.to_sql());
         }
         for (i, filter) in self.filters.iter().enumerate() {
+            let mut filter = filter.clone();
+            if filter.get_table() == "" {
+                filter.set_table(&target);
+            }
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let (s, p) = filter.to_sql_count(kind)?;
             lines.push(format!("{keyword} {s}"));
@@ -1109,24 +1191,6 @@ pub enum Filter {
     },
 }
 impl Filter {
-    pub fn get_table(&self) -> String {
-        match self {
-            Filter::Like { table, .. }
-            | Filter::Equal { table, .. }
-            | Filter::NotEqual { table, .. }
-            | Filter::GreaterThan { table, .. }
-            | Filter::GreaterThanOrEqual { table, .. }
-            | Filter::LessThan { table, .. }
-            | Filter::LessThanOrEqual { table, .. }
-            | Filter::Is { table, .. }
-            | Filter::IsNot { table, .. }
-            | Filter::In { table, .. }
-            | Filter::NotIn { table, .. }
-            | Filter::InSubquery { table, .. }
-            | Filter::NotInSubquery { table, .. } => table.to_string(),
-        }
-    }
-
     pub fn set_table(&mut self, new_name: &str) -> &Self {
         match self {
             Filter::Like { table, .. }
@@ -1144,24 +1208,6 @@ impl Filter {
             | Filter::NotInSubquery { table, .. } => *table = new_name.to_string(),
         };
         self
-    }
-
-    pub fn get_column(&self) -> String {
-        match self {
-            Filter::Like { column, .. }
-            | Filter::Equal { column, .. }
-            | Filter::NotEqual { column, .. }
-            | Filter::GreaterThan { column, .. }
-            | Filter::GreaterThanOrEqual { column, .. }
-            | Filter::LessThan { column, .. }
-            | Filter::LessThanOrEqual { column, .. }
-            | Filter::Is { column, .. }
-            | Filter::IsNot { column, .. }
-            | Filter::In { column, .. }
-            | Filter::NotIn { column, .. }
-            | Filter::InSubquery { column, .. }
-            | Filter::NotInSubquery { column, .. } => column.to_string(),
-        }
     }
 
     pub fn set_column(&mut self, new_name: &str) -> &Self {
@@ -1258,6 +1304,22 @@ impl Filter {
             operator.to_string(),
             json!(value),
         )
+    }
+
+    pub fn get_table(&self) -> String {
+        self.parts().0
+    }
+
+    pub fn get_column(&self) -> String {
+        self.parts().1
+    }
+
+    pub fn get_operator(&self) -> String {
+        self.parts().2
+    }
+
+    pub fn get_value(&self) -> JsonValue {
+        self.parts().3
     }
 
     pub fn to_url(&self) -> Result<String> {
@@ -1748,7 +1810,7 @@ FROM "penguin""#
             &format!(
                 r#"SELECT *
 FROM "penguin"
-WHERE "sample_number" = {sql_param}
+WHERE "penguin"."sample_number" = {sql_param}
 ORDER BY "penguin"._order ASC
 LIMIT 1
 OFFSET 2"#
@@ -1756,7 +1818,7 @@ OFFSET 2"#
             &format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "sample_number" = {sql_param}"#
+WHERE "penguin"."sample_number" = {sql_param}"#
             ),
             vec![json!("5")],
         );
@@ -1933,18 +1995,21 @@ FROM "penguin_test""#
         let mut outer_select = Select::from("penguin").limit(&0);
         outer_select.is_in_subquery("individual_id", &inner_select);
 
+        let tables = outer_select.get_tables().into_iter().collect::<Vec<_>>();
+        assert_eq!(tables, vec!["egg", "penguin"]);
+
         let (sql, params) = outer_select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
             format!(
                 r#"SELECT *
 FROM "penguin"
-WHERE "individual_id" IN (
+WHERE "penguin"."individual_id" IN (
   SELECT
     "penguin"."individual_id"
   FROM "penguin"
   LEFT JOIN "egg" ON "penguin"."individual_id" = "egg"."individual_id"
-  WHERE "individual_id" = {sql_param}
+  WHERE "penguin"."individual_id" = {sql_param}
 )
 ORDER BY "penguin"._order ASC"#
             )
@@ -1957,12 +2022,12 @@ ORDER BY "penguin"._order ASC"#
             format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "individual_id" IN (
+WHERE "penguin"."individual_id" IN (
   SELECT
     "penguin"."individual_id"
   FROM "penguin"
   LEFT JOIN "egg" ON "penguin"."individual_id" = "egg"."individual_id"
-  WHERE "individual_id" = {sql_param}
+  WHERE "penguin"."individual_id" = {sql_param}
 )"#
             )
         );

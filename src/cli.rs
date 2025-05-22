@@ -47,7 +47,7 @@ pub struct Cli {
     #[command(flatten)]
     verbose: Verbosity,
 
-    /// One of: none, truncate, truncate_all, trigger
+    /// One of: none, truncate, truncate_all, trigger, memory
     #[arg(long, default_value = "trigger", action = ArgAction::Set)]
     pub caching: CachingStrategy,
 
@@ -641,7 +641,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
 }
 
 /// Use Relatable, in conformity with the given command-line parameters, to add a row representing
-/// a [Message](rltbl::core::Message) to the message table. The details of the message are read
+/// a [Message](rltbl::table::Message) to the message table. The details of the message are read
 /// from STDIN, either interactively or in JSON format.
 pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::trace!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
