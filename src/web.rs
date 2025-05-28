@@ -2,7 +2,10 @@
 //!
 //! This is relatable (rltbl::web).
 
-use crate::{self as rltbl, core::render_values};
+use crate::{
+    self as rltbl,
+    core::{render_values, ResultSet},
+};
 use rltbl::{
     cli::Cli,
     core::{ChangeSet, Cursor, Format, QueryParams, Relatable, RelatableError, Row, Select},
@@ -95,6 +98,12 @@ async fn respond(rltbl: &Relatable, format: &Format, content: &JsonValue) -> Res
             (headers, to_string_pretty(content).unwrap_or_default()).into_response()
         }
         Format::ValueJson | Format::Json => Json(content).into_response(),
+        Format::Tsv => get_500(
+            &RelatableError::FormatError(
+                "TSV format should be handled before `respond()`".to_string(),
+            )
+            .into(),
+        ),
     };
     response
 }
@@ -105,6 +114,15 @@ fn get_username(session: Session<SessionNullPool>) -> String {
         return username;
     }
     session.get("username").unwrap_or_default()
+}
+
+fn respond_tsv(result: ResultSet) -> Response<Body> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        "text/tab-separated-values".parse().unwrap(),
+    );
+    (headers, result.to_tsv()).into_response()
 }
 
 async fn get_table(
@@ -132,6 +150,10 @@ async fn get_table(
         Ok(result) => result,
         Err(error) => return get_500(&error),
     };
+    match format {
+        Format::Tsv => return respond_tsv(result),
+        _ => (),
+    }
     let site = rltbl.get_site(&username).await;
     let content = json!({"site": site, "path": "table", "result": result});
     respond(&rltbl, &format, &content).await
@@ -164,6 +186,19 @@ async fn get_tableset(
         return Json(value).into_response();
     }
 
+    let mut result = match joined_query(&rltbl, &tableset_name, &select).await {
+        Ok(sel) => match rltbl.fetch(&sel).await {
+            Ok(result) => result,
+            Err(error) => return get_500(&error),
+        },
+        Err(error) => return get_500(&error),
+    };
+    result.select = select.clone();
+    match format {
+        Format::Tsv => return respond_tsv(result),
+        _ => (),
+    }
+
     let username = get_username(session);
     if username.trim() != "" {
         init_user(&rltbl, &username).await;
@@ -194,15 +229,6 @@ async fn get_tableset(
             "count": c.to_url(format!("{}/tableset/{tableset_name}", site.root).as_str(), &Format::ValueJson).unwrap()
         }));
     }
-
-    let mut result = match joined_query(&rltbl, &tableset_name, &select).await {
-        Ok(sel) => match rltbl.fetch(&sel).await {
-            Ok(result) => result,
-            Err(error) => return get_500(&error),
-        },
-        Err(error) => return get_500(&error),
-    };
-    result.select = select.clone();
 
     let content = json!({"site": site, "path": format!("tableset/{}", tableset_name), "tabs": tabs, "result": result});
     respond(&rltbl, &format, &content).await

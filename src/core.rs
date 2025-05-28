@@ -2758,6 +2758,25 @@ impl std::fmt::Display for ResultSet {
     }
 }
 
+impl ResultSet {
+    pub fn to_tsv(&self) -> String {
+        let mut writer = WriterBuilder::new()
+            .delimiter(b'\t')
+            .quote_style(QuoteStyle::Never)
+            .from_writer(vec![]);
+        let header_row = &self
+            .columns
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<String>>();
+        writer.write_record(header_row.clone()).unwrap();
+        for row in &self.rows {
+            writer.write_record(row.to_strings()).unwrap();
+        }
+        String::from_utf8(writer.into_inner().unwrap()).unwrap()
+    }
+}
+
 // Selects and Filters
 
 pub type QueryParams = IndexMap<String, String>;
@@ -2767,6 +2786,7 @@ pub enum Format {
     Json,
     PrettyJson,
     ValueJson,
+    Tsv,
     Default,
 }
 
@@ -2778,6 +2798,7 @@ impl Display for Format {
             Format::Json => ".json",
             Format::PrettyJson => ".pretty.json",
             Format::ValueJson => ".value.json",
+            Format::Tsv => ".tsv",
             Format::Default => "",
         };
         write!(f, "{result}")
@@ -2795,6 +2816,8 @@ impl TryFrom<&String> for Format {
             Format::Json
         } else if path.ends_with(".html") || path.ends_with(".htm") {
             Format::Html
+        } else if path.ends_with(".tsv") {
+            Format::Tsv
         } else if path.contains(".") {
             return Err(
                 RelatableError::FormatError(format!("Unknown format for path {path}")).into(),
