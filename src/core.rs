@@ -387,8 +387,8 @@ impl Relatable {
         // Load templates dynamically if src/templates/ exists,
         // otherwise use strings from compile time.
         // TODO: This should be a configuration option.
-        let dir = "src/templates/";
-        if FilePath::new(dir).is_dir() {
+        let dir = std::env::var("RLTBL_TEMPLATES").unwrap_or("src/templates/".to_string());
+        if FilePath::new(&dir).is_dir() {
             env.set_loader(path_loader(dir));
         };
         for (name, content) in templates {
