@@ -61,12 +61,20 @@ impl Select {
         let mut order_by = Vec::new();
 
         let mut select = vec![];
-        if let Some(s) = query_params.get("select") {
-            select.push(SelectField::Column {
-                table: String::new(),
-                column: s.to_string(),
-                alias: String::new(),
-            });
+        if let Some(selects) = query_params.get("select") {
+            for s in selects.split(",") {
+                match s {
+                    "count()" => select.push(SelectField::Expression {
+                        expression: s.to_string(),
+                        alias: String::new(),
+                    }),
+                    _ => select.push(SelectField::Column {
+                        table: String::new(),
+                        column: s.to_string(),
+                        alias: String::new(),
+                    }),
+                }
+            }
         }
 
         let limit: usize = query_params
@@ -416,7 +424,7 @@ impl Select {
     }
 
     /// Order (ascending) this select by the given column
-    pub fn order_by(mut self, column: &str) -> Self {
+    pub fn order_by(&mut self, column: &str) -> &Self {
         tracing::trace!("Select::order_by({column:?})");
         self.order_by = vec![(column.to_string(), Order::ASC)];
         self
@@ -638,6 +646,20 @@ impl Select {
         Ok(self)
     }
 
+    /// Add an equals filter on the given column and value.
+    pub fn table_eq<T>(&mut self, table: &str, column: &str, value: &T) -> Result<&Self>
+    where
+        T: Serialize,
+    {
+        tracing::trace!("Select::table_eq({column:?}, value)");
+        self.filters.push(Filter::Equal {
+            table: table.to_string(),
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
     /// Add a not-equals filter on the given column and value.
     pub fn not_eq<T>(mut self, column: &str, value: &T) -> Result<Self>
     where
@@ -813,7 +835,7 @@ impl Select {
                       AND "row" = "{}"._id
                    ) AS _change_id"#,
                 sql_param_gen.next(),
-                self.table_name
+                target
             )
         };
 
@@ -828,6 +850,7 @@ impl Select {
                 let (_, c, _, _) = filter.parts();
                 if c == "_change_id" {
                     lines.push(format!(", {}", get_change_sql(&mut sql_param_gen)));
+                    params.push(json!(self.table_name));
                 }
             }
         } else {
@@ -836,6 +859,7 @@ impl Select {
                 let (_, c, _, _) = filter.parts();
                 if c == "_change_id" {
                     lines.push(get_change_sql(&mut sql_param_gen));
+                    params.push(json!(self.table_name));
                 }
             }
             for field in &self.select {
@@ -845,12 +869,6 @@ impl Select {
                 let mut t = ",";
                 if field == self.select.last().unwrap() {
                     t = "";
-                }
-
-                // Replace the table with the view name in the SelectField if necessary:
-                let mut field = field.clone();
-                if let SelectField::Column { ref mut table, .. } = field {
-                    *table = target.to_string();
                 }
 
                 lines.push(format!(r#"  {field}{t}"#, field = field.to_sql()));
@@ -865,10 +883,6 @@ impl Select {
 
         // The WHERE clause:
         for (i, filter) in self.filters.iter().enumerate() {
-            let mut filter = filter.clone();
-            if filter.get_table() == "" {
-                filter.set_table(&target);
-            }
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
             lines.push(format!("{keyword} {filter_sql}"));
@@ -907,10 +921,6 @@ impl Select {
             lines.push(join.to_sql());
         }
         for (i, filter) in self.filters.iter().enumerate() {
-            let mut filter = filter.clone();
-            if filter.get_table() == "" {
-                filter.set_table(&target);
-            }
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let (s, p) = filter.to_sql_count(kind)?;
             lines.push(format!("{keyword} {s}"));
@@ -938,15 +948,17 @@ impl Select {
                     SelectField::Column { .. } => {
                         select_cols.push(sfield.to_url());
                     }
-                    SelectField::Expression { .. } => {
-                        return Err(RelatableError::InputError(
-                            "Expressions are not supported as input to to_params()".to_string(),
-                        )
-                        .into())
+                    SelectField::Expression { expression, .. } => {
+                        // Only include 'count()' expressions
+                        if expression == "count()" {
+                            select_cols.push(expression.to_string());
+                        }
                     }
                 };
             }
-            params.insert("select".to_string(), select_cols.join(",").into());
+            if select_cols.len() > 0 {
+                params.insert("select".to_string(), select_cols.join(",").into());
+            }
         }
         if self.filters.len() > 0 {
             for filter in &self.filters {
@@ -1059,7 +1071,13 @@ impl SelectField {
                 )
             }
             SelectField::Expression { expression, alias } => {
-                format!(r#"{expression} AS "{alias}""#)
+                format!(
+                    "{expression}{alias}",
+                    alias = match alias.as_str() {
+                        "" => "".to_string(),
+                        _ => format!(r#" AS "{alias}""#),
+                    }
+                )
             }
         }
     }
@@ -1736,6 +1754,8 @@ pub fn render_values(
 mod tests {
     use crate::sql::CachingStrategy;
     use async_std::task::block_on;
+    use pretty_assertions::assert_eq;
+    use serde_json::from_value;
 
     use super::*;
 
@@ -1748,104 +1768,154 @@ mod tests {
         ))
         .unwrap();
         let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
+        let base = "http://example.com";
+        let empty: Vec<JsonValue> = vec![];
 
-        fn test(
-            rltbl: &Relatable,
-            expected_url: &str,
-            table: &str,
-            format: &Format,
-            query_params: &JsonValue,
-            expected_sql: &str,
-            expected_sql_count: &str,
-            expected_params: Vec<JsonValue>,
-        ) {
-            let base = "http://example.com";
-
-            let query_params = serde_json::from_value(query_params.clone()).unwrap();
-            let select = Select::from_path_and_query(&table, &query_params);
-            println!("SELECT {select:?}");
-
-            let actual_url = select.to_url(&base, &format).unwrap();
-            assert_eq!(actual_url, expected_url);
-
-            let (actual_sql, actual_params) = select.to_sql(&rltbl.connection.kind()).unwrap();
-            assert_eq!(actual_sql, expected_sql);
-            assert_eq!(actual_params, expected_params);
-
-            let (actual_sql_count, actual_params) =
-                select.to_sql_count(&rltbl.connection.kind()).unwrap();
-            assert_eq!(actual_sql_count, expected_sql_count);
-            assert_eq!(actual_params, expected_params);
-        }
-
-        test(
-            &rltbl,
-            "http://example.com/penguin",
-            "penguin",
-            &Format::Default,
-            &json!({}),
-            &format!(
-                r#"SELECT *
+        let url = "http://example.com/penguin";
+        let query_params = from_value(json!({})).unwrap();
+        let select = Select::from_path_and_query("penguin", &query_params);
+        assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT *
 FROM "penguin"
 ORDER BY "penguin"._order ASC
 LIMIT 100"#
-            ),
-            &format!(
-                r#"SELECT COUNT(1) AS "count"
-FROM "penguin""#
-            ),
-            vec![],
         );
+        assert_eq!(params, empty);
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT COUNT(1) AS "count"
+FROM "penguin""#
+        );
+        assert_eq!(params, empty);
 
-        test(
-            &rltbl,
-            "http://example.com/penguin.json?sample_number=eq.5&limit=1&offset=2",
-            "penguin",
-            &Format::Json,
-            &json!({
-               "sample_number": "eq.5",
-               "limit": "1",
-               "offset": "2",
-            }),
-            &format!(
+        let url = "http://example.com/penguin.json?sample_number=eq.5&limit=1&offset=2";
+        let query_params = from_value(json!({
+           "sample_number": "eq.5",
+           "limit": "1",
+           "offset": "2",
+        }))
+        .unwrap();
+        let select = Select::from_path_and_query("penguin", &query_params);
+        assert_eq!(url, select.to_url(&base, &Format::Json).unwrap());
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
                 r#"SELECT *
 FROM "penguin"
-WHERE "penguin"."sample_number" = {sql_param}
+WHERE "sample_number" = {sql_param}
 ORDER BY "penguin"._order ASC
 LIMIT 1
 OFFSET 2"#
-            ),
-            &format!(
+            )
+        );
+        assert_eq!(params, vec![json!("5")]);
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "penguin"."sample_number" = {sql_param}"#
-            ),
-            vec![json!("5")],
+WHERE "sample_number" = {sql_param}"#
+            )
         );
+        assert_eq!(params, vec![json!("5")]);
 
-        test(
-            &rltbl,
-            "http://example.com/penguin?foo.bar=eq.5&limit=1",
-            "penguin",
-            &Format::Default,
-            &json!({
-               "foo.bar": "eq.5",
-               "limit": "1",
-            }),
-            &format!(
+        let url = "http://example.com/penguin?penguin.bar=eq.5&limit=1";
+        let query_params = from_value(json!({
+           "penguin.bar": "eq.5",
+           "limit": "1",
+        }))
+        .unwrap();
+        let select = Select::from_path_and_query("penguin", &query_params);
+        assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
                 r#"SELECT *
 FROM "penguin"
-WHERE "foo"."bar" = {sql_param}
+WHERE "penguin"."bar" = {sql_param}
 ORDER BY "penguin"._order ASC
 LIMIT 1"#
-            ),
-            &format!(
+            )
+        );
+        assert_eq!(params, vec![json!("5")]);
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "foo"."bar" = {sql_param}"#
-            ),
-            vec![json!("5")],
+WHERE "penguin"."bar" = {sql_param}"#
+            )
         );
+        assert_eq!(params, vec![json!("5")]);
+
+        let url = "http://example.com/penguin?_change_id=gt.5";
+        let query_params = from_value(json!({
+           "_change_id": "gt.5",
+        }))
+        .unwrap();
+        let select = Select::from_path_and_query("penguin", &query_params);
+        assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT *
+, (SELECT MAX(change_id) FROM history
+                    WHERE "table" = {sql_param}
+                      AND "row" = "penguin"._id
+                   ) AS _change_id
+FROM "penguin"
+WHERE "_change_id" > {sql_param}
+ORDER BY "penguin"._order ASC
+LIMIT 100"#
+            ),
+        );
+        assert_eq!(params, vec![json!("penguin"), json!("5")]);
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "_change_id" > {sql_param}"#
+            ),
+        );
+        assert_eq!(params, vec![json!("5")]);
+
+        let url = "http://example.com/penguin?select=sample_number,count()";
+
+        let query_params = from_value(json!({
+            "select": "sample_number,count()"
+        }))
+        .unwrap();
+        let select = Select::from_path_and_query("penguin", &query_params);
+        assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT
+  "sample_number",
+  count()
+FROM "penguin"
+ORDER BY "penguin"._order ASC
+LIMIT 100"#
+        );
+        assert_eq!(params, empty);
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT COUNT(1) AS "count"
+FROM "penguin""#
+        );
+        assert_eq!(params, empty);
     }
 
     #[test]
@@ -1883,8 +1953,8 @@ WHERE "foo"."bar" = {sql_param}"#
             r#"SELECT
   "penguin_test"."species",
   "penguin_test"."island",
-  "penguin_test"."study_name",
-  "penguin_test"."body_mass"
+  "study_name",
+  "body_mass"
 FROM "penguin_test"
 ORDER BY "penguin_test"._order ASC
 LIMIT 100"#
@@ -1952,15 +2022,15 @@ FROM "penguin_test""#
         assert_eq!(
             sql,
             r#"SELECT
-  "penguin_test"."_id",
-  "penguin_test"."_order",
-  "penguin_test"."study_name",
-  "penguin_test"."sample_number",
-  "penguin_test"."species",
-  "penguin_test"."island",
-  "penguin_test"."individual_id",
-  "penguin_test"."culmen_length",
-  "penguin_test"."body_mass"
+  "_id",
+  "_order",
+  "study_name",
+  "sample_number",
+  "species",
+  "island",
+  "individual_id",
+  "culmen_length",
+  "body_mass"
 FROM "penguin_test"
 ORDER BY "penguin_test"._order ASC
 LIMIT 100"#
@@ -1991,7 +2061,9 @@ FROM "penguin_test""#
         let mut inner_select = Select::from("penguin").limit(&0);
         inner_select.select_table_column("penguin", "individual_id");
         inner_select.left_join("penguin", "individual_id", "egg", "individual_id");
-        inner_select.eq("individual_id", &"N1").unwrap();
+        inner_select
+            .table_eq("penguin", "individual_id", &"N1")
+            .unwrap();
         let mut outer_select = Select::from("penguin").limit(&0);
         outer_select.is_in_subquery("individual_id", &inner_select);
 

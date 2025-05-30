@@ -661,8 +661,7 @@ pub fn view_exists_for(table: &str, tx: &mut DbTransaction<'_>) -> Result<bool> 
         DbKind::Postgres => format!(
             r#"SELECT 1
                FROM "information_schema"."tables"
-               WHERE "table_schema" = 'public'
-               AND "table_name" = {sql_param}
+               WHERE "table_name" = {sql_param}
                AND "table_type" = 'VIEW'"#,
         ),
     };
@@ -686,8 +685,7 @@ pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<V
             let sql = format!(
                 r#"SELECT "column_name"::TEXT AS "name"
                    FROM "information_schema"."columns"
-                   WHERE "table_schema" = 'public'
-                   AND "table_name" = {sql_param}
+                   WHERE "table_name" = {sql_param}
                    ORDER BY "ordinal_position""#,
                 sql_param = SqlParam::new(&tx.kind()).next()
             );
@@ -709,7 +707,7 @@ pub fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
         DbKind::Postgres => {
             let sql = format!(
                 // Note that in the case of postgres an _id column is required.
-                r#"SELECT last_value FROM public."{table}__id_seq""#
+                r#"SELECT last_value FROM "{table}__id_seq""#
             );
             tx.query_value(&sql, None)?
         }
