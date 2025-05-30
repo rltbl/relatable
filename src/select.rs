@@ -416,7 +416,7 @@ impl Select {
     }
 
     /// Order (ascending) this select by the given column
-    pub fn order_by(mut self, column: &str) -> Self {
+    pub fn order_by(&mut self, column: &str) -> &Self {
         tracing::trace!("Select::order_by({column:?})");
         self.order_by = vec![(column.to_string(), Order::ASC)];
         self
@@ -638,6 +638,20 @@ impl Select {
         Ok(self)
     }
 
+    /// Add an equals filter on the given column and value.
+    pub fn table_eq<T>(&mut self, table: &str, column: &str, value: &T) -> Result<&Self>
+    where
+        T: Serialize,
+    {
+        tracing::trace!("Select::table_eq({column:?}, value)");
+        self.filters.push(Filter::Equal {
+            table: table.to_string(),
+            column: column.to_string(),
+            value: to_value(value)?,
+        });
+        Ok(self)
+    }
+
     /// Add a not-equals filter on the given column and value.
     pub fn not_eq<T>(mut self, column: &str, value: &T) -> Result<Self>
     where
@@ -813,7 +827,7 @@ impl Select {
                       AND "row" = "{}"._id
                    ) AS _change_id"#,
                 sql_param_gen.next(),
-                self.table_name
+                target
             )
         };
 
@@ -828,6 +842,7 @@ impl Select {
                 let (_, c, _, _) = filter.parts();
                 if c == "_change_id" {
                     lines.push(format!(", {}", get_change_sql(&mut sql_param_gen)));
+                    params.push(json!(self.table_name));
                 }
             }
         } else {
@@ -836,6 +851,7 @@ impl Select {
                 let (_, c, _, _) = filter.parts();
                 if c == "_change_id" {
                     lines.push(get_change_sql(&mut sql_param_gen));
+                    params.push(json!(self.table_name));
                 }
             }
             for field in &self.select {
@@ -865,10 +881,6 @@ impl Select {
 
         // The WHERE clause:
         for (i, filter) in self.filters.iter().enumerate() {
-            let mut filter = filter.clone();
-            if filter.get_table() == "" {
-                filter.set_table(&target);
-            }
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
             lines.push(format!("{keyword} {filter_sql}"));
@@ -907,10 +919,6 @@ impl Select {
             lines.push(join.to_sql());
         }
         for (i, filter) in self.filters.iter().enumerate() {
-            let mut filter = filter.clone();
-            if filter.get_table() == "" {
-                filter.set_table(&target);
-            }
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let (s, p) = filter.to_sql_count(kind)?;
             lines.push(format!("{keyword} {s}"));
@@ -1736,6 +1744,7 @@ pub fn render_values(
 mod tests {
     use crate::sql::CachingStrategy;
     use async_std::task::block_on;
+    use pretty_assertions::assert_eq;
 
     use super::*;
 
@@ -1756,8 +1765,9 @@ mod tests {
             format: &Format,
             query_params: &JsonValue,
             expected_sql: &str,
+            expected_sql_params: Vec<JsonValue>,
             expected_sql_count: &str,
-            expected_params: Vec<JsonValue>,
+            expected_sql_count_params: Vec<JsonValue>,
         ) {
             let base = "http://example.com";
 
@@ -1770,12 +1780,12 @@ mod tests {
 
             let (actual_sql, actual_params) = select.to_sql(&rltbl.connection.kind()).unwrap();
             assert_eq!(actual_sql, expected_sql);
-            assert_eq!(actual_params, expected_params);
+            assert_eq!(actual_params, expected_sql_params);
 
             let (actual_sql_count, actual_params) =
                 select.to_sql_count(&rltbl.connection.kind()).unwrap();
             assert_eq!(actual_sql_count, expected_sql_count);
-            assert_eq!(actual_params, expected_params);
+            assert_eq!(actual_params, expected_sql_count_params);
         }
 
         test(
@@ -1790,6 +1800,7 @@ FROM "penguin"
 ORDER BY "penguin"._order ASC
 LIMIT 100"#
             ),
+            vec![],
             &format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin""#
@@ -1810,39 +1821,69 @@ FROM "penguin""#
             &format!(
                 r#"SELECT *
 FROM "penguin"
-WHERE "penguin"."sample_number" = {sql_param}
+WHERE "sample_number" = {sql_param}
 ORDER BY "penguin"._order ASC
 LIMIT 1
 OFFSET 2"#
             ),
+            vec![json!("5")],
             &format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "penguin"."sample_number" = {sql_param}"#
+WHERE "sample_number" = {sql_param}"#
             ),
             vec![json!("5")],
         );
 
         test(
             &rltbl,
-            "http://example.com/penguin?foo.bar=eq.5&limit=1",
+            "http://example.com/penguin?penguin.bar=eq.5&limit=1",
             "penguin",
             &Format::Default,
             &json!({
-               "foo.bar": "eq.5",
+               "penguin.bar": "eq.5",
                "limit": "1",
             }),
             &format!(
                 r#"SELECT *
 FROM "penguin"
-WHERE "foo"."bar" = {sql_param}
+WHERE "penguin"."bar" = {sql_param}
 ORDER BY "penguin"._order ASC
 LIMIT 1"#
             ),
+            vec![json!("5")],
             &format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "foo"."bar" = {sql_param}"#
+WHERE "penguin"."bar" = {sql_param}"#
+            ),
+            vec![json!("5")],
+        );
+
+        test(
+            &rltbl,
+            "http://example.com/penguin?_change_id=gt.5",
+            "penguin",
+            &Format::Default,
+            &json!({
+               "_change_id": "gt.5",
+            }),
+            &format!(
+                r#"SELECT *
+, (SELECT MAX(change_id) FROM history
+                    WHERE "table" = {sql_param}
+                      AND "row" = "penguin"._id
+                   ) AS _change_id
+FROM "penguin"
+WHERE "_change_id" > {sql_param}
+ORDER BY "penguin"._order ASC
+LIMIT 100"#
+            ),
+            vec![json!("penguin"), json!("5")],
+            &format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "_change_id" > {sql_param}"#
             ),
             vec![json!("5")],
         );
@@ -1991,7 +2032,9 @@ FROM "penguin_test""#
         let mut inner_select = Select::from("penguin").limit(&0);
         inner_select.select_table_column("penguin", "individual_id");
         inner_select.left_join("penguin", "individual_id", "egg", "individual_id");
-        inner_select.eq("individual_id", &"N1").unwrap();
+        inner_select
+            .table_eq("penguin", "individual_id", &"N1")
+            .unwrap();
         let mut outer_select = Select::from("penguin").limit(&0);
         outer_select.is_in_subquery("individual_id", &inner_select);
 
