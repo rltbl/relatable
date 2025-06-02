@@ -1101,7 +1101,7 @@ impl SelectField {
                     column = format!("{column}")
                 )
             }
-            _ => todo!("Select Expressions are not supported"),
+            _ => panic!("Select Expressions are not supported"),
         }
     }
 }

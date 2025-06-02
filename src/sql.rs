@@ -812,9 +812,9 @@ pub fn prepare_sqlx_query<'a>(
     Ok(query)
 }
 
-/// TODO: Add docstring
+/// Execute the given rusqlite statement
 #[cfg(feature = "rusqlite")]
-pub fn submit_rusqlite_statement(
+fn submit_rusqlite_statement(
     stmt: &mut rusqlite::Statement<'_>,
     params: Option<&JsonValue>,
 ) -> Result<Vec<JsonRow>> {
@@ -845,8 +845,8 @@ pub fn submit_rusqlite_statement(
     Ok(result)
 }
 
-/// TODO: Add docstring
-pub fn valid_params(params: Option<&JsonValue>) -> bool {
+/// Validate that the given parameters are in the form of a JSON Array.
+fn valid_params(params: Option<&JsonValue>) -> bool {
     tracing::trace!("valid_params({params:?})");
     if let Some(params) = params {
         match params {
@@ -858,8 +858,8 @@ pub fn valid_params(params: Option<&JsonValue>) -> bool {
     }
 }
 
-/// TODO: Add docstring
-pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
+/// Extract the first value of the first row in `rows`.
+fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
     tracing::trace!("extract_value({rows:?})");
     match rows.iter().next() {
         Some(row) => match row.content.values().next() {
@@ -874,7 +874,8 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
 // Functions for generating DDL
 ////////////////
 
-/// TODO: Add docstring
+/// Generate DDL to create the given table in the database. If `force` is set, drop the table
+/// first.
 pub fn generate_table_ddl(
     table: &Table,
     force: bool,
@@ -974,7 +975,7 @@ pub fn generate_table_ddl(
     Ok(ddl)
 }
 
-/// TODO: Add docstring
+/// Add triggers for updating the meta columns, _id, and _order, of the given table.
 pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
     let update_stmt = format!(
         r#"UPDATE "{table}" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
@@ -1031,7 +1032,7 @@ pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &
     };
 }
 
-/// TODO: Add docstring
+/// Add a trigger to update the query cache for the given table.
 pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
     match db_kind {
         DbKind::Sqlite => {
@@ -1091,7 +1092,7 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
     };
 }
 
-/// TODO: Add docstring
+/// Generate the DDL for creating a view on the given table,
 pub fn generate_view_ddl(
     table_name: &str,
     view_name: &str,
@@ -1188,7 +1189,7 @@ pub fn generate_view_ddl(
     }
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the table table. If `force` is set, drop the table first
 pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_table_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1216,7 +1217,7 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the cache table. If `force` is set, drop the table first
 pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_cache_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1245,7 +1246,7 @@ pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 // TODO: When the Table struct is rich enough to support different datatypes, foreign keys,
 // and defaults, create these other meta tables in a similar way to the table table above.
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the user table. If `force` is set, drop the table first
 pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_user_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1266,7 +1267,7 @@ pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the change table. If `force` is set, drop the table first
 pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_change_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1307,7 +1308,7 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     }
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the history table. If `force` is set, drop the table first
 pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_history_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1348,7 +1349,7 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     }
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the message table. If `force` is set, drop the table first
 pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_message_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1393,7 +1394,8 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     }
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create all of the required meta tables. If `force` is set, drop the
+/// tables first
 pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_meta_tables_ddl({force}, {db_kind:?})");
     let mut ddl = generate_table_table_ddl(force, db_kind);
@@ -1410,7 +1412,7 @@ pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 ///////////////////////////////////////////////////////////////////////////////
 
 // WARN: This needs to be thought through.
-/// TODO: Add docstring
+/// Convert the given JSON value to a string
 pub fn json_to_string(value: &JsonValue) -> String {
     match value {
         JsonValue::Null => "".to_string(),
@@ -1422,7 +1424,7 @@ pub fn json_to_string(value: &JsonValue) -> String {
     }
 }
 
-/// TODO: Add docstring
+/// Convert the given JSON value to an unsigned integer
 pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
     match value {
         JsonValue::Bool(flag) => match flag {
@@ -1463,21 +1465,21 @@ where
     }
 }
 
-/// TODO: Add docstring
+/// A JSON representation of a database row
 #[derive(Clone, Serialize, Deserialize)]
 pub struct JsonRow {
     pub content: JsonMap<String, JsonValue>,
 }
 
 impl JsonRow {
-    /// TODO: Add docstring
+    /// Initialize an empty [JsonRow]
     pub fn new() -> Self {
         Self {
             content: JsonMap::new(),
         }
     }
 
-    /// TODO: Add docstring
+    /// Set any column values whose content matches the column's nulltype to [JsonValue::Null]
     pub fn nullified(row: &Self, table: &Table) -> Self {
         tracing::debug!("nullified({row:?}, {table:?})");
         let mut nullified_row = Self::new();
@@ -1502,7 +1504,7 @@ impl JsonRow {
         nullified_row
     }
 
-    /// TODO: Add docstring
+    /// Get the value of the given column from the row
     pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
         let value = self.content.get(column_name);
         match value {
@@ -1511,7 +1513,8 @@ impl JsonRow {
         }
     }
 
-    /// TODO: Add docstring
+    /// Get the value of the given column fromt he row and convert it to a string before returning
+    /// it
     pub fn get_string(&self, column_name: &str) -> Result<String> {
         let value = self.content.get(column_name);
         match value {
@@ -1520,7 +1523,8 @@ impl JsonRow {
         }
     }
 
-    /// TODO: Add docstring
+    /// Get the value of the given column fromt he row and convert it to an unsigned integer
+    /// before returning it
     pub fn get_unsigned(&self, column_name: &str) -> Result<usize> {
         let value = self.content.get(column_name);
         match value {
@@ -1529,7 +1533,8 @@ impl JsonRow {
         }
     }
 
-    /// TODO: Add docstring
+    /// Initialize a new row from the given list of column names and set all values to
+    /// [JsonValue::Null]
     pub fn from_strings(strings: &Vec<&str>) -> Self {
         let mut json_row = Self::new();
         for string in strings {
@@ -1538,7 +1543,7 @@ impl JsonRow {
         json_row
     }
 
-    /// TODO: Add docstring
+    /// Return all of the values in this row to a vector of strings and return it
     pub fn to_strings(&self) -> Vec<String> {
         let mut result = vec![];
         for column_name in self.content.keys() {
@@ -1549,7 +1554,7 @@ impl JsonRow {
         result
     }
 
-    /// TODO: Add docstring
+    /// Generate a map from the column names of the row to their values and return it
     pub fn to_string_map(&self) -> IndexMap<String, String> {
         let mut result = IndexMap::new();
         for column_name in self.content.keys() {
@@ -1561,7 +1566,7 @@ impl JsonRow {
         result
     }
 
-    /// TODO: Add docstring
+    /// Initialize a [JsonRow] from the given [rusqlite::Row]
     #[cfg(feature = "rusqlite")]
     pub fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
         let mut content = JsonMap::new();

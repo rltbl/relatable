@@ -23,9 +23,9 @@ $ git config core.pager cat
 Now we set up Relatable and make a first commit:
 
 ```console tesh-session="git"
-$ rltbl demo --size 1 --force
+$ rltbl -v demo --size 1 --force
 Created a demonstration database in '.relatable/relatable.db'
-$ rltbl save
+$ rltbl -v save
 $ echo '.relatable/' > .gitignore
 $ git add .gitignore penguin.tsv
 $ git commit --message 'Initial commit'
@@ -45,7 +45,7 @@ Without setting `RLTBL_GIT_AUTHOR`,
 changes are not committed:
 
 ```console tesh-session="git"
-$ rltbl set value penguin 1 study_name FOO
+$ rltbl -v set value penguin 1 study_name FOO
 $ git status
 On branch master
 nothing to commit, working tree clean
@@ -62,7 +62,7 @@ tables are saved and committed with that author:
 
 ```console tesh-session="git"
 $ export RLTBL_GIT_AUTHOR='Bob <bob@example.com>'
-$ rltbl set value penguin 1 study_name BAR
+$ rltbl -v set value penguin 1 study_name BAR
 $ git log
 commit ... (HEAD -> master)
 Author: Bob <bob@example.com>
@@ -82,7 +82,7 @@ will amend the commit,
 just like using `git commit --amend`:
 
 ```console tesh-session="git"
-$ rltbl set value penguin 1 study_name BAZ
+$ rltbl -v set value penguin 1 study_name BAZ
 $ git log
 commit ... (HEAD -> master)
 Author: Bob <bob@example.com>
@@ -102,7 +102,7 @@ then a new commit is made:
 
 ```console tesh-session="git"
 $ export RLTBL_GIT_AUTHOR='Cam <cam@example.com>'
-$ rltbl set value penguin 1 study_name CAM
+$ rltbl -v set value penguin 1 study_name CAM
 $ git log
 commit ... (HEAD -> master)
 Author: Cam <cam@example.com>

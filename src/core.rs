@@ -238,7 +238,9 @@ impl Relatable {
         Ok(rltbl)
     }
 
-    /// TODO: Add docstring
+    /// Create a demonstration table with the given name, add entries corresponding to it
+    /// to the column table, and add `size` rows of data to it. Drop the table first if `force` is
+    /// set.
     pub async fn create_demo_table(&self, table: &str, force: &bool, size: usize) -> Result<()> {
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
@@ -273,17 +275,14 @@ impl Relatable {
         self.connection.query(&sql, None).await?;
 
         let sql = format!(
-            r#"INSERT INTO "column"
-               ("table",   "column",        "label",      "description", "nulltype",  "datatype")
-               VALUES
-               ('{table}', 'study_name',    'muddy_name',  NULL,              'empty', NULL),
-               ('{table}', 'island',        NULL,          NULL,              'empty', NULL),
-               ('{table}', 'individual_id', NULL,          NULL,              'empty', NULL),
-               ('{table}', 'culmen_length', NULL,          NULL,              'empty', NULL),
-               ('{table}', 'body_mass',     NULL,          NULL,              'empty', NULL),
-               ('{table}', 'sample_number', NULL,          'a sample number', 'empty', 'integer'),
-               ('{table}', 'maple_syrup',   'maple syrup', NULL,              NULL,    'text'),
-               ('{table}', 'species',       NULL,          NULL,              'empty', 'text')"#
+            r#"
+            INSERT INTO "column"
+            ("table",   "column",        "label",       "description",     "nulltype",  "datatype")
+            VALUES
+            ('{table}', 'study_name',    'muddy_name',  NULL,              NULL,        NULL),
+            ('{table}', 'sample_number', NULL,          'a sample number', NULL,        'integer'),
+            ('{table}', 'maple_syrup',   'maple syrup', NULL,              NULL,        'text'),
+            ('{table}', 'species',       NULL,          NULL,              'empty',     'text')"#
         );
         self.connection.query(&sql, None).await?;
 
@@ -546,7 +545,8 @@ impl Relatable {
         }
     }
 
-    /// TODO: Add docstring
+    /// Delete all entries from the cache corresponding to the given table, or clear it completely
+    /// if no table is given.
     pub fn clear_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
         let mut sql = r#"DELETE FROM "cache""#.to_string();
         if let Some(table) = table {
@@ -579,7 +579,7 @@ impl Relatable {
         Ok(())
     }
 
-    /// TODO: Add doctring
+    /// Delete all entries from the in-memory cache corresponding to the given table
     pub fn clear_mem_cache(&self, table: &str) {
         let table = format!("\"{table}\"");
         let mut cache = CACHE.lock().expect("Could not lock cache");
@@ -692,6 +692,7 @@ impl Relatable {
             table
         };
 
+        // TODO: Remove this info!
         tracing::info!("TABLE: {table:#?}");
 
         // Generate the SQL statements needed to create the table and execute them:
@@ -768,7 +769,7 @@ impl Relatable {
                         };
                         let datatype = table
                             .get_column_attribute(column, "datatype")
-                            .unwrap_or("".to_string());
+                            .unwrap_or("text".to_string());
                         let nulltype = {
                             if value == "" {
                                 table.get_column_attribute(column, "nulltype")
@@ -786,11 +787,17 @@ impl Relatable {
                         None => {
                             sql_params.push(sql_param_gen.next());
                             if value == "" {
-                                panic!("Empty value for column '{column}' that has no nulltype");
+                                tracing::warn!(
+                                    "Got empty value for column '{column}' with no nulltype"
+                                );
                             }
                             let value = match datatype.to_lowercase().as_str() {
                                 "integer" => match value.parse::<isize>() {
                                     Ok(signed) => json!(signed),
+                                    Err(_) if value == "" => {
+                                        tracing::warn!("Setting value to -1");
+                                        json!(-1)
+                                    }
                                     Err(err) => {
                                         panic!(
                                             "{value} could not be parsed as a signed integer: {err}"
