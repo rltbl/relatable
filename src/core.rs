@@ -794,14 +794,9 @@ impl Relatable {
                             let value = match datatype.to_lowercase().as_str() {
                                 "integer" => match value.parse::<isize>() {
                                     Ok(signed) => json!(signed),
-                                    Err(_) if value == "" => {
-                                        tracing::warn!("Setting value to -1");
-                                        json!(-1)
-                                    }
                                     Err(err) => {
-                                        panic!(
-                                            "{value} could not be parsed as a signed integer: {err}"
-                                        );
+                                        tracing::warn!("'{value}' could not be parsed as a signed integer: '{err}'. Setting to -1");
+                                        json!(-1)
                                     }
                                 },
                                 _ => json!(value),
