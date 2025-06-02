@@ -276,10 +276,14 @@ impl Relatable {
             r#"INSERT INTO "column"
                ("table",   "column",        "label",      "description", "nulltype",  "datatype")
                VALUES
-               ('{table}', 'study_name',    'muddy_name', NULL,              NULL,    NULL),
-               ('{table}', 'sample_number', NULL,         'a sample number', NULL,    'integer'),
-               ('{table}', 'maple_syrup',   'maple syrup', NULL,             NULL,    'text'),
-               ('{table}', 'species',       NULL,          NULL,             'empty', 'text')"#
+               ('{table}', 'study_name',    'muddy_name',  NULL,              'empty', NULL),
+               ('{table}', 'island',        NULL,          NULL,              'empty', NULL),
+               ('{table}', 'individual_id', NULL,          NULL,              'empty', NULL),
+               ('{table}', 'culmen_length', NULL,          NULL,              'empty', NULL),
+               ('{table}', 'body_mass',     NULL,          NULL,              'empty', NULL),
+               ('{table}', 'sample_number', NULL,          'a sample number', 'empty', 'integer'),
+               ('{table}', 'maple_syrup',   'maple syrup', NULL,              NULL,    'text'),
+               ('{table}', 'species',       NULL,          NULL,              'empty', 'text')"#
         );
         self.connection.query(&sql, None).await?;
 
@@ -756,29 +760,47 @@ impl Relatable {
             sql_params.push(sql_param_gen.next());
             let sql_params = {
                 for (i, value) in row.iter().enumerate() {
-                    // TODO: Be aware of the column datatype
-                    let nulltype = {
-                        if value == "" {
-                            // We add 2 here because of _id and _order:
-                            match columns.get(i + 2) {
-                                Some(column) => Some(
-                                    table
-                                        .get_column_attribute(column, "nulltype")
-                                        .unwrap_or("".to_string()),
-                                ),
-                                None => panic!("Unable to retrieve column {}", i + 2),
+                    let (column, datatype, nulltype) = {
+                        // We add 2 here because of _id and _order:
+                        let column = match columns.get(i + 2) {
+                            Some(column) => column,
+                            None => panic!("Unable to retrieve column {}", i + 2),
+                        };
+                        let datatype = table
+                            .get_column_attribute(column, "datatype")
+                            .unwrap_or("".to_string());
+                        let nulltype = {
+                            if value == "" {
+                                table.get_column_attribute(column, "nulltype")
+                            } else {
+                                None
                             }
-                        } else {
-                            None
-                        }
+                        };
+                        (column, datatype, nulltype)
                     };
                     match nulltype {
                         Some(nulltype) if nulltype == "empty" => {
                             sql_params.push("NULL".to_string());
                         }
-                        _ => {
+                        Some(nulltype) => panic!("Nulltype '{nulltype}' not supported"),
+                        None => {
                             sql_params.push(sql_param_gen.next());
-                            param_values.push(json!(value))
+                            if value == "" {
+                                panic!("Empty value for column '{column}' that has no nulltype");
+                            }
+                            let value = match datatype.to_lowercase().as_str() {
+                                "integer" => match value.parse::<isize>() {
+                                    Ok(signed) => json!(signed),
+                                    Err(err) => {
+                                        panic!(
+                                            "{value} could not be parsed as a signed integer: {err}"
+                                        );
+                                    }
+                                },
+                                _ => json!(value),
+                            };
+
+                            param_values.push(value)
                         }
                     };
                 }
@@ -1163,7 +1185,7 @@ impl Relatable {
         tracing::trace!("Relatable::get_user({username:?})");
         let statement = format!(
             r#"SELECT "name", "color", "cursor", "datetime"
-               FROM user WHERE name = '{username}' LIMIT 1"#
+               FROM "user" WHERE name = '{username}' LIMIT 1"#
         );
         let user = self.connection.query_one(&statement, None).await;
         match user {
@@ -1191,11 +1213,13 @@ impl Relatable {
         tracing::trace!("Relatable::get_users()");
         let mut users = IndexMap::new();
         // let statement = format!(
-        //     r#"SELECT "name", color", "cursor", "datetime" FROM user WHERE cursor IS NOT NULL
+        //     r#"SELECT "name", color", "cursor", "datetime" FROM "user" WHERE cursor IS NOT NULL
         //        AND "datetime" >= DATETIME('now', '-10 minutes')"#
         // );
         let statement = format!(
-            r#"SELECT "name", "color", "cursor", "datetime" FROM user WHERE cursor {is_not} NULL"#,
+            r#"SELECT "name", "color", "cursor", "datetime"
+               FROM "user"
+               WHERE cursor {is_not} NULL"#,
             is_not = sql::is_not_clause(&self.connection.kind()),
         );
         let rows = self.connection.query(&statement, None).await?;
@@ -1311,7 +1335,7 @@ impl Relatable {
         };
 
         let statement = format!(
-            r#"SELECT max(change_id) FROM history WHERE "table" = {sql_param}"#,
+            r#"SELECT MAX("change_id") FROM "history" WHERE "table" = {sql_param}"#,
             sql_param = SqlParam::new(&tx.kind()).next()
         );
         let params = json!([table_name]);
@@ -1337,11 +1361,11 @@ impl Relatable {
         let mut tables = IndexMap::new();
         let statement = format!(
             r#"SELECT "_id", "_order", "table", "path",
-                 (SELECT max(change_id)
-                  FROM history
-                  WHERE history."table" = "table"."table"
-                 ) AS _change_id
-               FROM 'table'"#
+                 (SELECT MAX(change_id)
+                  FROM "history"
+                  WHERE "history"."table" = "table"."table"
+                 ) AS "_change_id"
+               FROM "table""#
         );
 
         let rows = self.connection.query(&statement, None).await?;

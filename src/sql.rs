@@ -49,7 +49,7 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 /// that can be bound to a Postgres query
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
 
-/// TODO: Add docstring
+/// Default size for the in-memory cache
 pub static DEFAULT_MEMORY_CACHE_SIZE: usize = 1000;
 
 /// Strategy to use for caching
@@ -62,7 +62,7 @@ pub enum CachingStrategy {
     Memory(usize),
 }
 
-/// TODO: Add docstrng
+/// The structure used to look up query results in the in-memory cache:
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MemoryCacheKey {
     pub tables: String,
@@ -177,14 +177,14 @@ impl SqlParam {
     }
 }
 
-/// TODO: Add docstring
+/// Represents an active database connection
 #[derive(Debug)]
 pub enum DbActiveConnection {
     #[cfg(feature = "rusqlite")]
     Rusqlite(rusqlite::Connection),
 }
 
-/// TODO: Add docstring
+/// Represents a database connection
 #[derive(Debug)]
 pub enum DbConnection {
     #[cfg(feature = "sqlx")]
@@ -195,7 +195,7 @@ pub enum DbConnection {
 }
 
 impl DbConnection {
-    /// TODO: Add docstring
+    /// Returns the kind of database that this connection is associated with
     pub fn kind(&self) -> DbKind {
         tracing::trace!("DbConnection::kind()");
         match self {
@@ -206,7 +206,7 @@ impl DbConnection {
         }
     }
 
-    /// TODO: Add docstring
+    /// Connects to the given database
     pub async fn connect(database: &str) -> Result<(Self, Option<DbActiveConnection>)> {
         tracing::trace!("DbConnection::connect({database})");
         let is_postgresql = database.starts_with("postgresql://");
@@ -268,7 +268,7 @@ impl DbConnection {
         }
     }
 
-    /// TODO: Add docstring
+    /// Reconnect to the current database
     pub fn reconnect(&self) -> Result<Option<DbActiveConnection>> {
         tracing::trace!("DbConnection::reconnect()");
         match self {
@@ -281,7 +281,7 @@ impl DbConnection {
         }
     }
 
-    /// TODO: Add docstring
+    /// Begin a transaction
     pub async fn begin<'a>(
         &self,
         conn: &'a mut Option<DbActiveConnection>,
@@ -346,7 +346,7 @@ impl DbConnection {
         }
     }
 
-    /// TODO: Add docstring
+    /// Query for a single row
     pub async fn query_one(
         &self,
         statement: &str,
@@ -360,7 +360,7 @@ impl DbConnection {
         }
     }
 
-    /// TODO: Add docstring
+    /// Query for a single value
     pub async fn query_value(
         &self,
         statement: &str,
@@ -371,7 +371,7 @@ impl DbConnection {
         Ok(extract_value(&rows))
     }
 
-    /// TODO: Add docstring
+    /// Attempt to use the cache to query
     pub async fn cache(
         &self,
         sql: &str,
@@ -518,7 +518,7 @@ impl DbConnection {
     }
 }
 
-/// TODO: Add docstring
+/// A database transaction
 #[derive(Debug)]
 pub enum DbTransaction<'a> {
     #[cfg(feature = "sqlx")]
@@ -529,7 +529,7 @@ pub enum DbTransaction<'a> {
 }
 
 impl DbTransaction<'_> {
-    /// TODO: Add docstring
+    /// The kind of database this transaction is associated with
     pub fn kind(&self) -> DbKind {
         tracing::trace!("DbTransaction::kind()");
         match self {
@@ -540,7 +540,7 @@ impl DbTransaction<'_> {
         }
     }
 
-    /// TODO: Add docstring
+    /// Commit this transaction
     pub fn commit(self) -> Result<()> {
         tracing::trace!("DbTransaction::commit()");
         match self {
@@ -552,7 +552,7 @@ impl DbTransaction<'_> {
         Ok(())
     }
 
-    /// TODO: Add docstring
+    /// Rollback this transaction
     pub fn rollback(self) -> Result<()> {
         tracing::trace!("DbTransaction::rollback()");
         match self {
@@ -592,7 +592,7 @@ impl DbTransaction<'_> {
         }
     }
 
-    /// TODO: Add docstring
+    /// Query for a single row
     pub fn query_one(
         &mut self,
         statement: &str,
@@ -606,7 +606,7 @@ impl DbTransaction<'_> {
         }
     }
 
-    /// TODO: Add docstring
+    /// Query for a single value
     pub fn query_value(
         &mut self,
         statement: &str,
@@ -622,7 +622,7 @@ impl DbTransaction<'_> {
 // Database-specific utilities and functions
 ///////////////////////////////////////////////////////////////////////////////
 
-/// TODO: Add docstring
+/// Determine whether the given table exists in the database
 pub async fn table_exists(table: &str, conn: &DbConnection) -> Result<bool> {
     tracing::trace!("table_exists({table}, {conn:?})");
     let sql_param = SqlParam::new(&conn.kind()).next();
@@ -695,7 +695,7 @@ pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<V
     }
 }
 
-/// TODO: Add dosctring
+/// Get the given attribute of the given table and column from the column table
 pub async fn get_db_column_attribute(
     table: &str,
     column: &str,
