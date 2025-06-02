@@ -7,7 +7,7 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{RelatableError, NEW_ORDER_MULTIPLIER},
+    core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
     table::{Column, Table},
 };
 
@@ -17,13 +17,11 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
-
 use std::{fmt::Display, str::FromStr};
 
 #[cfg(feature = "rusqlite")]
 use rusqlite;
 
-#[cfg(feature = "sqlx")]
 use async_std::task::block_on;
 
 #[cfg(feature = "sqlx")]
@@ -51,13 +49,24 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 /// that can be bound to a Postgres query
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
 
+/// TODO: Add docstring
+pub static DEFAULT_MEMORY_CACHE_SIZE: usize = 1000;
+
 /// Strategy to use for caching
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CachingStrategy {
     None,
     TruncateAll,
-    TruncateForTable,
+    Truncate,
     Trigger,
+    Memory(usize),
+}
+
+/// TODO: Add docstrng
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct MemoryCacheKey {
+    pub tables: String,
+    pub sql: String,
 }
 
 impl FromStr for CachingStrategy {
@@ -68,8 +77,24 @@ impl FromStr for CachingStrategy {
         match strategy.to_lowercase().as_str() {
             "none" => Ok(Self::None),
             "truncate_all" => Ok(Self::TruncateAll),
-            "truncate" => Ok(Self::TruncateForTable),
+            "truncate" => Ok(Self::Truncate),
             "trigger" => Ok(Self::Trigger),
+            strategy if strategy.starts_with("memory:") => {
+                let elems = strategy.split(":").collect::<Vec<_>>();
+                let cache_size = {
+                    if elems.len() < 2 {
+                        DEFAULT_MEMORY_CACHE_SIZE
+                    } else {
+                        let cache_size = elems[1];
+                        let cache_size = cache_size.parse::<usize>()?;
+                        match cache_size {
+                            0 => DEFAULT_MEMORY_CACHE_SIZE,
+                            size => size,
+                        }
+                    }
+                };
+                Ok(Self::Memory(cache_size))
+            }
             _ => {
                 return Err(RelatableError::InputError(format!(
                     "Unrecognized strategy: {strategy}"
@@ -85,8 +110,9 @@ impl Display for CachingStrategy {
         match self {
             CachingStrategy::None => write!(f, "none"),
             CachingStrategy::TruncateAll => write!(f, "truncate_all"),
-            CachingStrategy::TruncateForTable => write!(f, "truncate"),
+            CachingStrategy::Truncate => write!(f, "truncate"),
             CachingStrategy::Trigger => write!(f, "trigger"),
+            CachingStrategy::Memory(size) => write!(f, "memory:{size}"),
         }
     }
 }
@@ -151,12 +177,14 @@ impl SqlParam {
     }
 }
 
+/// TODO: Add docstring
 #[derive(Debug)]
 pub enum DbActiveConnection {
     #[cfg(feature = "rusqlite")]
     Rusqlite(rusqlite::Connection),
 }
 
+/// TODO: Add docstring
 #[derive(Debug)]
 pub enum DbConnection {
     #[cfg(feature = "sqlx")]
@@ -167,6 +195,7 @@ pub enum DbConnection {
 }
 
 impl DbConnection {
+    /// TODO: Add docstring
     pub fn kind(&self) -> DbKind {
         tracing::trace!("DbConnection::kind()");
         match self {
@@ -177,6 +206,7 @@ impl DbConnection {
         }
     }
 
+    /// TODO: Add docstring
     pub async fn connect(database: &str) -> Result<(Self, Option<DbActiveConnection>)> {
         tracing::trace!("DbConnection::connect({database})");
         let is_postgresql = database.starts_with("postgresql://");
@@ -238,6 +268,7 @@ impl DbConnection {
         }
     }
 
+    /// TODO: Add docstring
     pub fn reconnect(&self) -> Result<Option<DbActiveConnection>> {
         tracing::trace!("DbConnection::reconnect()");
         match self {
@@ -250,6 +281,7 @@ impl DbConnection {
         }
     }
 
+    /// TODO: Add docstring
     pub async fn begin<'a>(
         &self,
         conn: &'a mut Option<DbActiveConnection>,
@@ -277,10 +309,10 @@ impl DbConnection {
         }
     }
 
-    // Given a connection and a SQL string, return a vector of JsonRows.
-    // This is intended as a low-level function that abstracts over the SQL engine,
-    // and whatever result types it returns.
-    // Since it uses a vector, statements should be limited to a sane number of rows.
+    /// Given a connection and a generic SQL string with placeholders and a list of parameters
+    /// to interpolate into the string, return a vector of [JsonRow]s.
+    /// Note that since this returns a vector, statements should be limited to those that will
+    /// return a sane number of rows.
     pub async fn query(&self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
         tracing::trace!("DbConnection::query({statement}, {params:?})");
         if !valid_params(params) {
@@ -314,6 +346,7 @@ impl DbConnection {
         }
     }
 
+    /// TODO: Add docstring
     pub async fn query_one(
         &self,
         statement: &str,
@@ -327,6 +360,7 @@ impl DbConnection {
         }
     }
 
+    /// TODO: Add docstring
     pub async fn query_value(
         &self,
         statement: &str,
@@ -337,52 +371,95 @@ impl DbConnection {
         Ok(extract_value(&rows))
     }
 
+    /// TODO: Add docstring
     pub async fn cache(
         &self,
         sql: &str,
         params: Option<&JsonValue>,
-        table: &str,
+        tables: &Vec<String>,
         strategy: &CachingStrategy,
     ) -> Result<Vec<JsonRow>> {
         tracing::trace!("cache({sql}, {params:?}, {strategy:?})");
 
-        async fn query_cache(
+        async fn _cache(
             conn: &DbConnection,
-            table: &str,
+            tables: &Vec<String>,
             sql: &str,
             params: Option<&JsonValue>,
         ) -> Result<Vec<JsonRow>> {
-            let query_cache_sql = {
+            let tables = tables
+                .iter()
+                .map(|t| json!(t).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let (cache_sql, tables) = {
                 let mut sql_param = SqlParam::new(&conn.kind());
-                format!(
-                    r#"SELECT "value" FROM "cache" WHERE "table" = {} AND "key" = {} LIMIT 1"#,
-                    sql_param.next(),
-                    sql_param.next()
-                )
+                match conn.kind() {
+                    DbKind::Postgres => {
+                        let sql = format!(
+                            r#"SELECT {}||rtrim(ltrim("value", '['), ']')||{} AS "value"
+                               FROM "cache"
+                               WHERE "tables"::TEXT = {}
+                               AND "key" = {} LIMIT 1"#,
+                            sql_param.next(),
+                            sql_param.next(),
+                            sql_param.next(),
+                            sql_param.next()
+                        );
+                        (sql, format!("[{tables}]"))
+                    }
+                    DbKind::Sqlite => {
+                        let sql = format!(
+                            r#"SELECT {}||rtrim(ltrim("value", '['), ']')||{} AS "value"
+                               FROM "cache"
+                               WHERE CAST("tables" AS TEXT) = {}
+                               AND "key" = {} LIMIT 1"#,
+                            sql_param.next(),
+                            sql_param.next(),
+                            sql_param.next(),
+                            sql_param.next()
+                        );
+                        (sql, format!("[{tables}]"))
+                    }
+                }
             };
-            let query_cache_params = json!([table, sql]);
-            match conn
-                .query_one(&query_cache_sql, Some(&query_cache_params))
-                .await?
-            {
+            let cache_params = json!([r#"[{"content": "#, "}]", tables, sql]);
+            match conn.query_one(&cache_sql, Some(&cache_params)).await? {
                 Some(json_row) => {
-                    tracing::debug!("Cache hit for table '{table}'");
+                    tracing::debug!("Cache hit for tables {tables}");
                     let value = json_row.get_string("value")?;
                     let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
                     Ok(json_rows)
                 }
                 None => {
-                    tracing::info!("Cache miss for table '{table}'");
+                    tracing::debug!("Cache miss for tables {tables}");
                     let json_rows = conn.query(sql, params).await?;
+                    let json_rows_content = json_rows
+                        .iter()
+                        .map(|r| r.content.clone())
+                        .collect::<Vec<_>>();
                     let mut sql_param = SqlParam::new(&conn.kind());
-                    let update_cache_sql = format!(
-                        r#"INSERT INTO "cache" ("table", "key", "value")
-                               VALUES ({}, {}, {})"#,
-                        sql_param.next(),
-                        sql_param.next(),
-                        sql_param.next(),
-                    );
-                    let update_cache_params = json!([table, sql, json_rows]);
+                    let update_cache_sql = match conn.kind() {
+                        DbKind::Postgres => {
+                            format!(
+                                r#"INSERT INTO "cache" ("tables", "key", "value")
+                                   VALUES ({}::JSONB, {}, {})"#,
+                                sql_param.next(),
+                                sql_param.next(),
+                                sql_param.next(),
+                            )
+                        }
+                        DbKind::Sqlite => {
+                            format!(
+                                r#"INSERT INTO "cache" ("tables", "key", "value")
+                                   VALUES ({}, {}, {})"#,
+                                sql_param.next(),
+                                sql_param.next(),
+                                sql_param.next(),
+                            )
+                        }
+                    };
+                    let update_cache_params = json!([tables, sql, json_rows_content]);
                     conn.query(&update_cache_sql, Some(&update_cache_params))
                         .await?;
                     Ok(json_rows)
@@ -392,13 +469,56 @@ impl DbConnection {
 
         match strategy {
             CachingStrategy::None => self.query(sql, params).await,
-            CachingStrategy::TruncateAll
-            | CachingStrategy::TruncateForTable
-            | CachingStrategy::Trigger => query_cache(self, table, sql, params).await,
+            CachingStrategy::TruncateAll | CachingStrategy::Truncate | CachingStrategy::Trigger => {
+                _cache(self, tables, sql, params).await
+            }
+            CachingStrategy::Memory(cache_size) => {
+                let mut cache = core::CACHE.lock().expect("Could not lock cache");
+                let keys = cache.keys().map(|key| key.clone()).collect::<Vec<_>>();
+
+                for (i, key) in keys.iter().enumerate().rev() {
+                    if i >= *cache_size {
+                        tracing::debug!("Removing {key:?} ({i}th entry) from cache");
+                        cache.remove(&key);
+                    } else {
+                        break;
+                    }
+                }
+
+                let tables = tables
+                    .iter()
+                    .map(|t| json!(t).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let mem_key = MemoryCacheKey {
+                    tables: tables.to_string(),
+                    sql: sql.to_string(),
+                };
+                match cache.get(&mem_key) {
+                    Some(json_rows) => {
+                        tracing::debug!("Cache hit for tables {tables}");
+                        Ok(json_rows.to_vec())
+                    }
+                    None => {
+                        tracing::debug!("Cache miss for tables {tables}");
+                        // Why is a block_on() call needed here but not above?
+                        let json_rows = block_on(self.query(sql, params))?;
+                        cache.insert(
+                            MemoryCacheKey {
+                                tables: tables.to_string(),
+                                sql: sql.to_string(),
+                            },
+                            json_rows.to_vec(),
+                        );
+                        Ok(json_rows)
+                    }
+                }
+            }
         }
     }
 }
 
+/// TODO: Add docstring
 #[derive(Debug)]
 pub enum DbTransaction<'a> {
     #[cfg(feature = "sqlx")]
@@ -409,6 +529,7 @@ pub enum DbTransaction<'a> {
 }
 
 impl DbTransaction<'_> {
+    /// TODO: Add docstring
     pub fn kind(&self) -> DbKind {
         tracing::trace!("DbTransaction::kind()");
         match self {
@@ -419,6 +540,7 @@ impl DbTransaction<'_> {
         }
     }
 
+    /// TODO: Add docstring
     pub fn commit(self) -> Result<()> {
         tracing::trace!("DbTransaction::commit()");
         match self {
@@ -430,6 +552,7 @@ impl DbTransaction<'_> {
         Ok(())
     }
 
+    /// TODO: Add docstring
     pub fn rollback(self) -> Result<()> {
         tracing::trace!("DbTransaction::rollback()");
         match self {
@@ -441,10 +564,10 @@ impl DbTransaction<'_> {
         Ok(())
     }
 
-    // Given a connection and a SQL string, return a vector of JsonRows.
-    // This is intended as a low-level function that abstracts over the SQL engine,
-    // and whatever result types it returns.
-    // Since it uses a vector, statements should be limited to a sane number of rows.
+    /// Given a connection and a generic SQL string with placeholders and a list of parameters
+    /// to interpolate into the string, return a vector of [JsonRow]s.
+    /// Note that since this returns a vector, statements should be limited to those that will
+    /// return a sane number of rows.
     pub fn query(&mut self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
         tracing::trace!("DbTransaction::query({statement}, {params:?})");
         if !valid_params(params) {
@@ -469,6 +592,7 @@ impl DbTransaction<'_> {
         }
     }
 
+    /// TODO: Add docstring
     pub fn query_one(
         &mut self,
         statement: &str,
@@ -482,6 +606,7 @@ impl DbTransaction<'_> {
         }
     }
 
+    /// TODO: Add docstring
     pub fn query_value(
         &mut self,
         statement: &str,
@@ -497,6 +622,7 @@ impl DbTransaction<'_> {
 // Database-specific utilities and functions
 ///////////////////////////////////////////////////////////////////////////////
 
+/// TODO: Add docstring
 pub async fn table_exists(table: &str, conn: &DbConnection) -> Result<bool> {
     tracing::trace!("table_exists({table}, {conn:?})");
     let sql_param = SqlParam::new(&conn.kind()).next();
@@ -535,8 +661,7 @@ pub fn view_exists_for(table: &str, tx: &mut DbTransaction<'_>) -> Result<bool> 
         DbKind::Postgres => format!(
             r#"SELECT 1
                FROM "information_schema"."tables"
-               WHERE "table_schema" = 'public'
-               AND "table_name" = {sql_param}
+               WHERE "table_name" = {sql_param}
                AND "table_type" = 'VIEW'"#,
         ),
     };
@@ -560,8 +685,7 @@ pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<V
             let sql = format!(
                 r#"SELECT "column_name"::TEXT AS "name"
                    FROM "information_schema"."columns"
-                   WHERE "table_schema" = 'public'
-                   AND "table_name" = {sql_param}
+                   WHERE "table_name" = {sql_param}
                    ORDER BY "ordinal_position""#,
                 sql_param = SqlParam::new(&tx.kind()).next()
             );
@@ -616,7 +740,7 @@ pub fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
         DbKind::Postgres => {
             let sql = format!(
                 // Note that in the case of postgres an _id column is required.
-                r#"SELECT last_value FROM public."{table}__id_seq""#
+                r#"SELECT last_value FROM "{table}__id_seq""#
             );
             tx.query_value(&sql, None)?
         }
@@ -688,6 +812,7 @@ pub fn prepare_sqlx_query<'a>(
     Ok(query)
 }
 
+/// TODO: Add docstring
 #[cfg(feature = "rusqlite")]
 pub fn submit_rusqlite_statement(
     stmt: &mut rusqlite::Statement<'_>,
@@ -720,6 +845,7 @@ pub fn submit_rusqlite_statement(
     Ok(result)
 }
 
+/// TODO: Add docstring
 pub fn valid_params(params: Option<&JsonValue>) -> bool {
     tracing::trace!("valid_params({params:?})");
     if let Some(params) = params {
@@ -732,6 +858,7 @@ pub fn valid_params(params: Option<&JsonValue>) -> bool {
     }
 }
 
+/// TODO: Add docstring
 pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
     tracing::trace!("extract_value({rows:?})");
     match rows.iter().next() {
@@ -747,6 +874,7 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
 // Functions for generating DDL
 ////////////////
 
+/// TODO: Add docstring
 pub fn generate_table_ddl(
     table: &Table,
     force: bool,
@@ -846,6 +974,7 @@ pub fn generate_table_ddl(
     Ok(ddl)
 }
 
+/// TODO: Add docstring
 pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
     let update_stmt = format!(
         r#"UPDATE "{table}" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
@@ -910,25 +1039,27 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
                 r#"CREATE TRIGGER "{table}_cache_after_insert"
                    AFTER INSERT ON "{table}"
                    BEGIN
-                     DELETE FROM "cache" WHERE "table" = '{table}';
+                     DELETE FROM "cache" WHERE "tables" LIKE '%"{table}"%';
                    END"#
             ));
             ddl.push(format!(
                 r#"CREATE TRIGGER "{table}_cache_after_update"
                    AFTER UPDATE ON "{table}"
                    BEGIN
-                     DELETE FROM "cache" WHERE "table" = '{table}';
+                     DELETE FROM "cache" WHERE "tables" LIKE '%"{table}"%';
                    END"#
             ));
             ddl.push(format!(
                 r#"CREATE TRIGGER "{table}_cache_after_delete"
                    AFTER DELETE ON "{table}"
                    BEGIN
-                     DELETE FROM "cache" WHERE "table" = '{table}';
+                     DELETE FROM "cache" WHERE "tables" LIKE '%"{table}"%';
                    END"#
             ));
         }
         DbKind::Postgres => {
+            // Note that the '?' is *not* being used as a parameter placeholder here
+            // but a JSONB operator.
             ddl.push(format!(
                 r#"CREATE OR REPLACE FUNCTION "clean_cache_for_{table}"()
                      RETURNS TRIGGER
@@ -936,7 +1067,7 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
                    AS
                    $$
                    BEGIN
-                     DELETE FROM "cache" WHERE "table" = '{table}';
+                     DELETE FROM "cache" WHERE "tables" ? '{table}';
                      RETURN NEW;
                    END;
                    $$"#
@@ -960,6 +1091,7 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
     };
 }
 
+/// TODO: Add docstring
 pub fn generate_view_ddl(
     table_name: &str,
     view_name: &str,
@@ -1056,6 +1188,7 @@ pub fn generate_view_ddl(
     }
 }
 
+/// TODO: Add docstring
 pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_table_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1083,6 +1216,7 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl
 }
 
+/// TODO: Add docstring
 pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_cache_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1092,12 +1226,17 @@ pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
         }
     }
 
+    let json_type = match db_kind {
+        DbKind::Postgres => "JSONB",
+        DbKind::Sqlite => "JSON",
+    };
+
     ddl.push(format!(
         r#"CREATE TABLE "cache" (
-             "table" TEXT,
+             "tables" {json_type},
              "key" TEXT,
              "value" TEXT,
-              PRIMARY KEY ("table", "key")
+              PRIMARY KEY ("tables", "key")
            )"#
     ));
     ddl
@@ -1106,6 +1245,7 @@ pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 // TODO: When the Table struct is rich enough to support different datatypes, foreign keys,
 // and defaults, create these other meta tables in a similar way to the table table above.
 
+/// TODO: Add docstring
 pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_user_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1126,6 +1266,7 @@ pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl
 }
 
+/// TODO: Add docstring
 pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_change_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1166,6 +1307,7 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     }
 }
 
+/// TODO: Add docstring
 pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_history_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1206,6 +1348,7 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     }
 }
 
+/// TODO: Add docstring
 pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_message_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1250,6 +1393,7 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     }
 }
 
+/// TODO: Add docstring
 pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_meta_tables_ddl({force}, {db_kind:?})");
     let mut ddl = generate_table_table_ddl(force, db_kind);
@@ -1262,14 +1406,11 @@ pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Utilities for dealing with JSON representations of rows. The reason these
-// are located here instead of in core.rs is because the implementation of
-// JsonRow is dependent, in part, on whether the sqlx or rusqlite crate feature
-// is enabled. Encapsulating the handling of that crate feature from the rest of
-// the API is the other purpose of this module.
+// Utilities for dealing with JSON representations of database rows.
 ///////////////////////////////////////////////////////////////////////////////
 
 // WARN: This needs to be thought through.
+/// TODO: Add docstring
 pub fn json_to_string(value: &JsonValue) -> String {
     match value {
         JsonValue::Null => "".to_string(),
@@ -1281,6 +1422,7 @@ pub fn json_to_string(value: &JsonValue) -> String {
     }
 }
 
+/// TODO: Add docstring
 pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
     match value {
         JsonValue::Bool(flag) => match flag {
@@ -1321,18 +1463,21 @@ where
     }
 }
 
+/// TODO: Add docstring
 #[derive(Clone, Serialize, Deserialize)]
 pub struct JsonRow {
     pub content: JsonMap<String, JsonValue>,
 }
 
 impl JsonRow {
+    /// TODO: Add docstring
     pub fn new() -> Self {
         Self {
             content: JsonMap::new(),
         }
     }
 
+    /// TODO: Add docstring
     pub fn nullified(row: &Self, table: &Table) -> Self {
         tracing::debug!("nullified({row:?}, {table:?})");
         let mut nullified_row = Self::new();
@@ -1357,6 +1502,7 @@ impl JsonRow {
         nullified_row
     }
 
+    /// TODO: Add docstring
     pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
         let value = self.content.get(column_name);
         match value {
@@ -1365,6 +1511,7 @@ impl JsonRow {
         }
     }
 
+    /// TODO: Add docstring
     pub fn get_string(&self, column_name: &str) -> Result<String> {
         let value = self.content.get(column_name);
         match value {
@@ -1373,6 +1520,7 @@ impl JsonRow {
         }
     }
 
+    /// TODO: Add docstring
     pub fn get_unsigned(&self, column_name: &str) -> Result<usize> {
         let value = self.content.get(column_name);
         match value {
@@ -1381,6 +1529,7 @@ impl JsonRow {
         }
     }
 
+    /// TODO: Add docstring
     pub fn from_strings(strings: &Vec<&str>) -> Self {
         let mut json_row = Self::new();
         for string in strings {
@@ -1389,6 +1538,7 @@ impl JsonRow {
         json_row
     }
 
+    /// TODO: Add docstring
     pub fn to_strings(&self) -> Vec<String> {
         let mut result = vec![];
         for column_name in self.content.keys() {
@@ -1399,6 +1549,7 @@ impl JsonRow {
         result
     }
 
+    /// TODO: Add docstring
     pub fn to_string_map(&self) -> IndexMap<String, String> {
         let mut result = IndexMap::new();
         for column_name in self.content.keys() {
@@ -1410,8 +1561,9 @@ impl JsonRow {
         result
     }
 
+    /// TODO: Add docstring
     #[cfg(feature = "rusqlite")]
-    fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
+    pub fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
         let mut content = JsonMap::new();
         for column_name in column_names {
             let value = match row.get_ref(*column_name) {
