@@ -1167,16 +1167,22 @@ impl Relatable {
                FROM user WHERE name = '{username}' LIMIT 1"#
         );
         let user = self.connection.query_one(&statement, None).await;
-        if let Ok(user) = user {
-            if let Some(user) = user {
-                return Account {
+        match user {
+            Ok(user) => match user {
+                Some(user) => Account {
                     name: username.to_string(),
                     color: user.get_string("color").expect("No 'color' found"),
-                };
+                },
+                None => Account {
+                    ..Default::default()
+                },
+            },
+            Err(err) => {
+                tracing::warn!("Error while querying user table: '{err}'");
+                Account {
+                    ..Default::default()
+                }
             }
-        }
-        Account {
-            ..Default::default()
         }
     }
 
