@@ -2,11 +2,12 @@ This test is identical (as of 2025-04-13) to the test in `doc/messsage.md` but i
 
 ```console tesh-session="test"
 $ export RLTBL_CONNECTION=postgresql:///rltbl_db
+$ alias rltbl='rltbl -v'
 $ rltbl demo --size 10 --force
 Created a demonstration database in 'postgresql:///rltbl_db'
 $ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
 $ echo '{"level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 4 species
-$ rltbl -v get table penguin
+$ rltbl get table penguin
 Rows 1-10 of 10
 study_name  sample_number  species             island     individual_id  culmen_length  body_mass
 FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.6           3221
