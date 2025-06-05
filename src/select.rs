@@ -491,6 +491,14 @@ impl Select {
                 let captures = like.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
+                let value = match serde_json::from_str(value)? {
+                    JsonValue::Null => "NULL".to_string(),
+                    JsonValue::Bool(value) => value.to_string(),
+                    JsonValue::Number(value) => value.to_string(),
+                    JsonValue::String(value) => value.to_string(),
+                    JsonValue::Array(value) => format!("{value:?}"),
+                    JsonValue::Object(value) => format!("{value:?}"),
+                };
                 let value = maybe_quote_value(&value)?;
                 self.filters.push(Filter::Like {
                     table: "".to_string(),
@@ -501,7 +509,14 @@ impl Select {
                 let captures = eq.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = maybe_quote_value(&value)?;
+                let value = match serde_json::from_str(value)? {
+                    JsonValue::String(_)
+                    | JsonValue::Null
+                    | JsonValue::Bool(_)
+                    | JsonValue::Array(_)
+                    | JsonValue::Object(_) => maybe_quote_value(&value)?,
+                    JsonValue::Number(value) => JsonValue::Number(value),
+                };
                 self.filters.push(Filter::Equal {
                     table: "".to_string(),
                     column,
@@ -511,7 +526,14 @@ impl Select {
                 let captures = not_eq.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = maybe_quote_value(&value)?;
+                let value = match serde_json::from_str(value)? {
+                    JsonValue::String(_)
+                    | JsonValue::Null
+                    | JsonValue::Bool(_)
+                    | JsonValue::Array(_)
+                    | JsonValue::Object(_) => maybe_quote_value(&value)?,
+                    JsonValue::Number(value) => JsonValue::Number(value),
+                };
                 self.filters.push(Filter::NotEqual {
                     table: "".to_string(),
                     column,
@@ -521,7 +543,14 @@ impl Select {
                 let captures = gt.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = maybe_quote_value(&value)?;
+                let value = match serde_json::from_str(value)? {
+                    JsonValue::String(_)
+                    | JsonValue::Null
+                    | JsonValue::Bool(_)
+                    | JsonValue::Array(_)
+                    | JsonValue::Object(_) => maybe_quote_value(&value)?,
+                    JsonValue::Number(value) => JsonValue::Number(value),
+                };
                 self.filters.push(Filter::GreaterThan {
                     table: "".to_string(),
                     column,
@@ -531,7 +560,14 @@ impl Select {
                 let captures = gte.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = maybe_quote_value(value)?;
+                let value = match serde_json::from_str(value)? {
+                    JsonValue::String(_)
+                    | JsonValue::Null
+                    | JsonValue::Bool(_)
+                    | JsonValue::Array(_)
+                    | JsonValue::Object(_) => maybe_quote_value(&value)?,
+                    JsonValue::Number(value) => JsonValue::Number(value),
+                };
                 self.filters.push(Filter::GreaterThanOrEqual {
                     table: "".to_string(),
                     column,
@@ -541,7 +577,14 @@ impl Select {
                 let captures = lt.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = maybe_quote_value(&value)?;
+                let value = match serde_json::from_str(value)? {
+                    JsonValue::String(_)
+                    | JsonValue::Null
+                    | JsonValue::Bool(_)
+                    | JsonValue::Array(_)
+                    | JsonValue::Object(_) => maybe_quote_value(&value)?,
+                    JsonValue::Number(value) => JsonValue::Number(value),
+                };
                 self.filters.push(Filter::LessThan {
                     table: "".to_string(),
                     column,
@@ -551,7 +594,14 @@ impl Select {
                 let captures = lte.captures(&filter).unwrap();
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(2).unwrap().as_str();
-                let value = maybe_quote_value(&value)?;
+                let value = match serde_json::from_str(value)? {
+                    JsonValue::String(_)
+                    | JsonValue::Null
+                    | JsonValue::Bool(_)
+                    | JsonValue::Array(_)
+                    | JsonValue::Object(_) => maybe_quote_value(&value)?,
+                    JsonValue::Number(value) => JsonValue::Number(value),
+                };
                 self.filters.push(Filter::LessThanOrEqual {
                     table: "".to_string(),
                     column,
@@ -563,7 +613,14 @@ impl Select {
                 let value = &captures.get(3).unwrap().as_str();
                 let value = match value.to_lowercase().as_str() {
                     "null" => JsonValue::Null,
-                    _ => maybe_quote_value(&value)?,
+                    _ => match serde_json::from_str(value)? {
+                        JsonValue::String(_)
+                        | JsonValue::Null
+                        | JsonValue::Bool(_)
+                        | JsonValue::Array(_)
+                        | JsonValue::Object(_) => maybe_quote_value(&value)?,
+                        JsonValue::Number(value) => JsonValue::Number(value),
+                    },
                 };
                 self.filters.push(Filter::Is {
                     table: "".to_string(),
@@ -576,7 +633,14 @@ impl Select {
                 let value = &captures.get(3).unwrap().as_str();
                 let value = match value.to_lowercase().as_str() {
                     "null" => JsonValue::Null,
-                    _ => maybe_quote_value(&value)?,
+                    _ => match serde_json::from_str(value)? {
+                        JsonValue::String(_)
+                        | JsonValue::Null
+                        | JsonValue::Bool(_)
+                        | JsonValue::Array(_)
+                        | JsonValue::Object(_) => maybe_quote_value(&value)?,
+                        JsonValue::Number(value) => JsonValue::Number(value),
+                    },
                 };
                 self.filters.push(Filter::IsNot {
                     table: "".to_string(),
@@ -595,6 +659,7 @@ impl Select {
                 self.filters.push(Filter::In {
                     table: "".to_string(),
                     column,
+                    // TODO: Add a test to make sure this is done correctly.
                     value: json!(values),
                 });
             } else if is_not_in.is_match(&filter) {
@@ -609,6 +674,7 @@ impl Select {
                 self.filters.push(Filter::NotIn {
                     table: "".to_string(),
                     column,
+                    // TODO: Add a test to make sure this is done correctly.
                     value: json!(values),
                 });
             } else {
@@ -1392,16 +1458,6 @@ impl Filter {
 
     pub fn to_sql(&self, sql_param: &mut SqlParam) -> Result<(String, Vec<JsonValue>)> {
         tracing::trace!("Filter::to_sql({sql_param:?})");
-        let as_string = |value: &JsonValue| -> String {
-            match value {
-                JsonValue::Null => "NULL".to_string(),
-                JsonValue::Bool(value) => value.to_string(),
-                JsonValue::Number(value) => value.to_string(),
-                JsonValue::String(value) => value.to_string(),
-                JsonValue::Array(value) => format!("{value:?}"),
-                JsonValue::Object(value) => format!("{value:?}"),
-            }
-        };
 
         fn generate_lhs(table: &str, column: &str) -> String {
             match table {
@@ -1416,7 +1472,14 @@ impl Filter {
                 column,
                 value,
             } => {
-                let value = as_string(&value);
+                let value = match value {
+                    JsonValue::Null => "NULL".to_string(),
+                    JsonValue::Bool(value) => value.to_string(),
+                    JsonValue::Number(value) => value.to_string(),
+                    JsonValue::String(value) => value.to_string(),
+                    JsonValue::Array(value) => format!("{value:?}"),
+                    JsonValue::Object(value) => format!("{value:?}"),
+                };
                 let value = value.replace("*", "%");
                 Ok((
                     format!(
@@ -1431,124 +1494,100 @@ impl Filter {
                 table,
                 column,
                 value,
-            } => {
-                let value = as_string(&value);
-                Ok((
-                    format!(
-                        r#"{lhs} = {sql_param}"#,
-                        lhs = generate_lhs(table, column),
-                        sql_param = sql_param.next()
-                    ),
-                    vec![json!(value)],
-                ))
-            }
+            } => Ok((
+                format!(
+                    r#"{lhs} = {sql_param}"#,
+                    lhs = generate_lhs(table, column),
+                    sql_param = sql_param.next()
+                ),
+                vec![json!(value)],
+            )),
             Filter::NotEqual {
                 table,
                 column,
                 value,
-            } => {
-                let value = as_string(&value);
-                Ok((
-                    format!(
-                        r#"{lhs} <> {sql_param}"#,
-                        lhs = generate_lhs(table, column),
-                        sql_param = sql_param.next()
-                    ),
-                    vec![json!(value)],
-                ))
-            }
+            } => Ok((
+                format!(
+                    r#"{lhs} <> {sql_param}"#,
+                    lhs = generate_lhs(table, column),
+                    sql_param = sql_param.next()
+                ),
+                vec![json!(value)],
+            )),
             Filter::GreaterThan {
                 table,
                 column,
                 value,
-            } => {
-                let value = as_string(&value);
-                Ok((
-                    format!(
-                        r#"{lhs} > {sql_param}"#,
-                        lhs = generate_lhs(table, column),
-                        sql_param = sql_param.next()
-                    ),
-                    vec![json!(value)],
-                ))
-            }
+            } => Ok((
+                format!(
+                    r#"{lhs} > {sql_param}"#,
+                    lhs = generate_lhs(table, column),
+                    sql_param = sql_param.next()
+                ),
+                vec![json!(value)],
+            )),
             Filter::GreaterThanOrEqual {
                 table,
                 column,
                 value,
-            } => {
-                let value = as_string(&value);
-                Ok((
-                    format!(
-                        r#"{lhs} >= {sql_param}"#,
-                        lhs = generate_lhs(table, column),
-                        sql_param = sql_param.next()
-                    ),
-                    vec![json!(value)],
-                ))
-            }
+            } => Ok((
+                format!(
+                    r#"{lhs} >= {sql_param}"#,
+                    lhs = generate_lhs(table, column),
+                    sql_param = sql_param.next()
+                ),
+                vec![json!(value)],
+            )),
             Filter::LessThan {
                 table,
                 column,
                 value,
-            } => {
-                let value = as_string(&value);
-                Ok((
-                    format!(
-                        r#"{lhs} < {sql_param}"#,
-                        lhs = generate_lhs(table, column),
-                        sql_param = sql_param.next()
-                    ),
-                    vec![json!(value)],
-                ))
-            }
+            } => Ok((
+                format!(
+                    r#"{lhs} < {sql_param}"#,
+                    lhs = generate_lhs(table, column),
+                    sql_param = sql_param.next()
+                ),
+                vec![json!(value)],
+            )),
             Filter::LessThanOrEqual {
                 table,
                 column,
                 value,
-            } => {
-                let value = as_string(&value);
-                Ok((
-                    format!(
-                        r#"{lhs} <= {sql_param}"#,
-                        lhs = generate_lhs(table, column),
-                        sql_param = sql_param.next()
-                    ),
-                    vec![json!(value)],
-                ))
-            }
+            } => Ok((
+                format!(
+                    r#"{lhs} <= {sql_param}"#,
+                    lhs = generate_lhs(table, column),
+                    sql_param = sql_param.next()
+                ),
+                vec![json!(value)],
+            )),
             Filter::Is {
                 table,
                 column,
                 value,
-            } => {
-                let value = as_string(&value);
-                Ok((
-                    format!(
-                        r#"{lhs} {is} {sql_param}"#,
-                        lhs = generate_lhs(table, column),
-                        is = sql::is_clause(&sql_param.kind),
-                        sql_param = sql_param.next()
-                    ),
-                    vec![json!(value)],
-                ))
-            }
+            } => Ok((
+                format!(
+                    r#"{lhs} {is} {sql_param}"#,
+                    lhs = generate_lhs(table, column),
+                    is = sql::is_clause(&sql_param.kind),
+                    sql_param = sql_param.next()
+                ),
+                vec![json!(value)],
+            )),
             Filter::IsNot {
                 table,
                 column,
                 value,
-            } => {
-                let value = as_string(&value);
-                Ok((
-                    format!(
-                        r#"{lhs} {is_not} {sql_param}"#,
-                        lhs = generate_lhs(table, column),
-                        sql_param = sql_param.next(),
-                        is_not = sql::is_not_clause(&sql_param.kind)
-                    ),
-                    vec![json!(value)],
-                ))
-            }
+            } => Ok((
+                format!(
+                    r#"{lhs} {is_not} {sql_param}"#,
+                    lhs = generate_lhs(table, column),
+                    sql_param = sql_param.next(),
+                    is_not = sql::is_not_clause(&sql_param.kind)
+                ),
+                vec![json!(value)],
+            )),
             Filter::In {
                 table,
                 column,
@@ -1813,7 +1852,7 @@ LIMIT 1
 OFFSET 2"#
             )
         );
-        assert_eq!(params, vec![json!("5")]);
+        assert_eq!(params, vec![json!(5)]);
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
@@ -1823,7 +1862,7 @@ FROM "penguin"
 WHERE "sample_number" = {sql_param}"#
             )
         );
-        assert_eq!(params, vec![json!("5")]);
+        assert_eq!(params, vec![json!(5)]);
 
         let url = "http://example.com/penguin?penguin.bar=eq.5&limit=1";
         let query_params = from_value(json!({
@@ -1844,7 +1883,7 @@ ORDER BY "penguin"._order ASC
 LIMIT 1"#
             )
         );
-        assert_eq!(params, vec![json!("5")]);
+        assert_eq!(params, vec![json!(5)]);
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
@@ -1854,7 +1893,7 @@ FROM "penguin"
 WHERE "penguin"."bar" = {sql_param}"#
             )
         );
-        assert_eq!(params, vec![json!("5")]);
+        assert_eq!(params, vec![json!(5)]);
 
         let url = "http://example.com/penguin?_change_id=gt.5";
         let query_params = from_value(json!({
@@ -1878,7 +1917,7 @@ ORDER BY "penguin"._order ASC
 LIMIT 100"#
             ),
         );
-        assert_eq!(params, vec![json!("penguin"), json!("5")]);
+        assert_eq!(params, vec![json!("penguin"), json!(5)]);
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
@@ -1888,7 +1927,7 @@ FROM "penguin"
 WHERE "_change_id" > {sql_param}"#
             ),
         );
-        assert_eq!(params, vec![json!("5")]);
+        assert_eq!(params, vec![json!(5)]);
 
         let url = "http://example.com/penguin?select=sample_number,count()";
 
@@ -2104,5 +2143,46 @@ WHERE "penguin"."individual_id" IN (
             )
         );
         assert_eq!(format!("{params:?}"), r#"[String("N1")]"#);
+    }
+
+    #[test]
+    fn test_filters() {
+        let rltbl = block_on(Relatable::init(
+            &true,
+            Some("build/test_filters.db"),
+            &CachingStrategy::Trigger,
+        ))
+        .unwrap();
+        let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
+
+        let mut select = Select::from("penguin").limit(&0);
+        // TODO: Having to reassign to `select` here is awkward.
+        select = select
+            .filters(&vec!["sample_number > 2".to_string()])
+            .unwrap();
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT *
+FROM "penguin"
+WHERE "sample_number" > {sql_param}
+ORDER BY "penguin"._order ASC"#
+            )
+        );
+        assert_eq!(format!("{params:?}"), "[Number(2)]");
+
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "sample_number" > {sql_param}"#
+            )
+        );
+        assert_eq!(format!("{params:?}"), "[Number(2)]");
+
+        // TODO: Add (possibly separate) tests for more complex filters, subqueries, and joins
     }
 }
