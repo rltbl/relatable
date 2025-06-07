@@ -247,3 +247,4 @@ clean_sqlite_test:
 .PHONY: clean_test
 clean_test: clean_postgres_test clean_sqlite_test
 	rm -Rf test/perf
+	rm -Rf build/
