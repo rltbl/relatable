@@ -17,7 +17,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use promptly::prompt_opt;
 use regex::Regex;
-use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
+use serde_json::{json, to_string_pretty, Value as JsonValue};
 use std::{io, io::Write, path::Path};
 use tabwriter::TabWriter;
 
@@ -583,7 +583,7 @@ pub fn prompt_for_column_value(column: &str) -> JsonValue {
     let value: Option<String> = prompt_opt(format!("Enter a {column}"))
         .expect("Error getting column value from user input");
     match value {
-        Some(value) => json!(value),
+        Some(value) => serde_json::from_str::<JsonValue>(&value).unwrap_or(json!(&value)),
         None => json!(""),
     }
 }
