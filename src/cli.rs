@@ -538,6 +538,7 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
         .await
         .expect("Error getting value")
         .expect("No value found");
+    let after = serde_json::from_str::<JsonValue>(value).unwrap_or(json!(value));
 
     // Apply the change to the new value:
     let num_changes = rltbl
@@ -550,7 +551,7 @@ pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: 
                 row,
                 column: column.to_string(),
                 before: before,
-                after: to_value(value).unwrap_or_default(),
+                after: after,
             }],
         })
         .await

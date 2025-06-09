@@ -795,7 +795,10 @@ impl Relatable {
                                 "integer" => match value.parse::<isize>() {
                                     Ok(signed) => json!(signed),
                                     Err(err) => {
-                                        tracing::warn!("'{value}' could not be parsed as a signed integer: '{err}'. Setting to -1");
+                                        tracing::warn!(
+                                            "'{value}' could not be parsed as a signed integer: \
+                                             '{err}'. Setting to -1"
+                                        );
                                         json!(-1)
                                     }
                                 },
@@ -2167,11 +2170,15 @@ impl Relatable {
                         );
                         let params = match value {
                             JsonValue::Null => json!([row]),
-                            _ => json!([sql::json_to_string(&value), row]),
+                            _ => json!([value, row]),
                         };
                         (sql, params)
                     };
 
+                    tracing::debug!(
+                        "Updating value of row {row} in {table}.{column} to {value:?}",
+                        table = table.name
+                    );
                     if tx.query(&sql, Some(&params))?.len() < 1 {
                         tracing::warn!("No row with _id {row} found to update");
                     } else {
