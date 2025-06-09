@@ -3,11 +3,11 @@ $ echo "Created a demonstration database in '$RLTBL_CONNECTION'" > expected_outp
 $ alias rltbl='rltbl -v'
 $ rltbl demo --size 10 --force | diff - expected_output.txt
 $ rm -f expected_output.txt
-$ echo '{"species": "FOO"}' | rltbl --input JSON add row penguin
+$ echo '{"species": "FOO", "sample_number": 25}' | rltbl --input JSON add row penguin
 $ rltbl undo
 $ rltbl redo
 $ rltbl delete row penguin 6
-$ rltbl set value penguin 4 island Enderby
+$ rltbl set value penguin 4 sample_number 26
 $ rltbl move row penguin 1 8
 $ rltbl undo # Undo move row
 $ rltbl undo # Undo set value
@@ -29,7 +29,7 @@ FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6   
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
 $ rltbl history
   Move row 1 from after row 8 to after row 0 (action #7, undo)
-  Update 'island' in row 4 from Enderby to Torgersen (action #8, undo)
+  Update 'sample_number' in row 4 from 26 to 4 (action #8, undo)
   Add row 6 after row 5 (action #9, undo)
 ▲ Delete row 11 (action #10, undo)
 ```
