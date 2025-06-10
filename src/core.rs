@@ -15,7 +15,7 @@ use rltbl::{
 };
 
 use anyhow::Result;
-use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
+use csv::{QuoteStyle, ReaderBuilder, Writer, WriterBuilder};
 use lazy_static::lazy_static;
 use minijinja::{path_loader, Environment};
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
@@ -3072,6 +3072,34 @@ pub struct ResultSet {
     pub rows: Vec<Row>,
 }
 
+impl ResultSet {
+    pub fn to_csv(&self) -> String {
+        let writer = WriterBuilder::new().from_writer(vec![]);
+        self.to_xsv(writer)
+    }
+
+    pub fn to_tsv(&self) -> String {
+        let writer = WriterBuilder::new()
+            .delimiter(b'\t')
+            .quote_style(QuoteStyle::Never)
+            .from_writer(vec![]);
+        self.to_xsv(writer)
+    }
+
+    pub fn to_xsv(&self, mut writer: Writer<Vec<u8>>) -> String {
+        let header_row = &self
+            .columns
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<String>>();
+        writer.write_record(header_row.clone()).unwrap();
+        for row in &self.rows {
+            writer.write_record(row.to_strings()).unwrap();
+        }
+        String::from_utf8(writer.into_inner().unwrap()).unwrap()
+    }
+}
+
 impl std::fmt::Display for ResultSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut tw = TabWriter::new(vec![]);
@@ -3125,4 +3153,10 @@ pub struct UserCursor {
     color: String,
     cursor: Cursor,
     datetime: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Page {
+    pub path: String,
+    pub formats: IndexMap<String, String>,
 }
