@@ -11,7 +11,7 @@ use rltbl::{
         self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
         MemoryCacheKey, SqlParam, VecInto as _,
     },
-    table::{Cell, Column, Message, Row, Table},
+    table::{Column, Message, Row, Table},
 };
 
 use anyhow::Result;
@@ -810,10 +810,11 @@ impl Relatable {
                                     .begin(&mut conn)
                                     .await
                                     .expect("Error beginning transaction");
-                                let value = Cell::validate_value(&value, &table, column, &mut tx)
-                                    .expect(&format!("Error validating {value}"));
+                                let cell =
+                                    Row::validate_value(&table, &id, column, &value, &mut tx)
+                                        .expect(&format!("Error validating {value}"));
                                 tx.commit().expect("Error committing transaction");
-                                value
+                                cell.value
                             })
                         }
                     };
@@ -2142,9 +2143,11 @@ impl Relatable {
                     let after = sql::nullify_value(&table, column, after);
                     let value = match &changeset.action {
                         ChangeAction::Undo | ChangeAction::Redo => {
-                            Cell::validate_value(&before, &table, column, &mut tx)?
+                            Row::validate_value(&table, row, column, &before, &mut tx)?.value
                         }
-                        ChangeAction::Do => Cell::validate_value(&after, &table, column, &mut tx)?,
+                        ChangeAction::Do => {
+                            Row::validate_value(&table, row, column, &after, &mut tx)?.value
+                        }
                     };
                     let db_kind = self.connection.kind();
                     let (sql, params) = {

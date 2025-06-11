@@ -78,7 +78,7 @@ impl Table {
         match self.columns.get(column) {
             Some(column) => column.clone(),
             None => {
-                tracing::info!("TODO: Do or say something here");
+                tracing::debug!("TODO: Do or say something here");
                 Column::default()
             }
         }
@@ -130,7 +130,7 @@ pub struct Column {
 }
 
 /// Represents a row from some table
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Row {
     pub id: usize,
     pub order: usize,
@@ -233,9 +233,72 @@ impl Row {
     /// TODO: Add docstring
     pub fn validate(&mut self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<&Self> {
         for (column, cell) in self.cells.iter_mut() {
-            cell.validate(&table.get_column(column), tx)?;
+            let column_details = table.get_column(column);
+            let datatype = match column_details.datatype {
+                None => "text".to_string(),
+                Some(ref dt) => dt.to_string(),
+            };
+            let saved_value = sql::json_to_string(&cell.value);
+            cell.validate(&column_details)?;
+            if !cell.valid {
+                let mut sql_param_gen = SqlParam::new(&tx.kind());
+                let sql = format!(
+                    r#"INSERT INTO "message"
+                       ("added_by", "table", "row", "column", "value", "level", "rule", "message")
+                       VALUES ({p1}, {p2}, {p3}, {p4}, {p5}, {p6}, {p7}, {p8})"#,
+                    p1 = sql_param_gen.next(),
+                    p2 = sql_param_gen.next(),
+                    p3 = sql_param_gen.next(),
+                    p4 = sql_param_gen.next(),
+                    p5 = sql_param_gen.next(),
+                    p6 = sql_param_gen.next(),
+                    p7 = sql_param_gen.next(),
+                    p8 = sql_param_gen.next(),
+                );
+                let params = json!([
+                    "valve",
+                    table.name,
+                    self.id,
+                    column,
+                    saved_value,
+                    "error",
+                    format!("datatype:{datatype}"),
+                    "incorrect datatype"
+                ]);
+                tx.query(&sql, Some(&params))?;
+            }
         }
+
         Ok(self)
+    }
+
+    /// TODO: Add docstring
+    pub fn validate_value(
+        table: &Table,
+        row: &usize,
+        column: &str,
+        value: &JsonValue,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Cell> {
+        let mut row = Self {
+            id: *row,
+            cells: [(
+                column.to_string(),
+                Cell {
+                    value: value.clone(),
+                    text: sql::json_to_string(&value),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect::<IndexMap<_, _>>(),
+            ..Default::default()
+        };
+        row.validate(table, tx).expect("Validation error");
+        // There will always only be one cell:
+        // TODO: Check whether we can somehow avoid the clone since there's no logical reason
+        // to have to allocate twice?
+        Ok(row.cells[0].clone())
     }
 }
 
@@ -283,7 +346,7 @@ impl From<JsonRow> for Row {
 }
 
 /// Represents a cell from a row in a given table
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Cell {
     pub value: JsonValue,
     pub text: String,
@@ -309,23 +372,11 @@ impl From<&JsonValue> for Cell {
 
 impl Cell {
     /// TODO: Add docstring
-    pub fn validate_value(
-        value: &JsonValue,
-        table: &Table,
-        column: &str,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<JsonValue> {
-        let column = table.get_column(column);
-        let mut cell = Cell::from(value);
-        cell.validate(&column, tx)?;
-        Ok(cell.value)
-    }
-
-    /// TODO: Add docstring
-    pub fn validate(&mut self, column: &Column, tx: &mut DbTransaction<'_>) -> Result<&Self> {
-        let mut invalidate_self = || {
-            self.valid = false;
-            self.messages.push(Message {
+    pub fn validate(&mut self, column: &Column) -> Result<&Self> {
+        fn invalidate(cell: &mut Cell, column: &Column) {
+            cell.valid = false;
+            cell.value = JsonValue::Null;
+            cell.messages.push(Message {
                 level: "error".to_string(),
                 rule: format!(
                     "datatype:{}",
@@ -336,21 +387,22 @@ impl Cell {
                 ),
                 message: "incorrect datatype".to_string(),
             });
-        };
+        }
 
         match sql::get_sql_type(&column.datatype)?.to_lowercase().as_str() {
-            "integer" => match &self.value {
+            "integer" => match &mut self.value {
                 // TODO: It seems inefficient to first convert to a string in order to determine
                 // whether the number is an integer.
                 JsonValue::Number(number) => match number.to_string().parse::<isize>() {
                     Ok(_) => (),
-                    Err(_) => invalidate_self(),
+                    Err(_) => invalidate(self, column),
                 },
-                _ => invalidate_self(),
+                JsonValue::Null => (),
+                _ => invalidate(self, column),
             },
-            "text" => match &self.value {
-                JsonValue::String(_) => (),
-                _ => invalidate_self(),
+            "text" | "" => match &self.value {
+                JsonValue::String(_) | JsonValue::Null => (),
+                _ => invalidate(self, column),
             },
             unsupported => {
                 return Err(RelatableError::InputError(format!(

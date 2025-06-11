@@ -789,7 +789,7 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
 pub fn get_sql_type(datatype: &Option<String>) -> Result<&str> {
     match datatype {
         None => Ok("TEXT"),
-        Some(datatype) if datatype.to_lowercase() == "text" => Ok("TEXT"),
+        Some(datatype) if ["text", ""].contains(&datatype.to_lowercase().as_str()) => Ok("TEXT"),
         Some(datatype) if datatype.to_lowercase() == "integer" => Ok("INTEGER"),
         Some(unsupported) => {
             return Err(RelatableError::InputError(format!(
