@@ -11,7 +11,7 @@ use rltbl::{
         self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
         MemoryCacheKey, SqlParam, VecInto as _,
     },
-    table::{Column, Message, Row, Table},
+    table::{Cell, Column, Message, Row, Table},
 };
 
 use anyhow::Result;
@@ -692,9 +692,6 @@ impl Relatable {
             table
         };
 
-        // TODO: Remove this info!
-        tracing::info!("TABLE: {table:#?}");
-
         // Generate the SQL statements needed to create the table and execute them:
         for sql in sql::generate_table_ddl(&table, force, &db_kind, &self.caching_strategy)
             .expect("Error getting DDL")
@@ -804,8 +801,20 @@ impl Relatable {
                                 },
                                 _ => json!(value),
                             };
-
-                            param_values.push(value)
+                            let value = sql::nullify_value(&table, column, &value);
+                            param_values.push({
+                                let mut conn =
+                                    self.connection.reconnect().expect("Error reconnecting");
+                                let mut tx = self
+                                    .connection
+                                    .begin(&mut conn)
+                                    .await
+                                    .expect("Error beginning transaction");
+                                let value = Cell::validate_value(&value, &table, column, &mut tx)
+                                    .expect(&format!("Error validating {value}"));
+                                tx.commit().expect("Error committing transaction");
+                                value
+                            })
                         }
                     };
                 }
@@ -2116,26 +2125,8 @@ impl Relatable {
         // Update the user cursor
         self.prepare_user_cursor(changeset, &mut tx)?;
 
-        let table = self._get_table(&changeset.table, &mut tx)?;
-        let nullify_value = |column: &str, value: &JsonValue| -> Result<JsonValue> {
-            match value {
-                JsonValue::String(s) if s == "" => {
-                    let nulltype = {
-                        table
-                            .get_column_attribute(column, "nulltype")
-                            .unwrap_or("".to_string())
-                    };
-                    if nulltype == "empty" {
-                        Ok(JsonValue::Null)
-                    } else {
-                        Ok(value.clone())
-                    }
-                }
-                _ => Ok(value.clone()),
-            }
-        };
-
         // Actually make the changes:
+        let table = self._get_table(&changeset.table, &mut tx)?;
         let mut actual_changes = vec![];
         for change in &changeset.changes {
             match change {
@@ -2147,11 +2138,13 @@ impl Relatable {
                 } => {
                     // Depending on whether this is an undo/redo or an original action, the
                     // new value will be taken from either `before` or `after`.
-                    let before = nullify_value(column, before)?;
-                    let after = nullify_value(column, after)?;
+                    let before = sql::nullify_value(&table, column, before);
+                    let after = sql::nullify_value(&table, column, after);
                     let value = match &changeset.action {
-                        ChangeAction::Undo | ChangeAction::Redo => before.clone(),
-                        ChangeAction::Do => after.clone(),
+                        ChangeAction::Undo | ChangeAction::Redo => {
+                            Cell::validate_value(&before, &table, column, &mut tx)?
+                        }
+                        ChangeAction::Do => Cell::validate_value(&after, &table, column, &mut tx)?,
                     };
                     let db_kind = self.connection.kind();
                     let (sql, params) = {
@@ -2334,8 +2327,10 @@ impl Relatable {
             new_row.id = new_row_id;
         }
 
-        // Add the row to the table:
-        let (sql, params) = new_row.as_insert(&table.name, &tx.kind());
+        // Validate the row and add it to the table:
+        let (sql, params) = new_row
+            .validate(&table, &mut tx)
+            .as_insert(&table.name, &tx.kind());
         tracing::debug!("_add_row {sql} {params:?}");
         tx.query(&sql, Some(&params))?;
 

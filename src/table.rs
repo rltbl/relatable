@@ -73,6 +73,17 @@ impl Table {
         Ok(columns)
     }
 
+    /// TODO: Add docstring
+    pub fn get_column(&self, column: &str) -> Column {
+        match self.columns.get(column) {
+            Some(column) => column.clone(),
+            None => {
+                tracing::info!("TODO: Do or say something here");
+                Column::default()
+            }
+        }
+    }
+
     /// Retrieve the given attribute of the given column from this table's
     /// [column configuration](Table::columns)
     pub fn get_column_attribute(&self, column: &str, attribute: &str) -> Option<String> {
@@ -218,6 +229,14 @@ impl Row {
         };
         (sql, json!(params))
     }
+
+    /// TODO: Add docstring
+    pub fn validate(&mut self, table: &Table, tx: &mut DbTransaction<'_>) -> &Self {
+        for (column, cell) in self.cells.iter_mut() {
+            cell.validate(&table.get_column(column), tx);
+        }
+        self
+    }
 }
 
 impl From<Row> for Vec<String> {
@@ -283,6 +302,27 @@ impl From<&JsonValue> for Cell {
             },
             messages: vec![],
         }
+    }
+}
+
+impl Cell {
+    /// TODO: Add docstring
+    pub fn validate_value(
+        value: &JsonValue,
+        table: &Table,
+        column: &str,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<JsonValue> {
+        let column = table.get_column(column);
+        let mut cell = Cell::from(value);
+        cell.validate(&column, tx);
+        Ok(cell.value)
+    }
+
+    /// TODO: Add docstring
+    pub fn validate(&mut self, column: &Column, tx: &mut DbTransaction<'_>) -> &Self {
+        // TODO:
+        self
     }
 }
 

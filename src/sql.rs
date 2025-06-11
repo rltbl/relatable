@@ -1451,6 +1451,25 @@ pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
     }
 }
 
+/// TODO: Add docstring
+pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::String(s) if s == "" => {
+            let nulltype = {
+                table
+                    .get_column_attribute(column, "nulltype")
+                    .unwrap_or("".to_string())
+            };
+            if nulltype == "empty" {
+                JsonValue::Null
+            } else {
+                value.clone()
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
 // From https://stackoverflow.com/a/78372188
 pub trait VecInto<D> {
     fn vec_into(self) -> Vec<D>;
