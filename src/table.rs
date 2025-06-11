@@ -236,6 +236,7 @@ impl Row {
             let column_details = table.get_column(column);
             let datatype = match column_details.datatype {
                 None => "text".to_string(),
+                Some(ref dt) if dt == "" => "text".to_string(),
                 Some(ref dt) => dt.to_string(),
             };
             let saved_value = sql::json_to_string(&cell.value);
