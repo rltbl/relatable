@@ -231,11 +231,11 @@ impl Row {
     }
 
     /// TODO: Add docstring
-    pub fn validate(&mut self, table: &Table, tx: &mut DbTransaction<'_>) -> &Self {
+    pub fn validate(&mut self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<&Self> {
         for (column, cell) in self.cells.iter_mut() {
-            cell.validate(&table.get_column(column), tx);
+            cell.validate(&table.get_column(column), tx)?;
         }
-        self
+        Ok(self)
     }
 }
 
@@ -287,6 +287,7 @@ impl From<JsonRow> for Row {
 pub struct Cell {
     pub value: JsonValue,
     pub text: String,
+    pub valid: bool,
     pub messages: Vec<Message>,
 }
 
@@ -300,6 +301,7 @@ impl From<&JsonValue> for Cell {
                 JsonValue::String(value) => value.to_string(),
                 value => format!("{value}"),
             },
+            valid: true,
             messages: vec![],
         }
     }
@@ -315,14 +317,50 @@ impl Cell {
     ) -> Result<JsonValue> {
         let column = table.get_column(column);
         let mut cell = Cell::from(value);
-        cell.validate(&column, tx);
+        cell.validate(&column, tx)?;
         Ok(cell.value)
     }
 
     /// TODO: Add docstring
-    pub fn validate(&mut self, column: &Column, tx: &mut DbTransaction<'_>) -> &Self {
-        // TODO:
-        self
+    pub fn validate(&mut self, column: &Column, tx: &mut DbTransaction<'_>) -> Result<&Self> {
+        let mut invalidate_self = || {
+            self.valid = false;
+            self.messages.push(Message {
+                level: "error".to_string(),
+                rule: format!(
+                    "datatype:{}",
+                    match &column.datatype {
+                        None => "text",
+                        Some(datatype) => datatype,
+                    }
+                ),
+                message: "incorrect datatype".to_string(),
+            });
+        };
+
+        match sql::get_sql_type(&column.datatype)?.to_lowercase().as_str() {
+            "integer" => match &self.value {
+                // TODO: It seems inefficient to first convert to a string in order to determine
+                // whether the number is an integer.
+                JsonValue::Number(number) => match number.to_string().parse::<isize>() {
+                    Ok(_) => (),
+                    Err(_) => invalidate_self(),
+                },
+                _ => invalidate_self(),
+            },
+            "text" => match &self.value {
+                JsonValue::String(_) => (),
+                _ => invalidate_self(),
+            },
+            unsupported => {
+                return Err(RelatableError::InputError(format!(
+                    "Unsupported datatype: '{unsupported}'"
+                ))
+                .into())
+            }
+        };
+
+        Ok(self)
     }
 }
 

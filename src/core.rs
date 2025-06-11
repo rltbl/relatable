@@ -2329,7 +2329,7 @@ impl Relatable {
 
         // Validate the row and add it to the table:
         let (sql, params) = new_row
-            .validate(&table, &mut tx)
+            .validate(&table, &mut tx)?
             .as_insert(&table.name, &tx.kind());
         tracing::debug!("_add_row {sql} {params:?}");
         tx.query(&sql, Some(&params))?;

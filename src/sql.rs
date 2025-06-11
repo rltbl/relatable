@@ -785,6 +785,21 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
     }
 }
 
+/// TODO: Add docstring
+pub fn get_sql_type(datatype: &Option<String>) -> Result<&str> {
+    match datatype {
+        None => Ok("TEXT"),
+        Some(datatype) if datatype.to_lowercase() == "text" => Ok("TEXT"),
+        Some(datatype) if datatype.to_lowercase() == "integer" => Ok("INTEGER"),
+        Some(unsupported) => {
+            return Err(RelatableError::InputError(format!(
+                "Unsupported datatype: '{unsupported}'"
+            ))
+            .into());
+        }
+    }
+}
+
 /// Given an SQL string that has been bound to the given parameter vector, construct a database
 /// query and return it.
 #[cfg(feature = "sqlx")]
@@ -913,19 +928,7 @@ pub fn generate_table_ddl(
             ))
             .into());
         }
-
-        let sql_type = match &col.datatype {
-            None => "TEXT",
-            Some(datatype) if datatype.to_lowercase() == "text" => "TEXT",
-            Some(datatype) if datatype.to_lowercase() == "integer" => "INTEGER",
-            Some(unsupported) => {
-                return Err(RelatableError::InputError(format!(
-                    "Unsupported datatype: '{unsupported}'"
-                ))
-                .into());
-            }
-        };
-
+        let sql_type = get_sql_type(&col.datatype)?;
         let clause = format!(
             r#""{cname}" {sql_type}{unique}"#,
             unique = match col.unique {
