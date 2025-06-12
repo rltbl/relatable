@@ -11,7 +11,7 @@ use rltbl::{
         self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
         MemoryCacheKey, SqlParam, VecInto as _,
     },
-    table::{Column, Message, Row, Table},
+    table::{Cell, Column, Message, Row, Table},
 };
 
 use anyhow::Result;
@@ -2143,47 +2143,73 @@ impl Relatable {
                     // new value will be taken from either `before` or `after`.
                     let before = sql::nullify_value(&table, column, before);
                     let after = sql::nullify_value(&table, column, after);
-                    let cell = match &changeset.action {
-                        ChangeAction::Undo | ChangeAction::Redo => {
-                            Row::validate_value(&table, row, column, &before, &mut tx)?
-                        }
-                        ChangeAction::Do => {
-                            Row::validate_value(&table, row, column, &after, &mut tx)?
-                        }
+                    let mut cell = match &changeset.action {
+                        ChangeAction::Undo | ChangeAction::Redo => Cell {
+                            value: before.clone(),
+                            text: sql::json_to_string(&before),
+                            ..Default::default()
+                        },
+                        ChangeAction::Do => Cell {
+                            value: after.clone(),
+                            text: sql::json_to_string(&after),
+                            ..Default::default()
+                        },
                     };
-                    let value = {
+
+                    // Validate the cell and add any messages to the message table:
+                    cell.validate(&table.get_column(column))
+                        .expect("Error validating cell");
+                    for message in cell.messages.iter() {
+                        let (msg_id, msg) = self._add_message(
+                            "Valve",
+                            &table.name,
+                            &row,
+                            column,
+                            &message.level,
+                            &message.rule,
+                            &message.message,
+                            &mut tx,
+                        )?;
+                        tracing::debug!("Added message (ID {msg_id}): {msg:?}");
+                    }
+
+                    // If the cell is invalid, insert a NULL instead of its actual value
+                    let sql_value = {
                         if cell.error_level() >= 2 {
                             JsonValue::Null
                         } else {
                             cell.value
                         }
                     };
-                    let db_kind = self.connection.kind();
+
+                    // Generate the UPDATE statement:
                     let (sql, params) = {
-                        let mut sql_param = SqlParam::new(&db_kind);
+                        let mut sql_param = SqlParam::new(&self.connection.kind());
                         let sql = format!(
                             r#"UPDATE "{table}"
-                               SET "{column}" = {value}
+                               SET "{column}" = {sql_value}
                                WHERE _id = {sql_param}
                                RETURNING 1 AS "updated""#,
                             table = changeset.table,
-                            value = match value {
+                            sql_value = match sql_value {
                                 JsonValue::Null => "NULL".to_string(),
                                 _ => sql_param.next(),
                             },
                             sql_param = sql_param.next()
                         );
-                        let params = match value {
+                        let params = match sql_value {
                             JsonValue::Null => json!([row]),
-                            _ => json!([value, row]),
+                            _ => json!([sql_value, row]),
                         };
                         (sql, params)
                     };
 
                     tracing::debug!(
-                        "Updating value of row {row} in {table}.{column} to {value:?}",
+                        "Updating value of row {row} in {table}.{column} to {sql_value:?}",
                         table = table.name
                     );
+
+                    // Execute the UPDATE statement.
                     if tx.query(&sql, Some(&params))?.len() < 1 {
                         tracing::warn!("No row with _id {row} found to update");
                     } else {
@@ -2240,6 +2266,61 @@ impl Relatable {
         Ok(changeset)
     }
 
+    /// TODO: Add docstring
+    fn _add_message(
+        &self,
+        user: &str,
+        table_name: &str,
+        row: &usize,
+        column: &str,
+        level: &str,
+        rule: &str,
+        message: &str,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<(usize, Message)> {
+        tracing::trace!(
+            "Relatable::add_message({user:?}, {table_name:?}, {row}, \
+                         {column:?}, {level:?}, {rule:?}, {message:?}, tx)"
+        );
+
+        let sql = format!(
+            r#"SELECT "{column}" FROM "{table_name}" WHERE _id = {sql_param}"#,
+            sql_param = SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([row]);
+        let value = match tx.query_value(&sql, Some(&params))? {
+            Some(JsonValue::String(s)) => s.as_str().to_string(),
+            Some(JsonValue::Null) | None => "".to_string(),
+            Some(value) => value.to_string(),
+        };
+
+        let sql = format!(
+            r#"INSERT INTO "message"
+               ("added_by", "table", "row", "column", "value",
+                "level", "rule", "message")
+               VALUES
+               ({sql_params})
+               RETURNING "message_id""#,
+            sql_params = SqlParam::new(&tx.kind()).get_as_list(8)
+        );
+        let params = json!([user, table_name, row, column, value, level, rule, message]);
+        let message_id = tx
+            .query_one(&sql, Some(&params))?
+            .ok_or(RelatableError::DataError(
+                "Error inserting message".to_string(),
+            ))?
+            .get_unsigned("message_id")?;
+
+        Ok((
+            message_id,
+            Message {
+                level: level.to_string(),
+                rule: rule.to_string(),
+                message: message.to_string(),
+            },
+        ))
+    }
+
     /// Add a message to the message table.
     pub async fn add_message(
         &self,
@@ -2255,44 +2336,19 @@ impl Relatable {
             "Relatable::add_message({user:?}, {table_name:?}, {row}, \
                          {column:?}, {level:?}, {rule:?}, {message:?})"
         );
-        let sql = format!(
-            r#"SELECT "{column}" FROM "{table_name}" WHERE _id = {sql_param}"#,
-            sql_param = SqlParam::new(&self.connection.kind()).next()
-        );
-        let params = json!([row]);
-        let value = match self.connection.query_value(&sql, Some(&params)).await? {
-            Some(JsonValue::String(s)) => s.as_str().to_string(),
-            Some(JsonValue::Null) | None => "".to_string(),
-            Some(value) => value.to_string(),
-        };
 
-        let sql = format!(
-            r#"INSERT INTO "message"
-               ("added_by", "table", "row", "column", "value",
-                "level", "rule", "message")
-               VALUES
-               ({sql_params})
-               RETURNING "message_id""#,
-            sql_params = SqlParam::new(&self.connection.kind()).get_as_list(8)
-        );
-        let params = json!([user, table_name, row, column, value, level, rule, message]);
-        let message_id = self
-            .connection
-            .query_one(&sql, Some(&params))
-            .await?
-            .ok_or(RelatableError::DataError(
-                "Error inserting message".to_string(),
-            ))?
-            .get_unsigned("message_id")?;
+        // Begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
 
-        Ok((
-            message_id,
-            Message {
-                level: level.to_string(),
-                rule: rule.to_string(),
-                message: message.to_string(),
-            },
-        ))
+        let (message_id, message) = self._add_message(
+            user, table_name, &row, column, level, rule, message, &mut tx,
+        )?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok((message_id, message))
     }
 
     /// Add a row to the given table

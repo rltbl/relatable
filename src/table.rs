@@ -271,35 +271,6 @@ impl Row {
 
         Ok(self)
     }
-
-    /// TODO: Add docstring
-    pub fn validate_value(
-        table: &Table,
-        row: &usize,
-        column: &str,
-        value: &JsonValue,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<Cell> {
-        let mut row = Self {
-            id: *row,
-            cells: [(
-                column.to_string(),
-                Cell {
-                    value: value.clone(),
-                    text: sql::json_to_string(&value),
-                    ..Default::default()
-                },
-            )]
-            .into_iter()
-            .collect::<IndexMap<_, _>>(),
-            ..Default::default()
-        };
-        row.validate(table, tx).expect("Validation error");
-        // There will always only be one cell:
-        // TODO: Check whether we can somehow avoid the clone since there's no logical reason
-        // to have to allocate twice?
-        Ok(row.cells[0].clone())
-    }
 }
 
 impl From<Row> for Vec<String> {
