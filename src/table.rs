@@ -239,9 +239,8 @@ impl Row {
                 Some(ref dt) if dt == "" => "text".to_string(),
                 Some(ref dt) => dt.to_string(),
             };
-            let saved_value = sql::json_to_string(&cell.value);
             cell.validate(&column_details)?;
-            if !cell.valid {
+            if cell.error_level() >= 2 {
                 let mut sql_param_gen = SqlParam::new(&tx.kind());
                 let sql = format!(
                     r#"INSERT INTO "message"
@@ -261,7 +260,7 @@ impl Row {
                     table.name,
                     self.id,
                     column,
-                    saved_value,
+                    cell.value,
                     "error",
                     format!("datatype:{datatype}"),
                     "incorrect datatype"
@@ -351,7 +350,6 @@ impl From<JsonRow> for Row {
 pub struct Cell {
     pub value: JsonValue,
     pub text: String,
-    pub valid: bool,
     pub messages: Vec<Message>,
 }
 
@@ -365,18 +363,16 @@ impl From<&JsonValue> for Cell {
                 JsonValue::String(value) => value.to_string(),
                 value => format!("{value}"),
             },
-            valid: true,
             messages: vec![],
         }
     }
 }
 
+// TODO: Add a "get greatest error level" function.
 impl Cell {
     /// TODO: Add docstring
     pub fn validate(&mut self, column: &Column) -> Result<&Self> {
         fn invalidate(cell: &mut Cell, column: &Column) {
-            cell.valid = false;
-            cell.value = JsonValue::Null;
             cell.messages.push(Message {
                 level: "error".to_string(),
                 rule: format!(
@@ -401,10 +397,7 @@ impl Cell {
                 JsonValue::Null => (),
                 _ => invalidate(self, column),
             },
-            "text" | "" => match &self.value {
-                JsonValue::String(_) | JsonValue::Null => (),
-                _ => invalidate(self, column),
-            },
+            "text" | "" => (),
             unsupported => {
                 return Err(RelatableError::InputError(format!(
                     "Unsupported datatype: '{unsupported}'"
@@ -414,6 +407,28 @@ impl Cell {
         };
 
         Ok(self)
+    }
+
+    pub fn error_level(&self) -> usize {
+        let mut level = 0;
+        for message in &self.messages {
+            match message.level.as_str() {
+                "info" => (),
+                "warn" => {
+                    if level < 1 {
+                        level = 1;
+                    }
+                }
+                "error" => {
+                    level = 2;
+                    break;
+                }
+                unsupported => {
+                    tracing::warn!("Unsupported message level '{unsupported}'");
+                }
+            };
+        }
+        level
     }
 }
 

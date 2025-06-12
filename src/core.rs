@@ -803,18 +803,20 @@ impl Relatable {
                             };
                             let value = sql::nullify_value(&table, column, &value);
                             param_values.push({
-                                let mut conn =
-                                    self.connection.reconnect().expect("Error reconnecting");
-                                let mut tx = self
-                                    .connection
-                                    .begin(&mut conn)
-                                    .await
-                                    .expect("Error beginning transaction");
-                                let cell =
-                                    Row::validate_value(&table, &id, column, &value, &mut tx)
-                                        .expect(&format!("Error validating {value}"));
-                                tx.commit().expect("Error committing transaction");
-                                cell.value
+                                // TODO: The column configuration needs to be filled in for this to
+                                // work.
+                                //let mut conn =
+                                //    self.connection.reconnect().expect("Error reconnecting");
+                                //let mut tx = self
+                                //    .connection
+                                //    .begin(&mut conn)
+                                //    .await
+                                //    .expect("Error beginning transaction");
+                                //let cell =
+                                //    Row::validate_value(&table, &id, column, &value, &mut tx)
+                                //        .expect(&format!("Error validating {value}"));
+                                //tx.commit().expect("Error committing transaction");
+                                value
                             })
                         }
                     };
@@ -2141,12 +2143,19 @@ impl Relatable {
                     // new value will be taken from either `before` or `after`.
                     let before = sql::nullify_value(&table, column, before);
                     let after = sql::nullify_value(&table, column, after);
-                    let value = match &changeset.action {
+                    let cell = match &changeset.action {
                         ChangeAction::Undo | ChangeAction::Redo => {
-                            Row::validate_value(&table, row, column, &before, &mut tx)?.value
+                            Row::validate_value(&table, row, column, &before, &mut tx)?
                         }
                         ChangeAction::Do => {
-                            Row::validate_value(&table, row, column, &after, &mut tx)?.value
+                            Row::validate_value(&table, row, column, &after, &mut tx)?
+                        }
+                    };
+                    let value = {
+                        if cell.error_level() >= 2 {
+                            JsonValue::Null
+                        } else {
+                            cell.value
                         }
                     };
                     let db_kind = self.connection.kind();
@@ -2331,9 +2340,14 @@ impl Relatable {
         }
 
         // Validate the row and add it to the table:
-        let (sql, params) = new_row
-            .validate(&table, &mut tx)?
-            .as_insert(&table.name, &tx.kind());
+        new_row.validate(&table, &mut tx)?;
+        for (_column, cell) in new_row.cells.iter_mut() {
+            if cell.error_level() >= 2 {
+                cell.value = JsonValue::Null;
+                cell.text = "".to_string(); // Should it be "null" instead of blank?
+            }
+        }
+        let (sql, params) = new_row.as_insert(&table.name, &tx.kind());
         tracing::debug!("_add_row {sql} {params:?}");
         tx.query(&sql, Some(&params))?;
 

@@ -55,6 +55,9 @@ impl Select {
     /// Construct a [Select] for the given [relatable](crate) instance from the given path and
     /// query parameters.
     pub fn from_path_and_query(path: &str, query_params: &QueryParams) -> Self {
+        // TODO: We need to be able to handle the case where 123 is passed but it is actually
+        // for a column of type string.
+
         tracing::trace!("Select::from_path_and_query({path:?}, {query_params:?})");
         let mut query_params = query_params.clone();
         let mut filters = Vec::new();
