@@ -758,15 +758,12 @@ impl Relatable {
             sql_params.push(sql_param_gen.next());
             let sql_params = {
                 for (i, value) in row.iter().enumerate() {
-                    let (column, datatype, nulltype) = {
+                    let (column, nulltype) = {
                         // We add 2 here because of _id and _order:
                         let column = match columns.get(i + 2) {
                             Some(column) => column,
                             None => panic!("Unable to retrieve column {}", i + 2),
                         };
-                        let datatype = table
-                            .get_column_attribute(column, "datatype")
-                            .unwrap_or("text".to_string());
                         let nulltype = {
                             if value == "" {
                                 table.get_column_attribute(column, "nulltype")
@@ -774,7 +771,7 @@ impl Relatable {
                                 None
                             }
                         };
-                        (column, datatype, nulltype)
+                        (column, nulltype)
                     };
                     match nulltype {
                         Some(nulltype) if nulltype == "empty" => {
@@ -782,42 +779,48 @@ impl Relatable {
                         }
                         Some(nulltype) => panic!("Nulltype '{nulltype}' not supported"),
                         None => {
-                            sql_params.push(sql_param_gen.next());
-                            if value == "" {
-                                tracing::warn!(
-                                    "Got empty value for column '{column}' with no nulltype"
-                                );
-                            }
-                            let value = match datatype.to_lowercase().as_str() {
-                                "integer" => match value.parse::<isize>() {
-                                    Ok(signed) => json!(signed),
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            "'{value}' could not be parsed as a signed integer: \
-                                             '{err}'. Setting to -1"
-                                        );
-                                        json!(-1)
-                                    }
-                                },
-                                _ => json!(value),
+                            // Use the value to create a cell:
+                            let mut cell = {
+                                let value = match serde_json::from_str::<JsonValue>(value) {
+                                    Ok(JsonValue::Number(num)) => JsonValue::Number(num),
+                                    // TODO: Maybe a warning on error here?
+                                    Ok(_) | Err(_) => json!(value),
+                                };
+                                let value = sql::nullify_value(&table, column, &value);
+                                Cell {
+                                    text: sql::json_to_string(&value),
+                                    value: value,
+                                    ..Default::default()
+                                }
                             };
-                            let value = sql::nullify_value(&table, column, &value);
-                            param_values.push({
-                                // TODO: The column configuration needs to be filled in for this to
-                                // work.
-                                //let mut conn =
-                                //    self.connection.reconnect().expect("Error reconnecting");
-                                //let mut tx = self
-                                //    .connection
-                                //    .begin(&mut conn)
-                                //    .await
-                                //    .expect("Error beginning transaction");
-                                //let cell =
-                                //    Row::validate_value(&table, &id, column, &value, &mut tx)
-                                //        .expect(&format!("Error validating {value}"));
-                                //tx.commit().expect("Error committing transaction");
-                                value
-                            })
+
+                            // Validate the cell and add any messages to the message table:
+                            cell.validate(&table.get_column(column))
+                                .expect("Error validating cell");
+                            for message in cell.messages.iter() {
+                                let (msg_id, msg) = self
+                                    .add_message(
+                                        "Valve",
+                                        &table.name,
+                                        id,
+                                        column,
+                                        Some(&cell.value),
+                                        &message.level,
+                                        &message.rule,
+                                        &message.message,
+                                    )
+                                    .await
+                                    .expect("Error adding message");
+                                tracing::debug!("Added message (ID {msg_id}): {msg:?}");
+                            }
+
+                            // Add the parameter for the value to the SQL insert statement:
+                            if cell.error_level() >= 2 {
+                                sql_params.push("NULL".to_string());
+                            } else {
+                                sql_params.push(sql_param_gen.next());
+                                param_values.push(cell.value);
+                            }
                         }
                     };
                 }
@@ -2165,6 +2168,7 @@ impl Relatable {
                             &table.name,
                             &row,
                             column,
+                            Some(&cell.value),
                             &message.level,
                             &message.rule,
                             &message.message,
@@ -2273,6 +2277,7 @@ impl Relatable {
         table_name: &str,
         row: &usize,
         column: &str,
+        value: Option<&JsonValue>,
         level: &str,
         rule: &str,
         message: &str,
@@ -2283,15 +2288,21 @@ impl Relatable {
                          {column:?}, {level:?}, {rule:?}, {message:?}, tx)"
         );
 
-        let sql = format!(
-            r#"SELECT "{column}" FROM "{table_name}" WHERE _id = {sql_param}"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([row]);
-        let value = match tx.query_value(&sql, Some(&params))? {
-            Some(JsonValue::String(s)) => s.as_str().to_string(),
-            Some(JsonValue::Null) | None => "".to_string(),
-            Some(value) => value.to_string(),
+        let value = match value {
+            Some(value) => value.clone(),
+            None => {
+                let sql = format!(
+                    r#"SELECT "{column}" FROM "{table_name}" WHERE _id = {sql_param}"#,
+                    sql_param = SqlParam::new(&tx.kind()).next()
+                );
+                let params = json!([row]);
+                let value = match tx.query_value(&sql, Some(&params))? {
+                    Some(JsonValue::String(s)) => s.as_str().to_string(),
+                    Some(JsonValue::Null) | None => "".to_string(),
+                    Some(value) => value.to_string(),
+                };
+                json!(value)
+            }
         };
 
         let sql = format!(
@@ -2328,6 +2339,7 @@ impl Relatable {
         table_name: &str,
         row: usize,
         column: &str,
+        value: Option<&JsonValue>,
         level: &str,
         rule: &str,
         message: &str,
@@ -2342,7 +2354,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         let (message_id, message) = self._add_message(
-            user, table_name, &row, column, level, rule, message, &mut tx,
+            user, table_name, &row, column, value, level, rule, message, &mut tx,
         )?;
 
         // Commit the transaction:

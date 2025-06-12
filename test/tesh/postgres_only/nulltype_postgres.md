@@ -34,12 +34,6 @@ DROP TABLE
 $ rltbl init --force
 Initialized a relatable database in 'postgresql:///rltbl_db'
 $ rltbl load table penguin.tsv
-... WARN rltbl::core: Got empty value for column 'island' with no nulltype
-... WARN rltbl::core: Got empty value for column 'study_name' with no nulltype
-... WARN rltbl::core: Got empty value for column 'island' with no nulltype
-... WARN rltbl::core: Got empty value for column 'individual_id' with no nulltype
-... WARN rltbl::core: Got empty value for column 'culmen_length' with no nulltype
-... WARN rltbl::core: Got empty value for column 'body_mass' with no nulltype
 $ echo "select * from penguin where species is null and island = '' order by _order" | psql rltbl_db
  _id | _order | study_name | sample_number | species | island | individual_id | culmen_length | body_mass 
 -----+--------+------------+---------------+---------+--------+---------------+---------------+-----------

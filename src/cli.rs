@@ -305,6 +305,7 @@ pub enum LoadSubcommand {
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
 
+        // TODO: Add a --validate switch and DO NOT validate by default.
         #[arg(value_name = "PATH", num_args=1..,
               action = ArgAction::Set,
               help = "The path(s) to load from")]
@@ -679,7 +680,7 @@ pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
 
     let user = get_username(&cli);
     let (mid, message) = rltbl
-        .add_message(&user, table, row, column, &level, &rule, &message)
+        .add_message(&user, table, row, column, None, &level, &rule, &message)
         .await
         .expect("Error adding row");
     tracing::info!("Added message (ID: {mid}) {message:?}");
