@@ -76,6 +76,7 @@ impl Table {
     /// TODO: Add docstring
     pub async fn ensure_text_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
         tracing::trace!("Table::ensure_text_view_created({rltbl:?})");
+        self.ensure_default_view_created(rltbl).await?;
         let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
         self.view = format!("{}_text_view", self.name);
         tracing::debug!(r#"Creating view "{}" with columns {columns:?}"#, self.view);

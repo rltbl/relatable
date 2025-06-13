@@ -1203,10 +1203,92 @@ pub fn generate_text_view_ddl(
     kind: &DbKind,
 ) -> Vec<String> {
     tracing::trace!(
-        "generate_default_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, \
+        "generate_text_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, \
          {kind:?})"
     );
-    todo!()
+
+    let mut inner_columns = columns
+        .iter()
+        .map(|column| {
+            // TODO: Use placeholders
+            format!(
+                r#"CASE
+                     WHEN "{column}" {is_clause} NULL THEN (
+                       SELECT "value"
+                       FROM "message"
+                       WHERE "row" = "_id"
+                         AND "column" = '{column}'
+                         AND "table" = '{table_name}'
+                       ORDER BY "message_id" DESC
+                       LIMIT 1
+                     )
+                     ELSE {column_cast}
+                   END AS "{column}""#,
+                column = column.name,
+                is_clause = is_clause(kind),
+                column_cast = {
+                    let datatype = match &column.datatype {
+                        None => "text".to_string(),
+                        Some(datatype) if datatype == "" => "text".to_string(),
+                        Some(datatype) => datatype.to_lowercase(),
+                    };
+                    if *kind == DbKind::Sqlite {
+                        if datatype.as_str() == "text" {
+                            format!(r#""{}""#, column.name)
+                        } else {
+                            format!(r#"CAST("{}" AS TEXT)"#, column.name)
+                        }
+                    } else {
+                        format!(r#""{}"::TEXT"#, column.name)
+                    }
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let inner_columns = {
+        let mut v = vec![
+            "_id".to_string(),
+            "_order".to_string(),
+            "_message".to_string(),
+            "_history".to_string(),
+        ];
+        v.append(&mut inner_columns);
+        v
+    };
+
+    let mut outer_columns = columns
+        .iter()
+        .map(|column| format!(r#"t."{}""#, column.name))
+        .collect::<Vec<_>>();
+
+    let outer_columns = {
+        let mut v = vec![
+            "t._id".to_string(),
+            "t._order".to_string(),
+            "t._message".to_string(),
+            "t._history".to_string(),
+        ];
+        v.append(&mut outer_columns);
+        v
+    };
+
+    let create_view_sql = format!(
+        r#"CREATE VIEW "{view_name}" AS
+           SELECT {outer_columns}
+           FROM (
+               SELECT {inner_columns}
+               FROM "{table_name}_default_view"
+           ) t"#,
+        outer_columns = outer_columns.join(", "),
+        inner_columns = inner_columns.join(", "),
+    );
+
+    tracing::debug!("Generated DDL for '{table_name}_text_view': {create_view_sql}");
+    vec![
+        format!(r#"DROP VIEW IF EXISTS "{}""#, view_name),
+        create_view_sql,
+    ]
 }
 /// Generate the DDL used to create the table table. If `force` is set, drop the table first
 pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {

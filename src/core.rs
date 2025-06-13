@@ -864,6 +864,9 @@ impl Relatable {
         let table_rows = self.connection.query(&sql, None).await?;
         for table_row in table_rows {
             let table_name = table_row.get_string("table")?;
+            let mut table = self.get_table(&table_name).await?;
+            table.ensure_text_view_created(self).await?;
+
             let path = match save_dir {
                 Some(save_dir) => format!("{save_dir}/{table_name}.tsv"),
                 None => table_row.get_string("path")?,
@@ -872,7 +875,6 @@ impl Relatable {
                 .delimiter(b'\t')
                 .quote_style(QuoteStyle::Never)
                 .from_path(path)?;
-
             let header_row = self
                 .fetch_columns(&table_name)
                 .await?
@@ -882,7 +884,7 @@ impl Relatable {
             writer.write_record(header_row.clone())?;
 
             let sql = format!(
-                r#"SELECT {columns} FROM "{table_name}" ORDER BY "_order""#,
+                r#"SELECT {columns} FROM "{table_name}_text_view" ORDER BY "_order""#,
                 columns = header_row
                     .iter()
                     .map(|c| format!(r#""{c}""#))
@@ -890,7 +892,6 @@ impl Relatable {
                     .join(", ")
             );
             let data_rows = self.connection.query(&sql, None).await?;
-            let table = self.get_table(&table_name).await?;
             for data_row in data_rows {
                 let values = {
                     let mut str_values = vec![];
