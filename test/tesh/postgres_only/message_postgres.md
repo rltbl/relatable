@@ -5,8 +5,8 @@ $ export RLTBL_CONNECTION=postgresql:///rltbl_db
 $ alias rltbl='rltbl -v'
 $ rltbl demo --size 10 --force
 Created a demonstration database in 'postgresql:///rltbl_db'
-$ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
-$ echo '{"level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 4 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 4 species
 $ rltbl get table penguin
 Rows 1-10 of 10
 study_name  sample_number  species             island     individual_id  culmen_length  body_mass
@@ -33,12 +33,12 @@ $ echo 'select * from message order by message_id' | psql rltbl_db
 ------------+----------+-------+-----+--------+-------+-------+------+---------
 (0 rows)
 
-$ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
-$ echo '{"level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 4 species
-$ echo '{"level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=afreen rltbl --input JSON add message penguin 5 species
-$ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=afreen rltbl --input JSON add message penguin 6 species
-$ echo '{"level": "error", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl --input JSON add message penguin 6 study_name
-$ echo '{"level": "error", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl --input JSON add message penguin 7 study_name
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 4 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=afreen rltbl --input JSON add message penguin 5 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=afreen rltbl --input JSON add message penguin 6 species
+$ echo '{"value": "FAKE123", "level": "error", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl --input JSON add message penguin 6 study_name
+$ echo '{"value": "FAKE123", "level": "error", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl --input JSON add message penguin 7 study_name
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |   column   |       value        | level |   rule   |               message
 ------------+----------+---------+-----+------------+--------------------+-------+----------+-------------------------------------

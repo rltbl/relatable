@@ -5,8 +5,8 @@
 ```console tesh-session="message"
 $ rltbl -v demo --size 10 --force
 Created a demonstration database in '.relatable/relatable.db'
-$ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
-$ echo '{"level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
 ```
 
 The messages are not normally visible when viewing the table's contents on the command line, but by increasing **rltbl**'s verbosity level we can see more detail about the first few rows returned from a `get table` command:
@@ -47,12 +47,12 @@ $ sqlite3 -header .relatable/relatable.db 'select * from message'
 Let's add a few more messages to the message table. Two of them will be by the user **mike** and the rest by the user **afreen**.
 
 ```console tesh-session="message"
-$ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
-$ echo '{"level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
-$ echo '{"level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 5 species
-$ echo '{"level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 species
-$ echo '{"level": "error", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 study_name
-$ echo '{"level": "error", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 7 study_name
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 5 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 species
+$ echo '{"value": "FAKE123", "level": "error", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 study_name
+$ echo '{"value": "FAKE123", "level": "error", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 7 study_name
 $ sqlite3 -header .relatable/relatable.db 'select * from message'
 message_id|added_by|table|row|column|value|level|rule|message
 3|mike|penguin|3|species|Pygoscelis adeliae|error|custom-a|this is not a good species

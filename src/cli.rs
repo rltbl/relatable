@@ -305,7 +305,9 @@ pub enum LoadSubcommand {
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
 
-        // TODO: Add a --validate switch and DO NOT validate by default.
+        #[arg(long, action = ArgAction::SetTrue)]
+        validate: bool,
+
         #[arg(value_name = "PATH", num_args=1..,
               action = ArgAction::Set,
               help = "The path(s) to load from")]
@@ -600,7 +602,7 @@ pub async fn prompt_for_json_message(
         .fetch_columns("message")
         .await?
         .iter()
-        .filter(|c| !["message_id", "added_by", "value"].contains(&c.name.as_str()))
+        .filter(|c| !["message_id", "added_by"].contains(&c.name.as_str()))
         .map(|c| c.name.to_string())
         .collect::<Vec<_>>();
     let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
@@ -662,6 +664,11 @@ pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
         panic!("Refusing to insert an empty message to the database");
     }
 
+    let value = json!(json_message
+        .content
+        .get("value")
+        .and_then(|m| m.as_str())
+        .expect("The field 'value' (type: string) is required."));
     let level = json_message
         .content
         .get("level")
@@ -680,7 +687,7 @@ pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
 
     let user = get_username(&cli);
     let (mid, message) = rltbl
-        .add_message(&user, table, row, column, None, &level, &rule, &message)
+        .add_message(&user, table, row, column, &value, &level, &rule, &message)
         .await
         .expect("Error adding row");
     tracing::info!("Added message (ID: {mid}) {message:?}");
@@ -796,14 +803,14 @@ pub async fn redo(cli: &Cli) {
     tracing::info!("Last operation redone");
 }
 
-pub async fn load_tables(cli: &Cli, paths: &Vec<String>, force: bool) {
+pub async fn load_tables(cli: &Cli, paths: &Vec<String>, force: bool, validate: bool) {
     tracing::trace!("load_tables({cli:?}, {paths:?})");
     for path in paths {
-        load_table(cli, &path, force).await;
+        load_table(cli, &path, force, validate).await;
     }
 }
 
-pub async fn load_table(cli: &Cli, path: &str, force: bool) {
+pub async fn load_table(cli: &Cli, path: &str, force: bool, validate: bool) {
     tracing::trace!("load_table({cli:?}, {path})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -820,7 +827,7 @@ pub async fn load_table(cli: &Cli, path: &str, force: bool) {
     let table = table.trim_end_matches("_");
     let table = table.trim_start_matches("_");
 
-    rltbl.load_table(&table, path, force).await;
+    rltbl.load_table(&table, path, force, validate).await;
     tracing::info!("Loaded table '{table}'");
 }
 
@@ -927,7 +934,11 @@ pub async fn process_command() {
         Command::Redo {} => redo(&cli).await,
         Command::History { context } => print_history(&cli, *context).await,
         Command::Load { subcommand } => match subcommand {
-            LoadSubcommand::Table { paths, force } => load_tables(&cli, paths, *force).await,
+            LoadSubcommand::Table {
+                paths,
+                force,
+                validate,
+            } => load_tables(&cli, paths, *force, *validate).await,
         },
         Command::Save { save_dir } => save_all(&cli, save_dir.as_deref()).await,
         Command::Serve {

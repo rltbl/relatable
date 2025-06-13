@@ -599,8 +599,9 @@ impl Relatable {
     }
 
     /// Loads the given table from the given path. When `force` is set to true, deletes any
-    /// existing table of the same name in the database first. Note that this function may panic.
-    pub async fn load_table(&self, table_name: &str, path: &str, force: bool) {
+    /// existing table of the same name in the database first. When `validate` is set to true,
+    /// Validates each row before loading it. Note that this function may panic.
+    pub async fn load_table(&self, table_name: &str, path: &str, force: bool, validate: bool) {
         tracing::trace!("Relatable::load_table({table_name:?}, {path:?})");
         // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
@@ -795,27 +796,29 @@ impl Relatable {
                             };
 
                             // Validate the cell and add any messages to the message table:
-                            cell.validate(&table.get_column(column))
-                                .expect("Error validating cell");
-                            for message in cell.messages.iter() {
-                                let (msg_id, msg) = self
-                                    .add_message(
-                                        "Valve",
-                                        &table.name,
-                                        id,
-                                        column,
-                                        Some(&cell.value),
-                                        &message.level,
-                                        &message.rule,
-                                        &message.message,
-                                    )
-                                    .await
-                                    .expect("Error adding message");
-                                tracing::debug!("Added message (ID {msg_id}): {msg:?}");
+                            if validate {
+                                cell.validate(&table.get_column(column))
+                                    .expect("Error validating cell");
+                                for message in cell.messages.iter() {
+                                    let (msg_id, msg) = self
+                                        .add_message(
+                                            "Valve",
+                                            &table.name,
+                                            id,
+                                            column,
+                                            &cell.value,
+                                            &message.level,
+                                            &message.rule,
+                                            &message.message,
+                                        )
+                                        .await
+                                        .expect("Error adding message");
+                                    tracing::debug!("Added message (ID {msg_id}): {msg:?}");
+                                }
                             }
 
                             // Add the parameter for the value to the SQL insert statement:
-                            if cell.error_level() >= 2 {
+                            if cell.error_level() >= 2 || cell.value == JsonValue::Null {
                                 sql_params.push("NULL".to_string());
                             } else {
                                 sql_params.push(sql_param_gen.next());
@@ -2168,7 +2171,7 @@ impl Relatable {
                             &table.name,
                             &row,
                             column,
-                            Some(&cell.value),
+                            &cell.value,
                             &message.level,
                             &message.rule,
                             &message.message,
@@ -2277,7 +2280,7 @@ impl Relatable {
         table_name: &str,
         row: &usize,
         column: &str,
-        value: Option<&JsonValue>,
+        value: &JsonValue,
         level: &str,
         rule: &str,
         message: &str,
@@ -2285,25 +2288,8 @@ impl Relatable {
     ) -> Result<(usize, Message)> {
         tracing::trace!(
             "Relatable::add_message({user:?}, {table_name:?}, {row}, \
-                         {column:?}, {level:?}, {rule:?}, {message:?}, tx)"
+             {column:?}, {value:?}, {level:?}, {rule:?}, {message:?}, tx)"
         );
-
-        let value = match value {
-            Some(value) => value.clone(),
-            None => {
-                let sql = format!(
-                    r#"SELECT "{column}" FROM "{table_name}" WHERE _id = {sql_param}"#,
-                    sql_param = SqlParam::new(&tx.kind()).next()
-                );
-                let params = json!([row]);
-                let value = match tx.query_value(&sql, Some(&params))? {
-                    Some(JsonValue::String(s)) => s.as_str().to_string(),
-                    Some(JsonValue::Null) | None => "".to_string(),
-                    Some(value) => value.to_string(),
-                };
-                json!(value)
-            }
-        };
 
         let sql = format!(
             r#"INSERT INTO "message"
@@ -2339,14 +2325,14 @@ impl Relatable {
         table_name: &str,
         row: usize,
         column: &str,
-        value: Option<&JsonValue>,
+        value: &JsonValue,
         level: &str,
         rule: &str,
         message: &str,
     ) -> Result<(usize, Message)> {
         tracing::trace!(
             "Relatable::add_message({user:?}, {table_name:?}, {row}, \
-                         {column:?}, {level:?}, {rule:?}, {message:?})"
+             {column:?}, {value:?}, {level:?}, {rule:?}, {message:?})"
         );
 
         // Begin a transaction:
