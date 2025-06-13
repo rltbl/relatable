@@ -97,6 +97,10 @@ test_tesh_doc: debug
 test_tesh_doc_sqlx: sqlx_debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
+# Round-trip tests
+# TODO: Add some TSV files that include errors
+# Load and save and verify a match. Note: This requires the text views to exist in order to work.
+
 # SQLite tests (rusqlite)
 
 test/tesh/common/as_sqlite:

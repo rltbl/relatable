@@ -47,7 +47,7 @@ impl Table {
     /// table has been created, and to set the [view name](Table::view) for this table to
     /// TABLENAME_default_view
     pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
-        tracing::trace!("Table::ensure_view_created({rltbl:?})");
+        tracing::trace!("Table::ensure_default_view_created({rltbl:?})");
         let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
         self.view = format!("{}_default_view", self.name);
         tracing::debug!(r#"Creating view "{}" with columns {columns:?}"#, self.view);
@@ -60,7 +60,35 @@ impl Table {
             true => r#"_order"#,
         };
 
-        for sql in sql::generate_view_ddl(
+        for sql in sql::generate_default_view_ddl(
+            &self.name,
+            &self.view,
+            id_col,
+            order_col,
+            &columns,
+            &rltbl.connection.kind(),
+        ) {
+            rltbl.connection.query(&sql, None).await?;
+        }
+        Ok(columns)
+    }
+
+    /// TODO: Add docstring
+    pub async fn ensure_text_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
+        tracing::trace!("Table::ensure_text_view_created({rltbl:?})");
+        let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
+        self.view = format!("{}_text_view", self.name);
+        tracing::debug!(r#"Creating view "{}" with columns {columns:?}"#, self.view);
+        let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
+            false => r#"rowid"#, // This *must* be lowercase.
+            true => r#"_id"#,
+        };
+        let order_col = match meta_columns.iter().any(|c| c.name == "_order") {
+            false => r#"rowid"#, // This *must* be lowercase.
+            true => r#"_order"#,
+        };
+
+        for sql in sql::generate_text_view_ddl(
             &self.name,
             &self.view,
             id_col,

@@ -1350,7 +1350,7 @@ impl Relatable {
             }
         }
 
-        let result = sql::view_exists_for(table_name, tx)?;
+        let result = sql::view_exists_for(table_name, "default", tx)?;
         let view = if result {
             format!("{table_name}_default_view")
         } else {
@@ -1428,13 +1428,13 @@ impl Relatable {
     }
 
     /// Determine whether a view already exists for the table in the database.
-    pub async fn view_exists_for(&self, table: &str) -> Result<bool> {
+    pub async fn view_exists_for(&self, table: &str, view_type: &str) -> Result<bool> {
         tracing::trace!("Relatable::view_exists_for({table:?})");
         let mut conn = self.connection.reconnect()?;
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        let table = sql::view_exists_for(table, &mut tx)?;
+        let table = sql::view_exists_for(table, view_type, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;

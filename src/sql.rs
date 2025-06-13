@@ -649,7 +649,7 @@ pub async fn table_exists(table: &str, conn: &DbConnection) -> Result<bool> {
 }
 
 /// Determine whether a view already exists for the table in the database.
-pub fn view_exists_for(table: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
+pub fn view_exists_for(table: &str, view_type: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
     tracing::trace!("view_exists_for({table}, tx)");
     let sql_param = SqlParam::new(&tx.kind()).next();
     let statement = match tx.kind() {
@@ -665,7 +665,7 @@ pub fn view_exists_for(table: &str, tx: &mut DbTransaction<'_>) -> Result<bool> 
                AND "table_type" = 'VIEW'"#,
         ),
     };
-    let params = json!([format!("{table}_default_view")]);
+    let params = json!([format!("{table}_{view_type}_view")]);
     let result = tx.query_value(&statement, Some(&params))?;
     match result {
         None => Ok(false),
@@ -1095,8 +1095,8 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
     };
 }
 
-/// Generate the DDL for creating a view on the given table,
-pub fn generate_view_ddl(
+/// Generate the DDL for creating the default view on the given table,
+pub fn generate_default_view_ddl(
     table_name: &str,
     view_name: &str,
     id_col: &str,
@@ -1105,7 +1105,8 @@ pub fn generate_view_ddl(
     kind: &DbKind,
 ) -> Vec<String> {
     tracing::trace!(
-        "generate_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, {kind:?})"
+        "generate_default_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, \
+         {kind:?})"
     );
     // Note that '?' parameters are not allowed in views so we must hard code them:
     match kind {
@@ -1192,6 +1193,21 @@ pub fn generate_view_ddl(
     }
 }
 
+/// Generate the DDL for creating the text view on the given table,
+pub fn generate_text_view_ddl(
+    table_name: &str,
+    view_name: &str,
+    id_col: &str,
+    order_col: &str,
+    columns: &Vec<Column>,
+    kind: &DbKind,
+) -> Vec<String> {
+    tracing::trace!(
+        "generate_default_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, \
+         {kind:?})"
+    );
+    todo!()
+}
 /// Generate the DDL used to create the table table. If `force` is set, drop the table first
 pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_table_table_ddl({force}, {db_kind:?})");
