@@ -256,7 +256,7 @@ impl Row {
                     p8 = sql_param_gen.next(),
                 );
                 let params = json!([
-                    "valve",
+                    "Valve",
                     table.name,
                     self.id,
                     column,
@@ -339,7 +339,6 @@ impl From<&JsonValue> for Cell {
     }
 }
 
-// TODO: Add a "get greatest error level" function.
 impl Cell {
     /// TODO: Add docstring
     pub fn validate(&mut self, column: &Column) -> Result<&Self> {

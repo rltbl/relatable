@@ -196,15 +196,15 @@ test_caching: test_caching_sqlite test_caching_postgres test_caching_memory
 .PHONY: test_perf_sqlite
 test_perf_sqlite: test/perf/tsv/penguin.tsv debug
 	target/debug/rltbl --database $(SQLITE_DB) init --force
-	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $< || \
+	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 .PHONY: test_perf_sqlx_sqlite
 test_perf_sqlx_sqlite: test/perf/tsv/penguin.tsv sqlx_debug
 	target/debug/rltbl --database $(SQLITE_DB) init --force
-	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $< || \
+	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 # Postgres performance (rusqlite and sqlx)
@@ -212,8 +212,8 @@ test_perf_sqlx_sqlite: test/perf/tsv/penguin.tsv sqlx_debug
 .PHONY: test_perf_sqlx_postgres
 test_perf_sqlx_postgres: test/perf/tsv/penguin.tsv sqlx_debug
 	target/debug/rltbl --database $(PG_DB) init --force
-	@echo "target/debug/rltbl --database $(PG_DB) -vv load table --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(PG_DB) -vv load table --force $< || \
+	@echo "target/debug/rltbl --database $(PG_DB) -vv load table --validate --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(PG_DB) -vv load table --validate --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 # Combined tests
