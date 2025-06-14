@@ -622,136 +622,6 @@ impl DbTransaction<'_> {
 // Database-specific utilities and functions
 ///////////////////////////////////////////////////////////////////////////////
 
-/// Determine whether the given table exists in the database
-pub async fn table_exists(table: &str, conn: &DbConnection) -> Result<bool> {
-    tracing::trace!("table_exists({table}, {conn:?})");
-    let sql_param = SqlParam::new(&conn.kind()).next();
-    let (sql, params) = match conn.kind() {
-        DbKind::Sqlite => (
-            format!(
-                r#"SELECT 1 FROM "sqlite_master"
-                   WHERE "type" = {sql_param} AND name = {sql_param} LIMIT 1"#,
-            ),
-            json!(["table", table]),
-        ),
-        DbKind::Postgres => (
-            format!(
-                r#"SELECT 1 FROM "information_schema"."tables"
-                   WHERE "table_type" LIKE {sql_param} AND "table_name" = {sql_param}"#,
-            ),
-            json!(["%TABLE", table]),
-        ),
-    };
-    match conn.query_value(&sql, Some(&params)).await? {
-        None => Ok(false),
-        Some(_) => Ok(true),
-    }
-}
-
-/// Determine whether a view already exists for the table in the database.
-pub fn view_exists_for(table: &str, view_type: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
-    tracing::trace!("view_exists_for({table}, tx)");
-    let sql_param = SqlParam::new(&tx.kind()).next();
-    let statement = match tx.kind() {
-        DbKind::Sqlite => format!(
-            r#"SELECT 1
-               FROM sqlite_master
-               WHERE type = 'view' AND name = {sql_param}"#
-        ),
-        DbKind::Postgres => format!(
-            r#"SELECT 1
-               FROM "information_schema"."tables"
-               WHERE "table_name" = {sql_param}
-               AND "table_type" = 'VIEW'"#,
-        ),
-    };
-    let params = json!([format!("{table}_{view_type}_view")]);
-    let result = tx.query_value(&statement, Some(&params))?;
-    match result {
-        None => Ok(false),
-        _ => Ok(true),
-    }
-}
-
-/// Query the database for the columns associated with the given table
-pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<Vec<JsonRow>> {
-    tracing::trace!("get_db_table_columns({table:?}, tx)");
-    match tx.kind() {
-        DbKind::Sqlite => {
-            let sql = format!(r#"SELECT "name" FROM pragma_table_info("{table}") ORDER BY "cid""#);
-            tx.query(&sql, None)
-        }
-        DbKind::Postgres => {
-            let sql = format!(
-                r#"SELECT "column_name"::TEXT AS "name", "data_type"::TEXT AS "datatype"
-                   FROM "information_schema"."columns"
-                   WHERE "table_name" = {sql_param}
-                   ORDER BY "ordinal_position""#,
-                sql_param = SqlParam::new(&tx.kind()).next()
-            );
-            let params = json!([table]);
-            tx.query(&sql, Some(&params))
-        }
-    }
-}
-
-/// Get the given attribute of the given table and column from the column table
-pub async fn get_db_column_attribute(
-    table: &str,
-    column: &str,
-    attribute: &str,
-    conn: &DbConnection,
-) -> Result<Option<String>> {
-    let mut sql_param = SqlParam::new(&conn.kind());
-    let is_not_clause = is_not_clause(&conn.kind());
-    let sql = format!(
-        r#"SELECT "{attribute}"
-           FROM "column"
-           WHERE "{attribute}" {is_not_clause} NULL
-           AND "table" = {}
-           AND "column" = {}"#,
-        sql_param.next(),
-        sql_param.next(),
-    );
-    let params = json!([table, column]);
-    let value = match conn.query_one(&sql, Some(&params)).await {
-        Ok(Some(row)) => Some(row.get_string(attribute)?),
-        Ok(None) => None,
-        Err(err) => {
-            // We assume that any database errors encountered here are because the (optional)
-            // column table does not exist. But we log a debug message in case we need to
-            // troubleshoot.
-            tracing::debug!("Received message: '{err}' from database. Returning None");
-            None
-        }
-    };
-    Ok(value)
-}
-
-/// Query the database for what the id of the next created row of the given table will be
-pub fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
-    tracing::trace!("get_next_id({table:?}, tx)");
-    let current_row_id = match tx.kind() {
-        DbKind::Sqlite => {
-            let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
-            let params = json!([table]);
-            tx.query_value(sql, Some(&params))?
-        }
-        DbKind::Postgres => {
-            let sql = format!(
-                // Note that in the case of postgres an _id column is required.
-                r#"SELECT last_value FROM "{table}__id_seq""#
-            );
-            tx.query_value(&sql, None)?
-        }
-    };
-    let current_row_id = match current_row_id {
-        Some(value) => value.as_u64().unwrap_or_default() as usize,
-        None => 0,
-    };
-    Ok(current_row_id + 1)
-}
-
 /// Helper function to determine whether the given name is 'simple', as defined by
 /// [DB_OBJECT_MATCH_STR]
 pub fn is_simple(db_object_name: &str) -> Result<(), String> {
@@ -1558,7 +1428,7 @@ pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValu
         JsonValue::String(s) if s == "" => {
             let nulltype = {
                 table
-                    .get_column_attribute(column, "nulltype")
+                    .get_configured_column_attribute(column, "nulltype")
                     .unwrap_or("".to_string())
             };
             if nulltype == "empty" {
@@ -1605,7 +1475,7 @@ impl JsonRow {
         let mut nullified_row = Self::new();
         for (column, value) in row.content.iter() {
             let nulltype = table
-                .get_column_attribute(&column, "nulltype")
+                .get_configured_column_attribute(&column, "nulltype")
                 .unwrap_or("".to_string());
             match value {
                 JsonValue::String(s) if s == "" && nulltype == "empty" => {

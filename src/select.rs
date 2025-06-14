@@ -399,10 +399,10 @@ impl Select {
 
     /// Add all of the given table's columns to the SELECT clause of this select
     pub async fn select_all(&mut self, rltbl: &Relatable, table: &str) -> Result<&Self> {
-        for column in rltbl.get_db_table_columns(&table).await? {
+        for column in rltbl.fetch_all_columns(&table).await? {
             self.select.push(SelectField::Column {
                 table: String::new(),
-                column: column.get_string("name")?,
+                column: column.name,
                 alias: String::new(),
             });
         }

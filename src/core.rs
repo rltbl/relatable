@@ -413,7 +413,7 @@ impl Relatable {
         tracing::trace!("Relatable::fetch({select:?})");
 
         // Get the table and column information and ensure that the view has been created:
-        let mut table = self.get_table(select.table_name.as_str()).await?;
+        let mut table = Table::get_table(select.table_name.as_str(), self).await?;
         let mut columns = table.ensure_default_view_created(self).await?;
 
         let mut select = select.clone();
@@ -554,32 +554,21 @@ impl Relatable {
                 name: table_name.to_string(),
                 ..Default::default()
             };
+            let table_columns = Table::get_column_table_columns(table_name, self)
+                .await
+                .expect(&format!("Error getting columns for table '{table_name}'"));
             for column_name in headers.iter() {
                 table.columns.insert(
                     column_name.to_string(),
                     Column {
                         name: column_name.to_string(),
                         table: table_name.to_string(),
-                        datatype: sql::get_db_column_attribute(
-                            table_name,
-                            column_name,
-                            "datatype",
-                            &self.connection,
-                        )
-                        .await
-                        .expect(&format!(
-                            "Error getting datatype for column: {table_name}.{column_name}"
-                        )),
-                        nulltype: sql::get_db_column_attribute(
-                            table_name,
-                            column_name,
-                            "nulltype",
-                            &self.connection,
-                        )
-                        .await
-                        .expect(&format!(
-                            "Error getting nulltype for column: {table_name}.{column_name}"
-                        )),
+                        datatype: table_columns
+                            .get(column_name)
+                            .and_then(|col| col.datatype.clone()),
+                        nulltype: table_columns
+                            .get(column_name)
+                            .and_then(|col| col.nulltype.clone()),
                         ..Default::default()
                     },
                 );
@@ -598,10 +587,6 @@ impl Relatable {
         }
 
         // Insert the data into the table:
-        let table = self
-            .get_table(table_name)
-            .await
-            .expect(&format!("Error getting info for {table_name}"));
         let mut columns = vec!["_id".to_string(), "_order".to_string()];
         columns.append(
             &mut headers
@@ -661,7 +646,7 @@ impl Relatable {
                         };
                         let nulltype = {
                             if value == "" {
-                                table.get_column_attribute(column, "nulltype")
+                                table.get_configured_column_attribute(column, "nulltype")
                             } else {
                                 None
                             }
@@ -691,7 +676,7 @@ impl Relatable {
 
                             // Validate the cell and add any messages to the message table:
                             if validate {
-                                cell.validate(&table.get_column(column))
+                                cell.validate(&table.get_config_for_column(column))
                                     .expect("Error validating cell");
                                 for message in cell.messages.iter() {
                                     let (msg_id, msg) = self
@@ -758,7 +743,7 @@ impl Relatable {
         let table_rows = self.connection.query(&sql, None).await?;
         for table_row in table_rows {
             let table_name = table_row.get_string("table")?;
-            let mut table = self.get_table(&table_name).await?;
+            let mut table = Table::get_table(&table_name, self).await?;
             table.ensure_text_view_created(self).await?;
 
             let path = match save_dir {
@@ -796,7 +781,7 @@ impl Relatable {
                             JsonValue::Null => {
                                 let nulltype = {
                                     table
-                                        .get_column_attribute(column, "nulltype")
+                                        .get_configured_column_attribute(column, "nulltype")
                                         .unwrap_or("".to_string())
                                 };
                                 match nulltype.as_str() {
@@ -996,7 +981,7 @@ impl Relatable {
                     // If the row has just been newly added, it will be found in the table,
                     // otherwise we will use the old_change_id to look for it in the history
                     // table:
-                    let json_row = match self._get_row(&table, *row, tx)? {
+                    let json_row = match Table::_get_row(&table, *row, tx)? {
                         Some(json_row) => json_row,
                         None => match old_change_id {
                             Some(change_id) => {
@@ -1060,7 +1045,7 @@ impl Relatable {
                     tx.query_value(&sql, Some(&params))?;
                 }
                 Change::Delete { row, after: _ } => {
-                    let json_row = match self._get_row(&table, *row, tx)? {
+                    let json_row = match Table::_get_row(&table, *row, tx)? {
                         Some(json_row) => json_row,
                         None => {
                             // It must be there since we supposedly just added it, so if it is
@@ -1159,178 +1144,38 @@ impl Relatable {
         Ok(users)
     }
 
-    /// Converts a vector of [JsonRow](JsonRow)s to a map from column names to [Column]s.
-    fn json_to_columns_map(json_cols: &Vec<JsonRow>) -> Result<IndexMap<String, Column>> {
-        tracing::trace!("Relatable::json_to_columns_map({json_cols:?})");
-        let mut columns = IndexMap::new();
-        for json_col in json_cols {
-            columns.insert(
-                json_col.get_string("column")?,
-                Column {
-                    name: json_col.get_string("column")?,
-                    table: json_col.get_string("table")?,
-                    label: json_col.get_string("label").ok(),
-                    description: json_col.get_string("description").ok(),
-                    datatype: json_col.get_string("datatype").ok(),
-                    nulltype: json_col.get_string("nulltype").ok(),
-                    ..Default::default()
-                },
-            );
-        }
-        Ok(columns)
-    }
-
-    /// Returns the given table's columns as a map from column names to [Column]s.
-    pub async fn get_column_columns(&self, table_name: &str) -> Result<IndexMap<String, Column>> {
-        tracing::trace!("Relatable::get_column_columns({table_name:?})");
-        let sql = format!(
-            r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
-            sql_param = SqlParam::new(&self.connection.kind()).next()
-        );
-        let params = json!([table_name]);
-        let json_columns = self
-            .connection
-            .query(&sql, Some(&params))
-            .await
-            .unwrap_or(vec![]);
-        Self::json_to_columns_map(&json_columns)
-    }
-
-    /// Returns the given table's columns as a map from column names to [Column]s using the
-    /// given transaction.
-    fn _get_column_columns(
-        &self,
-        table_name: &str,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<IndexMap<String, Column>> {
-        tracing::trace!("Relatable::_get_column_columns({table_name:?}, tx)");
-        let sql = format!(
-            r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([table_name]);
-        let json_columns = tx.query(&sql, Some(&params)).unwrap_or(vec![]);
-        Self::json_to_columns_map(&json_columns)
-    }
-
-    /// Returns a tuple whose first position contains a list of the given table's columns, and whose
-    /// second position contains a list of the given table's metacolumns.
-    pub async fn fetch_all_columns(&self, table_name: &str) -> Result<(Vec<Column>, Vec<Column>)> {
-        tracing::trace!("Relatable::fetch_all_columns({table_name:?})");
-        // Fetch the columns corresponding to `table_name` from the database's metadata:
-        let mut columns = vec![];
-        let mut meta_columns = vec![];
-        let table = self.get_table(table_name).await?;
-        for column in self.get_db_table_columns(table_name).await? {
-            // Decorate the column using the information from the column table that we collected
-            // above:
-            match column.get_string("name")? {
-                name if name.starts_with("_") => meta_columns.push(Column {
-                    name,
-                    table: table.name.to_string(),
-                    ..Default::default()
-                }),
-                name => columns.push(Column {
-                    // The fields are assigned in this particular order to satisfy the constraints
-                    // of rust's ownership model. Because `name` is a String and not a reference,
-                    // we cannot assign it and then afterwards borrow it to use as an argument
-                    // to a function. But doing that in the opposite order is fine.
-                    label: table.get_column_attribute(&name.as_str(), "label"),
-                    description: table.get_column_attribute(&name.as_str(), "description"),
-                    nulltype: table.get_column_attribute(&name.as_str(), "nulltype"),
-                    datatype: table.get_column_attribute(&name.as_str(), "datatype"),
-                    name,
-                    table: table.name.to_string(),
-                    ..Default::default()
-                }),
-            };
-        }
-        if columns.is_empty() && meta_columns.is_empty() {
-            return Err(RelatableError::DataError(format!(
-                "No db columns found for: {}",
-                table.name
-            ))
-            .into());
-        }
-        Ok((columns, meta_columns))
-    }
-
     /// Returns a list of the given table's columns (not including metacolumns)
     pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
         tracing::trace!("Relatable::fetch_columns({table_name:?})");
-        Ok(self.fetch_all_columns(table_name).await?.0)
+        let table = Table::get_table(table_name, self).await?;
+        Ok(table.columns.values().cloned().collect::<Vec<_>>())
     }
 
-    /// Returns a list of the given table's metacolumns
-    pub async fn fetch_metacolumns(&self, table_name: &str) -> Result<Vec<Column>> {
-        tracing::trace!("Relatable::fetch_metacolumns({table_name:?})");
-        Ok(self.fetch_all_columns(table_name).await?.1)
-    }
-
-    /// Returns a [Table] corresponding to the given table.
-    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
-        tracing::trace!("Relatable::get_table({table_name:?})");
+    /// TODO: Add docstring
+    pub async fn fetch_all_columns(&self, table_name: &str) -> Result<Vec<Column>> {
+        tracing::trace!("Relatable::fetch_all_columns({table_name:?})");
         let mut conn = self.connection.reconnect()?;
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        let table = self._get_table(table_name, &mut tx)?;
+        let columns = {
+            let (mut normal_columns, meta_columns) =
+                Table::_collect_column_info(table_name, &mut tx)?;
+            let mut all_columns = meta_columns;
+            all_columns.append(&mut normal_columns);
+            all_columns
+        };
 
         // Commit the transaction:
         tx.commit()?;
 
-        Ok(table)
-    }
-
-    /// Returns a [Table] corresponding to the given table using the given transaction.
-    fn _get_table(&self, table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Table> {
-        tracing::trace!("Relatable::_get_table({table_name:?}, tx)");
-        let statement = format!(
-            r#"SELECT "table" FROM "table" WHERE "table" = {sql_param}"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([table_name]);
-        match tx.query_value(&statement, Some(&params))? {
-            Some(_) => (),
-            None => {
-                return Err(RelatableError::TableError(format!(
-                    "Table '{table_name}' is not in the 'table' table"
-                ))
-                .into())
-            }
-        }
-
-        let result = sql::view_exists_for(table_name, "default", tx)?;
-        let view = if result {
-            format!("{table_name}_default_view")
-        } else {
-            String::from(table_name)
-        };
-
-        let statement = format!(
-            r#"SELECT MAX("change_id") FROM "history" WHERE "table" = {sql_param}"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([table_name]);
-        let change_id = match tx.query_value(&statement, Some(&params))? {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
-            None => 0,
-        };
-        let name = table_name.to_string();
-
-        Ok(Table {
-            name,
-            view,
-            change_id,
-            columns: self._get_column_columns(table_name, tx)?,
-            ..Default::default()
-        })
+        Ok(columns)
     }
 
     /// Returns all of the tables that have entries in the table table as a map from table names
     /// to Table structs.
     pub async fn get_tables(&self) -> Result<IndexMap<String, Table>> {
-        tracing::trace!("Relatable::get_tables()");
+        tracing::trace!("Relatable::get_tables({self:?})");
         let mut tables = IndexMap::new();
         let statement = format!(
             r#"SELECT "_id", "_order", "table", "path",
@@ -1353,117 +1198,18 @@ impl Relatable {
                         .get("_change_id")
                         .and_then(|i| i.as_u64())
                         .unwrap_or_default() as usize,
-                    columns: self.get_column_columns(&name).await?,
+                    columns: self
+                        .fetch_columns(&name)
+                        .await?
+                        .into_iter()
+                        .map(|column| (name.clone(), column))
+                        .collect::<IndexMap<_, _>>(),
                     view: format!("{name}_default_view"),
                     ..Default::default()
                 },
             );
         }
         Ok(tables)
-    }
-
-    /// Query the database for the columns associated with the given table
-    pub async fn get_db_table_columns(&self, table: &str) -> Result<Vec<JsonRow>> {
-        tracing::trace!("Relatable::get_db_table_columns({table:?})");
-        let mut conn = self.connection.reconnect()?;
-        // Begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
-
-        let table = sql::get_db_table_columns(table, &mut tx)?;
-
-        // Commit the transaction:
-        tx.commit()?;
-
-        Ok(table)
-    }
-
-    /// Determine whether a view already exists for the table in the database.
-    pub async fn view_exists_for(&self, table: &str, view_type: &str) -> Result<bool> {
-        tracing::trace!("Relatable::view_exists_for({table:?})");
-        let mut conn = self.connection.reconnect()?;
-        // Begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
-
-        let table = sql::view_exists_for(table, view_type, &mut tx)?;
-
-        // Commit the transaction:
-        tx.commit()?;
-
-        Ok(table)
-    }
-
-    /// Determine what the next created row id for the given table will be
-    pub async fn get_next_id(&self, table: &str) -> Result<usize> {
-        tracing::trace!("Relatable::get_next_id({table:?})");
-        let mut conn = self.connection.reconnect()?;
-        // Begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
-
-        let table = sql::get_next_id(table, &mut tx)?;
-
-        // Commit the transaction:
-        tx.commit()?;
-
-        Ok(table)
-    }
-
-    /// Returns the value of the _order column of the given row from the given table using the
-    /// given transaction.
-    fn _get_row_order(&self, table: &str, row: usize, tx: &mut DbTransaction<'_>) -> Result<usize> {
-        tracing::trace!("Relatable::_get_row_order({table:?}, {row}, tx)");
-        let sql = format!(
-            r#"SELECT "_order" FROM "{table}" WHERE "_id" = {sql_param}"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([row]);
-        let rows = tx.query(&sql, Some(&params))?;
-        if rows.len() == 0 {
-            return Err(
-                RelatableError::InputError(format!("No row {row} in table '{table}'")).into(),
-            );
-        }
-        Ok(rows[0].get_unsigned("_order")?)
-    }
-
-    /// Returns the row id that comes before the given row in the given table, using the given
-    /// transaction.
-    fn _get_previous_row_id(
-        &self,
-        table: &str,
-        row: usize,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<usize> {
-        tracing::trace!("Relatable::_get_previous_row_id({table:?}, {row}, tx)");
-        let curr_row_order = self._get_row_order(table, row, tx)?;
-        let sql = format!(
-            r#"SELECT "_id" FROM "{table}" WHERE "_order" < {sql_param}
-               ORDER BY "_order" DESC LIMIT 1"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([curr_row_order]);
-        let rows = tx.query(&sql, Some(&params))?;
-        if rows.len() == 0 {
-            Ok(0)
-        } else {
-            rows[0].get_unsigned("_id")
-        }
-    }
-
-    /// Return a [JsonRow](JsonRow) representing the given row of the given table, using the
-    /// given transaction.
-    fn _get_row(
-        &self,
-        table: &str,
-        row: usize,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<Option<JsonRow>> {
-        tracing::trace!("Relatable::_get_row({table:}?, {row}, tx)");
-        let sql = format!(
-            r#"SELECT * FROM "{table}" WHERE "_id" = {sql_param}"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([row]);
-        tx.query_one(&sql, Some(&params))
     }
 
     /// Returns a [Site] corresponding to the given username.
@@ -1511,7 +1257,7 @@ impl Relatable {
         match changeset.action {
             ChangeAction::Undo | ChangeAction::Redo => match changeset.changes.first() {
                 Some(Change::Delete { row, after: _ }) => {
-                    cursor.row = self._get_previous_row_id(&changeset.table, *row, tx)?;
+                    cursor.row = Table::_get_previous_row_id(&changeset.table, *row, tx)?;
                 }
                 _ => (),
             },
@@ -2085,11 +1831,7 @@ impl Relatable {
         self.prepare_user_cursor(changeset, &mut tx)?;
 
         // Actually make the changes:
-        let table = self._get_table(&changeset.table, &mut tx)?;
-        println!("**** TABLE: {table:#?}");
-        if 1 == 1 {
-            todo!();
-        }
+        let table = Table::_get_table(&changeset.table, &mut tx)?;
         let mut actual_changes = vec![];
         for change in &changeset.changes {
             match change {
@@ -2117,7 +1859,7 @@ impl Relatable {
                     };
 
                     // Validate the cell and add any messages to the message table:
-                    cell.validate(&table.get_column(column))
+                    cell.validate(&table.get_config_for_column(column))
                         .expect("Error validating cell");
                     for message in cell.messages.iter() {
                         let (msg_id, msg) = self._add_message(
@@ -2323,7 +2065,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = self._get_table(table_name, &mut tx)?;
+        let table = Table::_get_table(table_name, &mut tx)?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
@@ -2360,7 +2102,7 @@ impl Relatable {
         tx.query(&sql, Some(&params))?;
 
         let after_id = match after_id {
-            None => self._get_previous_row_id(table_name, new_row.id, &mut tx)?,
+            None => Table::_get_previous_row_id(&table.name, new_row.id, &mut tx)?,
             Some(after_id) => {
                 // Move the row to its assigned spot within the table:
                 tracing::debug!(
@@ -2447,7 +2189,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = self._get_table(table_name, &mut tx)?;
+        let table = Table::_get_table(table_name, &mut tx)?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
@@ -2463,7 +2205,7 @@ impl Relatable {
             description: "Delete one row".to_string(),
             changes: vec![Change::Delete {
                 row: row,
-                after: self._get_previous_row_id(table_name, row, &mut tx)?,
+                after: Table::_get_previous_row_id(table_name, row, &mut tx)?,
             }],
         };
 
@@ -2586,7 +2328,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = self._get_table(table_name, &mut tx)?;
+        let table = Table::_get_table(table_name, &mut tx)?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
@@ -2602,7 +2344,7 @@ impl Relatable {
             description: "Move one row".to_string(),
             changes: vec![Change::Move {
                 row: id,
-                from_after: self._get_previous_row_id(table_name, id, &mut tx)?,
+                from_after: Table::_get_previous_row_id(table_name, id, &mut tx)?,
                 to_after: after_id,
             }],
         };

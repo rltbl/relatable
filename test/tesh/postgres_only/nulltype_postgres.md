@@ -29,7 +29,9 @@ $ echo "select * from penguin where species is null and island = '' order by _or
 
 $ rltbl save
 $ echo "drop table penguin cascade" | psql rltbl_db
-NOTICE:  drop cascades to view penguin_default_view
+NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to view penguin_default_view
+drop cascades to view penguin_text_view
 DROP TABLE
 $ rltbl init --force
 Initialized a relatable database in 'postgresql:///rltbl_db'

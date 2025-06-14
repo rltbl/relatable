@@ -9,7 +9,7 @@ use rltbl::{
     select::{Format, QueryParams, Select},
     sql,
     sql::{CachingStrategy, JsonRow},
-    table::Row,
+    table::{Row, Table},
 };
 use std::io::Write;
 
@@ -301,7 +301,7 @@ async fn get_row_menu(
     tracing::info!("get_row_menu({table_name}, {row_id})");
     let username = get_username(session);
     let site = rltbl.get_site(&username).await;
-    let table = match rltbl.get_table(&table_name).await {
+    let table = match Table::get_table(&table_name, &rltbl).await {
         Ok(table) => table,
         Err(error) => return get_404(&error),
     };
@@ -381,7 +381,7 @@ async fn get_cell_menu(
     tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
     let username = get_username(session);
     let site = rltbl.get_site(&username).await;
-    let table = match rltbl.get_table(&table_name).await {
+    let table = match Table::get_table(&table_name, &rltbl).await {
         Ok(table) => table,
         Err(error) => return get_404(&error),
     };

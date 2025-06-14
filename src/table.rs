@@ -43,14 +43,135 @@ impl Default for Table {
 }
 
 impl Table {
+    /// Returns a [Table] corresponding to the given table name.
+    pub async fn get_table(table_name: &str, rltbl: &Relatable) -> Result<Self> {
+        tracing::trace!("Table::get_table({table_name:?}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+
+        let table = Self::_get_table(table_name, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(table)
+    }
+
+    /// Returns a [Table] corresponding to the given table name using the given transaction.
+    pub fn _get_table(table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Self> {
+        tracing::trace!("Table::_get_table({table_name:?}, tx)");
+        let result = Self::_view_exists(table_name, "default", tx)?;
+        let view = {
+            if result {
+                format!("{table_name}_default_view")
+            } else {
+                String::from(table_name)
+            }
+        };
+
+        let statement = format!(
+            r#"SELECT MAX("change_id") FROM "history" WHERE "table" = {sql_param}"#,
+            sql_param = SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([table_name]);
+        let change_id = match tx.query_value(&statement, Some(&params))? {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+
+        Ok(Table {
+            name: table_name.to_string(),
+            view,
+            change_id,
+            columns: Self::_collect_column_info(table_name, tx)?
+                .0
+                .into_iter()
+                .map(|column| (column.name.clone(), column))
+                .collect::<IndexMap<_, _>>(),
+            ..Default::default()
+        })
+    }
+
+    /// Determine whether the given table exists in the database
+    pub async fn table_exists(&self, rltbl: &Relatable) -> Result<bool> {
+        tracing::trace!("Table::table_exists({self:?}, {rltbl:?})");
+        let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
+        let (sql, params) = match rltbl.connection.kind() {
+            DbKind::Sqlite => (
+                format!(
+                    r#"SELECT 1 FROM "sqlite_master"
+                       WHERE "type" = {sql_param} AND name = {sql_param} LIMIT 1"#,
+                ),
+                json!(["table", self.name]),
+            ),
+            DbKind::Postgres => (
+                format!(
+                    r#"SELECT 1 FROM "information_schema"."tables"
+                       WHERE "table_type" LIKE {sql_param} AND "table_name" = {sql_param}"#,
+                ),
+                json!(["%TABLE", self.name]),
+            ),
+        };
+        match rltbl.connection.query_value(&sql, Some(&params)).await? {
+            None => Ok(false),
+            Some(_) => Ok(true),
+        }
+    }
+
+    /// Determine whether a view of the given type exists for the table in the database.
+    pub async fn view_exists(&self, view_type: &str, rltbl: &Relatable) -> Result<bool> {
+        tracing::trace!("Table::view_exists({self:?}, {view_type}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+
+        let view_exists = Self::_view_exists(&self.name, view_type, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(view_exists)
+    }
+
+    /// Determine whether a view of the given type exists for the table in the database, using the
+    /// given transaction.
+    pub fn _view_exists(table: &str, view_type: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
+        tracing::trace!("Table::_view_exists({table}, {view_type}, tx)");
+        let sql_param = SqlParam::new(&tx.kind()).next();
+        let statement = match tx.kind() {
+            DbKind::Sqlite => format!(
+                r#"SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'view' AND name = {sql_param}"#
+            ),
+            DbKind::Postgres => format!(
+                r#"SELECT 1
+                   FROM "information_schema"."tables"
+                   WHERE "table_name" = {sql_param}
+                   AND "table_type" = 'VIEW'"#,
+            ),
+        };
+        let params = json!([format!("{table}_{view_type}_view")]);
+        let result = tx.query_value(&statement, Some(&params))?;
+        match result {
+            None => Ok(false),
+            _ => Ok(true),
+        }
+    }
+
+    // TODO: Do we really need to return the column list?
     /// Use the given [relatable](crate) instance to ensure that the default view for this
     /// table has been created, and to set the [view name](Table::view) for this table to
-    /// TABLENAME_default_view
+    /// TABLENAME_default_view. Returns the columns of the table for which the view was created.
     pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
-        tracing::trace!("Table::ensure_default_view_created({rltbl:?})");
-        let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
+        tracing::trace!("Table::ensure_default_view_created({self:?}, {rltbl:?})");
+        let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
         self.view = format!("{}_default_view", self.name);
-        tracing::debug!(r#"Creating view "{}" with columns {columns:?}"#, self.view);
+        tracing::debug!(
+            r#"Creating default view "{}" with columns {columns:?}"#,
+            self.view
+        );
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
             true => r#"_id"#,
@@ -73,13 +194,21 @@ impl Table {
         Ok(columns)
     }
 
+    // TODO: Do we really need to return the column list?
     /// TODO: Add docstring
     pub async fn ensure_text_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
-        tracing::trace!("Table::ensure_text_view_created({rltbl:?})");
+        tracing::trace!("Table::ensure_text_view_created({self:?}, {rltbl:?})");
+
+        // The default view needs to be created first:
         self.ensure_default_view_created(rltbl).await?;
-        let (columns, meta_columns) = rltbl.fetch_all_columns(&self.name).await?;
+
+        // Create the text view:
+        let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
         self.view = format!("{}_text_view", self.name);
-        tracing::debug!(r#"Creating view "{}" with columns {columns:?}"#, self.view);
+        tracing::debug!(
+            r#"Creating text view "{}" with columns {columns:?}"#,
+            self.view
+        );
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
             true => r#"_id"#,
@@ -103,7 +232,162 @@ impl Table {
     }
 
     /// TODO: Add docstring
-    pub fn get_column(&self, column: &str) -> Column {
+    pub async fn get_column_table_columns(
+        table_name: &str,
+        rltbl: &Relatable,
+    ) -> Result<IndexMap<String, Column>> {
+        tracing::trace!("Table::get_column_table_columns({table_name}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+
+        let columns = Self::_get_column_table_columns(table_name, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(columns)
+    }
+
+    /// Returns the given table's columns, as defined by the (optional) column table, as a map from
+    /// column names to [Column]s using the given transaction.
+    fn _get_column_table_columns(
+        table_name: &str,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<IndexMap<String, Column>> {
+        tracing::trace!("Table::_get_column_table_columns({table_name:?}, tx)");
+        let sql = format!(
+            r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
+            sql_param = SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([table_name]);
+        let json_columns = tx.query(&sql, Some(&params)).unwrap_or(vec![]);
+        let mut columns = IndexMap::new();
+        for json_col in json_columns {
+            columns.insert(
+                json_col.get_string("column")?,
+                Column {
+                    name: json_col.get_string("column")?,
+                    table: json_col.get_string("table")?,
+                    label: json_col.get_string("label").ok(),
+                    description: json_col.get_string("description").ok(),
+                    datatype: json_col.get_string("datatype").ok(),
+                    nulltype: json_col.get_string("nulltype").ok(),
+                    ..Default::default()
+                },
+            );
+        }
+        Ok(columns)
+    }
+
+    /// Query the database for the column names associated with the given table and their
+    /// datatypes
+    fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<Vec<JsonRow>> {
+        tracing::trace!("Table::_get_db_table_columns({table:?}, tx)");
+        match tx.kind() {
+            DbKind::Sqlite => {
+                let sql = format!(
+                    r#"SELECT "name", "type" AS "datatype"
+                       FROM pragma_table_info("{table}") ORDER BY "cid""#
+                );
+                tx.query(&sql, None)
+            }
+            DbKind::Postgres => {
+                let sql = format!(
+                    r#"SELECT "column_name"::TEXT AS "name", "data_type"::TEXT AS "datatype"
+                       FROM "information_schema"."columns"
+                       WHERE "table_name" = {sql_param}
+                       ORDER BY "ordinal_position""#,
+                    sql_param = SqlParam::new(&tx.kind()).next()
+                );
+                let params = json!([table]);
+                tx.query(&sql, Some(&params))
+            }
+        }
+    }
+
+    /// Returns a tuple whose first position contains a list of the given table's columns, and whose
+    /// second position contains a list of the given table's metacolumns
+    pub async fn collect_column_info(
+        &self,
+        rltbl: &Relatable,
+    ) -> Result<(Vec<Column>, Vec<Column>)> {
+        tracing::trace!("Table::get_db_table_columns({self:?}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+
+        let columns = Self::_collect_column_info(&self.name, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(columns)
+    }
+
+    /// Returns a tuple whose first position contains a list of the given table's columns, and whose
+    /// second position contains a list of the given table's metacolumns, using the given database
+    /// transaction
+    pub fn _collect_column_info(
+        table_name: &str,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<(Vec<Column>, Vec<Column>)> {
+        tracing::trace!("Table::collect_column_info({table_name}, tx)");
+
+        // Get information about the table's columns from the optional column table:
+        let column_columns = Self::_get_column_table_columns(table_name, tx)?;
+
+        // Get the table's columns from the database and merge it with the information from the
+        // column table that we just collected:
+        let mut columns = vec![];
+        let mut meta_columns = vec![];
+        for column in Self::get_db_table_columns(table_name, tx)? {
+            match column.get_string("name")? {
+                column_name if column_name.starts_with("_") => meta_columns.push(Column {
+                    name: column_name,
+                    table: table_name.to_string(),
+                    ..Default::default()
+                }),
+                column_name => columns.push(Column {
+                    label: column_columns
+                        .get(&column_name)
+                        .and_then(|col| col.label.clone()),
+                    description: column_columns
+                        .get(&column_name)
+                        .and_then(|col| col.description.clone()),
+                    nulltype: column_columns
+                        .get(&column_name)
+                        .and_then(|col| col.nulltype.clone()),
+                    datatype: {
+                        // Fall back to the SQL type if no datatype is defined in the column
+                        // table or the column table does not exist:
+                        match column_columns
+                            .get(&column_name)
+                            .and_then(|col| col.datatype.clone())
+                        {
+                            Some(datatype) => Some(datatype),
+                            None => Some(column.get_string("datatype")?),
+                        }
+                    },
+                    name: column_name,
+                    table: table_name.to_string(),
+                    ..Default::default()
+                }),
+            };
+        }
+        if columns.is_empty() && meta_columns.is_empty() {
+            return Err(RelatableError::DataError(format!(
+                "No db columns found for: {}",
+                table_name
+            ))
+            .into());
+        }
+        Ok((columns, meta_columns))
+    }
+
+    /// TODO: Add docstring
+    pub fn get_config_for_column(&self, column: &str) -> Column {
+        tracing::trace!("Table::get_config_for_column({self:?}, {column}, tx)");
         match self.columns.get(column) {
             Some(column) => column.clone(),
             None => {
@@ -115,8 +399,10 @@ impl Table {
 
     /// Retrieve the given attribute of the given column from this table's
     /// [column configuration](Table::columns)
-    pub fn get_column_attribute(&self, column: &str, attribute: &str) -> Option<String> {
-        tracing::trace!("Table::get_column_attribute({column:?}, {attribute:?})");
+    pub fn get_configured_column_attribute(&self, column: &str, attribute: &str) -> Option<String> {
+        tracing::trace!(
+            "Table::get_configured_column_attribute({self:?}, {column:?}, {attribute:?})"
+        );
         self.columns.get(column).and_then(|col| match attribute {
             "table" => Some(col.table.to_string()),
             "column" => Some(col.name.to_string()),
@@ -142,6 +428,103 @@ impl Table {
             },
             _ => None,
         })
+    }
+
+    /// Return a [JsonRow] representing the given row of the given table, using the
+    /// given transaction.
+    pub fn _get_row(
+        table: &str,
+        row: usize,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Option<JsonRow>> {
+        tracing::trace!("Table::_get_row({table:}?, {row}, tx)");
+        let sql = format!(
+            r#"SELECT * FROM "{table}" WHERE "_id" = {sql_param}"#,
+            sql_param = SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([row]);
+        tx.query_one(&sql, Some(&params))
+    }
+
+    /// Determine what the next created row id for the given table will be
+    pub async fn get_next_id(&self, rltbl: &Relatable) -> Result<usize> {
+        tracing::trace!("Table::get_next_id({self:?}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+
+        let rowid = self._get_next_id(&mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(rowid)
+    }
+
+    /// Query the database for what the id of the next created row of the given table will be
+    pub fn _get_next_id(&self, tx: &mut DbTransaction<'_>) -> Result<usize> {
+        tracing::trace!("Table::_get_next_id({self:?}, tx)");
+        let current_row_id = match tx.kind() {
+            DbKind::Sqlite => {
+                let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
+                let params = json!([self.name]);
+                tx.query_value(sql, Some(&params))?
+            }
+            DbKind::Postgres => {
+                let sql = format!(
+                    // Note that in the case of postgres an _id column is required.
+                    r#"SELECT last_value FROM "{table}__id_seq""#,
+                    table = self.name
+                );
+                tx.query_value(&sql, None)?
+            }
+        };
+        let current_row_id = match current_row_id {
+            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            None => 0,
+        };
+        Ok(current_row_id + 1)
+    }
+
+    /// Returns the row id that comes before the given row in the given table, using the given
+    /// transaction.
+    pub fn _get_previous_row_id(
+        table: &str,
+        row: usize,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<usize> {
+        tracing::trace!("Table::_get_previous_row_id({table}, {row}, tx)");
+        let curr_row_order = Self::_get_row_order(table, row, tx)?;
+        let sql = format!(
+            r#"SELECT "_id" FROM "{table}" WHERE "_order" < {sql_param}
+               ORDER BY "_order" DESC LIMIT 1"#,
+            sql_param = SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([curr_row_order]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            Ok(0)
+        } else {
+            rows[0].get_unsigned("_id")
+        }
+    }
+
+    /// Returns the value of the _order column of the given row from the given table using the
+    /// given transaction.
+    fn _get_row_order(table: &str, row: usize, tx: &mut DbTransaction<'_>) -> Result<usize> {
+        tracing::trace!("Table::_get_row_order({table:?}, {row}, tx)");
+        let sql = format!(
+            r#"SELECT "_order" FROM "{table}" WHERE "_id" = {sql_param}"#,
+            sql_param = SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([row]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            return Err(
+                RelatableError::InputError(format!("No row {row} in table '{table}'")).into(),
+            );
+        }
+        Ok(rows[0].get_unsigned("_order")?)
     }
 }
 
@@ -179,7 +562,7 @@ impl Row {
         let json_row = match json_row {
             None => {
                 let columns = {
-                    let columns = sql::get_db_table_columns(&table.name, tx)?;
+                    let columns = Table::get_db_table_columns(&table.name, tx)?;
                     if columns.is_empty() {
                         return Err(RelatableError::DataError(format!(
                             "No defined columns for: {table}",
@@ -199,7 +582,7 @@ impl Row {
             Some(json_row) => json_row.clone(),
         };
         let mut row = Row::from(json_row);
-        row.id = sql::get_next_id(table.name.as_str(), tx)?;
+        row.id = table._get_next_id(tx)?;
         row.order = NEW_ORDER_MULTIPLIER * row.id;
         row.change_id = table.change_id;
         tracing::debug!("Prepared a new row: {row:?}");
@@ -262,7 +645,7 @@ impl Row {
     /// TODO: Add docstring
     pub fn validate(&mut self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<&Self> {
         for (column, cell) in self.cells.iter_mut() {
-            let column_details = table.get_column(column);
+            let column_details = table.get_config_for_column(column);
             let datatype = match column_details.datatype {
                 None => "text".to_string(),
                 Some(ref dt) if dt == "" => "text".to_string(),
