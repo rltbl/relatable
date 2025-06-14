@@ -111,22 +111,29 @@ impl Table {
     /// Determine whether the given table exists in the database
     pub fn _table_exists(table_name: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
         tracing::trace!("Table::_table_exists({table_name}, tx)");
-        let sql_param = SqlParam::new(&tx.kind()).next();
         let (sql, params) = match tx.kind() {
-            DbKind::Sqlite => (
-                format!(
-                    r#"SELECT 1 FROM "sqlite_master"
-                       WHERE "type" = {sql_param} AND name = {sql_param} LIMIT 1"#,
-                ),
-                json!(["table", table_name]),
-            ),
-            DbKind::Postgres => (
-                format!(
-                    r#"SELECT 1 FROM "information_schema"."tables"
-                       WHERE "table_type" LIKE {sql_param} AND "table_name" = {sql_param}"#,
-                ),
-                json!(["%TABLE", table_name]),
-            ),
+            DbKind::Sqlite => {
+                let sql_param = SqlParam::new(&tx.kind()).next();
+                (
+                    format!(
+                        r#"SELECT 1 FROM "sqlite_master"
+                           WHERE "type" = {sql_param} AND name = {sql_param} LIMIT 1"#,
+                    ),
+                    json!(["table", table_name]),
+                )
+            }
+            DbKind::Postgres => {
+                let mut sql_param_gen = SqlParam::new(&tx.kind());
+                let sql_param_1 = sql_param_gen.next();
+                let sql_param_2 = sql_param_gen.next();
+                (
+                    format!(
+                        r#"SELECT 1 FROM "information_schema"."tables"
+                           WHERE "table_type" LIKE {sql_param_1} AND "table_name" = {sql_param_2}"#,
+                    ),
+                    json!(["%TABLE", table_name]),
+                )
+            }
         };
         match tx.query_value(&sql, Some(&params))? {
             None => Ok(false),
@@ -160,6 +167,7 @@ impl Table {
                    FROM sqlite_master
                    WHERE type = 'view' AND name = {sql_param}"#
             ),
+            // TODO: Use placeholder for 'VIEW' (Note that two placeholders are needed)
             DbKind::Postgres => format!(
                 r#"SELECT 1
                    FROM "information_schema"."tables"
