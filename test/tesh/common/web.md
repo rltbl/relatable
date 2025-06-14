@@ -1,6 +1,7 @@
 ```console tesh-session="test"
 $ echo "Created a demonstration database in '$RLTBL_CONNECTION'" > expected_output.txt
-$ rltbl -v demo --size 10 --force | diff - expected_output.txt
+$ alias rltbl='rltbl -v'
+$ rltbl demo --size 10 --force | diff - expected_output.txt
 $ rm -f expected_output.txt
 $ rltbl serve --port 9000 --timeout 5 &
 ...
