@@ -370,6 +370,7 @@ impl Relatable {
         Ok(())
     }
 
+    /// TODO: Add docstring
     pub fn render<T: Serialize>(&self, template: &str, context: T) -> Result<String> {
         tracing::trace!("Relatable::render({template:?}, context)");
         // TODO: Optionally we should set up the environment once and store it,
@@ -405,60 +406,6 @@ impl Relatable {
         env.get_template(template)?
             .render(context)
             .map_err(|e| e.into())
-    }
-
-    /// Returns a tuple whose first position contains a list of the given table's columns, and whose
-    /// second position contains a list of the given table's metacolumns.
-    pub async fn fetch_all_columns(&self, table_name: &str) -> Result<(Vec<Column>, Vec<Column>)> {
-        tracing::trace!("Relatable::fetch_all_columns({table_name:?})");
-        // Fetch the columns corresponding to `table_name` from the database's metadata:
-        let mut columns = vec![];
-        let mut meta_columns = vec![];
-        let table = self.get_table(table_name).await?;
-        for column in self.get_db_table_columns(table_name).await? {
-            // Decorate the column using the information from the column table that we collected
-            // above:
-            match column.get_string("name")? {
-                name if name.starts_with("_") => meta_columns.push(Column {
-                    name,
-                    table: table.name.to_string(),
-                    ..Default::default()
-                }),
-                name => columns.push(Column {
-                    // The fields are assigned in this particular order to satisfy the constraints
-                    // of rust's ownership model. Because `name` is a String and not a reference,
-                    // we cannot assign it and then afterwards borrow it to use as an argument
-                    // to a function. But doing that in the opposite order is fine.
-                    label: table.get_column_attribute(&name.as_str(), "label"),
-                    description: table.get_column_attribute(&name.as_str(), "description"),
-                    nulltype: table.get_column_attribute(&name.as_str(), "nulltype"),
-                    datatype: table.get_column_attribute(&name.as_str(), "datatype"),
-                    name,
-                    table: table.name.to_string(),
-                    ..Default::default()
-                }),
-            };
-        }
-        if columns.is_empty() && meta_columns.is_empty() {
-            return Err(RelatableError::DataError(format!(
-                "No db columns found for: {}",
-                table.name
-            ))
-            .into());
-        }
-        Ok((columns, meta_columns))
-    }
-
-    /// Returns a list of the given table's columns (not including metacolumns)
-    pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
-        tracing::trace!("Relatable::fetch_columns({table_name:?})");
-        Ok(self.fetch_all_columns(table_name).await?.0)
-    }
-
-    /// Returns a list of the given table's metacolumns
-    pub async fn fetch_metacolumns(&self, table_name: &str) -> Result<Vec<Column>> {
-        tracing::trace!("Relatable::fetch_metacolumns({table_name:?})");
-        Ok(self.fetch_all_columns(table_name).await?.1)
     }
 
     /// Use the given [Select] to fetch data from the database.
@@ -542,59 +489,6 @@ impl Relatable {
         match json_rows.get(0) {
             Some(json_row) => json_row.get_unsigned("count"),
             None => Ok(0),
-        }
-    }
-
-    /// Delete all entries from the cache corresponding to the given table, or clear it completely
-    /// if no table is given.
-    pub fn clear_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
-        let mut sql = r#"DELETE FROM "cache""#.to_string();
-        if let Some(table) = table {
-            let mut table = table.to_string();
-            tracing::debug!("Deleting entries for table '{table}' from cache");
-            match tx.kind() {
-                DbKind::Postgres => {
-                    // Note that the '?' is *not* being used as a parameter placeholder here
-                    // but a JSONB operator.
-                    sql.push_str(&format!(
-                        r#" WHERE "tables" ? {}"#,
-                        SqlParam::new(&tx.kind()).next()
-                    ));
-                }
-                DbKind::Sqlite => {
-                    sql.push_str(&format!(
-                        r#" WHERE "tables" LIKE {}"#,
-                        SqlParam::new(&tx.kind()).next()
-                    ));
-                    table = format!(r#"%"{table}"%"#);
-                }
-            };
-            let params = json!([table]);
-            tx.query(&sql, Some(&params))?;
-        } else {
-            tracing::debug!("Truncating cache");
-            tx.query(&sql, None)?;
-        }
-
-        Ok(())
-    }
-
-    /// Delete all entries from the in-memory cache corresponding to the given table
-    pub fn clear_mem_cache(&self, table: &str) {
-        let table = format!("\"{table}\"");
-        let mut cache = CACHE.lock().expect("Could not lock cache");
-        let keys = cache
-            .keys()
-            .map(|k| k)
-            .cloned()
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        for key in keys.iter() {
-            if key.tables.contains(&table) {
-                tracing::debug!("Removing {key:?} from cache");
-                cache.remove(key);
-            }
         }
     }
 
@@ -1287,8 +1181,8 @@ impl Relatable {
     }
 
     /// Returns the given table's columns as a map from column names to [Column]s.
-    pub async fn get_columns_map(&self, table_name: &str) -> Result<IndexMap<String, Column>> {
-        tracing::trace!("Relatable::get_columns_map({table_name:?})");
+    pub async fn get_column_columns(&self, table_name: &str) -> Result<IndexMap<String, Column>> {
+        tracing::trace!("Relatable::get_column_columns({table_name:?})");
         let sql = format!(
             r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
             sql_param = SqlParam::new(&self.connection.kind()).next()
@@ -1304,11 +1198,12 @@ impl Relatable {
 
     /// Returns the given table's columns as a map from column names to [Column]s using the
     /// given transaction.
-    fn _get_columns_map(
+    fn _get_column_columns(
+        &self,
         table_name: &str,
         tx: &mut DbTransaction<'_>,
     ) -> Result<IndexMap<String, Column>> {
-        tracing::trace!("Relatable::_get_columns_map({table_name:?}, tx)");
+        tracing::trace!("Relatable::_get_column_columns({table_name:?}, tx)");
         let sql = format!(
             r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
             sql_param = SqlParam::new(&tx.kind()).next()
@@ -1316,6 +1211,60 @@ impl Relatable {
         let params = json!([table_name]);
         let json_columns = tx.query(&sql, Some(&params)).unwrap_or(vec![]);
         Self::json_to_columns_map(&json_columns)
+    }
+
+    /// Returns a tuple whose first position contains a list of the given table's columns, and whose
+    /// second position contains a list of the given table's metacolumns.
+    pub async fn fetch_all_columns(&self, table_name: &str) -> Result<(Vec<Column>, Vec<Column>)> {
+        tracing::trace!("Relatable::fetch_all_columns({table_name:?})");
+        // Fetch the columns corresponding to `table_name` from the database's metadata:
+        let mut columns = vec![];
+        let mut meta_columns = vec![];
+        let table = self.get_table(table_name).await?;
+        for column in self.get_db_table_columns(table_name).await? {
+            // Decorate the column using the information from the column table that we collected
+            // above:
+            match column.get_string("name")? {
+                name if name.starts_with("_") => meta_columns.push(Column {
+                    name,
+                    table: table.name.to_string(),
+                    ..Default::default()
+                }),
+                name => columns.push(Column {
+                    // The fields are assigned in this particular order to satisfy the constraints
+                    // of rust's ownership model. Because `name` is a String and not a reference,
+                    // we cannot assign it and then afterwards borrow it to use as an argument
+                    // to a function. But doing that in the opposite order is fine.
+                    label: table.get_column_attribute(&name.as_str(), "label"),
+                    description: table.get_column_attribute(&name.as_str(), "description"),
+                    nulltype: table.get_column_attribute(&name.as_str(), "nulltype"),
+                    datatype: table.get_column_attribute(&name.as_str(), "datatype"),
+                    name,
+                    table: table.name.to_string(),
+                    ..Default::default()
+                }),
+            };
+        }
+        if columns.is_empty() && meta_columns.is_empty() {
+            return Err(RelatableError::DataError(format!(
+                "No db columns found for: {}",
+                table.name
+            ))
+            .into());
+        }
+        Ok((columns, meta_columns))
+    }
+
+    /// Returns a list of the given table's columns (not including metacolumns)
+    pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
+        tracing::trace!("Relatable::fetch_columns({table_name:?})");
+        Ok(self.fetch_all_columns(table_name).await?.0)
+    }
+
+    /// Returns a list of the given table's metacolumns
+    pub async fn fetch_metacolumns(&self, table_name: &str) -> Result<Vec<Column>> {
+        tracing::trace!("Relatable::fetch_metacolumns({table_name:?})");
+        Ok(self.fetch_all_columns(table_name).await?.1)
     }
 
     /// Returns a [Table] corresponding to the given table.
@@ -1373,7 +1322,7 @@ impl Relatable {
             name,
             view,
             change_id,
-            columns: Self::_get_columns_map(table_name, tx)?,
+            columns: self._get_column_columns(table_name, tx)?,
             ..Default::default()
         })
     }
@@ -1404,7 +1353,7 @@ impl Relatable {
                         .get("_change_id")
                         .and_then(|i| i.as_u64())
                         .unwrap_or_default() as usize,
-                    columns: self.get_columns_map(&name).await?,
+                    columns: self.get_column_columns(&name).await?,
                     view: format!("{name}_default_view"),
                     ..Default::default()
                 },
@@ -2137,6 +2086,10 @@ impl Relatable {
 
         // Actually make the changes:
         let table = self._get_table(&changeset.table, &mut tx)?;
+        println!("**** TABLE: {table:#?}");
+        if 1 == 1 {
+            todo!();
+        }
         let mut actual_changes = vec![];
         for change in &changeset.changes {
             match change {
@@ -2913,6 +2866,59 @@ impl Relatable {
             self.commit_to_git().await?;
         }
         Ok(new_order)
+    }
+
+    /// Delete all entries from the cache corresponding to the given table, or clear it completely
+    /// if no table is given.
+    pub fn clear_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
+        let mut sql = r#"DELETE FROM "cache""#.to_string();
+        if let Some(table) = table {
+            let mut table = table.to_string();
+            tracing::debug!("Deleting entries for table '{table}' from cache");
+            match tx.kind() {
+                DbKind::Postgres => {
+                    // Note that the '?' is *not* being used as a parameter placeholder here
+                    // but a JSONB operator.
+                    sql.push_str(&format!(
+                        r#" WHERE "tables" ? {}"#,
+                        SqlParam::new(&tx.kind()).next()
+                    ));
+                }
+                DbKind::Sqlite => {
+                    sql.push_str(&format!(
+                        r#" WHERE "tables" LIKE {}"#,
+                        SqlParam::new(&tx.kind()).next()
+                    ));
+                    table = format!(r#"%"{table}"%"#);
+                }
+            };
+            let params = json!([table]);
+            tx.query(&sql, Some(&params))?;
+        } else {
+            tracing::debug!("Truncating cache");
+            tx.query(&sql, None)?;
+        }
+
+        Ok(())
+    }
+
+    /// Delete all entries from the in-memory cache corresponding to the given table
+    pub fn clear_mem_cache(&self, table: &str) {
+        let table = format!("\"{table}\"");
+        let mut cache = CACHE.lock().expect("Could not lock cache");
+        let keys = cache
+            .keys()
+            .map(|k| k)
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        for key in keys.iter() {
+            if key.tables.contains(&table) {
+                tracing::debug!("Removing {key:?} from cache");
+                cache.remove(key);
+            }
+        }
     }
 }
 

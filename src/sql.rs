@@ -683,7 +683,7 @@ pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<V
         }
         DbKind::Postgres => {
             let sql = format!(
-                r#"SELECT "column_name"::TEXT AS "name"
+                r#"SELECT "column_name"::TEXT AS "name", "data_type"::TEXT AS "datatype"
                    FROM "information_schema"."columns"
                    WHERE "table_name" = {sql_param}
                    ORDER BY "ordinal_position""#,
