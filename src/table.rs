@@ -93,27 +93,42 @@ impl Table {
         })
     }
 
+    /// TODO: Add docstring
+    pub async fn table_exists(table_name: &str, rltbl: &Relatable) -> Result<bool> {
+        tracing::trace!("Table::table_exists({table_name}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+
+        let table_exists = Self::_table_exists(table_name, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(table_exists)
+    }
+
     /// Determine whether the given table exists in the database
-    pub async fn table_exists(&self, rltbl: &Relatable) -> Result<bool> {
-        tracing::trace!("Table::table_exists({self:?}, {rltbl:?})");
-        let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
-        let (sql, params) = match rltbl.connection.kind() {
+    pub fn _table_exists(table_name: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
+        tracing::trace!("Table::_table_exists({table_name}, tx)");
+        let sql_param = SqlParam::new(&tx.kind()).next();
+        let (sql, params) = match tx.kind() {
             DbKind::Sqlite => (
                 format!(
                     r#"SELECT 1 FROM "sqlite_master"
                        WHERE "type" = {sql_param} AND name = {sql_param} LIMIT 1"#,
                 ),
-                json!(["table", self.name]),
+                json!(["table", table_name]),
             ),
             DbKind::Postgres => (
                 format!(
                     r#"SELECT 1 FROM "information_schema"."tables"
                        WHERE "table_type" LIKE {sql_param} AND "table_name" = {sql_param}"#,
                 ),
-                json!(["%TABLE", self.name]),
+                json!(["%TABLE", table_name]),
             ),
         };
-        match rltbl.connection.query_value(&sql, Some(&params)).await? {
+        match tx.query_value(&sql, Some(&params))? {
             None => Ok(false),
             Some(_) => Ok(true),
         }
@@ -256,28 +271,32 @@ impl Table {
         tx: &mut DbTransaction<'_>,
     ) -> Result<IndexMap<String, Column>> {
         tracing::trace!("Table::_get_column_table_columns({table_name:?}, tx)");
-        let sql = format!(
-            r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([table_name]);
-        let json_columns = tx.query(&sql, Some(&params)).unwrap_or(vec![]);
-        let mut columns = IndexMap::new();
-        for json_col in json_columns {
-            columns.insert(
-                json_col.get_string("column")?,
-                Column {
-                    name: json_col.get_string("column")?,
-                    table: json_col.get_string("table")?,
-                    label: json_col.get_string("label").ok(),
-                    description: json_col.get_string("description").ok(),
-                    datatype: json_col.get_string("datatype").ok(),
-                    nulltype: json_col.get_string("nulltype").ok(),
-                    ..Default::default()
-                },
+        if !Self::_table_exists(table_name, tx)? {
+            Ok(IndexMap::new())
+        } else {
+            let sql = format!(
+                r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
+                sql_param = SqlParam::new(&tx.kind()).next()
             );
+            let params = json!([table_name]);
+            let json_columns = tx.query(&sql, Some(&params))?;
+            let mut columns = IndexMap::new();
+            for json_col in json_columns {
+                columns.insert(
+                    json_col.get_string("column")?,
+                    Column {
+                        name: json_col.get_string("column")?,
+                        table: json_col.get_string("table")?,
+                        label: json_col.get_string("label").ok(),
+                        description: json_col.get_string("description").ok(),
+                        datatype: json_col.get_string("datatype").ok(),
+                        nulltype: json_col.get_string("nulltype").ok(),
+                        ..Default::default()
+                    },
+                );
+            }
+            Ok(columns)
         }
-        Ok(columns)
     }
 
     /// Query the database for the column names associated with the given table and their
