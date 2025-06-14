@@ -271,7 +271,7 @@ impl Table {
         tx: &mut DbTransaction<'_>,
     ) -> Result<IndexMap<String, Column>> {
         tracing::trace!("Table::_get_column_table_columns({table_name:?}, tx)");
-        if !Self::_table_exists(table_name, tx)? {
+        if !Self::_table_exists("column", tx)? {
             Ok(IndexMap::new())
         } else {
             let sql = format!(
