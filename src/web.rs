@@ -155,7 +155,7 @@ async fn get_table(
         init_user(&rltbl, &username).await;
     }
     // tracing::info!("USERNAME {username}");
-    let select = Select::from_path_and_query(&path, &query_params);
+    let select = Select::from_path_and_query(&path, &query_params, &rltbl).await;
     let format = match Format::try_from(&path) {
         Ok(format) => format,
         Err(error) => return get_404(&error),
@@ -344,7 +344,7 @@ async fn get_column_menu(
 ) -> Response<Body> {
     tracing::info!("get_column_menu({table_name}, {column})");
     let username = get_username(session);
-    let select = Select::from_path_and_query(&table_name, &query_params);
+    let select = Select::from_path_and_query(&table_name, &query_params, &rltbl).await;
     let mut operator = String::new();
     let mut value = json!("");
     let mut order = String::new();

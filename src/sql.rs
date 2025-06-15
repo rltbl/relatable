@@ -1475,7 +1475,7 @@ impl JsonRow {
     }
 
     /// Use the [columns configuration](Table::columns) for the given table to lookup the
-    /// [nulltype][Column::nulltype) of the given column, and then if the given value matches the
+    /// [nulltype](Column::nulltype) of the given column, and then if the given value matches the
     /// column's nulltype, set it to [Null](JsonValue::Null)
     pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValue {
         match table.get_configured_column_attribute(column, "nulltype") {
