@@ -266,7 +266,7 @@ test_sqlx_postgres: src/resources/main.js src/resources/main.css test_fmt_and_un
 test: test_rusqlite
 
 .PHONY: test_all
-test_all: test_rusqlite test_sqlx_sqlite test_sqlx_postgres
+test_all: test_rusqlite test_sqlx_postgres test_sqlx_sqlite
 
 # Test cleaning
 

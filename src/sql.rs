@@ -655,7 +655,7 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
     }
 }
 
-/// TODO: Add docstring
+/// Return the SQL type corresponding to the given datatype
 pub fn get_sql_type(datatype: &Option<String>) -> Result<&str> {
     match datatype {
         None => Ok("TEXT"),
@@ -966,7 +966,7 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
 }
 
 /// Generate the DDL for creating the default view on the given table,
-pub fn generate_default_view_ddl(
+pub(crate) fn generate_default_view_ddl(
     table_name: &str,
     view_name: &str,
     id_col: &str,
@@ -1064,7 +1064,7 @@ pub fn generate_default_view_ddl(
 }
 
 /// Generate the DDL for creating the text view on the given table,
-pub fn generate_text_view_ddl(
+pub(crate) fn generate_text_view_ddl(
     table_name: &str,
     view_name: &str,
     id_col: &str,
@@ -1077,10 +1077,10 @@ pub fn generate_text_view_ddl(
          {kind:?})"
     );
 
+    // Note that '?' parameters are not allowed in views so we must hard code them:
     let mut inner_columns = columns
         .iter()
         .map(|column| {
-            // TODO: Use placeholders
             format!(
                 r#"CASE
                      WHEN "{column}" {is_clause} NULL THEN (
@@ -1154,7 +1154,6 @@ pub fn generate_text_view_ddl(
         inner_columns = inner_columns.join(", "),
     );
 
-    tracing::debug!("Generated DDL for '{table_name}_text_view': {create_view_sql}");
     vec![
         format!(r#"DROP VIEW IF EXISTS "{}""#, view_name),
         create_view_sql,
@@ -1422,25 +1421,6 @@ pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
     }
 }
 
-/// TODO: Add docstring
-pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValue {
-    match value {
-        JsonValue::String(s) if s == "" => {
-            let nulltype = {
-                table
-                    .get_configured_column_attribute(column, "nulltype")
-                    .unwrap_or("".to_string())
-            };
-            if nulltype == "empty" {
-                JsonValue::Null
-            } else {
-                value.clone()
-            }
-        }
-        _ => value.clone(),
-    }
-}
-
 // From https://stackoverflow.com/a/78372188
 pub trait VecInto<D> {
     fn vec_into(self) -> Vec<D>;
@@ -1470,7 +1450,7 @@ impl JsonRow {
     }
 
     /// Set any column values whose content matches the column's nulltype to [JsonValue::Null]
-    pub fn nullified(row: &Self, table: &Table) -> Self {
+    pub fn nullify(row: &Self, table: &Table) -> Self {
         tracing::debug!("nullified({row:?}, {table:?})");
         let mut nullified_row = Self::new();
         for (column, value) in row.content.iter() {
@@ -1492,6 +1472,23 @@ impl JsonRow {
         }
         tracing::debug!("Nullified row: {nullified_row:?}");
         nullified_row
+    }
+
+    /// Use the [columns configuration](Table::columns) for the given table to lookup the
+    /// [nulltype][Column::nulltype) of the given column, and then if the given value matches the
+    /// column's nulltype, set it to [Null](JsonValue::Null)
+    pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValue {
+        match table.get_configured_column_attribute(column, "nulltype") {
+            Some(supported) if supported == "empty" => match value {
+                JsonValue::String(s) if s == "" => JsonValue::Null,
+                _ => value.clone(),
+            },
+            Some(unsupported) => {
+                tracing::warn!("Unsupported nulltype: '{unsupported}'");
+                value.clone()
+            }
+            None => value.clone(),
+        }
     }
 
     /// Get the value of the given column from the row

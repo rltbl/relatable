@@ -93,7 +93,8 @@ impl Table {
         })
     }
 
-    /// TODO: Add docstring
+    /// Query the database through the given [Relatable] instance to determine whether the given
+    /// table exists.
     pub async fn table_exists(table_name: &str, rltbl: &Relatable) -> Result<bool> {
         tracing::trace!("Table::table_exists({table_name}, {rltbl:?})");
         let mut conn = rltbl.connection.reconnect()?;
@@ -108,7 +109,8 @@ impl Table {
         Ok(table_exists)
     }
 
-    /// Determine whether the given table exists in the database
+    /// Query the database through the given [DbTransaction] instance to determine whether the given
+    /// table exists.
     pub fn _table_exists(table_name: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
         tracing::trace!("Table::_table_exists({table_name}, tx)");
         let (sql, params) = match tx.kind() {
@@ -160,22 +162,33 @@ impl Table {
     /// given transaction.
     pub fn _view_exists(table: &str, view_type: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
         tracing::trace!("Table::_view_exists({table}, {view_type}, tx)");
-        let sql_param = SqlParam::new(&tx.kind()).next();
-        let statement = match tx.kind() {
-            DbKind::Sqlite => format!(
-                r#"SELECT 1
-                   FROM sqlite_master
-                   WHERE type = 'view' AND name = {sql_param}"#
-            ),
-            // TODO: Use placeholder for 'VIEW' (Note that two placeholders are needed)
-            DbKind::Postgres => format!(
-                r#"SELECT 1
-                   FROM "information_schema"."tables"
-                   WHERE "table_name" = {sql_param}
-                   AND "table_type" = 'VIEW'"#,
-            ),
+        let (statement, params) = match tx.kind() {
+            DbKind::Sqlite => {
+                let sql_param = SqlParam::new(&tx.kind()).next();
+                (
+                    format!(
+                        r#"SELECT 1
+                           FROM sqlite_master
+                           WHERE type = 'view' AND name = {sql_param}"#
+                    ),
+                    json!([format!("{table}_{view_type}_view")]),
+                )
+            }
+            DbKind::Postgres => {
+                let mut sql_param_gen = SqlParam::new(&tx.kind());
+                let sql_param_1 = sql_param_gen.next();
+                let sql_param_2 = sql_param_gen.next();
+                (
+                    format!(
+                        r#"SELECT 1
+                           FROM "information_schema"."tables"
+                           WHERE "table_name" = {sql_param_1}
+                           AND "table_type" = {sql_param_2}"#,
+                    ),
+                    json!([format!("{table}_{view_type}_view"), "VIEW"]),
+                )
+            }
         };
-        let params = json!([format!("{table}_{view_type}_view")]);
         let result = tx.query_value(&statement, Some(&params))?;
         match result {
             None => Ok(false),
@@ -183,11 +196,10 @@ impl Table {
         }
     }
 
-    // TODO: Do we really need to return the column list?
     /// Use the given [relatable](crate) instance to ensure that the default view for this
     /// table has been created, and to set the [view name](Table::view) for this table to
-    /// TABLENAME_default_view. Returns the columns of the table for which the view was created.
-    pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
+    /// TABLENAME_default_view.
+    pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::ensure_default_view_created({self:?}, {rltbl:?})");
         let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
         self.view = format!("{}_default_view", self.name);
@@ -214,12 +226,13 @@ impl Table {
         ) {
             rltbl.connection.query(&sql, None).await?;
         }
-        Ok(columns)
+        Ok(())
     }
 
-    // TODO: Do we really need to return the column list?
-    /// TODO: Add docstring
-    pub async fn ensure_text_view_created(&mut self, rltbl: &Relatable) -> Result<Vec<Column>> {
+    /// Use the given [relatable](crate) instance to ensure that the text view for this
+    /// table has been created, and to set the [view name](Table::view) for this table to
+    /// TABLENAME_text_view.
+    pub async fn ensure_text_view_created(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::ensure_text_view_created({self:?}, {rltbl:?})");
 
         // The default view needs to be created first:
@@ -251,10 +264,12 @@ impl Table {
         ) {
             rltbl.connection.query(&sql, None).await?;
         }
-        Ok(columns)
+        Ok(())
     }
 
-    /// TODO: Add docstring
+    /// Returns the given table's columns, as defined by the (optional) column table, as a map from
+    /// column names to [Column]s using the given [Relatable] instance. When the column table does
+    /// not exist, returns an empty map
     pub async fn get_column_table_columns(
         table_name: &str,
         rltbl: &Relatable,
@@ -273,7 +288,8 @@ impl Table {
     }
 
     /// Returns the given table's columns, as defined by the (optional) column table, as a map from
-    /// column names to [Column]s using the given transaction.
+    /// column names to [Column]s using the given [DbTransaction]. When the column table does
+    /// not exist, returns an empty map
     fn _get_column_table_columns(
         table_name: &str,
         tx: &mut DbTransaction<'_>,
@@ -412,20 +428,24 @@ impl Table {
         Ok((columns, meta_columns))
     }
 
-    /// TODO: Add docstring
+    /// Fetches the [Column] struct representing the configuration of the given column from this
+    /// table's [columns configuration](Table::columns)
     pub fn get_config_for_column(&self, column: &str) -> Column {
         tracing::trace!("Table::get_config_for_column({self:?}, {column}, tx)");
         match self.columns.get(column) {
             Some(column) => column.clone(),
             None => {
-                tracing::debug!("TODO: Do or say something here");
+                tracing::warn!(
+                    "No configuration found for column '{table}.{column}'",
+                    table = self.name
+                );
                 Column::default()
             }
         }
     }
 
     /// Retrieve the given attribute of the given column from this table's
-    /// [column configuration](Table::columns)
+    /// [columns configuration](Table::columns)
     pub fn get_configured_column_attribute(&self, column: &str, attribute: &str) -> Option<String> {
         tracing::trace!(
             "Table::get_configured_column_attribute({self:?}, {column:?}, {attribute:?})"
@@ -669,7 +689,8 @@ impl Row {
         (sql, json!(params))
     }
 
-    /// TODO: Add docstring
+    /// Validate this row, which belongs to the given [Table], using the given [DbTransaction],
+    /// and add any resulting validation [messages](Message) to the message table
     pub fn validate(&mut self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<&Self> {
         for (column, cell) in self.cells.iter_mut() {
             let column_details = table.get_config_for_column(column);
@@ -779,7 +800,8 @@ impl From<&JsonValue> for Cell {
 }
 
 impl Cell {
-    /// TODO: Add docstring
+    /// Validate this cell, which belongs to the given [Column], adding any validation
+    /// [messages](Message) to the cell's [messages](Cell::messages) field.
     pub fn validate(&mut self, column: &Column) -> Result<&Self> {
         fn invalidate(cell: &mut Cell, column: &Column) {
             cell.messages.push(Message {
@@ -797,8 +819,6 @@ impl Cell {
 
         match sql::get_sql_type(&column.datatype)?.to_lowercase().as_str() {
             "integer" => match &mut self.value {
-                // TODO: It seems inefficient to first convert to a string in order to determine
-                // whether the number is an integer.
                 JsonValue::Number(number) => match number.to_string().parse::<isize>() {
                     Ok(_) => (),
                     Err(_) => invalidate(self, column),
@@ -818,6 +838,9 @@ impl Cell {
         Ok(self)
     }
 
+    /// Report the maximum [error level](Message::level) associated with this cell's
+    /// [messages](Cell::messages), where 0 represents no error, 1 represents the presence of
+    /// at least one warning message, and 2 represents the presence of at least one error message.
     pub fn error_level(&self) -> usize {
         let mut level = 0;
         for message in &self.messages {

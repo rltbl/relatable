@@ -370,7 +370,7 @@ impl Relatable {
         Ok(())
     }
 
-    /// TODO: Add docstring
+    /// Render this relatable instance in HTML according to the given template and context
     pub fn render<T: Serialize>(&self, template: &str, context: T) -> Result<String> {
         tracing::trace!("Relatable::render({template:?}, context)");
         // TODO: Optionally we should set up the environment once and store it,
@@ -414,7 +414,8 @@ impl Relatable {
 
         // Get the table and column information and ensure that the view has been created:
         let mut table = Table::get_table(select.table_name.as_str(), self).await?;
-        let mut columns = table.ensure_default_view_created(self).await?;
+        let mut columns = table.columns.values().cloned().collect::<Vec<_>>();
+        table.ensure_default_view_created(self).await?;
 
         let mut select = select.clone();
         select.view_name = table.view.clone();
@@ -547,8 +548,7 @@ impl Relatable {
             .expect("Error inserting to table table");
         tracing::debug!("Table {table_name} (path: {path}) added to table table");
 
-        // Initialize a new table struct that we will use to generate DDL to create it in the
-        // database if we need to:
+        // Initialize a new table struct and collect its columns configuration:
         let table = {
             let mut table = Table {
                 name: table_name.to_string(),
@@ -663,10 +663,9 @@ impl Relatable {
                             let mut cell = {
                                 let value = match serde_json::from_str::<JsonValue>(value) {
                                     Ok(JsonValue::Number(num)) => JsonValue::Number(num),
-                                    // TODO: Maybe a warning on error here?
-                                    Ok(_) | Err(_) => json!(value),
+                                    _ => json!(value),
                                 };
-                                let value = sql::nullify_value(&table, column, &value);
+                                let value = JsonRow::nullify_value(&table, column, &value);
                                 Cell {
                                     text: sql::json_to_string(&value),
                                     value: value,
@@ -1144,14 +1143,14 @@ impl Relatable {
         Ok(users)
     }
 
-    /// Returns a list of the given table's columns (not including metacolumns)
+    /// Returns a list of the given table's columns, not including metacolumns
     pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
         tracing::trace!("Relatable::fetch_columns({table_name:?})");
         let table = Table::get_table(table_name, self).await?;
         Ok(table.columns.values().cloned().collect::<Vec<_>>())
     }
 
-    /// TODO: Add docstring
+    /// Returns a list of the given table's columns, including metacolumns
     pub async fn fetch_all_columns(&self, table_name: &str) -> Result<Vec<Column>> {
         tracing::trace!("Relatable::fetch_all_columns({table_name:?})");
         let mut conn = self.connection.reconnect()?;
@@ -1843,8 +1842,8 @@ impl Relatable {
                 } => {
                     // Depending on whether this is an undo/redo or an original action, the
                     // new value will be taken from either `before` or `after`.
-                    let before = sql::nullify_value(&table, column, before);
-                    let after = sql::nullify_value(&table, column, after);
+                    let before = JsonRow::nullify_value(&table, column, before);
+                    let after = JsonRow::nullify_value(&table, column, after);
                     let mut cell = match &changeset.action {
                         ChangeAction::Undo | ChangeAction::Redo => Cell {
                             value: before.clone(),
@@ -1969,7 +1968,7 @@ impl Relatable {
         Ok(changeset)
     }
 
-    /// TODO: Add docstring
+    /// Add a message to the message table using the given [DbTransaction]
     fn _add_message(
         &self,
         user: &str,
@@ -2074,7 +2073,7 @@ impl Relatable {
 
         // Nullify the JSON row by setting any column values whose content matches the column's
         // nulltype to Null:
-        let row = JsonRow::nullified(row, &table);
+        let row = JsonRow::nullify(row, &table);
 
         // Prepare a new row to be inserted using the JSON row as a base:
         let mut new_row = Row::prepare_new(&table, Some(&row), &mut tx)?;
