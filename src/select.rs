@@ -3,7 +3,7 @@
 //! This is [relatable](crate) (rltbl::[select](crate::select)).
 
 use crate::{
-    core::{Relatable, RelatableError, DEFAULT_LIMIT},
+    core::{Page, Relatable, RelatableError, DEFAULT_LIMIT},
     sql::{self, DbKind, SqlParam},
     table::Table,
 };
@@ -1048,6 +1048,24 @@ impl Select {
             Ok(path.to_string())
         }
     }
+
+    pub fn to_page(&self, root: &str, path: &str) -> Result<Page> {
+        tracing::trace!("Select::to_page({root}, {path})");
+        let base = format!("{root}/{path}");
+        let mut formats = IndexMap::new();
+        formats.insert("HTML".to_string(), self.to_url(&base, &Format::Html)?);
+        formats.insert("CSV".to_string(), self.to_url(&base, &Format::Csv)?);
+        formats.insert("TSV".to_string(), self.to_url(&base, &Format::Tsv)?);
+        formats.insert("JSON".to_string(), self.to_url(&base, &Format::Json)?);
+        formats.insert(
+            "JSON (Pretty)".to_string(),
+            self.to_url(&base, &Format::PrettyJson)?,
+        );
+        Ok(Page {
+            path: path.to_string(),
+            formats,
+        })
+    }
 }
 
 /// A field in a [Select] clause.
@@ -1635,6 +1653,8 @@ pub type QueryParams = IndexMap<String, String>;
 
 pub enum Format {
     Html,
+    Csv,
+    Tsv,
     Json,
     PrettyJson,
     Default,
@@ -1645,6 +1665,8 @@ impl std::fmt::Display for Format {
         // TODO: This should be factored out.
         let result = match self {
             Format::Html => ".html",
+            Format::Csv => ".csv",
+            Format::Tsv => ".tsv",
             Format::Json => ".json",
             Format::PrettyJson => ".pretty.json",
             Format::Default => "",
@@ -1661,6 +1683,10 @@ impl TryFrom<&String> for Format {
             Format::PrettyJson
         } else if path.ends_with(".json") {
             Format::Json
+        } else if path.ends_with(".csv") {
+            Format::Csv
+        } else if path.ends_with(".tsv") {
+            Format::Tsv
         } else if path.ends_with(".html") || path.ends_with(".htm") {
             Format::Html
         } else if path.contains(".") {

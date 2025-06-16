@@ -81,54 +81,50 @@ async fn main_css() -> impl IntoResponse {
     (headers, include_str!("resources/main.css"))
 }
 
-async fn render_html(rltbl: &Relatable, username: &str, result: &ResultSet) -> Result<String> {
-    let site = rltbl.get_site(username).await;
-    rltbl.render("table.html", context! {site, result})
-}
-
-async fn render_response(rltbl: &Relatable, username: &str, result: &ResultSet) -> Response<Body> {
-    match render_html(rltbl, username, result).await {
-        Ok(html) => Html(html).into_response(),
-        Err(error) => {
-            tracing::error!("{error:?}");
-            return get_500(&error);
-        }
-    }
-}
-
-async fn respond(
-    rltbl: &Relatable,
-    username: &str,
-    select: &Select,
-    format: &Format,
-) -> Response<Body> {
-    let result = match rltbl.fetch(&select).await {
-        Ok(result) => result,
-        Err(error) => return get_500(&error),
-    };
-
-    // format!(
-    //     "get_table:\nPath: {path}, {table_name}, {extension:?}, {format}\nQuery Parameters: \
-    //      {query_params:?}\nResult Set: {pretty}"
-    // );
+async fn respond(rltbl: &Relatable, format: &Format, content: &JsonValue) -> Response<Body> {
     let response = match format {
-        Format::Html | Format::Default => render_response(&rltbl, &username, &result).await,
+        Format::Html | Format::Default => match rltbl.render("table.html", content) {
+            Ok(html) => Html(html).into_response(),
+            Err(error) => {
+                tracing::error!("{error:?}");
+                return get_500(&error);
+            }
+        },
         Format::PrettyJson => {
-            let site = rltbl.get_site(username).await;
             let mut headers = HeaderMap::new();
             headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
-            (
-                headers,
-                to_string_pretty(&json!({"site": site, "result": result})).unwrap_or_default(),
+            (headers, to_string_pretty(content).unwrap_or_default()).into_response()
+        }
+        Format::Json => Json(content).into_response(),
+        Format::Csv => get_500(
+            &RelatableError::FormatError(
+                "CSV format should be handled before `respond()`".to_string(),
             )
-                .into_response()
-        }
-        Format::Json => {
-            let site = rltbl.get_site(username).await;
-            Json(&json!({"site": site, "result": result})).into_response()
-        }
+            .into(),
+        ),
+        Format::Tsv => get_500(
+            &RelatableError::FormatError(
+                "TSV format should be handled before `respond()`".to_string(),
+            )
+            .into(),
+        ),
     };
     response
+}
+
+fn respond_csv(result: ResultSet) -> Response<Body> {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, "text/csv".parse().unwrap());
+    (headers, result.to_csv()).into_response()
+}
+
+fn respond_tsv(result: ResultSet) -> Response<Body> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        "text/tab-separated-values".parse().unwrap(),
+    );
+    (headers, result.to_tsv()).into_response()
 }
 
 fn get_username(session: Session<SessionNullPool>) -> String {
@@ -146,21 +142,32 @@ async fn get_table(
     session: Session<SessionNullPool>,
 ) -> Response<Body> {
     // tracing::info!("get_table({rltbl:?}, {path}, {query_params:?})");
-    // tracing::info!("get_table([rltbl], {path}, {query_params:?})");
-    // tracing::info!("SESSION {:?}", session.get_session_id().inner());
-    // tracing::info!("SESSIONS {}", session.count().await);
 
     let username = get_username(session);
     if username.trim() != "" {
         init_user(&rltbl, &username).await;
     }
-    // tracing::info!("USERNAME {username}");
     let select = Select::from_path_and_query(&path, &query_params, &rltbl).await;
     let format = match Format::try_from(&path) {
         Ok(format) => format,
         Err(error) => return get_404(&error),
     };
-    respond(&rltbl, &username, &select, &format).await
+    let result = match rltbl.fetch(&select).await {
+        Ok(result) => result,
+        Err(error) => return get_500(&error),
+    };
+    match format {
+        Format::Csv => return respond_csv(result),
+        Format::Tsv => return respond_tsv(result),
+        _ => (),
+    }
+    let site = rltbl.get_site(&username).await;
+    let content = json!({
+        "site": site,
+        "page": select.to_page(&rltbl.root, "table").unwrap(),
+        "result": result
+    });
+    respond(&rltbl, &format, &content).await
 }
 
 async fn post_table(
