@@ -289,7 +289,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     } catch (error) {
       console.error(error.message);
     }
-  }, [site, change_id, table, updateCursors, setNumRows, idRowRef]);
+  }, [site, change_id, rltbl.page.path, table, updateCursors, setNumRows, idRowRef]);
 
   // Fetch data updated since we started.
   const pollData = React.useCallback(async () => {
@@ -332,15 +332,15 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       }
     }
     gridRef.current?.updateCells(damageList);
-  }, [site, table, columns, numRows, updateCursors, dataRef, gridRef]);
+  }, [site, rltbl.page.path, table, columns, numRows, updateCursors, dataRef, gridRef]);
 
   // Poll for new data.
   React.useEffect(() => {
-    if (site.editable == true) {
+    if (site.editable === true) {
       const interval = setInterval(pollData, 5000);
       return () => clearInterval(interval);
     }
-  }, [pollData, dataRef]);
+  }, [site.editable, pollData, dataRef]);
 
   // Scroll to offset
   React.useEffect(() => {
