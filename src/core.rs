@@ -235,8 +235,82 @@ impl Relatable {
                     .await?;
             }
         }
-        rltbl.create_demo_table("penguin", force, size).await?;
+        rltbl.create_demo_tableset(force, size).await?;
         Ok(rltbl)
+    }
+
+    pub async fn create_demo_tableset(&self, force: &bool, size: usize) -> Result<()> {
+        if *force {
+            if let DbKind::Postgres = self.connection.kind() {
+                self.connection
+                    .query(&format!(r#"DROP TABLE IF EXISTS "study" CASCADE"#), None)
+                    .await?;
+                self.connection
+                    .query(&format!(r#"DROP TABLE IF EXISTS "penguin" CASCADE"#), None)
+                    .await?;
+                self.connection
+                    .query(&format!(r#"DROP TABLE IF EXISTS "egg" CASCADE"#), None)
+                    .await?;
+            }
+        }
+
+        let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('tableset', 'tableset.tsv')"#;
+        self.connection.query(sql, None).await.unwrap();
+
+        // Create the tableset table.
+        let sql = r#"CREATE TABLE tableset (
+              _id INTEGER PRIMARY KEY AUTOINCREMENT,
+              _order INTEGER UNIQUE,
+              tableset TEXT,
+              left_table TEXT,
+              left_column TEXT,
+              right_table TEXT,
+              right_column TEXT
+            )"#;
+        self.connection.query(sql, None).await.unwrap();
+
+        let sql = r#"INSERT INTO "tableset" VALUES
+              (1, 1000, 'combined', NULL, NULL, 'study', 'study_name'),
+              (2, 2000, 'combined', 'study', 'study_name', 'penguin', 'individual_id'),
+              (3, 3000, 'combined', 'penguin', 'individual_id', 'egg', 'egg_id')
+            "#;
+        self.connection.query(sql, None).await.unwrap();
+
+        let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('study', 'study.tsv')"#;
+        self.connection.query(sql, None).await.unwrap();
+
+        // Create the study table.
+        let sql = r#"CREATE TABLE study (
+              _id INTEGER PRIMARY KEY AUTOINCREMENT,
+              _order INTEGER UNIQUE,
+              study_name TEXT UNIQUE,
+              description TEXT
+            )"#;
+        self.connection.query(sql, None).await.unwrap();
+
+        let sql = r#"INSERT INTO study VALUES
+            (0, 0, 'FAKE123', 'Fake Study 123')"#;
+        self.connection.query(sql, None).await.unwrap();
+
+        self.create_demo_table("penguin", force, size).await?;
+
+        let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('egg', 'egg.tsv')"#;
+        self.connection.query(sql, None).await.unwrap();
+
+        // Create the egg table.
+        let sql = r#"CREATE TABLE egg (
+      _id INTEGER PRIMARY KEY AUTOINCREMENT,
+      _order INTEGER UNIQUE,
+      egg_id TEXT UNIQUE,
+      individual_id TEXT
+    )"#;
+        self.connection.query(sql, None).await.unwrap();
+
+        let sql = r#"INSERT INTO egg VALUES
+        (0, 0, 'E1', 'N1')"#;
+        self.connection.query(sql, None).await.unwrap();
+
+        Ok(())
     }
 
     /// TODO: Add docstring
@@ -3063,7 +3137,7 @@ impl std::fmt::Display for Range {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ResultSet {
     pub select: Select,
     pub range: Range,
@@ -3126,12 +3200,12 @@ impl std::fmt::Display for ResultSet {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Site {
-    title: String,
-    root: String,
-    editable: bool,
-    user: Account,
-    users: IndexMap<String, UserCursor>,
-    tables: IndexMap<String, Table>,
+    pub title: String,
+    pub root: String,
+    pub editable: bool,
+    pub user: Account,
+    pub users: IndexMap<String, UserCursor>,
+    pub tables: IndexMap<String, Table>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -3155,8 +3229,17 @@ pub struct UserCursor {
     datetime: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Page {
     pub path: String,
     pub formats: IndexMap<String, String>,
+    pub tabs: Vec<Tab>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Tab {
+    pub table: String,
+    pub active: bool,
+    pub url: String,
+    pub count: String,
 }

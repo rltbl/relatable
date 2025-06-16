@@ -32,7 +32,9 @@ sqlx_release:
 rusqlite: rusqlite_debug
 
 .PHONY: rusqlite_debug
-rusqlite_debug:
+rusqlite_debug: target/debug/rltbl
+
+target/debug/rltbl: src/resources/main.js src/resources/main.css
 	cargo build
 
 .PHONY: rusqlite_release
@@ -247,3 +249,31 @@ clean_sqlite_test:
 .PHONY: clean_test
 clean_test: clean_postgres_test clean_sqlite_test
 	rm -Rf test/perf
+
+# Build a Linux binary using Musl instead of GCC.
+target/x86_64-unknown-linux-musl/release/rltbl: Cargo.toml src/*.rs src/templates/* src/resources/main.js src/resources/main.css
+	mv Cargo.toml Cargo.toml.bk
+	sed 's/"bundled", //' Cargo.toml.bk > Cargo.toml
+	docker pull --platform linux/amd64 clux/muslrust:stable
+	docker run \
+		--platform linux/amd64 \
+		-v cargo-cache:/root/.cargo/registry \
+		-v $$PWD:/volume \
+		--rm -t clux/muslrust:stable \
+		cargo build --release --all-features
+	mv Cargo.toml.bk Cargo.toml
+
+.PHONY: musl
+musl: target/x86_64-unknown-linux-musl/release/rltbl
+
+.PHONY: push
+push: target/x86_64-unknown-linux-musl/release/rltbl
+	scp $< dev:/var/www/tdt-demo/bin/
+
+.PHONY: pub
+pub: target/x86_64-unknown-linux-musl/release/rltbl
+	scp $< dev:/var/www/james.overton.ca/files/
+
+.PHONY: cebs
+cebs: target/x86_64-unknown-linux-musl/release/rltbl
+	scp $< dev:/home/knocean/cebs-ddd-dev/bin/

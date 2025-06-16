@@ -1,12 +1,12 @@
 <ul class="dropdown-menu" style="display: inline-block; position: relative">
   <li>
-    <a class="dropdown-item" href="{{site.root}}/table/{{table.name}}?{{column}}=eq.{{cell.text}}">
+    <a class="dropdown-item" href="./{{table.name}}?{{table.name}}.{{column}}=eq.{{cell.text}}">
       <i class="bi bi-funnel-fill"></i>
       Filter for this value
     </a>
   </li>
   <li>
-    <a class="dropdown-item" href="{{site.root}}/table/{{table.name}}?{{column}}=not_eq.{{cell.text}}">
+    <a class="dropdown-item" href="./{{table.name}}?{{table.name}}.{{column}}=not_eq.{{cell.text}}">
       <i class="bi bi-funnel"></i>
       Excude this value
     </a>

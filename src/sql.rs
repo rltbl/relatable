@@ -682,14 +682,18 @@ pub fn get_db_table_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<V
             tx.query(&sql, None)
         }
         DbKind::Postgres => {
+            let mut sql_param = SqlParam::new(&tx.kind());
+            let schema = std::env::var("RLTBL_SCHEMA").unwrap_or("public".to_string());
             let sql = format!(
                 r#"SELECT "column_name"::TEXT AS "name"
                    FROM "information_schema"."columns"
-                   WHERE "table_name" = {sql_param}
+                   WHERE "table_schema" = {}
+                     AND "table_name" = {}
                    ORDER BY "ordinal_position""#,
-                sql_param = SqlParam::new(&tx.kind()).next()
+                sql_param.next(),
+                sql_param.next()
             );
-            let params = json!([table]);
+            let params = json!([schema, table]);
             tx.query(&sql, Some(&params))
         }
     }
@@ -1418,7 +1422,7 @@ where
 }
 
 /// TODO: Add docstring
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JsonRow {
     pub content: JsonMap<String, JsonValue>,
 }

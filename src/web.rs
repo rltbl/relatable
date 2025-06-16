@@ -2,11 +2,11 @@
 //!
 //! This is [relatable](crate) (rltbl::[web](crate::web)).
 
-use crate as rltbl;
+use crate::{self as rltbl, core::ResultSet};
 use rltbl::{
     cli::Cli,
-    core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet},
-    select::{Format, QueryParams, Select},
+    core::{ChangeSet, Cursor, Relatable, RelatableError},
+    select::{joined_query, Format, QueryParams, Select},
     sql,
     sql::{CachingStrategy, JsonRow},
     table::Row,
@@ -95,7 +95,7 @@ async fn respond(rltbl: &Relatable, format: &Format, content: &JsonValue) -> Res
             headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
             (headers, to_string_pretty(content).unwrap_or_default()).into_response()
         }
-        Format::Json => Json(content).into_response(),
+        Format::Json | Format::ValueJson => Json(content).into_response(),
         Format::Csv => get_500(
             &RelatableError::FormatError(
                 "CSV format should be handled before `respond()`".to_string(),
@@ -164,7 +164,7 @@ async fn get_table(
     let site = rltbl.get_site(&username).await;
     let content = json!({
         "site": site,
-        "page": select.to_page(&rltbl.root, "table").unwrap(),
+        "page": select.to_page(&rltbl.root, "table", &vec![]).unwrap_or_default(),
         "result": result
     });
     respond(&rltbl, &format, &content).await
@@ -207,6 +207,104 @@ async fn post_table(
         Ok(_) => "POST successful".into_response(),
         Err(error) => get_500(&error),
     }
+}
+
+async fn get_tableset(
+    State(rltbl): State<Arc<Relatable>>,
+    Path((tableset_name, path)): Path<(String, String)>,
+    Query(query_params): Query<QueryParams>,
+    session: Session<SessionNullPool>,
+) -> Response<Body> {
+    tracing::trace!("get_tableset({rltbl:?}, {tableset_name}, {path}, {query_params:?})");
+    let format = match Format::try_from(&path) {
+        Ok(format) => format,
+        Err(error) => return get_404(&error),
+    };
+
+    let select = Select::from_path_and_query(&path, &query_params);
+    // tracing::info!("SELECT {select:?}",);
+
+    if matches!(format, Format::ValueJson) {
+        let sel = match joined_query(&rltbl, &tableset_name, &select).await {
+            Ok(select) => select,
+            Err(error) => match error.downcast_ref() {
+                Some(RelatableError::ConfigError(e)) => match e.as_str() {
+                    "empty tableset" => return Json(json!(0)).into_response(),
+                    _ => return get_500(&error),
+                },
+                _ => {
+                    return get_500(&error);
+                }
+            },
+        };
+        let value = match rltbl.count(&sel).await {
+            Ok(count) => count,
+            Err(error) => return get_500(&error),
+        };
+        return Json(value).into_response();
+    }
+
+    let mut result = match joined_query(&rltbl, &tableset_name, &select).await {
+        Ok(sel) => match rltbl.fetch(&sel).await {
+            Ok(result) => result,
+            Err(error) => return get_500(&error),
+        },
+        Err(error) => match error.downcast_ref() {
+            Some(RelatableError::ConfigError(e)) => match e.as_str() {
+                "empty tableset" => {
+                    let mut table = rltbl.get_table(select.table_name.as_str()).await.unwrap();
+                    let columns = table.ensure_default_view_created(&rltbl).await.unwrap();
+                    ResultSet {
+                        select: select.clone(),
+                        table,
+                        columns,
+                        ..Default::default()
+                    }
+                }
+                _ => return get_500(&error),
+            },
+            _ => {
+                return get_500(&error);
+            }
+        },
+    };
+    result.select = select.clone();
+    match format {
+        Format::Csv => return respond_csv(result),
+        Format::Tsv => return respond_tsv(result),
+        _ => (),
+    }
+
+    let username = get_username(session);
+    if username.trim() != "" {
+        init_user(&rltbl, &username).await;
+    }
+    // tracing::info!("USERNAME {username}");
+
+    let site = rltbl.get_site(&username).await;
+
+    let sql = format!(r#"SELECT * FROM "tableset" WHERE tableset = '{tableset_name}'"#);
+    let json_rows = match rltbl.connection.query(&sql, None).await {
+        Ok(rows) => rows,
+        Err(error) => return get_500(&error),
+    };
+
+    // tracing::info!("TAB {json_rows:?}");
+    let mut tabset = vec![];
+    for json_row in json_rows {
+        let table = json_row.get_string("right_table").unwrap();
+        if tabset.contains(&table) {
+            continue;
+        }
+        tabset.push(table.clone());
+    }
+
+    let content = json!({
+       "site": site,
+       "page": select.to_page(&rltbl.root, &format!("tableset/{tableset_name}"), &tabset).unwrap_or_default(),
+       "result": result
+    });
+    respond(&rltbl, &format, &content).await
 }
 
 async fn init_user(rltbl: &Relatable, username: &str) -> () {
@@ -601,6 +699,7 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
         .route("/sign-out", post(post_sign_out))
         .route("/cursor", post(post_cursor))
         .route("/table/{*path}", get(get_table).post(post_table))
+        .route("/tableset/{tableset_name}/{*path}", get(get_tableset))
         .route("/row-menu/{table_name}/{row_id}", get(get_row_menu))
         .route("/column-menu/{table_name}/{column}", get(get_column_menu))
         .route(

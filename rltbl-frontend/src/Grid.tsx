@@ -266,8 +266,8 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     const params = new URLSearchParams(document.location.search);
     params.set("limit", String(limit));
     params.set("offset", String(first));
-    const url = `${site.root}/table/${table}.json?${params.toString()}`;
-    // console.log("Fetch: " + url);
+    const url = `${site.root}/${rltbl.page.path}/${table}.json?${params.toString()}`;
+    console.log("getRowData: " + url);
     try {
       const response = await fetch(url);
       if (!response.ok) {
@@ -298,8 +298,8 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     params.set("_change_id", `gt.${change_id.current}`);
     params.delete("limit");
     params.delete("offset");
-    const url = `${site.root}/table/${table}.json?${params.toString()}`;
-    // console.log("Fetch: " + url);
+    const url = `${site.root}/${rltbl.page.path}/${table}.json?${params.toString()}`;
+    console.log("pollData: " + url);
     var rows: Row[] = [];
     try {
       const response = await fetch(url);
@@ -336,8 +336,10 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
 
   // Poll for new data.
   React.useEffect(() => {
-    const interval = setInterval(pollData, 5000);
-    return () => clearInterval(interval);
+    if (site.editable == true) {
+      const interval = setInterval(pollData, 5000);
+      return () => clearInterval(interval);
+    }
   }, [pollData, dataRef]);
 
   // Scroll to offset
@@ -601,47 +603,49 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     possiblePlacements: ["bottom-start", "bottom-end", "top-start", "top-end"],
   });
 
-  const drawCell: DrawCellCallback = React.useCallback((args, draw) => {
-    draw(); // draw up front to draw over the cell
-    // if (!dataRef.current) { return; }
-    // const { ctx, rect, col, row } = args;
-    // const color = cursorRef.current[col + "," + row];
-    // if (!color) { return; };
-    // ctx.beginPath();
-    // ctx.rect(rect.x + 1, rect.y + 1, rect.width - 1, rect.height - 1);
-    // ctx.save();
-    // ctx.strokeStyle = color;
-    // ctx.stroke();
-    // ctx.restore();
-  }, []);
-
-  // Draw a red triangle in upper-right, like Excel.
   // const drawCell: DrawCellCallback = React.useCallback((args, draw) => {
   //   draw(); // draw up front to draw over the cell
   //   if (!dataRef.current) { return; }
   //   const { ctx, rect, col, row } = args;
-  //   const rowData = dataRef.current[row];
-  //   if (!rowData) { return; }
-  //   const cellData = rowData.cells[columns[col].id];
-  //   if (!cellData) { return; }
-  //   // if (cellData.message_level !== "error") { return; }
-  //   const size = 7;
+  //   const color = cursorRef.current[col + "," + row];
+  //   if (!color) { return; };
   //   ctx.beginPath();
-  //   ctx.moveTo(rect.x + rect.width - size, rect.y + 1);
-  //   ctx.lineTo(rect.x + rect.width, rect.y + size + 1);
-  //   ctx.lineTo(rect.x + rect.width, rect.y + 1);
-  //   ctx.closePath();
+  //   ctx.rect(rect.x + 1, rect.y + 1, rect.width - 1, rect.height - 1);
   //   ctx.save();
-  //   ctx.fillStyle = "#ff0000";
-  //   ctx.fill();
+  //   ctx.strokeStyle = color;
+  //   ctx.stroke();
   //   ctx.restore();
-  // }, [columns, dataRef]);
+  // }, []);
+
+  // Draw a red triangle in upper-right, like Excel.
+  const drawCell: DrawCellCallback = React.useCallback((args, draw) => {
+    draw(); // draw up front to draw over the cell
+    if (!dataRef.current) { return; }
+    const { ctx, rect, col, row } = args;
+    const rowData = dataRef.current[row];
+    if (!rowData) { return; }
+    const cellData = rowData.cells[columns[col].id];
+    if (!cellData) { return; }
+    if (!cellData.messages) { return; }
+    if (cellData.messages.length < 1) { return; }
+    // if (cellData.message_level !== "error") { return; }
+    const size = 7;
+    ctx.beginPath();
+    ctx.moveTo(rect.x + rect.width - size, rect.y + 1);
+    ctx.lineTo(rect.x + rect.width, rect.y + size + 1);
+    ctx.lineTo(rect.x + rect.width, rect.y + 1);
+    ctx.closePath();
+    ctx.save();
+    ctx.fillStyle = "#ff0000";
+    ctx.fill();
+    ctx.restore();
+  }, [columns, dataRef]);
 
   return <>
     <DataEditor
       ref={gridRef}
       {...async_args}
-      customRenderers={[DropdownCell]}
+      customRenderers={[DropdownCell, drawCell]}
       rowMarkers={"clickable-number"}
       gridSelection={gridSelection}
       onGridSelectionChange={onGridSelectionChange}

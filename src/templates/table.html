@@ -11,7 +11,7 @@
 
 {% block content %}
 <div class="float-end mt-1">
-  <a class="btn btn-outline-primary" href="{{site.root}}/table/{{table.name}}">
+  <a class="btn btn-outline-primary" href="{{site.root}}/{{page.path}}/{{table.name}}">
     <i class="bi bi-funnel"></i>
     Clear Filters
   </a>
@@ -33,35 +33,69 @@
 </div>
 <h1>{{ table.name }}</h1>
 
+{% if page.tabs %}
+<ul class="nav nav-tabs mb-2">
+  {% for tab in page.tabs %}
+  <li class="nav-item">
+    <a class="nav-link {{'active' if tab['active'] == true}} {{'disabled' if tab['disabled'] == true}}"
+      href="{{tab['url']}}">
+      {{tab['table']}}
+      <span id="tab-{{tab['table']}}-count" class="badge rounded-pill text-bg-secondary">...</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
 <div id="portal" style="width: 100%; min-width: 400px; left: auto; right: auto"></div>
 
 <p class="range">Rows {{ range.start }}-{{ range.end }} of {{ range.total }}</p>
-<table class="table">
-  <thead>
-    <tr>
-      {% for column in columns %}
-      <th>{{ column.name }}</th>
+<noscript>
+  <table class="table">
+    <thead>
+      <tr>
+        {% for column in columns %}
+        <th>{{ column.name }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        {% for column, cell in row.cells|items %}
+        <td>{{ cell.text }}</td>
+        {% endfor %}
+      </tr>
       {% endfor %}
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in rows %}
-    <tr>
-      {% for column, cell in row.cells|items %}
-      <td>{{ cell.text }}</td>
-      {% endfor %}
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+    </tbody>
+  </table>
+</noscript>
 {% endblock %}
 
 {% block scripts %}
 <script>
   window.rltbl = {};
   window.rltbl.site = {{site | tojson}};
+  window.rltbl.page = {{page | tojson}};
   window.rltbl.result = {{result | tojson}};
   window.rltbl.grid = {};
+
+  for (var i = 0; i < window.rltbl.page.tabs.length; i++) {
+    var tab = window.rltbl.page.tabs[i];
+    // console.log("fetch " + i, tab);
+    fetch_count(tab);
+  }
+
+  function fetch_count(tab) {
+    fetch(tab['count'])
+      .catch(e => console.log("tab count error", tab, e))
+      .then(response => response.json())
+      .then(data => {
+        // console.log("tab count result", tab, data);
+        document.getElementById("tab-" + tab['table'] + "-count").innerHTML = data;
+      });
+  }
+
 
   // Example: Use an autocomplete dropdown for 'penguin.island' column.
   const table = {{result.table.name | tojson}};
@@ -74,11 +108,6 @@
         kind = "dropdown";
       } else if (column_name === "review") {
         kind = "image";
-      }
-    }
-    if (table === "tree_table") {
-      if (column_name === "label") {
-        kind = "tree";
       }
     }
     window.rltbl.result.columns[i].kind = kind;
@@ -133,7 +162,7 @@
     if (e.target.id === "filter-column") {
       e.preventDefault();
       if (e.submitter.id === "filter-clear") {
-        document.location = '{{site.root}}/table/{{table.name}}';
+        document.location = '{{site.root}}/{{page.path}}/{{table.name}}';
       } else {
         const column = document.getElementById("filter-value").name;
         var operator = document.getElementById("filter-operator").value;

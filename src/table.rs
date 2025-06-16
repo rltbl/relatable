@@ -113,7 +113,7 @@ pub struct Column {
 }
 
 /// Represents a row from some table
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Row {
     pub id: usize,
     pub order: usize,
@@ -224,7 +224,6 @@ impl From<Row> for Vec<String> {
 
 impl From<JsonRow> for Row {
     fn from(row: JsonRow) -> Self {
-        tracing::trace!("Row::from({row:?})");
         let id = row
             .content
             .get("_id")
@@ -240,13 +239,40 @@ impl From<JsonRow> for Row {
             .get("_change_id")
             .and_then(|i| i.as_u64())
             .unwrap_or_default() as usize;
-        let cells = row
+        let mut cells: IndexMap<String, Cell> = row
             .content
             .iter()
             // Ignore columns that start with "_"
             .filter(|(k, _)| !k.starts_with("_"))
             .map(|(k, v)| (k.clone(), v.into()))
             .collect();
+        let messages = row.content.get("_message");
+        if let Some(m) = messages {
+            let mut messages = m.clone();
+            // WARN: Converting _message string to JSON.
+            match m {
+                JsonValue::String(m) => messages = serde_json::from_str(&m).unwrap(),
+                _ => (),
+            }
+            if let Some(messages) = messages.as_array() {
+                for message in messages.iter() {
+                    let column = message
+                        .as_object()
+                        .unwrap()
+                        .get("column")
+                        .unwrap()
+                        .as_str()
+                        .unwrap();
+                    let message: Message =
+                        serde_json::from_value(message.clone()).unwrap_or_default();
+                    if let Some(cell) = cells.get(column) {
+                        let mut new_cell = cell.clone();
+                        new_cell.messages.push(message);
+                        cells.insert(column.to_string(), new_cell);
+                    }
+                }
+            }
+        }
 
         Self {
             id,
@@ -258,7 +284,7 @@ impl From<JsonRow> for Row {
 }
 
 /// Represents a cell from a row in a given table
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     pub value: JsonValue,
     pub text: String,
@@ -273,6 +299,7 @@ impl From<&JsonValue> for Cell {
             value: value.clone(),
             text: match value {
                 JsonValue::String(value) => value.to_string(),
+                JsonValue::Null => String::new(),
                 value => format!("{value}"),
             },
             messages: vec![],
@@ -281,7 +308,7 @@ impl From<&JsonValue> for Cell {
 }
 
 /// Represents a validation message
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     /// The severity of the message.
     pub level: String,
@@ -289,4 +316,88 @@ pub struct Message {
     pub rule: String,
     /// The contents of the message.
     pub message: String,
+}
+
+// Tests
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn test_json_to_row() {
+        let json_blob = json!({
+            "content": {
+                "_id": 1,
+                "_order": 1000,
+                "_change_id": 0,
+                "foo": "FOO",
+            }
+        });
+        let json_row: JsonRow = serde_json::from_value(json_blob).unwrap();
+        let row: Row = json_row.into();
+        let mut cells = IndexMap::new();
+        cells.insert(
+            "foo".to_string(),
+            Cell {
+                value: json!("FOO"),
+                text: "FOO".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            row,
+            Row {
+                id: 1,
+                order: 1000,
+                change_id: 0,
+                cells
+            }
+        )
+    }
+
+    #[test]
+    fn test_json_to_row_messages() {
+        let json_blob = json!({
+            "content": {
+                "_id": 1,
+                "_order": 1000,
+                "_change_id": 0,
+                "_message": [{
+                    "column": "foo",
+                    "value": "FOO",
+                    "level": "error",
+                    "rule": "test rule",
+                    "message": "Test message 'FOO'"
+                }],
+                "foo": "FOO",
+            }
+        });
+        let json_row: JsonRow = serde_json::from_value(json_blob).unwrap();
+        let row: Row = json_row.into();
+        let mut cells = IndexMap::new();
+        cells.insert(
+            "foo".to_string(),
+            Cell {
+                value: json!("FOO"),
+                text: "FOO".to_string(),
+                messages: vec![Message {
+                    level: "error".to_string(),
+                    rule: "test rule".to_string(),
+                    message: "Test message 'FOO'".to_string(),
+                }],
+            },
+        );
+        assert_eq!(
+            row,
+            Row {
+                id: 1,
+                order: 1000,
+                change_id: 0,
+                cells
+            }
+        )
+    }
 }
