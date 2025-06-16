@@ -49,7 +49,7 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 /// that can be bound to a Postgres query
 pub static MAX_PARAMS_POSTGRES: usize = 65535;
 
-/// TODO: Add docstring
+/// Default size for the in-memory cache
 pub static DEFAULT_MEMORY_CACHE_SIZE: usize = 1000;
 
 /// Strategy to use for caching
@@ -62,7 +62,7 @@ pub enum CachingStrategy {
     Memory(usize),
 }
 
-/// TODO: Add docstrng
+/// The structure used to look up query results in the in-memory cache:
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MemoryCacheKey {
     pub tables: String,
@@ -177,14 +177,14 @@ impl SqlParam {
     }
 }
 
-/// TODO: Add docstring
+/// Represents an active database connection
 #[derive(Debug)]
 pub enum DbActiveConnection {
     #[cfg(feature = "rusqlite")]
     Rusqlite(rusqlite::Connection),
 }
 
-/// TODO: Add docstring
+/// Represents a database connection
 #[derive(Debug)]
 pub enum DbConnection {
     #[cfg(feature = "sqlx")]
@@ -195,7 +195,7 @@ pub enum DbConnection {
 }
 
 impl DbConnection {
-    /// TODO: Add docstring
+    /// Returns the kind of database that this connection is associated with
     pub fn kind(&self) -> DbKind {
         tracing::trace!("DbConnection::kind()");
         match self {
@@ -206,7 +206,7 @@ impl DbConnection {
         }
     }
 
-    /// TODO: Add docstring
+    /// Connects to the given database
     pub async fn connect(database: &str) -> Result<(Self, Option<DbActiveConnection>)> {
         tracing::trace!("DbConnection::connect({database})");
         let is_postgresql = database.starts_with("postgresql://");
@@ -268,7 +268,7 @@ impl DbConnection {
         }
     }
 
-    /// TODO: Add docstring
+    /// Reconnect to the current database
     pub fn reconnect(&self) -> Result<Option<DbActiveConnection>> {
         tracing::trace!("DbConnection::reconnect()");
         match self {
@@ -281,7 +281,7 @@ impl DbConnection {
         }
     }
 
-    /// TODO: Add docstring
+    /// Begin a transaction
     pub async fn begin<'a>(
         &self,
         conn: &'a mut Option<DbActiveConnection>,
@@ -346,7 +346,7 @@ impl DbConnection {
         }
     }
 
-    /// TODO: Add docstring
+    /// Query for a single row
     pub async fn query_one(
         &self,
         statement: &str,
@@ -360,7 +360,7 @@ impl DbConnection {
         }
     }
 
-    /// TODO: Add docstring
+    /// Query for a single value
     pub async fn query_value(
         &self,
         statement: &str,
@@ -371,7 +371,7 @@ impl DbConnection {
         Ok(extract_value(&rows))
     }
 
-    /// TODO: Add docstring
+    /// Attempt to use the cache to query
     pub async fn cache(
         &self,
         sql: &str,
@@ -518,7 +518,7 @@ impl DbConnection {
     }
 }
 
-/// TODO: Add docstring
+/// A database transaction
 #[derive(Debug)]
 pub enum DbTransaction<'a> {
     #[cfg(feature = "sqlx")]
@@ -529,7 +529,7 @@ pub enum DbTransaction<'a> {
 }
 
 impl DbTransaction<'_> {
-    /// TODO: Add docstring
+    /// The kind of database this transaction is associated with
     pub fn kind(&self) -> DbKind {
         tracing::trace!("DbTransaction::kind()");
         match self {
@@ -540,7 +540,7 @@ impl DbTransaction<'_> {
         }
     }
 
-    /// TODO: Add docstring
+    /// Commit this transaction
     pub fn commit(self) -> Result<()> {
         tracing::trace!("DbTransaction::commit()");
         match self {
@@ -552,7 +552,7 @@ impl DbTransaction<'_> {
         Ok(())
     }
 
-    /// TODO: Add docstring
+    /// Rollback this transaction
     pub fn rollback(self) -> Result<()> {
         tracing::trace!("DbTransaction::rollback()");
         match self {
@@ -592,7 +592,7 @@ impl DbTransaction<'_> {
         }
     }
 
-    /// TODO: Add docstring
+    /// Query for a single row
     pub fn query_one(
         &mut self,
         statement: &str,
@@ -606,7 +606,7 @@ impl DbTransaction<'_> {
         }
     }
 
-    /// TODO: Add docstring
+    /// Query for a single value
     pub fn query_value(
         &mut self,
         statement: &str,
@@ -756,6 +756,21 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
     }
 }
 
+/// Return the SQL type corresponding to the given datatype
+pub fn get_sql_type(datatype: &Option<String>) -> Result<&str> {
+    match datatype {
+        None => Ok("TEXT"),
+        Some(datatype) if ["text", ""].contains(&datatype.to_lowercase().as_str()) => Ok("TEXT"),
+        Some(datatype) if datatype.to_lowercase() == "integer" => Ok("INTEGER"),
+        Some(unsupported) => {
+            return Err(RelatableError::InputError(format!(
+                "Unsupported datatype: '{unsupported}'"
+            ))
+            .into());
+        }
+    }
+}
+
 /// Given an SQL string that has been bound to the given parameter vector, construct a database
 /// query and return it.
 #[cfg(feature = "sqlx")]
@@ -783,9 +798,9 @@ pub fn prepare_sqlx_query<'a>(
     Ok(query)
 }
 
-/// TODO: Add docstring
+/// Execute the given rusqlite statement
 #[cfg(feature = "rusqlite")]
-pub fn submit_rusqlite_statement(
+fn submit_rusqlite_statement(
     stmt: &mut rusqlite::Statement<'_>,
     params: Option<&JsonValue>,
 ) -> Result<Vec<JsonRow>> {
@@ -816,8 +831,8 @@ pub fn submit_rusqlite_statement(
     Ok(result)
 }
 
-/// TODO: Add docstring
-pub fn valid_params(params: Option<&JsonValue>) -> bool {
+/// Validate that the given parameters are in the form of a JSON Array.
+fn valid_params(params: Option<&JsonValue>) -> bool {
     tracing::trace!("valid_params({params:?})");
     if let Some(params) = params {
         match params {
@@ -829,8 +844,8 @@ pub fn valid_params(params: Option<&JsonValue>) -> bool {
     }
 }
 
-/// TODO: Add docstring
-pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
+/// Extract the first value of the first row in `rows`.
+fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
     tracing::trace!("extract_value({rows:?})");
     match rows.iter().next() {
         Some(row) => match row.content.values().next() {
@@ -845,7 +860,8 @@ pub fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
 // Functions for generating DDL
 ////////////////
 
-/// TODO: Add docstring
+/// Generate DDL to create the given table in the database. If `force` is set, drop the table
+/// first.
 pub fn generate_table_ddl(
     table: &Table,
     force: bool,
@@ -883,8 +899,9 @@ pub fn generate_table_ddl(
             ))
             .into());
         }
+        let sql_type = get_sql_type(&col.datatype)?;
         let clause = format!(
-            r#""{cname}" TEXT{unique}"#,
+            r#""{cname}" {sql_type}{unique}"#,
             unique = match col.unique {
                 true => " UNIQUE",
                 false => "",
@@ -932,7 +949,7 @@ pub fn generate_table_ddl(
     Ok(ddl)
 }
 
-/// TODO: Add docstring
+/// Add triggers for updating the meta columns, _id, and _order, of the given table.
 pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
     let update_stmt = format!(
         r#"UPDATE "{table}" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
@@ -989,7 +1006,7 @@ pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &
     };
 }
 
-/// TODO: Add docstring
+/// Add a trigger to update the query cache for the given table.
 pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
     match db_kind {
         DbKind::Sqlite => {
@@ -1049,8 +1066,8 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
     };
 }
 
-/// TODO: Add docstring
-pub fn generate_view_ddl(
+/// Generate the DDL for creating the default view on the given table,
+pub(crate) fn generate_default_view_ddl(
     table_name: &str,
     view_name: &str,
     id_col: &str,
@@ -1059,7 +1076,8 @@ pub fn generate_view_ddl(
     kind: &DbKind,
 ) -> Vec<String> {
     tracing::trace!(
-        "generate_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, {kind:?})"
+        "generate_default_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, \
+         {kind:?})"
     );
     // Note that '?' parameters are not allowed in views so we must hard code them:
     match kind {
@@ -1146,7 +1164,103 @@ pub fn generate_view_ddl(
     }
 }
 
-/// TODO: Add docstring
+/// Generate the DDL for creating the text view on the given table,
+pub(crate) fn generate_text_view_ddl(
+    table_name: &str,
+    view_name: &str,
+    id_col: &str,
+    order_col: &str,
+    columns: &Vec<Column>,
+    kind: &DbKind,
+) -> Vec<String> {
+    tracing::trace!(
+        "generate_text_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, \
+         {kind:?})"
+    );
+
+    // Note that '?' parameters are not allowed in views so we must hard code them:
+    let mut inner_columns = columns
+        .iter()
+        .map(|column| {
+            format!(
+                r#"CASE
+                     WHEN "{column}" {is_clause} NULL THEN (
+                       SELECT "value"
+                       FROM "message"
+                       WHERE "row" = "_id"
+                         AND "column" = '{column}'
+                         AND "table" = '{table_name}'
+                       ORDER BY "message_id" DESC
+                       LIMIT 1
+                     )
+                     ELSE {column_cast}
+                   END AS "{column}""#,
+                column = column.name,
+                is_clause = is_clause(kind),
+                column_cast = {
+                    let datatype = match &column.datatype {
+                        None => "text".to_string(),
+                        Some(datatype) if datatype == "" => "text".to_string(),
+                        Some(datatype) => datatype.to_lowercase(),
+                    };
+                    if *kind == DbKind::Sqlite {
+                        if datatype.as_str() == "text" {
+                            format!(r#""{}""#, column.name)
+                        } else {
+                            format!(r#"CAST("{}" AS TEXT)"#, column.name)
+                        }
+                    } else {
+                        format!(r#""{}"::TEXT"#, column.name)
+                    }
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let inner_columns = {
+        let mut v = vec![
+            "_id".to_string(),
+            "_order".to_string(),
+            "_message".to_string(),
+            "_history".to_string(),
+        ];
+        v.append(&mut inner_columns);
+        v
+    };
+
+    let mut outer_columns = columns
+        .iter()
+        .map(|column| format!(r#"t."{}""#, column.name))
+        .collect::<Vec<_>>();
+
+    let outer_columns = {
+        let mut v = vec![
+            "t._id".to_string(),
+            "t._order".to_string(),
+            "t._message".to_string(),
+            "t._history".to_string(),
+        ];
+        v.append(&mut outer_columns);
+        v
+    };
+
+    let create_view_sql = format!(
+        r#"CREATE VIEW "{view_name}" AS
+           SELECT {outer_columns}
+           FROM (
+               SELECT {inner_columns}
+               FROM "{table_name}_default_view"
+           ) t"#,
+        outer_columns = outer_columns.join(", "),
+        inner_columns = inner_columns.join(", "),
+    );
+
+    vec![
+        format!(r#"DROP VIEW IF EXISTS "{}""#, view_name),
+        create_view_sql,
+    ]
+}
+/// Generate the DDL used to create the table table. If `force` is set, drop the table first
 pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_table_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1174,7 +1288,7 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the cache table. If `force` is set, drop the table first
 pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_cache_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1203,7 +1317,7 @@ pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 // TODO: When the Table struct is rich enough to support different datatypes, foreign keys,
 // and defaults, create these other meta tables in a similar way to the table table above.
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the user table. If `force` is set, drop the table first
 pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_user_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
@@ -1224,7 +1338,7 @@ pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the change table. If `force` is set, drop the table first
 pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_change_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1265,7 +1379,7 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     }
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the history table. If `force` is set, drop the table first
 pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_history_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1306,7 +1420,7 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     }
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create the message table. If `force` is set, drop the table first
 pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_message_table_ddl({force}, {db_kind:?})");
     match db_kind {
@@ -1351,7 +1465,8 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     }
 }
 
-/// TODO: Add docstring
+/// Generate the DDL used to create all of the required meta tables. If `force` is set, drop the
+/// tables first
 pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_meta_tables_ddl({force}, {db_kind:?})");
     let mut ddl = generate_table_table_ddl(force, db_kind);
@@ -1368,7 +1483,7 @@ pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 ///////////////////////////////////////////////////////////////////////////////
 
 // WARN: This needs to be thought through.
-/// TODO: Add docstring
+/// Convert the given JSON value to a string
 pub fn json_to_string(value: &JsonValue) -> String {
     match value {
         JsonValue::Null => "".to_string(),
@@ -1380,7 +1495,7 @@ pub fn json_to_string(value: &JsonValue) -> String {
     }
 }
 
-/// TODO: Add docstring
+/// Convert the given JSON value to an unsigned integer
 pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
     match value {
         JsonValue::Bool(flag) => match flag {
@@ -1421,27 +1536,27 @@ where
     }
 }
 
-/// TODO: Add docstring
+/// A JSON representation of a database row
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JsonRow {
     pub content: JsonMap<String, JsonValue>,
 }
 
 impl JsonRow {
-    /// TODO: Add docstring
+    /// Initialize an empty [JsonRow]
     pub fn new() -> Self {
         Self {
             content: JsonMap::new(),
         }
     }
 
-    /// TODO: Add docstring
-    pub fn nullified(row: &Self, table: &Table) -> Self {
+    /// Set any column values whose content matches the column's nulltype to [JsonValue::Null]
+    pub fn nullify(row: &Self, table: &Table) -> Self {
         tracing::debug!("nullified({row:?}, {table:?})");
         let mut nullified_row = Self::new();
         for (column, value) in row.content.iter() {
             let nulltype = table
-                .get_column_attribute(&column, "nulltype")
+                .get_configured_column_attribute(&column, "nulltype")
                 .unwrap_or("".to_string());
             match value {
                 JsonValue::String(s) if s == "" && nulltype == "empty" => {
@@ -1460,7 +1575,24 @@ impl JsonRow {
         nullified_row
     }
 
-    /// TODO: Add docstring
+    /// Use the [columns configuration](Table::columns) for the given table to lookup the
+    /// [nulltype](Column::nulltype) of the given column, and then if the given value matches the
+    /// column's nulltype, set it to [Null](JsonValue::Null)
+    pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValue {
+        match table.get_configured_column_attribute(column, "nulltype") {
+            Some(supported) if supported == "empty" => match value {
+                JsonValue::String(s) if s == "" => JsonValue::Null,
+                _ => value.clone(),
+            },
+            Some(unsupported) => {
+                tracing::warn!("Unsupported nulltype: '{unsupported}'");
+                value.clone()
+            }
+            None => value.clone(),
+        }
+    }
+
+    /// Get the value of the given column from the row
     pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
         let value = self.content.get(column_name);
         match value {
@@ -1469,7 +1601,8 @@ impl JsonRow {
         }
     }
 
-    /// TODO: Add docstring
+    /// Get the value of the given column fromt he row and convert it to a string before returning
+    /// it
     pub fn get_string(&self, column_name: &str) -> Result<String> {
         let value = self.content.get(column_name);
         match value {
@@ -1478,7 +1611,8 @@ impl JsonRow {
         }
     }
 
-    /// TODO: Add docstring
+    /// Get the value of the given column fromt he row and convert it to an unsigned integer
+    /// before returning it
     pub fn get_unsigned(&self, column_name: &str) -> Result<usize> {
         let value = self.content.get(column_name);
         match value {
@@ -1487,7 +1621,8 @@ impl JsonRow {
         }
     }
 
-    /// TODO: Add docstring
+    /// Initialize a new row from the given list of column names and set all values to
+    /// [JsonValue::Null]
     pub fn from_strings(strings: &Vec<&str>) -> Self {
         let mut json_row = Self::new();
         for string in strings {
@@ -1496,7 +1631,7 @@ impl JsonRow {
         json_row
     }
 
-    /// TODO: Add docstring
+    /// Return all of the values in this row to a vector of strings and return it
     pub fn to_strings(&self) -> Vec<String> {
         let mut result = vec![];
         for column_name in self.content.keys() {
@@ -1507,7 +1642,7 @@ impl JsonRow {
         result
     }
 
-    /// TODO: Add docstring
+    /// Generate a map from the column names of the row to their values and return it
     pub fn to_string_map(&self) -> IndexMap<String, String> {
         let mut result = IndexMap::new();
         for column_name in self.content.keys() {
@@ -1519,7 +1654,7 @@ impl JsonRow {
         result
     }
 
-    /// TODO: Add docstring
+    /// Initialize a [JsonRow] from the given [rusqlite::Row]
     #[cfg(feature = "rusqlite")]
     pub fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
         let mut content = JsonMap::new();

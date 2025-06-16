@@ -35,7 +35,7 @@ FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9   
 FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
 FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
-null        null           FOO                 null       null           null           null
+                           FOO                                                              
 ```
 
 We use the **history** subcommand to get information about the last few commands that can be undone or redone.

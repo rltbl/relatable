@@ -4,6 +4,9 @@ SHELL := bash
 .DELETE_ON_ERROR:
 .SUFFIXES:
 
+SQLITE_DB = ".relatable/relatable.db"
+PG_DB = "postgresql:///rltbl_db"
+
 .PHONY: usage
 usage:
 	@echo "make [TASK]"
@@ -99,7 +102,42 @@ test_tesh_doc: debug
 test_tesh_doc_sqlx: sqlx_debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
 
-# SQLite tests (rusqlite)
+# Round-trip load / validation tests
+
+test/round_trip/output:
+	mkdir -p $@
+
+.PHONY: test_round_trip
+test_round_trip: test_round_trip_sqlite test_round_trip_sqlx_sqlite test_round_trip_sqlx_postgres | test/round_trip/output
+
+.PHONY: test_round_trip_sqlite
+test_round_trip_sqlite: debug | test/round_trip/output
+	@echo "Testing round trip on sqlite (rusqlite) ..."
+	target/debug/rltbl -v --database $(SQLITE_DB) demo --size 0 --force
+	target/debug/rltbl -v --database $(SQLITE_DB) load table --force --validate test/round_trip/penguin.tsv
+	target/debug/rltbl -v --database $(SQLITE_DB) save $|
+	diff --strip-trailing-cr -q test/round_trip/penguin.tsv $|
+	@echo "Success!"
+
+.PHONY: test_round_trip_sqlx_sqlite
+test_round_trip_sqlx_sqlite: sqlx_debug | test/round_trip/output
+	@echo "Testing round trip on sqlite (sqlx) ..."
+	target/debug/rltbl -v --database $(SQLITE_DB) demo --size 0 --force
+	target/debug/rltbl -v --database $(SQLITE_DB) load table --force --validate test/round_trip/penguin.tsv
+	target/debug/rltbl -v --database $(SQLITE_DB) save $|
+	diff --strip-trailing-cr -q test/round_trip/penguin.tsv $|
+	@echo "Success!"
+
+.PHONY: test_round_trip_sqlx_postgres
+test_round_trip_sqlx_postgres: sqlx_debug | test/round_trip/output
+	@echo "Testing round trip on postgres (sqlx) ..."
+	target/debug/rltbl -v --database $(PG_DB) demo --size 0 --force
+	target/debug/rltbl -v --database $(PG_DB) load table --force --validate test/round_trip/penguin.tsv
+	target/debug/rltbl -v --database $(PG_DB) save $|
+	diff --strip-trailing-cr -q test/round_trip/penguin.tsv $|
+	@echo "Success!"
+
+# SQLite tesh tests (rusqlite)
 
 test/tesh/common/as_sqlite:
 	mkdir -p $@
@@ -122,7 +160,7 @@ test_tesh_sqlite_only: debug
 test_random_sqlite: debug prepare_sqlite
 	bash test/random-sqlite.sh --varying-rate
 
-# SQLite tests (sqlx)
+# SQLite tesh tests (sqlx)
 
 .PHONY: test_tesh_sqlx_common_as_sqlite
 test_tesh_sqlx_common_as_sqlite: sqlx_debug prepare_sqlite
@@ -136,7 +174,7 @@ test_tesh_sqlx_sqlite_only: sqlx_debug
 test_random_sqlx_sqlite: sqlx_debug prepare_sqlite
 	bash test/random-sqlite.sh --varying-rate
 
-# Postgres tests (sqlx)
+# Postgres tesh tests (sqlx)
 
 test/tesh/common/as_postgres:
 	mkdir -p $@
@@ -173,9 +211,6 @@ perf_test_size = 100000
 
 # SQLite performance (rusqlite and sqlx)
 
-SQLITE_DB = ".relatable/relatable.db"
-PG_DB = "postgresql:///rltbl_db"
-
 .PHONY: test_caching_sqlite
 test_caching_sqlite: debug
 	target/debug/rltbl_test --database $(SQLITE_DB) --caching trigger -vv test-read-perf 100 100 10 5 --force
@@ -198,15 +233,15 @@ test_caching: test_caching_sqlite test_caching_postgres test_caching_memory
 .PHONY: test_perf_sqlite
 test_perf_sqlite: test/perf/tsv/penguin.tsv debug
 	target/debug/rltbl --database $(SQLITE_DB) init --force
-	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $< || \
+	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 .PHONY: test_perf_sqlx_sqlite
 test_perf_sqlx_sqlite: test/perf/tsv/penguin.tsv sqlx_debug
 	target/debug/rltbl --database $(SQLITE_DB) init --force
-	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $< || \
+	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 # Postgres performance (rusqlite and sqlx)
@@ -214,23 +249,26 @@ test_perf_sqlx_sqlite: test/perf/tsv/penguin.tsv sqlx_debug
 .PHONY: test_perf_sqlx_postgres
 test_perf_sqlx_postgres: test/perf/tsv/penguin.tsv sqlx_debug
 	target/debug/rltbl --database $(PG_DB) init --force
-	@echo "target/debug/rltbl --database $(PG_DB) -vv load table --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(PG_DB) -vv load table --force $< || \
+	@echo "target/debug/rltbl --database $(PG_DB) -vv load table --validate --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(PG_DB) -vv load table --validate --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 # Combined tests
 
 .PHONY: test_rusqlite
-test_rusqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc test_tesh_common_as_sqlite test_tesh_sqlite_only test_random_sqlite test_perf_sqlite test_caching_sqlite
+test_rusqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc test_round_trip_sqlite test_tesh_common_as_sqlite test_tesh_sqlite_only test_random_sqlite test_perf_sqlite test_caching_sqlite
 
 .PHONY: test_sqlx_sqlite
-test_sqlx_sqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc_sqlx test_tesh_sqlx_common_as_sqlite test_tesh_sqlx_sqlite_only test_random_sqlx_sqlite test_perf_sqlx_sqlite test_caching_sqlite test_caching_memory
+test_sqlx_sqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc_sqlx test_round_trip_sqlx_sqlite test_tesh_sqlx_common_as_sqlite test_tesh_sqlx_sqlite_only test_random_sqlx_sqlite test_perf_sqlx_sqlite test_caching_sqlite test_caching_memory
 
 .PHONY: test_sqlx_postgres
-test_sqlx_postgres: src/resources/main.js src/resources/main.css test_fmt_and_unittest_postgres test_tesh_doc_sqlx test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres test_caching_postgres
+test_sqlx_postgres: src/resources/main.js src/resources/main.css test_fmt_and_unittest_postgres test_tesh_doc_sqlx test_round_trip_sqlx_postgres test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres test_caching_postgres
 
 .PHONY: test
 test: test_rusqlite
+
+.PHONY: test_all
+test_all: test_rusqlite test_sqlx_postgres test_sqlx_sqlite
 
 # Test cleaning
 
@@ -249,31 +287,5 @@ clean_sqlite_test:
 .PHONY: clean_test
 clean_test: clean_postgres_test clean_sqlite_test
 	rm -Rf test/perf
-
-# Build a Linux binary using Musl instead of GCC.
-target/x86_64-unknown-linux-musl/release/rltbl: Cargo.toml src/*.rs src/templates/* src/resources/main.js src/resources/main.css
-	mv Cargo.toml Cargo.toml.bk
-	sed 's/"bundled", //' Cargo.toml.bk > Cargo.toml
-	docker pull --platform linux/amd64 clux/muslrust:stable
-	docker run \
-		--platform linux/amd64 \
-		-v cargo-cache:/root/.cargo/registry \
-		-v $$PWD:/volume \
-		--rm -t clux/muslrust:stable \
-		cargo build --release --all-features
-	mv Cargo.toml.bk Cargo.toml
-
-.PHONY: musl
-musl: target/x86_64-unknown-linux-musl/release/rltbl
-
-.PHONY: push
-push: target/x86_64-unknown-linux-musl/release/rltbl
-	scp $< dev:/var/www/tdt-demo/bin/
-
-.PHONY: pub
-pub: target/x86_64-unknown-linux-musl/release/rltbl
-	scp $< dev:/var/www/james.overton.ca/files/
-
-.PHONY: cebs
-cebs: target/x86_64-unknown-linux-musl/release/rltbl
-	scp $< dev:/home/knocean/cebs-ddd-dev/bin/
+	rm -Rf build/
+	rm -Rf test/round_trip/output

@@ -9,7 +9,7 @@ use rltbl::{
     select::{joined_query, Format, QueryParams, Select},
     sql,
     sql::{CachingStrategy, JsonRow},
-    table::Row,
+    table::{Row, Table},
 };
 use std::io::Write;
 
@@ -147,7 +147,7 @@ async fn get_table(
     if username.trim() != "" {
         init_user(&rltbl, &username).await;
     }
-    let select = Select::from_path_and_query(&path, &query_params);
+    let select = Select::from_path_and_query(&path, &query_params, &rltbl).await;
     let format = match Format::try_from(&path) {
         Ok(format) => format,
         Err(error) => return get_404(&error),
@@ -221,7 +221,7 @@ async fn get_tableset(
         Err(error) => return get_404(&error),
     };
 
-    let select = Select::from_path_and_query(&path, &query_params);
+    let select = Select::from_path_and_query(&path, &query_params, &rltbl).await;
     // tracing::info!("SELECT {select:?}",);
 
     if matches!(format, Format::ValueJson) {
@@ -252,8 +252,11 @@ async fn get_tableset(
         Err(error) => match error.downcast_ref() {
             Some(RelatableError::ConfigError(e)) => match e.as_str() {
                 "empty tableset" => {
-                    let mut table = rltbl.get_table(select.table_name.as_str()).await.unwrap();
-                    let columns = table.ensure_default_view_created(&rltbl).await.unwrap();
+                    let mut table = Table::get_table(select.table_name.as_str(), &rltbl)
+                        .await
+                        .unwrap();
+                    table.ensure_default_view_created(&rltbl).await.unwrap();
+                    let (columns, _) = table.collect_column_info(&rltbl).await.unwrap();
                     ResultSet {
                         select: select.clone(),
                         table,
@@ -406,7 +409,7 @@ async fn get_row_menu(
     tracing::info!("get_row_menu({table_name}, {row_id})");
     let username = get_username(session);
     let site = rltbl.get_site(&username).await;
-    let table = match rltbl.get_table(&table_name).await {
+    let table = match Table::get_table(&table_name, &rltbl).await {
         Ok(table) => table,
         Err(error) => return get_404(&error),
     };
@@ -449,7 +452,7 @@ async fn get_column_menu(
 ) -> Response<Body> {
     tracing::info!("get_column_menu({table_name}, {column})");
     let username = get_username(session);
-    let select = Select::from_path_and_query(&table_name, &query_params);
+    let select = Select::from_path_and_query(&table_name, &query_params, &rltbl).await;
     let mut operator = String::new();
     let mut value = json!("");
     let mut order = String::new();
@@ -486,7 +489,7 @@ async fn get_cell_menu(
     tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
     let username = get_username(session);
     let site = rltbl.get_site(&username).await;
-    let table = match rltbl.get_table(&table_name).await {
+    let table = match Table::get_table(&table_name, &rltbl).await {
         Ok(table) => table,
         Err(error) => return get_404(&error),
     };
