@@ -120,9 +120,10 @@ impl Select {
                 }
             }
 
-            if column.starts_with("_") {
-                // Metacolumns (which begin with an underscore) are always parsed as integers:
+            if ["_id", "_order", "_change_id"].contains(&column) {
                 try_parse_as_int(value)
+            } else if ["_history", "_message"].contains(&column) {
+                JsonValue::String(value.to_string())
             } else {
                 match datatype {
                     Some(datatype) if datatype == "integer" => try_parse_as_int(value),
@@ -1375,16 +1376,30 @@ impl Filter {
 
     pub fn to_url(&self) -> Result<String> {
         tracing::trace!("Filter::to_url()");
+
+        fn handle_string_value(token: &str) -> String {
+            let reserved = vec![':', ',', '.', '(', ')'];
+            if token.chars().all(char::is_numeric) || reserved.iter().any(|&c| token.contains(c)) {
+                if token.contains(char::is_whitespace) {
+                    format!("\"{}\"", token)
+                } else {
+                    token.to_string()
+                }
+            } else {
+                token.to_string()
+            }
+        }
+
         let (_, _, operator, value) = self.parts();
         let rhs = match &value {
             JsonValue::Null => "null".to_string(),
-            JsonValue::String(string) => format!("{string}"),
+            JsonValue::String(string) => handle_string_value(&string),
             JsonValue::Number(number) => format!("{number}"),
             JsonValue::Array(vector) => {
                 let mut list = vec![];
                 for item in vector {
                     match item {
-                        JsonValue::String(string) => list.push(string.to_string()),
+                        JsonValue::String(string) => list.push(handle_string_value(&string)),
                         JsonValue::Number(number) => list.push(number.to_string()),
                         _ => {
                             return Err(RelatableError::DataError(format!(
@@ -1838,10 +1853,10 @@ WHERE "sample_number" = {sql_param}"#
         );
         assert_eq!(params, vec![json!(5)]);
 
-        // A URL with a filter on a string column
-        let url = "http://example.com/penguin?penguin.study_name=eq.FAKE123&limit=1";
+        // A URL with a filter on a string column and a value with a space
+        let url = "http://example.com/penguin?penguin.study_name=eq.FAKE 123&limit=1";
         let query_params = from_value(json!({
-           "penguin.study_name": "eq.FAKE123",
+           "penguin.study_name": "eq.FAKE 123",
            "limit": "1",
         }))
         .unwrap();
@@ -1862,7 +1877,7 @@ ORDER BY "penguin"._order ASC
 LIMIT 1"#
             )
         );
-        assert_eq!(params, vec![json!("FAKE123")]);
+        assert_eq!(params, vec![json!("FAKE 123")]);
 
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -1873,7 +1888,7 @@ FROM "penguin"
 WHERE "penguin"."study_name" = {sql_param}"#
             )
         );
-        assert_eq!(params, vec![json!("FAKE123")]);
+        assert_eq!(params, vec![json!("FAKE 123")]);
 
         // A URL with an IS NULL filter
         let url = "http://example.com/penguin?penguin.study_name=is.null&limit=1";

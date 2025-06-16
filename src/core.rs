@@ -696,7 +696,7 @@ impl Relatable {
                             }
 
                             // Add the parameter for the value to the SQL insert statement:
-                            if cell.error_level() >= 2 || cell.value == JsonValue::Null {
+                            if cell.message_level() >= 2 || cell.value == JsonValue::Null {
                                 sql_params.push("NULL".to_string());
                             } else {
                                 sql_params.push(sql_param_gen.next());
@@ -1877,7 +1877,7 @@ impl Relatable {
 
                     // If the cell is invalid, insert a NULL instead of its actual value
                     let sql_value = {
-                        if cell.error_level() >= 2 {
+                        if cell.message_level() >= 2 {
                             JsonValue::Null
                         } else {
                             cell.value
@@ -2091,7 +2091,7 @@ impl Relatable {
         // Validate the row and add it to the table:
         new_row.validate(&table, &mut tx)?;
         for (_column, cell) in new_row.cells.iter_mut() {
-            if cell.error_level() >= 2 {
+            if cell.message_level() >= 2 {
                 cell.value = JsonValue::Null;
                 cell.text = "".to_string(); // Should it be "null" instead of blank?
             }

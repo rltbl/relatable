@@ -700,7 +700,7 @@ impl Row {
                 Some(ref dt) => dt.to_string(),
             };
             cell.validate(&column_details)?;
-            if cell.error_level() >= 2 {
+            if cell.message_level() >= 2 {
                 let mut sql_param_gen = SqlParam::new(&tx.kind());
                 let sql = format!(
                     r#"INSERT INTO "message"
@@ -841,7 +841,7 @@ impl Cell {
     /// Report the maximum [error level](Message::level) associated with this cell's
     /// [messages](Cell::messages), where 0 represents no error, 1 represents the presence of
     /// at least one warning message, and 2 represents the presence of at least one error message.
-    pub fn error_level(&self) -> usize {
+    pub fn message_level(&self) -> usize {
         let mut level = 0;
         for message in &self.messages {
             match message.level.as_str() {
