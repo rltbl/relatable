@@ -421,9 +421,12 @@ impl Relatable {
         select.view_name = table.view.clone();
 
         // Fetch the data
-        let (statement, params) = select.to_sql(&self.connection.kind())?;
-        let params = json!(params);
-        let json_rows = self.connection.query(&statement, Some(&params)).await?;
+        let (statement, parameters) = select.to_sql(&self.connection.kind())?;
+        let json_params = json!(parameters);
+        let json_rows = self
+            .connection
+            .query(&statement, Some(&json_params))
+            .await?;
         let count = json_rows.len();
         tracing::info!("Fetched {count} rows");
 
@@ -452,13 +455,15 @@ impl Relatable {
         let rows: Vec<Row> = json_rows.clone().vec_into();
         let total = self.count(&select).await?;
         Ok(ResultSet {
+            select: select.clone(),
+            statement,
+            parameters,
             range: Range {
                 count,
                 total,
                 start: select.offset + 1,
                 end: select.offset + count,
             },
-            select: select.clone(),
             table,
             columns,
             rows,
@@ -2946,6 +2951,8 @@ impl std::fmt::Display for Range {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResultSet {
     pub select: Select,
+    pub statement: String,
+    pub parameters: Vec<JsonValue>,
     pub range: Range,
     pub table: Table,
     pub columns: Vec<Column>,
