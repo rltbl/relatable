@@ -792,6 +792,7 @@ impl From<&JsonValue> for Cell {
             value: value.clone(),
             text: match value {
                 JsonValue::String(value) => value.to_string(),
+                JsonValue::Null => String::new(),
                 value => format!("{value}"),
             },
             messages: vec![],

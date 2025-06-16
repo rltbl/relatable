@@ -18,9 +18,9 @@ FAKE123     5              Pygoscelis adeliae  Torgersen  N5             45.8   
 FAKE123     6              Pygoscelis adeliae  Torgersen  N6             40.6           4875
 FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9           2129
 FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
-FAKE123     null           Pygoscelis adeliae  Biscoe     N9             38.6           2702
+FAKE123                    Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
-FAKE123     null           Pygoscelis adeliae  Biscoe     N11            35.4           2001
+FAKE123                    Pygoscelis adeliae  Biscoe     N11            35.4           2001
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |   value    | level |       rule       |      message
 ------------+----------+---------+-----+---------------+------------+-------+------------------+--------------------
@@ -41,9 +41,9 @@ FAKE123     5              Pygoscelis adeliae  Torgersen  N5             45.8   
 FAKE123     6              Pygoscelis adeliae  Torgersen  N6             40.6           4875
 FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9           2129
 FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
-FAKE123     null           Pygoscelis adeliae  Biscoe     N9             38.6           2702
+FAKE123                    Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
-FAKE123     null           Pygoscelis adeliae  Biscoe     N11            35.4           2001
+FAKE123                    Pygoscelis adeliae  Biscoe     N11            35.4           2001
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |       value        | level |       rule       |          message
 ------------+----------+---------+-----+---------------+--------------------+-------+------------------+----------------------------

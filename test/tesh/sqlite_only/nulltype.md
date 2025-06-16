@@ -17,8 +17,8 @@ FAKE123     6              Pygoscelis adeliae  Torgersen  N6             40.6   
 FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9           2129
 FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
 FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6           2702
-FAKE123     10             null                           N10            33.8           4697
-null        20             null                           null           null           null
+FAKE123     10                                            N10            33.8           4697
+            20                                                                              
 $ sqlite3 -header .relatable/relatable.db "select * from penguin where species is null and island = '' order by _order"
 _id|_order|study_name|sample_number|species|island|individual_id|culmen_length|body_mass
 10|10000|FAKE123|10|||N10|33.8|4697
