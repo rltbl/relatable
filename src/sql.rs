@@ -1436,7 +1436,7 @@ where
 }
 
 /// A JSON representation of a database row
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JsonRow {
     pub content: JsonMap<String, JsonValue>,
 }

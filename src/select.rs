@@ -3,7 +3,7 @@
 //! This is [relatable](crate) (rltbl::[select](crate::select)).
 
 use crate::{
-    core::{Page, Relatable, RelatableError, DEFAULT_LIMIT},
+    core::{Page, Relatable, RelatableError, Tab, DEFAULT_LIMIT},
     sql::{self, DbKind, SqlParam},
     table::Table,
 };
@@ -13,7 +13,7 @@ use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value, Value as JsonValue};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 /// Represents a SELECT statement.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -900,6 +900,11 @@ impl Select {
         // The WHERE clause:
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
+            let mut filter = filter.clone();
+            let (t, _, _, _) = filter.parts();
+            if self.view_name != "" && t == self.table_name {
+                filter.set_table(&self.view_name);
+            }
             let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
             lines.push(format!("{keyword} {filter_sql}"));
             params.append(&mut filter_params);
@@ -938,6 +943,11 @@ impl Select {
         }
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
+            let mut filter = filter.clone();
+            let (t, _, _, _) = filter.parts();
+            if self.view_name != "" && t == self.table_name {
+                filter.set_table(&self.view_name);
+            }
             let (s, p) = filter.to_sql_count(kind)?;
             lines.push(format!("{keyword} {s}"));
             params.append(&mut p.clone());
@@ -1050,7 +1060,7 @@ impl Select {
         }
     }
 
-    pub fn to_page(&self, root: &str, path: &str) -> Result<Page> {
+    pub fn to_page(&self, root: &str, path: &str, tabs: &Vec<String>) -> Result<Page> {
         tracing::trace!("Select::to_page({root}, {path})");
         let base = format!("{root}/{path}");
         let mut formats = IndexMap::new();
@@ -1062,9 +1072,26 @@ impl Select {
             "JSON (Pretty)".to_string(),
             self.to_url(&base, &Format::PrettyJson)?,
         );
+        let tabs = tabs
+            .iter()
+            .map(|t| {
+                let mut s = self.clone();
+                s.table_name = t.clone();
+                let mut c = s.clone();
+                c.select_expression("count()", "count");
+                Tab {
+                    table: t.clone(),
+                    active: (t.as_str() == self.table_name),
+                    url: s.to_url(&base, &Format::Default).unwrap(),
+                    count: c.to_url(&base, &Format::ValueJson).unwrap(),
+                }
+            })
+            .collect();
+
         Ok(Page {
             path: path.to_string(),
             formats,
+            tabs,
         })
     }
 }
@@ -1671,6 +1698,7 @@ pub enum Format {
     Csv,
     Tsv,
     Json,
+    ValueJson,
     PrettyJson,
     Default,
 }
@@ -1683,6 +1711,7 @@ impl std::fmt::Display for Format {
             Format::Csv => ".csv",
             Format::Tsv => ".tsv",
             Format::Json => ".json",
+            Format::ValueJson => ".value.json",
             Format::PrettyJson => ".pretty.json",
             Format::Default => "",
         };
@@ -1696,6 +1725,8 @@ impl TryFrom<&String> for Format {
         let path = path.to_lowercase();
         let format = if path.ends_with(".pretty.json") {
             Format::PrettyJson
+        } else if path.ends_with(".value.json") {
+            Format::ValueJson
         } else if path.ends_with(".json") {
             Format::Json
         } else if path.ends_with(".csv") {
@@ -1763,6 +1794,115 @@ pub fn render_values(
         };
     }
     Ok((format!("({})", sql_params.join(", ")), values))
+}
+
+pub async fn joined_query(
+    rltbl: &Relatable,
+    tableset_name: &str,
+    select: &Select,
+) -> Result<Select> {
+    let tables = select.get_tables();
+    if tables.len() == 1 {
+        return Ok(select.clone());
+    }
+
+    let tables: Vec<JsonValue> = tables.into_iter().map(|x| json!(x)).collect();
+    let mut sql_param = sql::SqlParam::new(&rltbl.connection.kind());
+    let (value_string, value_list) = render_values(&tables, &mut sql_param).unwrap();
+
+    let sql = format!(
+        r#"WITH RECURSIVE ancestors(_order, left_table, left_column, right_table, right_column) AS (
+      SELECT _order, left_table, left_column, right_table, right_column
+      FROM tableset
+      WHERE right_table IN {value_string}
+      UNION
+      SELECT t._order, t.left_table, t.left_column, t.right_table, t.right_column
+      FROM ancestors AS a
+      JOIN tableset AS t ON a.left_table = t.right_table
+      WHERE t.tableset = '{tableset_name}'
+    )
+    SELECT *
+    FROM ancestors
+    WHERE _order >= (SELECT MIN(_order) FROM ancestors WHERE left_table IN {value_string})
+      AND _order <= (SELECT MAX(_order) FROM ancestors WHERE right_table IN {value_string})
+    ORDER BY _order"#
+    );
+    tracing::info!("SQL {sql}");
+    let mut three_value_lists = value_list.clone();
+    three_value_lists.extend(value_list.clone());
+    three_value_lists.extend(value_list.clone());
+    let params = json!(three_value_lists);
+    tracing::info!("PARAMS {params:?}");
+    let json_rows = rltbl.connection.query(&sql, Some(&params)).await?;
+    tracing::info!(
+        "TABLESET {} {json_rows:?}",
+        select.to_url("", &Format::Default)?
+    );
+    println!(
+        "TABLESET {} {json_rows:?}",
+        select.to_url("", &Format::Default)?
+    );
+    if json_rows.len() == 0 {
+        return Err(RelatableError::ConfigError(format!("empty tableset")).into());
+    }
+
+    let limit = select.limit;
+    let mut inner = select.clone();
+    inner.select = vec![];
+    let table_name = inner.table_name.clone();
+
+    let pkey = "_id".to_string();
+    inner.select_table_column(&table_name, &pkey);
+
+    // Find the primary key for this table.
+    // let mut pkey = String::new();
+    // for json_row in json_rows.clone() {
+    //     if table_name == json_row.get_string("left_table").unwrap() {
+    //         pkey = json_row.get_string("left_column").unwrap();
+    //         inner.select_table_column(&table_name, &pkey);
+    //         // println!("FOUND PKEY in {json_row:?}");
+    //     }
+    // }
+    // if table_name == json_rows.last().unwrap().get_string("right_table").unwrap() {
+    // }
+    //     inner.order_by(&pkey);
+    // } else {
+    //     inner.limit = 0;
+    // }
+    inner.order_by = vec![];
+    inner.limit = 0;
+    let json_row = json_rows.first().unwrap();
+    inner.table_name = json_row.get_string("left_table").unwrap();
+    let mut joined = HashSet::new();
+    for json_row in json_rows.iter() {
+        let left_table = json_row.get_string("left_table").unwrap();
+        let right_table = json_row.get_string("right_table").unwrap();
+        if &left_table == "" || &right_table == "" {
+            continue;
+        }
+        if joined.contains(&right_table) {
+            continue;
+        }
+        joined.insert(right_table.clone());
+        inner.left_join(
+            &left_table,
+            &json_row.get_string("left_column").unwrap(),
+            &right_table,
+            &json_row.get_string("right_column").unwrap(),
+        );
+    }
+    let (sql, params) = inner.to_sql(&rltbl.connection.kind()).unwrap();
+    tracing::warn!("SQL {sql} PARAMS {params:?}");
+    Ok(Select {
+        table_name,
+        filters: vec![Filter::InSubquery {
+            table: String::new(),
+            column: pkey.clone(),
+            subquery: inner.clone(),
+        }],
+        limit,
+        ..Default::default()
+    })
 }
 
 // Tests
@@ -2927,5 +3067,313 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
             );
             assert_eq!(params, vec![json!(1), json!(2)]);
         }
+    }
+
+    #[test]
+    fn test_tablesets() {
+        let rltbl = block_on(Relatable::init(
+            &true,
+            Some("build/test_tablesets.db"),
+            &CachingStrategy::None,
+        ))
+        .unwrap();
+        let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
+        let base = "http://example.com/combined";
+        let empty: Vec<JsonValue> = vec![];
+
+        // Create five tables:
+        //   / B \
+        // A       B2C - D
+        //   \ C /
+        let insert_sql = r#"INSERT INTO "table"("table") VALUES
+('A'), ('B'), ('C'), ('B2C'), ('D')"#;
+        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+
+        let drop_sql = r#"DROP TABLE IF EXISTS "A""#;
+        let create_sql = r#"CREATE TABLE "A" (
+    _id INTEGER,
+    _order INTEGER,
+    "a" TEXT PRIMARY KEY
+)"#;
+        let insert_sql = r#"INSERT INTO "A" VALUES
+(1, 1000, '1'),
+(2, 2000, '2'),
+(3, 3000, '3')"#;
+        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
+        block_on(rltbl.connection.query(create_sql, None)).unwrap();
+        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+
+        let drop_sql = r#"DROP TABLE IF EXISTS "B""#;
+        let create_sql = r#"CREATE TABLE "B" (
+    _id INTEGER,
+    _order INTEGER,
+    "a" TEXT,
+    "b" TEXT PRIMARY KEY
+)"#;
+        let insert_sql = r#"INSERT INTO "B" VALUES
+(1, 1000, '1', 'i'),
+(2, 2000, '2', 'ii'),
+(3, 3000, '3', 'iii')"#;
+        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
+        block_on(rltbl.connection.query(create_sql, None)).unwrap();
+        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+
+        let drop_sql = r#"DROP TABLE IF EXISTS "C""#;
+        let create_sql = r#"CREATE TABLE "C" (
+    _id INTEGER,
+    _order INTEGER,
+    "a" TEXT,
+    "c" TEXT PRIMARY KEY
+)"#;
+        let insert_sql = r#"INSERT INTO "C" VALUES
+(1, 1000, '1', 'x'),
+(2, 2000, '2', 'y'),
+(3, 3000, '3', 'z')"#;
+        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
+        block_on(rltbl.connection.query(create_sql, None)).unwrap();
+        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+
+        let drop_sql = r#"DROP TABLE IF EXISTS "B2C""#;
+        let create_sql = r#"CREATE TABLE "B2C" (
+    _id INTEGER,
+    _order INTEGER,
+    "b" TEXT,
+    "c" TEXT
+)"#;
+        let insert_sql = r#"INSERT INTO "B2C" VALUES
+(1, 1000, 'i', 'x'),
+(2, 2000, 'ii', 'y'),
+(3, 3000, 'iii', 'z')"#;
+        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
+        block_on(rltbl.connection.query(create_sql, None)).unwrap();
+        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+
+        let drop_sql = r#"DROP TABLE IF EXISTS "D""#;
+        let create_sql = r#"CREATE TABLE "D" (
+    _id INTEGER,
+    _order INTEGER,
+    "b" TEXT,
+    "d" TEXT PRIMARY KEY
+)"#;
+        let insert_sql = r#"INSERT INTO "D" VALUES
+(1, 1000, 'i', 'a'),
+(2, 2000, 'ii', 'b'),
+(3, 3000, 'iii', 'c')"#;
+        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
+        block_on(rltbl.connection.query(create_sql, None)).unwrap();
+        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+
+        // Create the tablset table.
+        let drop_sql = r#"DROP TABLE IF EXISTS "tableset""#;
+        let create_sql = r#"CREATE TABLE tableset (
+              _id INTEGER PRIMARY KEY AUTOINCREMENT,
+              _order INTEGER UNIQUE,
+              tableset TEXT,
+              left_table TEXT,
+              left_column TEXT,
+              right_table TEXT,
+              right_column TEXT
+            )"#;
+        let insert_sql = r#"INSERT INTO "tableset" VALUES
+              (1, 1000, 'combined', NULL, NULL, 'A', 'a'),
+              (2, 2000, 'combined', 'A', 'a', 'B', 'a'),
+              (3, 3000, 'combined', 'A', 'a', 'C', 'a'),
+              (4, 4000, 'combined', 'B', 'b', 'B2C', 'b'),
+              (5, 5000, 'combined', 'C', 'c', 'B2C', 'c'),
+              (7, 7000, 'combined', 'B', 'b', 'D', 'b')
+            "#;
+        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
+        block_on(rltbl.connection.query(create_sql, None)).unwrap();
+        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+
+        // Just query for the B table.
+        let url = "http://example.com/combined/B";
+        let query_params = from_value(json!({})).unwrap();
+        let inner = block_on(Select::from_path_and_query("B", &query_params, &rltbl));
+        let select = block_on(joined_query(&rltbl, "combined", &inner)).unwrap();
+        assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT *
+FROM "B"
+ORDER BY "B"._order ASC
+LIMIT 100"#
+        );
+        assert_eq!(params, empty);
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT COUNT(1) AS "count"
+FROM "B""#
+        );
+        assert_eq!(params, empty);
+        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+
+        // Filter the B table by one of its own columns.
+        let url = "http://example.com/combined/B?B.b=eq.i";
+        let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
+        let inner = block_on(Select::from_path_and_query("B", &query_params, &rltbl));
+
+        let select = block_on(joined_query(&rltbl, "combined", &inner)).unwrap();
+        assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT *
+FROM "B"
+WHERE "B"."b" = ?
+ORDER BY "B"._order ASC
+LIMIT 100"#
+        );
+        assert_eq!(params, vec![json!("i")]);
+        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            r#"SELECT COUNT(1) AS "count"
+FROM "B"
+WHERE "B"."b" = ?"#
+        );
+        assert_eq!(params, vec![json!("i")]);
+        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+
+        // Filter the A table by one of the columns from B.
+        let url = "http://example.com/combined/A?B.b=eq.i";
+        let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
+        let inner = block_on(Select::from_path_and_query("A", &query_params, &rltbl));
+        let select = block_on(joined_query(&rltbl, "combined", &inner)).unwrap();
+        assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT *
+FROM "A"
+WHERE "_id" IN (
+  SELECT
+    "A"."_id"
+  FROM "A"
+  LEFT JOIN "B" ON "A"."a" = "B"."a"
+  WHERE "B"."b" = {sql_param}
+)
+ORDER BY "A"._order ASC
+LIMIT 100"#
+            )
+        );
+        assert_eq!(params, vec![json!("i")]);
+        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "A"
+WHERE "_id" IN (
+  SELECT
+    "A"."_id"
+  FROM "A"
+  LEFT JOIN "B" ON "A"."a" = "B"."a"
+  WHERE "B"."b" = {sql_param}
+)"#
+            )
+        );
+        assert_eq!(params, vec![json!("i")]);
+        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+
+        // Filter the B2C table by one of the columns from B.
+        let url = "http://example.com/combined/B2C?B.b=eq.i";
+        let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
+        let inner = block_on(Select::from_path_and_query("B2C", &query_params, &rltbl));
+        let select = block_on(joined_query(&rltbl, "combined", &inner)).unwrap();
+        assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT *
+FROM "B2C"
+WHERE "_id" IN (
+  SELECT
+    "B2C"."_id"
+  FROM "B"
+  LEFT JOIN "B2C" ON "B"."b" = "B2C"."b"
+  WHERE "B"."b" = {sql_param}
+)
+ORDER BY "B2C"._order ASC
+LIMIT 100"#
+            )
+        );
+        assert_eq!(params, vec![json!("i")]);
+        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "B2C"
+WHERE "_id" IN (
+  SELECT
+    "B2C"."_id"
+  FROM "B"
+  LEFT JOIN "B2C" ON "B"."b" = "B2C"."b"
+  WHERE "B"."b" = {sql_param}
+)"#
+            )
+        );
+        assert_eq!(params, vec![json!("i")]);
+        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+
+        // Filter the D table by one of the columns from B.
+        let url = "http://example.com/combined/D?B.b=eq.i";
+        let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
+        let inner = block_on(Select::from_path_and_query("D", &query_params, &rltbl));
+        let select = block_on(joined_query(&rltbl, "combined", &inner)).unwrap();
+        assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT *
+FROM "D"
+WHERE "_id" IN (
+  SELECT
+    "D"."_id"
+  FROM "B"
+  LEFT JOIN "D" ON "B"."b" = "D"."b"
+  WHERE "B"."b" = {sql_param}
+)
+ORDER BY "D"._order ASC
+LIMIT 100"#
+            )
+        );
+        assert_eq!(params, vec![json!("i")]);
+        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "D"
+WHERE "_id" IN (
+  SELECT
+    "D"."_id"
+  FROM "B"
+  LEFT JOIN "D" ON "B"."b" = "D"."b"
+  WHERE "B"."b" = {sql_param}
+)"#
+            )
+        );
+        assert_eq!(params, vec![json!("i")]);
+        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+
+        // Filter the C table by one of the columns from B,
+        // This should cause joined_query() to return an error.
+        // let url = "http://example.com/combined/C?B.b=eq.i";
+        let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
+        let inner = block_on(Select::from_path_and_query("C", &query_params, &rltbl));
+        let select = block_on(joined_query(&rltbl, "combined", &inner));
+        assert_eq!(select.is_err(), true);
     }
 }

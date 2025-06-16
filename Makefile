@@ -35,7 +35,9 @@ sqlx_release:
 rusqlite: rusqlite_debug
 
 .PHONY: rusqlite_debug
-rusqlite_debug:
+rusqlite_debug: target/debug/rltbl
+
+target/debug/rltbl: src/resources/main.js src/resources/main.css
 	cargo build
 
 .PHONY: rusqlite_release
