@@ -622,30 +622,6 @@ impl DbTransaction<'_> {
 // Database-specific utilities and functions
 ///////////////////////////////////////////////////////////////////////////////
 
-/// Query the database for what the id of the next created row of the given table will be
-pub fn get_next_id(table: &str, tx: &mut DbTransaction<'_>) -> Result<usize> {
-    tracing::trace!("get_next_id({table:?}, tx)");
-    let current_row_id = match tx.kind() {
-        DbKind::Sqlite => {
-            let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
-            let params = json!([table]);
-            tx.query_value(sql, Some(&params))?
-        }
-        DbKind::Postgres => {
-            let sql = format!(
-                // Note that in the case of postgres an _id column is required.
-                r#"SELECT last_value FROM "{table}__id_seq""#
-            );
-            tx.query_value(&sql, None)?
-        }
-    };
-    let current_row_id = match current_row_id {
-        Some(value) => value.as_u64().unwrap_or_default() as usize,
-        None => 0,
-    };
-    Ok(current_row_id + 1)
-}
-
 /// Helper function to determine whether the given name is 'simple', as defined by
 /// [DB_OBJECT_MATCH_STR]
 pub fn is_simple(db_object_name: &str) -> Result<(), String> {
