@@ -8,7 +8,7 @@
 use crate as rltbl;
 use rltbl::{
     core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
-    table::{Column, Table},
+    table::{Column, ColumnDatatype, Table},
 };
 
 use anyhow::Result;
@@ -656,14 +656,14 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
 }
 
 /// Return the SQL type corresponding to the given datatype
-pub fn get_sql_type(datatype: &Option<String>) -> Result<&str> {
-    match datatype {
-        None => Ok("TEXT"),
-        Some(datatype) if ["text", ""].contains(&datatype.to_lowercase().as_str()) => Ok("TEXT"),
-        Some(datatype) if datatype.to_lowercase() == "integer" => Ok("INTEGER"),
-        Some(unsupported) => {
+pub fn get_sql_type(datatype: &ColumnDatatype) -> Result<&str> {
+    match datatype.name.as_str() {
+        "text" => Ok("TEXT"),
+        "integer" => Ok("INTEGER"),
+        "real" => Ok("REAL"),
+        unsupported => {
             return Err(RelatableError::InputError(format!(
-                "Unsupported datatype: '{unsupported}'"
+                "Unsupported datatype: '{unsupported}'",
             ))
             .into());
         }
@@ -968,16 +968,15 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
 /// Generate the DDL for creating the default view on the given table,
 pub(crate) fn generate_default_view_ddl(
     table_name: &str,
-    view_name: &str,
     id_col: &str,
     order_col: &str,
     columns: &Vec<Column>,
     kind: &DbKind,
 ) -> Vec<String> {
     tracing::trace!(
-        "generate_default_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, \
-         {kind:?})"
+        "generate_default_view_ddl({table_name}, {id_col}, {order_col}, {columns:?}, {kind:?})"
     );
+    let view_name = format!("{table_name}_default_view");
     // Note that '?' parameters are not allowed in views so we must hard code them:
     match kind {
         DbKind::Sqlite => vec![
@@ -1066,17 +1065,15 @@ pub(crate) fn generate_default_view_ddl(
 /// Generate the DDL for creating the text view on the given table,
 pub(crate) fn generate_text_view_ddl(
     table_name: &str,
-    view_name: &str,
     id_col: &str,
     order_col: &str,
     columns: &Vec<Column>,
     kind: &DbKind,
 ) -> Vec<String> {
     tracing::trace!(
-        "generate_text_view_ddl({table_name}, {view_name}, {id_col}, {order_col}, {columns:?}, \
-         {kind:?})"
+        "generate_text_view_ddl({table_name}, {id_col}, {order_col}, {columns:?}, {kind:?})"
     );
-
+    let view_name = format!("{table_name}_text_view");
     // Note that '?' parameters are not allowed in views so we must hard code them:
     let mut inner_columns = columns
         .iter()
@@ -1097,11 +1094,7 @@ pub(crate) fn generate_text_view_ddl(
                 column = column.name,
                 is_clause = is_clause(kind),
                 column_cast = {
-                    let datatype = match &column.datatype {
-                        None => "text".to_string(),
-                        Some(datatype) if datatype == "" => "text".to_string(),
-                        Some(datatype) => datatype.to_lowercase(),
-                    };
+                    let datatype = column.datatype.name.to_string();
                     if *kind == DbKind::Sqlite {
                         if datatype.as_str() == "text" {
                             format!(r#""{}""#, column.name)
@@ -1395,19 +1388,19 @@ pub fn json_to_string(value: &JsonValue) -> String {
 }
 
 /// Convert the given JSON value to an unsigned integer
-pub fn json_to_unsigned(value: &JsonValue) -> Result<usize> {
+pub fn json_to_unsigned(value: &JsonValue) -> Result<u64> {
     match value {
         JsonValue::Bool(flag) => match flag {
             true => Ok(1),
             false => Ok(0),
         },
         JsonValue::Number(value) => match value.as_u64() {
-            Some(unsigned) => Ok(unsigned as usize),
+            Some(unsigned) => Ok(unsigned as u64),
             None => Err(
                 RelatableError::InputError(format!("{value} is not an unsigned integer")).into(),
             ),
         },
-        JsonValue::String(value_str) => match value_str.parse::<usize>() {
+        JsonValue::String(value_str) => match value_str.parse::<u64>() {
             Ok(unsigned) => Ok(unsigned),
             Err(err) => Err(RelatableError::InputError(format!(
                 "{value} could not be parsed as an unsigned integer: {err}"
@@ -1510,9 +1503,9 @@ impl JsonRow {
         }
     }
 
-    /// Get the value of the given column fromt he row and convert it to an unsigned integer
+    /// Get the value of the given column from the row and convert it to an unsigned integer
     /// before returning it
-    pub fn get_unsigned(&self, column_name: &str) -> Result<usize> {
+    pub fn get_unsigned(&self, column_name: &str) -> Result<u64> {
         let value = self.content.get(column_name);
         match value {
             Some(value) => json_to_unsigned(&value),
@@ -1582,9 +1575,9 @@ impl TryFrom<sqlx::any::AnyRow> for JsonRow {
     fn try_from(row: sqlx::any::AnyRow) -> Result<Self> {
         let mut content = JsonMap::new();
         for column in row.columns() {
-            // I had problems getting a type for columns that are not in the schema,
+            // We had problems getting a type for columns that are not in the schema,
             // e.g. "SELECT COUNT() AS count".
-            // So now I start with Null and try INTEGER, NUMBER, STRING, BOOL.
+            // So now we start with Null and try INTEGER, NUMERIC, REAL, STRING, BOOL.
             let mut value: JsonValue = JsonValue::Null;
             if value.is_null() {
                 let x: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
@@ -1594,6 +1587,12 @@ impl TryFrom<sqlx::any::AnyRow> for JsonRow {
             }
             if value.is_null() {
                 let x: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
+                if let Ok(x) = x {
+                    value = JsonValue::from(x);
+                }
+            }
+            if value.is_null() {
+                let x: Result<f32, sqlx::Error> = row.try_get(column.ordinal());
                 if let Ok(x) = x {
                     value = JsonValue::from(x);
                 }

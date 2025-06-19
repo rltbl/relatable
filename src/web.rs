@@ -404,7 +404,7 @@ async fn post_cursor(
 async fn get_row_menu(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table_name, row_id)): Path<(String, usize)>,
+    Path((table_name, row_id)): Path<(String, u64)>,
 ) -> Response<Body> {
     tracing::info!("get_row_menu({table_name}, {row_id})");
     let username = get_username(session);
@@ -417,8 +417,8 @@ async fn get_row_menu(
         .connection
         .query_one(
             &format!(
-                r#"SELECT * FROM "{}" WHERE _id = {sql_param}"#,
-                table.view,
+                r#"SELECT * FROM "{}_default_view" WHERE _id = {sql_param}"#,
+                table.name,
                 sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
             ),
             Some(&json!([row_id])),
@@ -484,7 +484,7 @@ async fn get_column_menu(
 async fn get_cell_menu(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table_name, row_id, column)): Path<(String, usize, String)>,
+    Path((table_name, row_id, column)): Path<(String, u64, String)>,
 ) -> Response<Body> {
     tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
     let username = get_username(session);
@@ -497,8 +497,8 @@ async fn get_cell_menu(
         .connection
         .query_one(
             &format!(
-                r#"SELECT * FROM "{}" WHERE _id = {sql_param}"#,
-                table.view,
+                r#"SELECT * FROM "{}_default_view" WHERE _id = {sql_param}"#,
+                table.name,
                 sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
             ),
             Some(&json!([row_id])),
@@ -530,7 +530,7 @@ async fn get_cell_menu(
 
 async fn get_cell_options(
     State(rltbl): State<Arc<Relatable>>,
-    Path((table, row_id, column)): Path<(String, usize, String)>,
+    Path((table, row_id, column)): Path<(String, u64, String)>,
     Query(query_params): Query<QueryParams>,
 ) -> Response<Body> {
     tracing::info!("get_cell_option({table}, {row_id}, {column}, {query_params:?})");
@@ -560,7 +560,7 @@ async fn get_cell_options(
     Json(json!(values)).into_response()
 }
 
-async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &usize) -> usize {
+async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &u64) -> u64 {
     let sql = format!(
         r#"SELECT "_id", MAX("_order") FROM "{table}"
         WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = {sql_param})"#,
@@ -574,13 +574,13 @@ async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &usize) -> usiz
         .unwrap_or(Some(json!(0)))
         .unwrap_or(json!(0))
         .as_u64()
-        .unwrap_or_default() as usize
+        .unwrap_or_default() as u64
 }
 
 async fn add_row_before(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table, row_id)): Path<(String, usize)>,
+    Path((table, row_id)): Path<(String, u64)>,
 ) -> Response<Body> {
     tracing::info!("add_row_before({table}, {row_id})");
     let username = get_username(session);
@@ -591,7 +591,7 @@ async fn add_row_before(
 async fn add_row_after(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table, row_id)): Path<(String, usize)>,
+    Path((table, row_id)): Path<(String, u64)>,
 ) -> Response<Body> {
     tracing::info!("add_row_after({table}, {row_id})");
     let username = get_username(session);
@@ -612,7 +612,7 @@ async fn add_row(
     rltbl: &Relatable,
     username: &str,
     table: &str,
-    after_id: Option<usize>,
+    after_id: Option<u64>,
 ) -> Response<Body> {
     if rltbl.readonly {
         return forbid().into();
@@ -655,7 +655,7 @@ async fn add_row(
 async fn delete_row(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table, row_id)): Path<(String, usize)>,
+    Path((table, row_id)): Path<(String, u64)>,
 ) -> Response<Body> {
     tracing::info!("add_row_after({table}, {row_id})");
     if rltbl.readonly {

@@ -111,10 +111,20 @@ impl Select {
 
         fn value_as_type(datatype: &Option<String>, column: &str, value: &str) -> JsonValue {
             fn try_parse_as_int(value: &str) -> JsonValue {
-                match value.parse::<isize>() {
+                match value.parse::<i64>() {
                     Ok(signed) => json!(signed),
                     _ => {
                         tracing::warn!("Could not parse {value} as integer. Treating as string");
+                        JsonValue::String(value.to_string())
+                    }
+                }
+            }
+
+            fn try_parse_as_real(value: &str) -> JsonValue {
+                match value.parse::<f32>() {
+                    Ok(signed) => json!(signed),
+                    _ => {
+                        tracing::warn!("Could not parse {value} as real. Treating as string");
                         JsonValue::String(value.to_string())
                     }
                 }
@@ -127,6 +137,7 @@ impl Select {
             } else {
                 match datatype {
                     Some(datatype) if datatype == "integer" => try_parse_as_int(value),
+                    Some(datatype) if datatype == "real" => try_parse_as_real(value),
                     Some(datatype) if datatype == "text" => JsonValue::String(value.to_string()),
                     Some(datatype) => {
                         tracing::warn!(
@@ -495,9 +506,12 @@ impl Select {
                 }
             }
 
-            match value.parse::<isize>() {
+            match value.parse::<i64>() {
                 Ok(signed) => Ok(json!(signed)),
-                _ => maybe_quote(value),
+                _ => match value.parse::<f64>() {
+                    Ok(float) => Ok(json!(float)),
+                    _ => maybe_quote(value),
+                },
             }
         }
 
@@ -1955,7 +1969,7 @@ FROM "penguin""#
         );
         assert_eq!(params, empty);
 
-        // A URL with a filter on a numeric column:
+        // A URL with a filter on an integer column:
         let url = "http://example.com/penguin.json?sample_number=eq.5&limit=1&offset=2";
         let query_params = from_value(json!({
            "sample_number": "eq.5",
@@ -1992,6 +2006,8 @@ WHERE "sample_number" = {sql_param}"#
             )
         );
         assert_eq!(params, vec![json!(5)]);
+
+        // TODO: Add a test for a URL with a filter on a real column
 
         // A URL with a filter on a string column and a value with a space
         let url = "http://example.com/penguin?penguin.study_name=eq.FAKE 123&limit=1";
@@ -2188,7 +2204,7 @@ WHERE "penguin"."sample_number" NOT IN ({sql_param_1}, {sql_param_2})"#
         );
         assert_eq!(params, vec![json!(123), json!(345)]);
 
-        // A URL with a filter on a string column and a value that looks like a number (eq):
+        // A URL with a filter on a string column and a value that looks like an integer (eq):
         let url = "http://example.com/penguin?penguin.study_name=eq.123&limit=1";
         let query_params = from_value(json!({
            "penguin.study_name": "eq.123",
@@ -2225,7 +2241,44 @@ WHERE "penguin"."study_name" = {sql_param}"#
         );
         assert_eq!(params, vec![json!("123")]);
 
-        // A URL with a filter on a string column and a value that looks like a number (not_eq):
+        // A URL with a filter on a string column and a value that looks like a real (eq):
+        let url = "http://example.com/penguin?penguin.study_name=eq.123.345&limit=1";
+        let query_params = from_value(json!({
+           "penguin.study_name": "eq.123.345",
+           "limit": "1",
+        }))
+        .unwrap();
+        let select = block_on(Select::from_path_and_query(
+            "penguin",
+            &query_params,
+            &rltbl,
+        ));
+        assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
+
+        let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT *
+FROM "penguin"
+WHERE "penguin"."study_name" = {sql_param}
+ORDER BY "penguin"._order ASC
+LIMIT 1"#
+            )
+        );
+        assert_eq!(params, vec![json!("123.345")]);
+        let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
+        assert_eq!(
+            sql,
+            format!(
+                r#"SELECT COUNT(1) AS "count"
+FROM "penguin"
+WHERE "penguin"."study_name" = {sql_param}"#
+            )
+        );
+        assert_eq!(params, vec![json!("123.345")]);
+
+        // A URL with a filter on a string column and a value that looks like an integer (not_eq):
         let url = "http://example.com/penguin?penguin.study_name=not_eq.123&limit=1";
         let query_params = from_value(json!({
            "penguin.study_name": "not_eq.123",
@@ -2262,7 +2315,7 @@ WHERE "penguin"."study_name" <> {sql_param}"#
         );
         assert_eq!(params, vec![json!("123")]);
 
-        // A URL with a filter on a string column and a value that looks like a number (like):
+        // A URL with a filter on a string column and a value that looks like an integer (like):
         let url = "http://example.com/penguin?penguin.study_name=like.123&limit=1";
         let query_params = from_value(json!({
            "penguin.study_name": "like.123",
@@ -2299,7 +2352,7 @@ WHERE "penguin"."study_name" LIKE {sql_param}"#
         );
         assert_eq!(params, vec![json!("123")]);
 
-        // A URL with a filter on a string column and a value that looks like a number (gt):
+        // A URL with a filter on a string column and a value that looks like an integer (gt):
         let url = "http://example.com/penguin?penguin.study_name=gt.123&limit=1";
         let query_params = from_value(json!({
            "penguin.study_name": "gt.123",
@@ -2336,7 +2389,7 @@ WHERE "penguin"."study_name" > {sql_param}"#
         );
         assert_eq!(params, vec![json!("123")]);
 
-        // A URL with a filter on a string column and a value that looks like a number (gte):
+        // A URL with a filter on a string column and a value that looks like an integer (gte):
         let url = "http://example.com/penguin?penguin.study_name=gte.123&limit=1";
         let query_params = from_value(json!({
            "penguin.study_name": "gte.123",
@@ -2373,7 +2426,7 @@ WHERE "penguin"."study_name" >= {sql_param}"#
         );
         assert_eq!(params, vec![json!("123")]);
 
-        // A URL with a filter on a string column and a value that looks like a number (lt):
+        // A URL with a filter on a string column and a value that looks like an integer (lt):
         let url = "http://example.com/penguin?penguin.study_name=lt.123&limit=1";
         let query_params = from_value(json!({
            "penguin.study_name": "lt.123",
@@ -2410,7 +2463,7 @@ WHERE "penguin"."study_name" < {sql_param}"#
         );
         assert_eq!(params, vec![json!("123")]);
 
-        // A URL with a filter on a string column and a value that looks like a number (gte):
+        // A URL with a filter on a string column and a value that looks like an integer (gte):
         let url = "http://example.com/penguin?penguin.study_name=lte.123&limit=1";
         let query_params = from_value(json!({
            "penguin.study_name": "lte.123",
@@ -2447,7 +2500,7 @@ WHERE "penguin"."study_name" <= {sql_param}"#
         );
         assert_eq!(params, vec![json!("123")]);
 
-        // A URL with a filter on a string column and a value that looks like a number (is):
+        // A URL with a filter on a string column and a value that looks like an integer (is):
         let url = "http://example.com/penguin?penguin.study_name=is.123&limit=1";
         let query_params = from_value(json!({
            "penguin.study_name": "is.123",
@@ -2486,7 +2539,7 @@ WHERE "penguin"."study_name" {is_clause} {sql_param}"#,
         );
         assert_eq!(params, vec![json!("123")]);
 
-        // A URL with a filter on a string column and a value that looks like a number (is_not):
+        // A URL with a filter on a string column and a value that looks like an integer (is_not):
         let url = "http://example.com/penguin?penguin.study_name=is_not.123&limit=1";
         let query_params = from_value(json!({
            "penguin.study_name": "is_not.123",
@@ -2525,7 +2578,7 @@ WHERE "penguin"."study_name" {is_not_clause} {sql_param}"#,
         );
         assert_eq!(params, vec![json!("123")]);
 
-        // A URL with a filter on a string column and a value that looks like a number (in):
+        // A URL with a filter on a string column and a value that looks like an integer (in):
         let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
         let sql_param_1 = sql_param_gen.next();
         let sql_param_2 = sql_param_gen.next();
@@ -2565,7 +2618,7 @@ WHERE "penguin"."study_name" IN ({sql_param_1}, {sql_param_2})"#
         );
         assert_eq!(params, vec![json!("123"), json!("345")]);
 
-        // A URL with a filter on a string column and a value that looks like a number (not_in):
+        // A URL with a filter on a string column and a value that looks like an integer (not_in):
         let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
         let sql_param_1 = sql_param_gen.next();
         let sql_param_2 = sql_param_gen.next();
@@ -2693,8 +2746,8 @@ FROM "penguin""#
     species TEXT,
     island TEXT,
     individual_id TEXT,
-    culmen_length TEXT,
-    body_mass TEXT
+    culmen_length REAL,
+    body_mass INTEGER
 )"#;
         block_on(rltbl.connection.query(drop_sql, None)).unwrap();
         block_on(rltbl.connection.query(create_sql, None)).unwrap();

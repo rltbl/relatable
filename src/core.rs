@@ -3,7 +3,6 @@
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
 use crate::{self as rltbl};
-use indexmap::IndexMap;
 use rltbl::{
     git,
     select::{Select, SelectField},
@@ -11,11 +10,12 @@ use rltbl::{
         self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
         MemoryCacheKey, SqlParam, VecInto as _,
     },
-    table::{Cell, Column, Message, Row, Table},
+    table::{Cell, Column, ColumnDatatype, Message, Row, Table},
 };
 
 use anyhow::Result;
 use csv::{QuoteStyle, ReaderBuilder, Writer, WriterBuilder};
+use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use minijinja::{path_loader, Environment};
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
@@ -260,31 +260,7 @@ impl Relatable {
         };
 
         // Create and populate a column table:
-        let sql = format!(
-            r#"CREATE TABLE IF NOT EXISTS "column" (
-             _id {pkey_clause},
-             _order INTEGER UNIQUE,
-             "table" TEXT,
-             "column" TEXT,
-             "label" TEXT,
-             "description" TEXT,
-             "datatype" TEXT,
-             "nulltype" TEXT
-           )"#,
-        );
-        self.connection.query(&sql, None).await?;
-
-        let sql = format!(
-            r#"
-            INSERT INTO "column"
-            ("table",   "column",        "label",       "description",     "nulltype",  "datatype")
-            VALUES
-            ('{table}', 'study_name',    'muddy_name',  NULL,              NULL,        NULL),
-            ('{table}', 'sample_number', NULL,          'a sample number', NULL,        'integer'),
-            ('{table}', 'maple_syrup',   'maple syrup', NULL,              NULL,        'text'),
-            ('{table}', 'species',       NULL,          NULL,              'empty',     'text')"#
-        );
-        self.connection.query(&sql, None).await?;
+        self.create_demo_column_table(force).await?;
 
         // Create the demo table:
         let sql = format!(
@@ -296,8 +272,8 @@ impl Relatable {
              species TEXT,
              island TEXT,
              individual_id TEXT,
-             culmen_length TEXT,
-             body_mass TEXT
+             culmen_length REAL,
+             body_mass INTEGER
            )"#,
         );
         self.connection.query(&sql, None).await?;
@@ -370,6 +346,127 @@ impl Relatable {
         Ok(())
     }
 
+    /// TODO: Add docstring
+    pub async fn create_demo_column_table(&self, force: &bool) -> Result<()> {
+        if *force {
+            if let DbKind::Postgres = self.connection.kind() {
+                self.connection
+                    .query(r#"DROP TABLE IF EXISTS "column" CASCADE"#, None)
+                    .await?;
+            }
+        }
+
+        let pkey_clause = match self.connection.kind() {
+            DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+            DbKind::Postgres => "SERIAL PRIMARY KEY",
+        };
+
+        let sql = format!(
+            r#"CREATE TABLE IF NOT EXISTS "column" (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             "table" TEXT,
+             "column" TEXT,
+             "label" TEXT,
+             "description" TEXT,
+             "datatype" TEXT,
+             "nulltype" TEXT
+           )"#,
+        );
+        self.connection.query(&sql, None).await?;
+
+        let column_contents = [
+            json!({
+                "table": "penguin",
+                "column": "study_name",
+                "label": "muddy_name",
+                "description": JsonValue::Null,
+                "nulltype": JsonValue::Null,
+                "datatype": JsonValue::Null,
+            }),
+            json!({
+                "table": "penguin",
+                "column": "sample_number",
+                "label": JsonValue::Null,
+                "description": "a sample number",
+                "nulltype": JsonValue::Null,
+                "datatype": "integer",
+            }),
+            // A non-existent column, which relatable should silently ignore:
+            json!({
+                "table": "penguin",
+                "column": "maple_syrup",
+                "label": "maple syrup",
+                "description": JsonValue::Null,
+                "nulltype": JsonValue::Null,
+                "datatype": "text",
+            }),
+            json!({
+                "table": "penguin",
+                "column": "culmen_length",
+                "label": "culmen length (cm)",
+                "description": JsonValue::Null,
+                "nulltype": JsonValue::Null,
+                "datatype": "real:%.4f",
+            }),
+            json!({
+                "table": "penguin",
+                "column": "species",
+                "label": JsonValue::Null,
+                "description": JsonValue::Null,
+                "nulltype": "empty",
+                "datatype": "text",
+            }),
+            json!({
+                "table": "penguin",
+                "column": "body_mass",
+                "label": JsonValue::Null,
+                "description": JsonValue::Null,
+                "nulltype": "empty",
+                "datatype": "integer",
+            }),
+        ]
+        .iter()
+        .map(|content| JsonRow {
+            content: content.as_object().expect("Not a map").clone(),
+        })
+        .collect::<Vec<_>>();
+
+        let mut sql_param_gen = SqlParam::new(&self.connection.kind());
+        let mut param_values = vec![];
+        let mut get_param = |row: &JsonRow, cname: &str| -> Result<String> {
+            match row.get_value(cname)? {
+                JsonValue::Null => Ok("NULL".to_string()),
+                JsonValue::String(value) => {
+                    param_values.push(value.to_string());
+                    Ok(sql_param_gen.next().to_string())
+                }
+                _ => panic!("Invalid value type for column table"),
+            }
+        };
+        let mut value_clauses = vec![];
+        for row in &column_contents {
+            let s1 = get_param(row, "table")?;
+            let s2 = get_param(row, "column")?;
+            let s3 = get_param(row, "label")?;
+            let s4 = get_param(row, "description")?;
+            let s5 = get_param(row, "nulltype")?;
+            let s6 = get_param(row, "datatype")?;
+            value_clauses.push(format!("({s1}, {s2}, {s3}, {s4}, {s5}, {s6})"));
+        }
+
+        let sql = format!(
+            r#"INSERT INTO "column"
+               ("table", "column", "label", "description", "nulltype", "datatype")
+               VALUES {values}"#,
+            values = value_clauses.join(", ")
+        );
+        let param_values = json!(param_values);
+        self.connection.query(&sql, Some(&param_values)).await?;
+        Ok(())
+    }
+
+    /// TODO: Add docstring here.
     pub async fn create_demo_tableset(&self, force: &bool, size: usize) -> Result<()> {
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
@@ -482,17 +579,31 @@ impl Relatable {
             .map_err(|e| e.into())
     }
 
-    /// Use the given [Select] to fetch data from the database.
-    pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        tracing::trace!("Relatable::fetch({select:?})");
+    /// TODO: Add docstring
+    pub async fn fetch_with_view(&self, view_type: &str, select: &Select) -> Result<ResultSet> {
+        tracing::trace!("Relatable::fetch_with_view({view_type}, {select:?})");
 
-        // Get the table and column information and ensure that the view has been created:
+        // Get the table and columns info and ensure that the appropriate view has been created:
         let mut table = Table::get_table(select.table_name.as_str(), self).await?;
         let mut columns = table.columns.values().cloned().collect::<Vec<_>>();
-        table.ensure_default_view_created(self).await?;
-
         let mut select = select.clone();
-        select.view_name = table.view.clone();
+        select.view_name = match view_type {
+            "default" => {
+                table.ensure_default_view_created(self).await?;
+                format!("{}_default_view", table.name)
+            }
+            "text" => {
+                table.ensure_text_view_created(self).await?;
+                format!("{}_text_view", table.name)
+            }
+            unsupported => {
+                return Err(RelatableError::InputError(format!(
+                    "Unsupported view type: '{unsupported}'. Supported view types are: \
+                     'default', 'text'"
+                ))
+                .into());
+            }
+        };
 
         // Fetch the data
         let (statement, parameters) = select.to_sql(&self.connection.kind())?;
@@ -535,13 +646,19 @@ impl Relatable {
             range: Range {
                 count,
                 total,
-                start: select.offset + 1,
-                end: select.offset + count,
+                start: (select.offset + 1) as u64,
+                end: (select.offset + count) as u64,
             },
             table,
             columns,
             rows,
         })
+    }
+
+    /// Use the given [Select] to fetch data from the database.
+    pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
+        tracing::trace!("Relatable::fetch({select:?})");
+        self.fetch_with_view("text", select).await
     }
 
     /// Use the given [Select] to fetch data from the database.
@@ -553,7 +670,7 @@ impl Relatable {
     }
 
     /// Get the number of rows returned by this [Select] using the given caching strategy.
-    pub async fn count(&self, select: &Select) -> Result<usize> {
+    pub async fn count(&self, select: &Select) -> Result<u64> {
         tracing::trace!("Relatable::count({select:?})");
         let (statement, params) = select.to_sql_count(&self.connection.kind())?;
         let params = json!(params);
@@ -642,9 +759,13 @@ impl Relatable {
                     Column {
                         name: column_name.to_string(),
                         table: table_name.to_string(),
-                        datatype: table_columns
-                            .get(column_name)
-                            .and_then(|col| col.datatype.clone()),
+                        datatype: match table_columns.get(column_name) {
+                            None => ColumnDatatype {
+                                name: "text".to_string(),
+                                format: None,
+                            },
+                            Some(col) => col.datatype.clone(),
+                        },
                         nulltype: table_columns
                             .get(column_name)
                             .and_then(|col| col.nulltype.clone()),
@@ -678,8 +799,8 @@ impl Relatable {
             .map(|k| format!(r#""{k}""#))
             .collect::<Vec<_>>()
             .join(", ");
-        let mut id = 1;
-        let mut order = id * NEW_ORDER_MULTIPLIER;
+        let mut id: u64 = 1;
+        let mut order = id * NEW_ORDER_MULTIPLIER as u64;
         let sql_first_part = format!(r#"INSERT INTO "{table_name}" ({columns_line}) VALUES "#);
         let mut sql_value_parts = vec![];
         let mut sql_param_gen = SqlParam::new(&self.connection.kind());
@@ -789,7 +910,7 @@ impl Relatable {
             // Add two extra SQL_PARAM for _id and _order:
             sql_value_parts.push(format!("({sql_params})"));
             id += 1;
-            order += NEW_ORDER_MULTIPLIER;
+            order += NEW_ORDER_MULTIPLIER as u64;
         }
         if param_values.len() > 0 {
             let sql = format!(
@@ -870,9 +991,9 @@ impl Relatable {
                                 };
                             }
                             _ => {
-                                return Err(RelatableError::DataError(
-                                    "Not a string, integer or NULL".to_string(),
-                                )
+                                return Err(RelatableError::DataError(format!(
+                                    "Value {value} is not a string, number or NULL"
+                                ))
                                 .into());
                             }
                         }
@@ -948,7 +1069,7 @@ impl Relatable {
         tx: &mut DbTransaction<'_>,
         user: &str,
         action: &ChangeAction,
-    ) -> Result<Option<(usize, ChangeSet)>> {
+    ) -> Result<Option<(u64, ChangeSet)>> {
         tracing::trace!("Relatable::_get_last_change_for_user(tx, {user:?}, {action:?})");
         let mut sql_param = SqlParam::new(&tx.kind());
         let sql = format!(
@@ -1275,14 +1396,13 @@ impl Relatable {
                         .content
                         .get("_change_id")
                         .and_then(|i| i.as_u64())
-                        .unwrap_or_default() as usize,
+                        .unwrap_or_default() as u64,
                     columns: self
                         .fetch_columns(&name)
                         .await?
                         .into_iter()
                         .map(|column| (name.clone(), column))
                         .collect::<IndexMap<_, _>>(),
-                    view: format!("{name}_default_view"),
                     ..Default::default()
                 },
             );
@@ -1360,7 +1480,7 @@ impl Relatable {
     pub async fn get_last_redoable_changeset_for_user(
         &self,
         user: &str,
-    ) -> Result<Option<(usize, ChangeSet)>> {
+    ) -> Result<Option<(u64, ChangeSet)>> {
         tracing::trace!("Relatable::get_last_redoable_changeset_for_user({user:?})");
         let history = self.get_user_history(user, Some(1)).await?;
         match history.changes_undone_stack.first() {
@@ -1387,7 +1507,7 @@ impl Relatable {
     pub async fn get_last_undoable_changeset_for_user(
         &self,
         user: &str,
-    ) -> Result<Option<(usize, ChangeSet)>> {
+    ) -> Result<Option<(u64, ChangeSet)>> {
         tracing::trace!("Relatable::get_last_undoable_changeset_for_user({user:?})");
         let history = self.get_user_history(user, Some(1)).await?;
         match history.changes_done_stack.first() {
@@ -1750,7 +1870,7 @@ impl Relatable {
     }
 
     /// Reverse the given changeset in the database
-    async fn _revert(&self, change_id: usize, changeset: &ChangeSet) -> Result<Option<ChangeSet>> {
+    async fn _revert(&self, change_id: u64, changeset: &ChangeSet) -> Result<Option<ChangeSet>> {
         tracing::trace!("Relatable::_revert({change_id}, {changeset:?})");
         match changeset.changes.first() {
             None => Ok(None),
@@ -2052,14 +2172,14 @@ impl Relatable {
         &self,
         user: &str,
         table_name: &str,
-        row: &usize,
+        row: &u64,
         column: &str,
         value: &JsonValue,
         level: &str,
         rule: &str,
         message: &str,
         tx: &mut DbTransaction<'_>,
-    ) -> Result<(usize, Message)> {
+    ) -> Result<(u64, Message)> {
         tracing::trace!(
             "Relatable::add_message({user:?}, {table_name:?}, {row}, \
              {column:?}, {value:?}, {level:?}, {rule:?}, {message:?}, tx)"
@@ -2097,13 +2217,13 @@ impl Relatable {
         &self,
         user: &str,
         table_name: &str,
-        row: usize,
+        row: u64,
         column: &str,
         value: &JsonValue,
         level: &str,
         rule: &str,
         message: &str,
-    ) -> Result<(usize, Message)> {
+    ) -> Result<(u64, Message)> {
         tracing::trace!(
             "Relatable::add_message({user:?}, {table_name:?}, {row}, \
              {column:?}, {value:?}, {level:?}, {rule:?}, {message:?})"
@@ -2130,8 +2250,8 @@ impl Relatable {
         action: &ChangeAction,
         table_name: &str,
         user: &str,
-        new_row_id: Option<usize>,
-        after_id: Option<usize>,
+        new_row_id: Option<u64>,
+        after_id: Option<u64>,
         row: &JsonRow,
     ) -> Result<Row> {
         tracing::trace!(
@@ -2230,7 +2350,7 @@ impl Relatable {
         &self,
         table_name: &str,
         user: &str,
-        after_id: Option<usize>,
+        after_id: Option<u64>,
         row: &JsonRow,
     ) -> Result<Row> {
         tracing::trace!("Relatable::add_row({table_name:?}, {user:?}, {after_id:?}, {row:?})");
@@ -2250,14 +2370,14 @@ impl Relatable {
         Ok(new_row)
     }
 
-    /// Delete a row from the table
+    /// Delete a row from the table. Returns the number of rows deleted.
     async fn _delete_row(
         &self,
         mut conn: Option<DbActiveConnection>,
         action: &ChangeAction,
         table_name: &str,
         user: &str,
-        row: usize,
+        row: u64,
     ) -> Result<usize> {
         tracing::trace!(
             "Relatable::_delete_row(conn, {action:?}, {table_name:?}, {user:?} \
@@ -2317,7 +2437,7 @@ impl Relatable {
     }
 
     /// Delete a row from a given table
-    pub async fn delete_row(&self, table_name: &str, user: &str, row: usize) -> Result<usize> {
+    pub async fn delete_row(&self, table_name: &str, user: &str, row: u64) -> Result<usize> {
         tracing::trace!("Relatable::delete_row({table_name:?}, {user:?}, {row})");
         let conn = self.connection.reconnect()?;
         let num_deleted = self
@@ -2329,11 +2449,11 @@ impl Relatable {
         Ok(num_deleted)
     }
 
-    // Delete a message from the message table
+    // Delete messages from the message table. Returns the number of messages deleted.
     pub async fn delete_message(
         &self,
         table: &str,
-        row: Option<usize>,
+        row: Option<u64>,
         column: Option<&str>,
         target_rule: Option<&str>,
         target_user: Option<&str>,
@@ -2394,9 +2514,9 @@ impl Relatable {
         action: &ChangeAction,
         table_name: &str,
         user: &str,
-        id: usize,
-        after_id: usize,
-    ) -> Result<usize> {
+        id: u64,
+        after_id: u64,
+    ) -> Result<u64> {
         tracing::trace!(
             "Relatable::_move_and_record_row(conn, {action:?}, {table_name:?}, \
                          {user:?}, {id}, {after_id})"
@@ -2449,15 +2569,11 @@ impl Relatable {
         &self,
         tx: &mut DbTransaction<'_>,
         table: &Table,
-        id: usize,
-        after_id: usize,
-    ) -> Result<usize> {
+        id: u64,
+        after_id: u64,
+    ) -> Result<u64> {
         tracing::trace!("Relatable::_move_row(tx, {table:?}, {id}, {after_id})");
-        fn get_row_order(
-            tx: &mut DbTransaction<'_>,
-            table: &Table,
-            row_id: usize,
-        ) -> Result<usize> {
+        fn get_row_order(tx: &mut DbTransaction<'_>, table: &Table, row_id: u64) -> Result<u64> {
             let sql = format!(
                 r#"SELECT "_order" FROM "{}" WHERE "_id" = {sql_param}"#,
                 table.name,
@@ -2473,7 +2589,7 @@ impl Relatable {
                 .into());
             }
             match rows[0].content.get("_order").and_then(|o| o.as_u64()) {
-                Some(order) => Ok(order as usize),
+                Some(order) => Ok(order as u64),
                 None => {
                     return Err(
                         RelatableError::DataError("No integer '_order' in row".to_string()).into(),
@@ -2528,10 +2644,10 @@ impl Relatable {
                     JsonValue::Null => {
                         // The row_order will be null if we ask Relatable to move a row to
                         // a position after the last row in the table.
-                        order_prev + NEW_ORDER_MULTIPLIER
+                        order_prev + NEW_ORDER_MULTIPLIER as u64
                     }
                     _ => match value.as_u64() {
-                        Some(order) => order as usize,
+                        Some(order) => order as u64,
                         None => {
                             return Err(RelatableError::DataError(
                                 "Field '_order' in row is not an integer".to_string(),
@@ -2554,8 +2670,8 @@ impl Relatable {
                 // Otherwise, get all the orders that need to be moved. We sort the results in
                 // descending order so that when we later update each value, no duplicate key
                 // violations will ensue:
-                let upper_bound = (order_next as f32 / NEW_ORDER_MULTIPLIER as f32).ceil() as usize
-                    * NEW_ORDER_MULTIPLIER as usize;
+                let upper_bound = (order_next as f32 / NEW_ORDER_MULTIPLIER as f32).ceil() as u64
+                    * NEW_ORDER_MULTIPLIER as u64;
                 let mut sql_param = SqlParam::new(&tx.kind());
                 let sql = format!(
                     r#"SELECT "_order"
@@ -2575,7 +2691,7 @@ impl Relatable {
                     .into());
                 }
                 let highest_order = match rows[0].content.get("_order").and_then(|o| o.as_u64()) {
-                    Some(order) => order as usize,
+                    Some(order) => order as u64,
                     None => {
                         return Err(RelatableError::DataError(
                             "No field '_order' in row or it is not an integer".to_string(),
@@ -2594,7 +2710,7 @@ impl Relatable {
 
                 for row in rows {
                     let current_order = match row.content.get("_order").and_then(|o| o.as_u64()) {
-                        Some(order) => order as usize,
+                        Some(order) => order as u64,
                         None => {
                             return Err(RelatableError::DataError(
                                 "No field '_order' in row or it is not an integer".to_string(),
@@ -2647,8 +2763,8 @@ impl Relatable {
         &self,
         tx: &mut DbTransaction<'_>,
         table: &Table,
-        id: usize,
-        new_id: usize,
+        id: u64,
+        new_id: u64,
     ) -> Result<()> {
         tracing::trace!("Relatable::_change_row_id(tx, {table:?}, {id}, {new_id})");
         let mut sql_param = SqlParam::new(&tx.kind());
@@ -2662,7 +2778,7 @@ impl Relatable {
             sql_param_2 = sql_param.next(),
             sql_param_3 = sql_param.next(),
         );
-        let params = json!([new_id, id, id * NEW_ORDER_MULTIPLIER]);
+        let params = json!([new_id, id, id * NEW_ORDER_MULTIPLIER as u64]);
         tx.query_one(&sql, Some(&params))?
             .ok_or(RelatableError::DataError(format!("No row with _id = {id}")))?
             .get_unsigned("_id")?;
@@ -2674,9 +2790,9 @@ impl Relatable {
         &self,
         table_name: &str,
         user: &str,
-        id: usize,
-        after_id: usize,
-    ) -> Result<usize> {
+        id: u64,
+        after_id: u64,
+    ) -> Result<u64> {
         tracing::trace!("Relatable::move_row({table_name:?}, {user:?}, {after_id:?})");
         let conn = self.connection.reconnect()?;
         let new_order = self
@@ -2690,7 +2806,7 @@ impl Relatable {
 
     /// Delete all entries from the cache corresponding to the given table, or clear it completely
     /// if no table is given.
-    pub fn clear_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
+    pub(crate) fn clear_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
         let mut sql = r#"DELETE FROM "cache""#.to_string();
         if let Some(table) = table {
             let mut table = table.to_string();
@@ -2723,7 +2839,7 @@ impl Relatable {
     }
 
     /// Delete all entries from the in-memory cache corresponding to the given table
-    pub fn clear_mem_cache(&self, table: &str) {
+    pub(crate) fn clear_mem_cache(&self, table: &str) {
         let table = format!("\"{table}\"");
         let mut cache = CACHE.lock().expect("Could not lock cache");
         let keys = cache
@@ -2839,7 +2955,7 @@ impl Display for ChangeAction {
 pub enum Change {
     Update {
         /// The id of the row that was updated
-        row: usize,
+        row: u64,
         /// The column whose value was updated
         column: String,
         /// The value of the column before the change
@@ -2849,24 +2965,24 @@ pub enum Change {
     },
     Add {
         /// The id of the row that was added
-        row: usize,
+        row: u64,
         /// The _id of the row whose _order this comes immediately after in the table
-        after: usize,
+        after: u64,
     },
     Move {
         /// The id of the row that was moved
-        row: usize,
+        row: u64,
         /// The row that this row came after before the change
-        from_after: usize,
+        from_after: u64,
         /// The row that this row came after after the change
-        to_after: usize,
+        to_after: u64,
     },
     Delete {
         /// The id of the row that was deleted
-        row: usize,
+        row: u64,
         /// The _id of the row whose _order this row came immediately after in the table before
         /// being deleted.
-        after: usize,
+        after: u64,
     },
 }
 
@@ -3011,9 +3127,9 @@ impl Display for Change {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Range {
     count: usize,
-    total: usize,
-    start: usize,
-    end: usize,
+    total: u64,
+    start: u64,
+    end: u64,
 }
 
 impl std::fmt::Display for Range {
@@ -3058,6 +3174,41 @@ impl ResultSet {
             writer.write_record(row.to_strings()).unwrap();
         }
         String::from_utf8(writer.into_inner().unwrap()).unwrap()
+    }
+
+    pub fn to_console(&self) -> String {
+        let mut tw = TabWriter::new(vec![]);
+        tw.write(format!("{}\n", self.range).as_bytes())
+            .unwrap_or_default();
+        let header = &self
+            .columns
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<String>>();
+        tw.write(format!("{}\n", header.join("\t")).as_bytes())
+            .unwrap_or_default();
+        let mut contains_errors = false;
+        for row in &self.rows {
+            let cells = row
+                .cells
+                .values()
+                .map(|cell| {
+                    if cell.message_level() >= 2 {
+                        // TODO: Colorize or bold somehow. Note that the colorized crate does not
+                        // work as it messes up the column width formatting.
+                        contains_errors = true;
+                        format!("{}", cell.text)
+                    } else {
+                        format!("{}", cell.text)
+                    }
+                })
+                .collect::<Vec<_>>();
+            tw.write(format!("{}\n", cells.join("\t")).as_bytes())
+                .unwrap_or_default();
+        }
+        tw.flush().expect("TabWriter to flush");
+        let written = String::from_utf8(tw.into_inner().unwrap()).unwrap();
+        written
     }
 }
 
@@ -3104,7 +3255,7 @@ pub struct Account {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cursor {
     table: String,
-    row: usize,
+    row: u64,
     column: String,
 }
 

@@ -5,7 +5,7 @@
 ```console tesh-session="message"
 $ rltbl -v demo --size 10 --force
 Created a demonstration database in '.relatable/relatable.db'
-$ echo '{"study_name": "FAKE123", "sample_number": "SAMPLE #11", "species": "Pygoscelis adeliae", "island": "Biscoe", "individual_id": "N11", "culmen_length": "35.4", "body_mass": "2001"}' | rltbl --input JSON add row penguin
+$ echo '{"study_name": "FAKE123", "sample_number": "SAMPLE #11", "species": "Pygoscelis adeliae", "island": "Biscoe", "individual_id": "N11", "culmen_length": 35.4, "body_mass": 2001}' | rltbl --input JSON add row penguin
 $ rltbl set value penguin 9 sample_number SAMPLE09
 $ rltbl get table penguin
 Rows 1-11 of 11
@@ -18,16 +18,16 @@ FAKE123     5              Pygoscelis adeliae  Torgersen  N5             45.8   
 FAKE123     6              Pygoscelis adeliae  Torgersen  N6             40.6           4875
 FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9           2129
 FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
-FAKE123                    Pygoscelis adeliae  Biscoe     N9             38.6           2702
+FAKE123     SAMPLE09       Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
-FAKE123                    Pygoscelis adeliae  Biscoe     N11            35.4           2001
+FAKE123     SAMPLE #11     Pygoscelis adeliae  Biscoe     N11            35.4           2001
 $ sqlite3 -header .relatable/relatable.db 'select * from message order by message_id'
 message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|incorrect datatype
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|incorrect datatype
+1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
+2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
 
-$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
-$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
 ```
 
 The messages are not normally visible when viewing the table's contents on the command line, but by increasing **rltbl**'s verbosity level we can see more detail about the first few rows returned from a `get table` command:
@@ -44,9 +44,9 @@ FAKE123     5              Pygoscelis adeliae  Torgersen  N5             45.8   
 FAKE123     6              Pygoscelis adeliae  Torgersen  N6             40.6           4875
 FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9           2129
 FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
-FAKE123                    Pygoscelis adeliae  Biscoe     N9             38.6           2702
+FAKE123     SAMPLE09       Pygoscelis adeliae  Biscoe     N9             38.6           2702
 FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
-FAKE123                    Pygoscelis adeliae  Biscoe     N11            35.4           2001
+FAKE123     SAMPLE #11     Pygoscelis adeliae  Biscoe     N11            35.4           2001
 ```
 
 In any case the messages have been added to the message table in the database:
@@ -54,8 +54,8 @@ In any case the messages have been added to the message table in the database:
 ```
 $ sqlite3 -header .relatable/relatable.db 'select * from message'
 message_id|added_by|table|row|column|value|level|rule|message
-1|mike|penguin|3|species|Pygoscelis adeliae|error|custom-a|this is not a good species
-2|mike|penguin|4|species|Pygoscelis adeliae|error|custom-b|this is a terrible species
+1|mike|penguin|3|species|Pygoscelis adeliae|info|custom-a|this is not a good species
+2|mike|penguin|4|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
 ```
 
 We delete messages using `rltbl delete message TABLE [ROW] [COLUMN]`. If row is unspecified, all messages in the given table are deleted. If column is unspecified, all messages in the given row are deleted. You can also use the `--rule RULE` flag to further filter the messsages to be deleted so that only those whose rule matches the given string are actually deleted, as opposed to all of the messages in the given table, column, or row. Note that SQL wildcard characters are allowed. In the current example, the string `custom%` happens to match all of the rules input thus far:
@@ -64,29 +64,29 @@ We delete messages using `rltbl delete message TABLE [ROW] [COLUMN]`. If row is 
 $ rltbl -v delete message penguin --rule custom%
 $ sqlite3 -header .relatable/relatable.db 'select * from message'
 message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|incorrect datatype
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|incorrect datatype
+1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
+2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
 ```
 
 Let's add a few more messages to the message table. Two of them will be by the user **mike** and the rest by the user **afreen**.
 
 ```console tesh-session="message"
-$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
-$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
-$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 5 species
-$ echo '{"value": "Pygoscelis adeliae", "level": "error", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 species
-$ echo '{"value": "FAKE123", "level": "error", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 study_name
-$ echo '{"value": "FAKE123", "level": "error", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 7 study_name
+$ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 5 species
+$ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 species
+$ echo '{"value": "FAKE123", "level": "info", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 study_name
+$ echo '{"value": "FAKE123", "level": "info", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 7 study_name
 $ sqlite3 -header .relatable/relatable.db 'select * from message'
 message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|incorrect datatype
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|incorrect datatype
-5|mike|penguin|3|species|Pygoscelis adeliae|error|custom-a|this is not a good species
-6|mike|penguin|4|species|Pygoscelis adeliae|error|custom-b|this is a terrible species
-7|afreen|penguin|5|species|Pygoscelis adeliae|error|custom-b|this is a terrible species
-8|afreen|penguin|6|species|Pygoscelis adeliae|error|custom-a|this is not a good species
-9|afreen|penguin|6|study_name|FAKE123|error|custom-c|this is an inappropriate study_name
-10|afreen|penguin|7|study_name|FAKE123|error|custom-c|this is an inappropriate study_name
+1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
+2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
+5|mike|penguin|3|species|Pygoscelis adeliae|info|custom-a|this is not a good species
+6|mike|penguin|4|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
+7|afreen|penguin|5|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
+8|afreen|penguin|6|species|Pygoscelis adeliae|info|custom-a|this is not a good species
+9|afreen|penguin|6|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
+10|afreen|penguin|7|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
 ```
 
 Let's now delete all the messages added to the table by **mike** using the `--user USER` option (which does not permit wildcards):
@@ -95,12 +95,12 @@ Let's now delete all the messages added to the table by **mike** using the `--us
 $ rltbl -v delete message penguin --user mike
 $ sqlite3 -header .relatable/relatable.db 'select * from message'
 message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|incorrect datatype
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|incorrect datatype
-7|afreen|penguin|5|species|Pygoscelis adeliae|error|custom-b|this is a terrible species
-8|afreen|penguin|6|species|Pygoscelis adeliae|error|custom-a|this is not a good species
-9|afreen|penguin|6|study_name|FAKE123|error|custom-c|this is an inappropriate study_name
-10|afreen|penguin|7|study_name|FAKE123|error|custom-c|this is an inappropriate study_name
+1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
+2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
+7|afreen|penguin|5|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
+8|afreen|penguin|6|species|Pygoscelis adeliae|info|custom-a|this is not a good species
+9|afreen|penguin|6|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
+10|afreen|penguin|7|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
 ```
 
 Now delete all messages associated with the column **species** in row 6:
@@ -109,11 +109,11 @@ Now delete all messages associated with the column **species** in row 6:
 $ rltbl -v delete message penguin 6 species
 $ sqlite3 -header .relatable/relatable.db 'select * from message'
 message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|incorrect datatype
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|incorrect datatype
-7|afreen|penguin|5|species|Pygoscelis adeliae|error|custom-b|this is a terrible species
-9|afreen|penguin|6|study_name|FAKE123|error|custom-c|this is an inappropriate study_name
-10|afreen|penguin|7|study_name|FAKE123|error|custom-c|this is an inappropriate study_name
+1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
+2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
+7|afreen|penguin|5|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
+9|afreen|penguin|6|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
+10|afreen|penguin|7|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
 ```
 
 Delete any remaining messages in row 6:
@@ -122,10 +122,10 @@ Delete any remaining messages in row 6:
 $ rltbl -v delete message penguin 6
 $ sqlite3 -header .relatable/relatable.db 'select * from message'
 message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|incorrect datatype
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|incorrect datatype
-7|afreen|penguin|5|species|Pygoscelis adeliae|error|custom-b|this is a terrible species
-10|afreen|penguin|7|study_name|FAKE123|error|custom-c|this is an inappropriate study_name
+1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
+2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
+7|afreen|penguin|5|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
+10|afreen|penguin|7|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
 ```
 
 Delete all remaining messages:

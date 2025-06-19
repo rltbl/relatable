@@ -200,6 +200,7 @@ FAKE123     17             Pygoscelis adeliae  Biscoe     N17            34.3   
 FAKE123     18             Pygoscelis adeliae  Dream      N18            43.5           2516
 FAKE123     19             Pygoscelis adeliae  Biscoe     N19            46.3           1276
 FAKE123     20             Pygoscelis adeliae  Torgersen  N20            42.3           3803
+
 EOF
 
 status=$?
