@@ -8,6 +8,7 @@ use rltbl::{
     select::{Format, Select},
     sql,
     sql::{CachingStrategy, JsonRow, SqlParam, VecInto},
+    table::Table,
     web::{serve, serve_cgi},
 };
 
@@ -532,16 +533,17 @@ pub fn get_username(cli: &Cli) -> String {
     }
 }
 
-pub async fn set_value(cli: &Cli, table: &str, row: u64, column: &str, value: &str) {
-    tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value})");
+pub async fn set_value(cli: &Cli, table_name: &str, row: u64, column: &str, value: &str) {
+    tracing::trace!("set_value({cli:?}, {table_name}, {row}, {column}, {value})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
 
-    // Fetch the current value from the db:
+    let mut table = Table::get_table(table_name, &rltbl).await.unwrap();
+    table.ensure_text_view_created(&rltbl).await.unwrap();
     let sql = format!(
-        r#"SELECT "{column}" FROM "{table}" WHERE "_id" = {sql_param}"#,
-        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
+        r#"SELECT "{column}" FROM "{table_name}_text_view" WHERE "_id" = {sql_param}"#,
+        sql_param = SqlParam::new(&rltbl.connection.kind()).next(),
     );
     let params = json!([row]);
     let before = rltbl
@@ -557,7 +559,7 @@ pub async fn set_value(cli: &Cli, table: &str, row: u64, column: &str, value: &s
         .set_values(&ChangeSet {
             user: get_username(&cli),
             action: ChangeAction::Do,
-            table: table.to_string(),
+            table: table_name.to_string(),
             description: "Set one value".to_string(),
             changes: vec![Change::Update {
                 row,

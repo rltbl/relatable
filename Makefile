@@ -14,12 +14,12 @@ usage:
 
 .PHONY: debug release sqlx sqlx_debug sqlx_release rusqlite rusqlite_debug rusqlite_release
 
-.PHONY: build_debug
-debug:
-	cargo build
+# .PHONY: build_debug
+# debug:
+# 	cargo build
 
-# .PHONY: debug
-# debug: rusqlite_debug
+.PHONY: debug
+debug: rusqlite_debug
 
 .PHONY: release
 release: rusqlite_release
