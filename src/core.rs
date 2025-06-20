@@ -273,7 +273,8 @@ impl Relatable {
              island TEXT,
              individual_id TEXT,
              culmen_length REAL,
-             body_mass INTEGER
+             culmen_depth NUMERIC,
+             body_mass BIGINT
            )"#,
         );
         self.connection.query(&sql, None).await?;
@@ -298,7 +299,7 @@ impl Relatable {
             DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
         };
         for i in 1..=size {
-            if (param_values.len() + 7) >= max_params {
+            if (param_values.len() + 8) >= max_params {
                 let sql = format!(
                     "{sql_first_part} {sql_value_part}",
                     sql_value_part = sql_value_parts.join(", ")
@@ -317,14 +318,15 @@ impl Relatable {
             let id = i;
             let order = i * NEW_ORDER_MULTIPLIER;
             let island = islands.iter().choose(&mut rng);
-            let culmen_length = rng.gen_range(300..500) as f64 / 10.0;
+            let culmen_length = rng.gen_range(300..500) as f32 / 10.0;
+            let culmen_depth = rng.gen_range(300..500) as f64 / 15.0;
             let body_mass = rng.gen_range(1000..5000);
             sql_value_parts.push(format!(
                 "({sql_param_list_1}, 'FAKE123', {lone_sql_param}, 'Pygoscelis adeliae', \
                  {sql_param_list_2})",
                 sql_param_list_1 = sql_param.get_as_list(2),
                 lone_sql_param = sql_param.next(),
-                sql_param_list_2 = sql_param.get_as_list(4),
+                sql_param_list_2 = sql_param.get_as_list(5),
             ));
             param_values.push(json!(id));
             param_values.push(json!(order));
@@ -332,6 +334,7 @@ impl Relatable {
             param_values.push(json!(island));
             param_values.push(json!(format!("N{id}")));
             param_values.push(json!(culmen_length));
+            param_values.push(json!(culmen_depth));
             param_values.push(json!(body_mass));
         }
         if param_values.len() > 0 {
@@ -407,7 +410,17 @@ impl Relatable {
                 "label": "culmen length (cm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
+                // TODO: We are recording the format specififer in ColumnDatatype but we are not
+                // actually making use of it yet.
                 "datatype": "real:%.4f",
+            }),
+            json!({
+                "table": "penguin",
+                "column": "culmen_depth",
+                "label": "culmen depth (cm)",
+                "description": JsonValue::Null,
+                "nulltype": JsonValue::Null,
+                "datatype": "numeric:%.4f",
             }),
             json!({
                 "table": "penguin",

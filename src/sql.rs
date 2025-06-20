@@ -661,6 +661,7 @@ pub fn get_sql_type(datatype: &ColumnDatatype) -> Result<&str> {
         "text" => Ok("TEXT"),
         "integer" => Ok("INTEGER"),
         "real" => Ok("REAL"),
+        "numeric" => Ok("NUMERIC"),
         unsupported => {
             return Err(RelatableError::InputError(format!(
                 "Unsupported datatype: '{unsupported}'",

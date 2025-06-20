@@ -130,6 +130,16 @@ impl Select {
                 }
             }
 
+            fn try_parse_as_numeric(value: &str) -> JsonValue {
+                match value.parse::<f64>() {
+                    Ok(signed) => json!(signed),
+                    _ => {
+                        tracing::warn!("Could not parse {value} as numeric. Treating as string");
+                        JsonValue::String(value.to_string())
+                    }
+                }
+            }
+
             if ["_id", "_order", "_change_id"].contains(&column) {
                 try_parse_as_int(value)
             } else if ["_history", "_message"].contains(&column) {
@@ -138,6 +148,7 @@ impl Select {
                 match datatype {
                     Some(datatype) if datatype == "integer" => try_parse_as_int(value),
                     Some(datatype) if datatype == "real" => try_parse_as_real(value),
+                    Some(datatype) if datatype == "numeric" => try_parse_as_numeric(value),
                     Some(datatype) if datatype == "text" => JsonValue::String(value.to_string()),
                     Some(datatype) => {
                         tracing::warn!(
@@ -2747,7 +2758,8 @@ FROM "penguin""#
     island TEXT,
     individual_id TEXT,
     culmen_length REAL,
-    body_mass INTEGER
+    culmen_depth NUMERIC,
+    body_mass BIGINT
 )"#;
         block_on(rltbl.connection.query(drop_sql, None)).unwrap();
         block_on(rltbl.connection.query(create_sql, None)).unwrap();
@@ -2841,6 +2853,7 @@ FROM "penguin_test""#
   "island",
   "individual_id",
   "culmen_length",
+  "culmen_depth",
   "body_mass"
 FROM "penguin_test"
 ORDER BY "penguin_test"._order ASC

@@ -802,6 +802,14 @@ impl Cell {
                 JsonValue::Null => (),
                 _ => invalidate(self, column),
             },
+            "NUMERIC" => match &mut self.value {
+                JsonValue::Number(number) => match number.to_string().parse::<f64>() {
+                    Ok(_) => (),
+                    Err(_) => invalidate(self, column),
+                },
+                JsonValue::Null => (),
+                _ => invalidate(self, column),
+            },
             "TEXT" => (),
             unsupported => {
                 return Err(RelatableError::InputError(format!(
