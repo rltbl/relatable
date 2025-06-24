@@ -319,7 +319,7 @@ impl Relatable {
             let order = i * NEW_ORDER_MULTIPLIER;
             let island = islands.iter().choose(&mut rng);
             let culmen_length = rng.gen_range(300..500) as f32 / 10.0;
-            let culmen_depth = rng.gen_range(300..500) as f64 / 15.0;
+            let culmen_depth = rng.gen_range(200..400) as f64 / 10.0;
             let body_mass = rng.gen_range(1000..5000);
             sql_value_parts.push(format!(
                 "({sql_param_list_1}, 'FAKE123', {lone_sql_param}, 'Pygoscelis adeliae', \
@@ -671,7 +671,7 @@ impl Relatable {
     /// Use the given [Select] to fetch data from the database.
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
         tracing::trace!("Relatable::fetch({select:?})");
-        self.fetch_with_view("text", select).await
+        self.fetch_with_view("default", select).await
     }
 
     /// Use the given [Select] to fetch data from the database.

@@ -7,8 +7,8 @@ use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Relatable},
     select::{Format, Select},
     sql,
+    sql::DbConnection,
     sql::{CachingStrategy, JsonRow, SqlParam, VecInto},
-    table::Table,
     web::{serve, serve_cgi},
 };
 
@@ -61,6 +61,9 @@ pub struct Cli {
 // in the usage statement that is printed when valve is run with the option `--help`.
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    // Test connection (remove this later)
+    TestConnect {},
+
     /// Initialize a database
     Init {
         /// Overwrite an existing database
@@ -533,17 +536,16 @@ pub fn get_username(cli: &Cli) -> String {
     }
 }
 
-pub async fn set_value(cli: &Cli, table_name: &str, row: u64, column: &str, value: &str) {
-    tracing::trace!("set_value({cli:?}, {table_name}, {row}, {column}, {value})");
+pub async fn set_value(cli: &Cli, table: &str, row: u64, column: &str, value: &str) {
+    tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
 
-    let mut table = Table::get_table(table_name, &rltbl).await.unwrap();
-    table.ensure_text_view_created(&rltbl).await.unwrap();
+    // Fetch the current value from the db:
     let sql = format!(
-        r#"SELECT "{column}" FROM "{table_name}_text_view" WHERE "_id" = {sql_param}"#,
-        sql_param = SqlParam::new(&rltbl.connection.kind()).next(),
+        r#"SELECT "{column}" FROM "{table}" WHERE "_id" = {sql_param}"#,
+        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
     );
     let params = json!([row]);
     let before = rltbl
@@ -559,7 +561,7 @@ pub async fn set_value(cli: &Cli, table_name: &str, row: u64, column: &str, valu
         .set_values(&ChangeSet {
             user: get_username(&cli),
             action: ChangeAction::Do,
-            table: table_name.to_string(),
+            table: table.to_string(),
             description: "Set one value".to_string(),
             changes: vec![Change::Update {
                 row,
@@ -864,6 +866,38 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     );
 }
 
+///////////////////////////////////
+
+pub async fn test_connect(path: Option<&str>) -> Result<DbConnection> {
+    tracing::trace!("Relatable::connect({path:?})");
+    let _root = std::env::var("RLTBL_ROOT").unwrap_or_default();
+    // Set up database connection.
+    let _readonly = match std::env::var("RLTBL_READONLY") {
+        Ok(value) if value.to_lowercase() != "false" => true,
+        _ => false,
+    };
+    let path = match path {
+        Some(path) => path.to_string(),
+        None => match std::env::var_os("RLTBL_CONNECTION").and_then(|p| Some(p.into_string())) {
+            Some(Ok(path)) => path,
+            _ => crate::core::RLTBL_DEFAULT_DB.to_string(),
+        },
+    };
+    if !path.starts_with("postgresql://") {
+        let file = std::path::Path::new(&path);
+        if !file.exists() {
+            return Err(crate::core::RelatableError::InitError(
+                "First create a database with `rltbl init`".into(),
+            )
+            .into());
+        }
+    }
+    let (connection, _) = DbConnection::connect(&path).await?;
+    Ok(connection)
+}
+
+///////////////////////////////////
+
 pub async fn process_command() {
     tracing::trace!("process_command()");
     // Handle a CGI request, instead of normal CLI input.
@@ -886,6 +920,16 @@ pub async fn process_command() {
     tracing::debug!("CLI {cli:?}");
 
     match &cli.command {
+        Command::TestConnect {} => {
+            let conn = test_connect(None).await.unwrap();
+            let sql = format!(
+                r#"SELECT "culmen_length" FROM "penguin" WHERE "_id" = {sql_param}"#,
+                sql_param = SqlParam::new(&conn.kind()).next()
+            );
+            let params = json!([10]);
+            let value = conn.query_value(&sql, Some(&params)).await.unwrap();
+            println!("VALUE: {value:?}");
+        }
         Command::Init { force } => init(&cli, force, cli.database.as_deref()).await,
         Command::Get { subcommand } => match subcommand {
             GetSubcommand::Table {
