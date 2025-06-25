@@ -5,13 +5,20 @@
 //! This module contains functions for connecting to and querying the database, and implements
 //! elements of the API that are particularly database-specific.
 
+////////////////////////////////////
+// Internal imports
+////////////////////////////////////
 use crate as rltbl;
 use rltbl::{
     core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
     table::{Column, ColumnDatatype, Table},
 };
 
+////////////////////////////////////
+// External imports
+////////////////////////////////////
 use anyhow::Result;
+use async_std::task::block_on;
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -19,16 +26,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::{fmt::Display, str::FromStr};
 
+////////////////////////////////////
+// Database-driver-specific imports
+////////////////////////////////////
 #[cfg(feature = "rusqlite")]
 use rusqlite;
 
-use async_std::task::block_on;
+#[cfg(feature = "sqlx")]
+use bigdecimal::{BigDecimal, ToPrimitive};
 
 #[cfg(feature = "sqlx")]
 use sqlx::{
-    postgres::{PgConnectOptions, PgPool, PgPoolOptions},
-    sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions},
-    Acquire as _, Column as _, Row as _,
+    any::{install_default_drivers, Any, AnyArguments, AnyRow},
+    postgres::{PgArguments, PgConnectOptions, PgPool, PgPoolOptions, PgRow, Postgres},
+    query::Query,
+    Acquire as _, AnyPool, Column as _, Row as _, Transaction, TypeInfo as _,
 };
 
 /// A 'simple' database name
@@ -178,19 +190,19 @@ impl SqlParam {
     }
 }
 
+/// Represents a database connection pool
+#[cfg(feature = "sqlx")]
+#[derive(Debug)]
+pub enum DbPool {
+    Sqlite(AnyPool),
+    Postgres(PgPool),
+}
+
 /// Represents an active database connection
 #[derive(Debug)]
 pub enum DbActiveConnection {
     #[cfg(feature = "rusqlite")]
     Rusqlite(rusqlite::Connection),
-}
-
-/// TODO: Add docstrng
-#[cfg(feature = "sqlx")]
-#[derive(Debug)]
-pub enum DbPool {
-    Sqlite(SqlitePool),
-    Postgres(PgPool),
 }
 
 /// Represents a database connection
@@ -244,9 +256,10 @@ impl DbConnection {
             }
             false => {
                 // We suppress warnings for unused variables for this particular variable because
-                // the compiler is becoming confused about which variables have been actually used
-                // as a result of the conditional sqlx/rusqlite compilation (or maybe the programmer
-                // is confused).
+                // of the way that we are assigning the connection. We start by assigning a
+                // rusqlite connection and then, if the sqlx drivers are enabled, we immediately
+                // shadow the connection we just created. This is intentional so we need to
+                // suppress the compiler warnings about the unused rusqlite connection.
                 #[allow(unused_variables)]
                 #[cfg(feature = "rusqlite")]
                 let tuple = (
@@ -265,19 +278,10 @@ impl DbConnection {
                             format!("sqlite://{database}?mode=rwc")
                         }
                     };
-                    let connection_options = SqliteConnectOptions::from_str(&url)?;
-                    let db_kind = DbKind::Sqlite;
-                    let pool = SqlitePoolOptions::new()
-                        .max_connections(MAX_DB_CONNECTIONS)
-                        .connect_with(connection_options)
-                        .await?;
-                    let connection = Self::Sqlx(DbPool::Sqlite(pool), db_kind);
+                    install_default_drivers();
+                    let pool = AnyPool::connect(&url).await?;
+                    let connection = Self::Sqlx(DbPool::Sqlite(pool), DbKind::Sqlite);
                     (connection, None)
-                    //let connection = Self::Sqlx(
-                    //    DbPool::Sqlite(sqlx::SqlitePool::connect(&url).await?),
-                    //    DbKind::Sqlite,
-                    //);
-                    //(connection, None)
                 };
 
                 Ok(tuple)
@@ -303,23 +307,17 @@ impl DbConnection {
         &self,
         conn: &'a mut Option<DbActiveConnection>,
     ) -> Result<DbTransaction<'a>> {
-        tracing::trace!("DbConnection::begin()");
+        tracing::trace!("DbConnection::begin({self:?}, {conn:?})");
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(db_pool, kind) => match db_pool {
                 DbPool::Sqlite(pool) => {
                     let tx = pool.begin().await?;
-                    Ok(DbTransaction::Sqlx(
-                        DbSqlxTransaction::SqliteTransaction(tx),
-                        *kind,
-                    ))
+                    Ok(DbTransaction::Sqlx(SqlxDbTransaction::Sqlite(tx), *kind))
                 }
                 DbPool::Postgres(pool) => {
                     let tx = pool.begin().await?;
-                    Ok(DbTransaction::Sqlx(
-                        DbSqlxTransaction::PostgresTransaction(tx),
-                        *kind,
-                    ))
+                    Ok(DbTransaction::Sqlx(SqlxDbTransaction::Postgres(tx), *kind))
                 }
             },
             #[cfg(feature = "rusqlite")]
@@ -338,14 +336,13 @@ impl DbConnection {
         }
     }
 
-    /// Given a connection and a generic SQL string with placeholders and a list of parameters
-    /// to interpolate into the string, return a vector of [JsonRow]s.
-    /// Note that since this returns a vector, statements should be limited to those that will
-    /// return a sane number of rows.
+    /// Given a generic SQL string with placeholders and a list of parameters to interpolate into
+    /// the string, return a vector of [JsonRow]s. Note that since this returns a vector,
+    /// statements should be limited to those that will return a sane number of rows.
     pub async fn query(&self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
-        tracing::trace!("DbConnection::query({statement}, {params:?})");
+        tracing::trace!("DbConnection::query({self:?}, {statement}, {params:?})");
         if !valid_params(params) {
-            tracing::warn!("invalid parameter argument");
+            tracing::warn!("Invalid parameter argument");
             return Ok(vec![]);
         }
         match self {
@@ -557,19 +554,19 @@ impl DbConnection {
     }
 }
 
-/// TODO: Add docstring
+/// A database transaction as defined specifically for the sqlx driver
 #[cfg(feature = "sqlx")]
 #[derive(Debug)]
-pub enum DbSqlxTransaction<'a> {
-    SqliteTransaction(sqlx::Transaction<'a, sqlx::Sqlite>),
-    PostgresTransaction(sqlx::Transaction<'a, sqlx::Postgres>),
+pub enum SqlxDbTransaction<'a> {
+    Sqlite(Transaction<'a, Any>),
+    Postgres(Transaction<'a, Postgres>),
 }
 
 /// A database transaction
 #[derive(Debug)]
 pub enum DbTransaction<'a> {
     #[cfg(feature = "sqlx")]
-    Sqlx(DbSqlxTransaction<'a>, DbKind),
+    Sqlx(SqlxDbTransaction<'a>, DbKind),
 
     #[cfg(feature = "rusqlite")]
     Rusqlite(rusqlite::Transaction<'a>),
@@ -578,7 +575,7 @@ pub enum DbTransaction<'a> {
 impl DbTransaction<'_> {
     /// The kind of database this transaction is associated with
     pub fn kind(&self) -> DbKind {
-        tracing::trace!("DbTransaction::kind()");
+        tracing::trace!("DbTransaction::kind({self:?})");
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(_, kind) => *kind,
@@ -589,12 +586,12 @@ impl DbTransaction<'_> {
 
     /// Commit this transaction
     pub fn commit(self) -> Result<()> {
-        tracing::trace!("DbTransaction::commit()");
+        tracing::trace!("DbTransaction::commit({self:?})");
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(tx, _) => match tx {
-                DbSqlxTransaction::SqliteTransaction(tx) => block_on(tx.commit())?,
-                DbSqlxTransaction::PostgresTransaction(tx) => block_on(tx.commit())?,
+                SqlxDbTransaction::Sqlite(tx) => block_on(tx.commit())?,
+                SqlxDbTransaction::Postgres(tx) => block_on(tx.commit())?,
             },
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(tx) => tx.commit()?,
@@ -604,12 +601,12 @@ impl DbTransaction<'_> {
 
     /// Rollback this transaction
     pub fn rollback(self) -> Result<()> {
-        tracing::trace!("DbTransaction::rollback()");
+        tracing::trace!("DbTransaction::rollback({self:?})");
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(tx, _) => match tx {
-                DbSqlxTransaction::SqliteTransaction(tx) => block_on(tx.rollback())?,
-                DbSqlxTransaction::PostgresTransaction(tx) => block_on(tx.rollback())?,
+                SqlxDbTransaction::Sqlite(tx) => block_on(tx.rollback())?,
+                SqlxDbTransaction::Postgres(tx) => block_on(tx.rollback())?,
             },
             #[cfg(feature = "rusqlite")]
             Self::Rusqlite(tx) => tx.rollback()?,
@@ -617,12 +614,11 @@ impl DbTransaction<'_> {
         Ok(())
     }
 
-    /// Given a connection and a generic SQL string with placeholders and a list of parameters
-    /// to interpolate into the string, return a vector of [JsonRow]s.
-    /// Note that since this returns a vector, statements should be limited to those that will
-    /// return a sane number of rows.
+    /// Given a generic SQL string with placeholders and a list of parameters to interpolate into
+    /// the string, return a vector of [JsonRow]s. Note that since this returns a vector,
+    /// statements should be limited to those that will return a sane number of rows.
     pub fn query(&mut self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
-        tracing::trace!("DbTransaction::query({statement}, {params:?})");
+        tracing::trace!("DbTransaction::query({self:?}, {statement}, {params:?})");
         if !valid_params(params) {
             tracing::warn!("invalid parameter argument");
             return Ok(vec![]);
@@ -630,7 +626,7 @@ impl DbTransaction<'_> {
         match self {
             #[cfg(feature = "sqlx")]
             Self::Sqlx(tx, _) => match tx {
-                DbSqlxTransaction::SqliteTransaction(tx) => {
+                SqlxDbTransaction::Sqlite(tx) => {
                     let query = prepare_sqlx_sqlite_query(&statement, params)?;
                     let mut rows = vec![];
                     for row in block_on(query.fetch_all(block_on(tx.acquire())?))? {
@@ -638,7 +634,7 @@ impl DbTransaction<'_> {
                     }
                     Ok(rows)
                 }
-                DbSqlxTransaction::PostgresTransaction(tx) => {
+                SqlxDbTransaction::Postgres(tx) => {
                     let query = prepare_sqlx_pg_query(&statement, params)?;
                     let mut rows = vec![];
                     for row in block_on(query.fetch_all(block_on(tx.acquire())?))? {
@@ -661,7 +657,7 @@ impl DbTransaction<'_> {
         statement: &str,
         params: Option<&JsonValue>,
     ) -> Result<Option<JsonRow>> {
-        tracing::trace!("DbTransaction::query_one({statement}, {params:?})");
+        tracing::trace!("DbTransaction::query_one({self:?}, {statement}, {params:?})");
         let rows = self.query(&statement, params)?;
         match rows.iter().next() {
             Some(row) => Ok(Some(row.clone())),
@@ -675,7 +671,7 @@ impl DbTransaction<'_> {
         statement: &str,
         params: Option<&JsonValue>,
     ) -> Result<Option<JsonValue>> {
-        tracing::trace!("DbTransaction::query_value({statement}, {params:?})");
+        tracing::trace!("DbTransaction::query_value({self:?}, {statement}, {params:?})");
         let rows = self.query(statement, params)?;
         Ok(extract_value(&rows))
     }
@@ -720,6 +716,7 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
 
 /// Return the SQL type corresponding to the given datatype
 pub fn get_sql_type(datatype: &ColumnDatatype) -> Result<&str> {
+    tracing::trace!("get_sql_type({datatype:?})");
     match datatype.name.as_str() {
         "text" => Ok("TEXT"),
         "integer" => Ok("INTEGER"),
@@ -734,15 +731,19 @@ pub fn get_sql_type(datatype: &ColumnDatatype) -> Result<&str> {
     }
 }
 
+// TODO (maybe): Possibly define a new enum called DbQuery and save some lines of code by
+// refactoring prepare_sqlx_sqlite_query() and prepare_sqlx_pg_query() into one function that
+// accepts a DbQuery, unless doing that makes things unnecessarily complicated in other ways.
+
 /// Given an SQL string that has been bound to the given parameter vector, construct a database
 /// query and return it.
 #[cfg(feature = "sqlx")]
 pub fn prepare_sqlx_sqlite_query<'a>(
     statement: &'a str,
     params: Option<&'a JsonValue>,
-) -> Result<sqlx::query::Query<'a, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'a>>> {
+) -> Result<Query<'a, Any, AnyArguments<'a>>> {
     tracing::trace!("prepare_sqlx_query({statement}, {params:?})");
-    let mut query = sqlx::query::<sqlx::Sqlite>(&statement);
+    let mut query = sqlx::query::<Any>(&statement);
     if let Some(params) = params {
         for param in params.as_array().unwrap() {
             match param {
@@ -767,9 +768,9 @@ pub fn prepare_sqlx_sqlite_query<'a>(
 pub fn prepare_sqlx_pg_query<'a>(
     statement: &'a str,
     params: Option<&'a JsonValue>,
-) -> Result<sqlx::query::Query<'a, sqlx::Postgres, sqlx::postgres::PgArguments>> {
+) -> Result<Query<'a, Postgres, PgArguments>> {
     tracing::trace!("prepare_sqlx_query({statement}, {params:?})");
-    let mut query = sqlx::query::<sqlx::Postgres>(&statement);
+    let mut query = sqlx::query::<Postgres>(&statement);
     if let Some(params) = params {
         for param in params.as_array().unwrap() {
             match param {
@@ -1468,6 +1469,7 @@ pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 // WARN: This needs to be thought through.
 /// Convert the given JSON value to a string
 pub fn json_to_string(value: &JsonValue) -> String {
+    tracing::trace!("json_to_string({value:?})");
     match value {
         JsonValue::Null => "".to_string(),
         JsonValue::Bool(value) => value.to_string(),
@@ -1480,6 +1482,7 @@ pub fn json_to_string(value: &JsonValue) -> String {
 
 /// Convert the given JSON value to an unsigned integer
 pub fn json_to_unsigned(value: &JsonValue) -> Result<u64> {
+    tracing::trace!("json_to_unsigned({value:?})");
     match value {
         JsonValue::Bool(flag) => match flag {
             true => Ok(1),
@@ -1533,9 +1536,9 @@ impl JsonRow {
         }
     }
 
-    /// Set any column values whose content matches the column's nulltype to [JsonValue::Null]
+    /// Set any column values whose content matches that column's nulltype to [JsonValue::Null]
     pub fn nullify(row: &Self, table: &Table) -> Self {
-        tracing::debug!("nullified({row:?}, {table:?})");
+        tracing::trace!("JsonRow::nullify({row:?}, {table:?})");
         let mut nullified_row = Self::new();
         for (column, value) in row.content.iter() {
             let nulltype = table
@@ -1554,7 +1557,7 @@ impl JsonRow {
                 }
             };
         }
-        tracing::debug!("Nullified row: {nullified_row:?}");
+        tracing::debug!("Nullified row: {row:?} to: {nullified_row:?}");
         nullified_row
     }
 
@@ -1562,6 +1565,7 @@ impl JsonRow {
     /// [nulltype](Column::nulltype) of the given column, and then if the given value matches the
     /// column's nulltype, set it to [Null](JsonValue::Null)
     pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValue {
+        tracing::trace!("JsonRow::nullify_value({table:?}, {column}, {value:?})");
         match table.get_configured_column_attribute(column, "nulltype") {
             Some(supported) if supported == "empty" => match value {
                 JsonValue::String(s) if s == "" => JsonValue::Null,
@@ -1577,6 +1581,7 @@ impl JsonRow {
 
     /// Get the value of the given column from the row
     pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
+        tracing::trace!("JsonRow::get_value({self:?}, {column_name})");
         let value = self.content.get(column_name);
         match value {
             Some(value) => Ok(value.clone()),
@@ -1587,6 +1592,7 @@ impl JsonRow {
     /// Get the value of the given column fromt he row and convert it to a string before returning
     /// it
     pub fn get_string(&self, column_name: &str) -> Result<String> {
+        tracing::trace!("JsonRow::get_string({self:?}, {column_name})");
         let value = self.content.get(column_name);
         match value {
             Some(value) => Ok(json_to_string(&value)),
@@ -1597,6 +1603,7 @@ impl JsonRow {
     /// Get the value of the given column from the row and convert it to an unsigned integer
     /// before returning it
     pub fn get_unsigned(&self, column_name: &str) -> Result<u64> {
+        tracing::trace!("JsonRow::get_unsigned({self:?}, {column_name})");
         let value = self.content.get(column_name);
         match value {
             Some(value) => json_to_unsigned(&value),
@@ -1607,6 +1614,7 @@ impl JsonRow {
     /// Initialize a new row from the given list of column names and set all values to
     /// [JsonValue::Null]
     pub fn from_strings(strings: &Vec<&str>) -> Self {
+        tracing::trace!("JsonRow::from_strings({strings:?})");
         let mut json_row = Self::new();
         for string in strings {
             json_row.content.insert(string.to_string(), JsonValue::Null);
@@ -1616,6 +1624,7 @@ impl JsonRow {
 
     /// Return all of the values in this row to a vector of strings and return it
     pub fn to_strings(&self) -> Vec<String> {
+        tracing::trace!("JsonRow::to_strings({self:?})");
         let mut result = vec![];
         for column_name in self.content.keys() {
             // The logic of this implies that this should not fail, so an expect() is
@@ -1627,6 +1636,7 @@ impl JsonRow {
 
     /// Generate a map from the column names of the row to their values and return it
     pub fn to_string_map(&self) -> IndexMap<String, String> {
+        tracing::trace!("JsonRow::to_string_map({self:?})");
         let mut result = IndexMap::new();
         for column_name in self.content.keys() {
             result.insert(
@@ -1640,6 +1650,7 @@ impl JsonRow {
     /// Initialize a [JsonRow] from the given [rusqlite::Row]
     #[cfg(feature = "rusqlite")]
     pub fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
+        tracing::trace!("JsonRow::from_rusqlite({column_names:?}, {row:?})");
         let mut content = JsonMap::new();
         for column_name in column_names {
             let value = match row.get_ref(*column_name) {
@@ -1662,13 +1673,16 @@ impl JsonRow {
 }
 
 #[cfg(feature = "sqlx")]
-impl TryFrom<sqlx::sqlite::SqliteRow> for JsonRow {
-    fn try_from(row: sqlx::sqlite::SqliteRow) -> Result<Self> {
+impl TryFrom<AnyRow> for JsonRow {
+    type Error = anyhow::Error;
+
+    fn try_from(row: AnyRow) -> Result<Self> {
+        tracing::trace!("JsonRow::try_from::<AnyRow>(row)");
         let mut content = JsonMap::new();
         for column in row.columns() {
             // We had problems getting a type for columns that are not in the schema,
             // e.g. "SELECT COUNT() AS count".
-            // So now we start with Null and try INTEGER, NUMERIC, REAL, STRING, BOOL.
+            // So now we start with Null and try INTEGER, NUMERIC/REAL, STRING, BOOL.
             let mut value: JsonValue = JsonValue::Null;
             if value.is_null() {
                 let x: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
@@ -1678,12 +1692,6 @@ impl TryFrom<sqlx::sqlite::SqliteRow> for JsonRow {
             }
             if value.is_null() {
                 let x: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            if value.is_null() {
-                let x: Result<f32, sqlx::Error> = row.try_get(column.ordinal());
                 if let Ok(x) = x {
                     value = JsonValue::from(x);
                 }
@@ -1704,61 +1712,80 @@ impl TryFrom<sqlx::sqlite::SqliteRow> for JsonRow {
         }
         Ok(Self { content })
     }
-
-    type Error = anyhow::Error;
 }
 
 #[cfg(feature = "sqlx")]
-impl TryFrom<sqlx::postgres::PgRow> for JsonRow {
-    fn try_from(row: sqlx::postgres::PgRow) -> Result<Self> {
+impl TryFrom<PgRow> for JsonRow {
+    type Error = anyhow::Error;
+
+    fn try_from(row: PgRow) -> Result<Self> {
+        tracing::trace!("JsonRow::try_from::<PgRow>(row)");
         let mut content = JsonMap::new();
         for column in row.columns() {
-            // We had problems getting a type for columns that are not in the schema,
-            // e.g. "SELECT COUNT() AS count".
-            // So now we start with Null and try INTEGER, NUMERIC, REAL, STRING, BOOL.
-            let mut value: JsonValue = JsonValue::Null;
-            if value.is_null() {
-                let x: Result<i64, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
+            let column_type = column.type_info().name();
+            let value = match column_type {
+                "INT4" => {
+                    let value: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
+                    match value {
+                        Ok(value) => JsonValue::from(value),
+                        Err(_) => JsonValue::Null,
+                    }
                 }
-            }
-            if value.is_null() {
-                let x: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
+                "INT8" => {
+                    let value: Result<i64, sqlx::Error> = row.try_get(column.ordinal());
+                    match value {
+                        Ok(value) => JsonValue::from(value),
+                        Err(_) => JsonValue::Null,
+                    }
                 }
-            }
-            if value.is_null() {
-                let x: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
+                "FLOAT4" => {
+                    let value: Result<f32, sqlx::Error> = row.try_get(column.ordinal());
+                    match value {
+                        Ok(value) => JsonValue::from(value),
+                        Err(_) => JsonValue::Null,
+                    }
                 }
-            }
-            if value.is_null() {
-                let x: Result<f32, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
+                "NUMERIC" => {
+                    let value: Result<BigDecimal, sqlx::Error> = row.try_get(column.ordinal());
+                    match value {
+                        Ok(value) => {
+                            let value = value.to_f64();
+                            JsonValue::from(value)
+                        }
+                        Err(_) => JsonValue::Null,
+                    }
                 }
-            }
-            if value.is_null() {
-                let x: Result<String, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
+                "TEXT" => {
+                    let value: Result<String, sqlx::Error> = row.try_get(column.ordinal());
+                    match value {
+                        Ok(value) => JsonValue::from(value),
+                        Err(_) => JsonValue::Null,
+                    }
                 }
-            }
-            if value.is_null() {
-                let x: Result<bool, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
+                "BOOL" => {
+                    let value: Result<bool, sqlx::Error> = row.try_get(column.ordinal());
+                    match value {
+                        Ok(value) => JsonValue::from(value),
+                        Err(_) => JsonValue::Null,
+                    }
                 }
-            }
+                unsupported => {
+                    tracing::warn!(
+                        "Got unsupported column '{}' with type '{}'",
+                        column.name(),
+                        unsupported
+                    );
+                    let value: Result<String, sqlx::Error> = row.try_get(column.ordinal());
+                    match value {
+                        Ok(value) => JsonValue::from(value),
+                        Err(_) => JsonValue::Null,
+                    }
+                }
+            };
             content.insert(column.name().into(), value);
         }
         Ok(Self { content })
     }
-
-    type Error = anyhow::Error;
 }
 
 impl std::fmt::Display for JsonRow {

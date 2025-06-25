@@ -179,27 +179,27 @@ wait || exit 1
 rltbl get table penguin > /var/tmp/table.$$
 diff /var/tmp/table.$$ - <<EOF
 Rows 1-20 of 20
-study_name  sample_number  species             island     individual_id  culmen_length  body_mass
-FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.6           3221
-FAKE123     2              Pygoscelis adeliae  Torgersen  N2             30.5           3685
-FAKE123     3              Pygoscelis adeliae  Torgersen  N3             35.2           1491
-FAKE123     4              Pygoscelis adeliae  Torgersen  N4             31.4           1874
-FAKE123     5              Pygoscelis adeliae  Torgersen  N5             45.8           3469
-FAKE123     6              Pygoscelis adeliae  Torgersen  N6             40.6           4875
-FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9           2129
-FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
-FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6           2702
-FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
-FAKE123     11             Pygoscelis adeliae  Biscoe     N11            37.9           3237
-FAKE123     12             Pygoscelis adeliae  Torgersen  N12            33.1           3883
-FAKE123     13             Pygoscelis adeliae  Torgersen  N13            31.5           3012
-FAKE123     14             Pygoscelis adeliae  Torgersen  N14            42.7           3989
-FAKE123     15             Pygoscelis adeliae  Dream      N15            47.5           4174
-FAKE123     16             Pygoscelis adeliae  Torgersen  N16            44.6           1252
-FAKE123     17             Pygoscelis adeliae  Biscoe     N17            34.3           2747
-FAKE123     18             Pygoscelis adeliae  Dream      N18            43.5           2516
-FAKE123     19             Pygoscelis adeliae  Biscoe     N19            46.3           1276
-FAKE123     20             Pygoscelis adeliae  Torgersen  N20            42.3           3803
+study_name  sample_number  species             island     individual_id  culmen_length       culmen_depth  body_mass
+FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.599998474121094  31.1          4093
+FAKE123     2              Pygoscelis adeliae  Torgersen  N2             30.5                33.4          3336
+FAKE123     3              Pygoscelis adeliae  Torgersen  N3             35.20000076293945   22.4          4087
+FAKE123     4              Pygoscelis adeliae  Biscoe     N4             34.29999923706055   35.8          3469
+FAKE123     5              Pygoscelis adeliae  Torgersen  N5             40.599998474121094  39.9          2129
+FAKE123     6              Pygoscelis adeliae  Biscoe     N6             30.899999618530273  22.2          4962
+FAKE123     7              Pygoscelis adeliae  Biscoe     N7             38.599998474121094  28.5          3607
+FAKE123     8              Pygoscelis adeliae  Dream      N8             33.79999923706055   39.9          1908
+FAKE123     9              Pygoscelis adeliae  Dream      N9             43.70000076293945   23.1          3883
+FAKE123     10             Pygoscelis adeliae  Torgersen  N10            31.5                30.0          4521
+FAKE123     11             Pygoscelis adeliae  Torgersen  N11            39.5                37.5          4174
+FAKE123     12             Pygoscelis adeliae  Torgersen  N12            44.599998474121094  21.2          4700
+FAKE123     13             Pygoscelis adeliae  Biscoe     N13            34.29999923706055   28.7          4908
+FAKE123     14             Pygoscelis adeliae  Dream      N14            43.5                20.3          4274
+FAKE123     15             Pygoscelis adeliae  Biscoe     N15            47.099998474121094  32.3          3803
+FAKE123     16             Pygoscelis adeliae  Torgersen  N16            45.70000076293945   33.3          4458
+FAKE123     17             Pygoscelis adeliae  Biscoe     N17            46.29999923706055   30.3          4444
+FAKE123     18             Pygoscelis adeliae  Torgersen  N18            47.29999923706055   23.3          1350
+FAKE123     19             Pygoscelis adeliae  Biscoe     N19            37.0                37.9          1749
+FAKE123     20             Pygoscelis adeliae  Torgersen  N20            40.400001525878906  32.4          4906
 
 EOF
 

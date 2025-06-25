@@ -9,18 +9,18 @@ $ echo '{"study_name": "FAKE123", "sample_number": "SAMPLE #11", "species": "Pyg
 $ rltbl set value penguin 9 sample_number SAMPLE09
 $ rltbl get table penguin
 Rows 1-11 of 11
-study_name  sample_number  species             island     individual_id  culmen_length  body_mass
-FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.6           3221
-FAKE123     2              Pygoscelis adeliae  Torgersen  N2             30.5           3685
-FAKE123     3              Pygoscelis adeliae  Torgersen  N3             35.2           1491
-FAKE123     4              Pygoscelis adeliae  Torgersen  N4             31.4           1874
-FAKE123     5              Pygoscelis adeliae  Torgersen  N5             45.8           3469
-FAKE123     6              Pygoscelis adeliae  Torgersen  N6             40.6           4875
-FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9           2129
-FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
-FAKE123     SAMPLE09       Pygoscelis adeliae  Biscoe     N9             38.6           2702
-FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
-FAKE123     SAMPLE #11     Pygoscelis adeliae  Biscoe     N11            35.4           2001
+study_name  sample_number  species             island     individual_id  culmen_length       culmen_depth  body_mass
+FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.599998474121094  31.1          4093
+FAKE123     2              Pygoscelis adeliae  Torgersen  N2             30.5                33.4          3336
+FAKE123     3              Pygoscelis adeliae  Torgersen  N3             35.20000076293945   22.4          4087
+FAKE123     4              Pygoscelis adeliae  Biscoe     N4             34.29999923706055   35.8          3469
+FAKE123     5              Pygoscelis adeliae  Torgersen  N5             40.599998474121094  39.9          2129
+FAKE123     6              Pygoscelis adeliae  Biscoe     N6             30.899999618530273  22.2          4962
+FAKE123     7              Pygoscelis adeliae  Biscoe     N7             38.599998474121094  28.5          3607
+FAKE123     8              Pygoscelis adeliae  Dream      N8             33.79999923706055   39.9          1908
+FAKE123                    Pygoscelis adeliae  Dream      N9             43.70000076293945   23.1          3883
+FAKE123     10             Pygoscelis adeliae  Torgersen  N10            31.5                30.0          4521
+FAKE123                    Pygoscelis adeliae  Biscoe     N11            35.400001525878906                2001
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |   value    | level |       rule       |                message
 ------------+----------+---------+-----+---------------+------------+-------+------------------+---------------------------------------
@@ -32,18 +32,18 @@ $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "me
 $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 4 species
 $ rltbl get table penguin
 Rows 1-11 of 11
-study_name  sample_number  species             island     individual_id  culmen_length  body_mass
-FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.6           3221
-FAKE123     2              Pygoscelis adeliae  Torgersen  N2             30.5           3685
-FAKE123     3              Pygoscelis adeliae  Torgersen  N3             35.2           1491
-FAKE123     4              Pygoscelis adeliae  Torgersen  N4             31.4           1874
-FAKE123     5              Pygoscelis adeliae  Torgersen  N5             45.8           3469
-FAKE123     6              Pygoscelis adeliae  Torgersen  N6             40.6           4875
-FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9           2129
-FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
-FAKE123     SAMPLE09       Pygoscelis adeliae  Biscoe     N9             38.6           2702
-FAKE123     10             Pygoscelis adeliae  Dream      N10            33.8           4697
-FAKE123     SAMPLE #11     Pygoscelis adeliae  Biscoe     N11            35.4           2001
+study_name  sample_number  species             island     individual_id  culmen_length       culmen_depth  body_mass
+FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.599998474121094  31.1          4093
+FAKE123     2              Pygoscelis adeliae  Torgersen  N2             30.5                33.4          3336
+FAKE123     3              Pygoscelis adeliae  Torgersen  N3             35.20000076293945   22.4          4087
+FAKE123     4              Pygoscelis adeliae  Biscoe     N4             34.29999923706055   35.8          3469
+FAKE123     5              Pygoscelis adeliae  Torgersen  N5             40.599998474121094  39.9          2129
+FAKE123     6              Pygoscelis adeliae  Biscoe     N6             30.899999618530273  22.2          4962
+FAKE123     7              Pygoscelis adeliae  Biscoe     N7             38.599998474121094  28.5          3607
+FAKE123     8              Pygoscelis adeliae  Dream      N8             33.79999923706055   39.9          1908
+FAKE123                    Pygoscelis adeliae  Dream      N9             43.70000076293945   23.1          3883
+FAKE123     10             Pygoscelis adeliae  Torgersen  N10            31.5                30.0          4521
+FAKE123                    Pygoscelis adeliae  Biscoe     N11            35.400001525878906                2001
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |       value        | level |       rule       |                message
 ------------+----------+---------+-----+---------------+--------------------+-------+------------------+---------------------------------------

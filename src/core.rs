@@ -671,6 +671,8 @@ impl Relatable {
     /// Use the given [Select] to fetch data from the database.
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
         tracing::trace!("Relatable::fetch({select:?})");
+        // TODO: I've set this to the default view for dev testing for now, but switch this
+        // back to "text" before merging this PR.
         self.fetch_with_view("default", select).await
     }
 
@@ -2383,6 +2385,7 @@ impl Relatable {
         Ok(new_row)
     }
 
+    // TODO: Delete any messages associated with the deleted row. Similarly clean up messages when updating a row.
     /// Delete a row from the table. Returns the number of rows deleted.
     async fn _delete_row(
         &self,
