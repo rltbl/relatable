@@ -199,6 +199,23 @@ impl Table {
         }
     }
 
+    /// TODO: Add docstring
+    pub async fn set_view(&mut self, rltbl: &Relatable, view_type: &str) -> Result<&Self> {
+        match view_type {
+            "text" => self.ensure_text_view_created(rltbl).await?,
+            "default" => self.ensure_default_view_created(rltbl).await?,
+            unsupported => {
+                tracing::warn!(
+                    "Unsupported view name: '{}'. Not changing view '{}' for table '{}",
+                    unsupported,
+                    self.view,
+                    self.name
+                );
+            }
+        };
+        Ok(self)
+    }
+
     /// Use the given [relatable](crate) instance to ensure that the default view for this
     /// table has been created, and then set the view for this table to it.
     pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<()> {

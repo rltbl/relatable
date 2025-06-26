@@ -1176,6 +1176,10 @@ pub(crate) fn generate_text_view_ddl(
                     format!(r#"FORMAT("{}", "{}")"#, datatype_format, column.name)
                 } else {
                     // TODO: Use the formatting specifier here, similarly to sqlite
+                    // See the inner function called format_cell() in Valve::save_table() for
+                    // match statement matching over a sprintf-like format specifier. What needs
+                    // to be changed are just the actions, which need to mimic PostgreSQL's
+                    // to_char() function syntax.
                     format!(r#""{}"::TEXT"#, column.name)
                 }
             };

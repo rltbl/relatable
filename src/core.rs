@@ -599,15 +599,15 @@ impl Relatable {
         // Get the table and columns information and use the given select to set the table's view:
         let mut table = Table::get_table(select.table_name.as_str(), self).await?;
         if select.view_name == format!("{}_default_view", table.name) || select.view_name == "" {
-            table.ensure_default_view_created(self).await?;
+            table.set_view(self, "default").await?;
         } else if select.view_name == format!("{}_text_view", table.name) {
-            table.ensure_text_view_created(self).await?;
-        } else if select.view_name != "" {
+            table.set_view(self, "text").await?;
+        } else {
             tracing::warn!(
-                "Unsupported view name: '{}'. Using default view",
+                "Unsupported view name: '{}'. Falling back to default view",
                 select.view_name
             );
-            table.ensure_default_view_created(self).await?;
+            table.set_view(self, "default").await?;
         }
         let mut columns = table.columns.values().cloned().collect::<Vec<_>>();
 
@@ -943,7 +943,7 @@ impl Relatable {
         for table_row in table_rows {
             let table_name = table_row.get_string("table")?;
             let mut table = Table::get_table(&table_name, self).await?;
-            table.ensure_text_view_created(self).await?;
+            table.set_view(self, "text").await?;
 
             let path = match save_dir {
                 Some(save_dir) => format!("{save_dir}/{table_name}.tsv"),
