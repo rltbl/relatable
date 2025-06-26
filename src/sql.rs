@@ -919,7 +919,7 @@ pub fn generate_table_ddl(
             }
             DbKind::Postgres => {
                 "_id SERIAL PRIMARY KEY, \
-                 _order INTEGER UNIQUE, "
+                 _order BIGINT UNIQUE, "
             }
         });
     }
@@ -1261,7 +1261,7 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl.push(format!(
         r#"CREATE TABLE "table" (
              "_id" {pkey_clause},
-             "_order" INTEGER UNIQUE,
+             "_order" BIGINT UNIQUE,
              "table" TEXT UNIQUE,
              "path" TEXT UNIQUE
            )"#
@@ -1372,7 +1372,7 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
                       history_id INTEGER PRIMARY KEY AUTOINCREMENT,
                       change_id INTEGER NOT NULL,
                       "table" TEXT NOT NULL,
-                      "row" INTEGER NOT NULL,
+                      "row" BIGINT NOT NULL,
                       "before" TEXT,
                       "after" TEXT,
                       FOREIGN KEY ("change_id") REFERENCES "change"("change_id"),
@@ -1392,7 +1392,7 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
                      history_id SERIAL PRIMARY KEY,
                      change_id INTEGER NOT NULL,
                      "table" TEXT NOT NULL,
-                     "row" INTEGER NOT NULL,
+                     "row" BIGINT NOT NULL,
                      "before" TEXT,
                      "after" TEXT,
                      FOREIGN KEY ("change_id") REFERENCES "change"("change_id"),
@@ -1413,7 +1413,7 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
                       "message_id" INTEGER PRIMARY KEY AUTOINCREMENT,
                       "added_by" TEXT,
                       "table" TEXT NOT NULL,
-                      "row" INTEGER NOT NULL,
+                      "row" BIGINT NOT NULL,
                       "column" TEXT NOT NULL,
                       "value" TEXT,
                       "level" TEXT,
@@ -1435,7 +1435,7 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
                      "message_id" SERIAL PRIMARY KEY,
                      "added_by" TEXT,
                      "table" TEXT NOT NULL,
-                     "row" INTEGER NOT NULL,
+                     "row" BIGINT NOT NULL,
                      "column" TEXT NOT NULL,
                      "value" TEXT,
                      "level" TEXT,
@@ -1682,10 +1682,10 @@ impl TryFrom<AnyRow> for JsonRow {
         for column in row.columns() {
             // We had problems getting a type for columns that are not in the schema,
             // e.g. "SELECT COUNT() AS count".
-            // So now we start with Null and try INTEGER, NUMERIC/REAL, STRING, BOOL.
+            // So now we start with Null and try BIGINT/INTEGER, NUMERIC/REAL, STRING, BOOL.
             let mut value: JsonValue = JsonValue::Null;
             if value.is_null() {
-                let x: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
+                let x: Result<i64, sqlx::Error> = row.try_get(column.ordinal());
                 if let Ok(x) = x {
                     value = JsonValue::from(x);
                 }

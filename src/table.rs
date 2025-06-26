@@ -15,7 +15,10 @@ use serde_json::{json, Value as JsonValue};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Table {
+    /// The name of the table
     pub name: String,
+    /// The name of the view (blank if there is none) to be used when querying the table
+    pub view: String,
     /// The id of the most recent change to this table.
     pub change_id: u64,
     // We may eventually want to turn `columns` into a special-purpose struct, but for now a
@@ -31,6 +34,7 @@ impl Default for Table {
     fn default() -> Self {
         Self {
             name: "".into(),
+            view: "".into(),
             change_id: 0,
             columns: IndexMap::new(),
             editable: true,
@@ -58,6 +62,15 @@ impl Table {
     /// Returns a [Table] corresponding to the given table name using the given transaction.
     pub fn _get_table(table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Self> {
         tracing::trace!("Table::_get_table({table_name:?}, tx)");
+        // If the default view exists, set the table's view to it, otherwise leave it blank:
+        let result = Self::_view_exists(table_name, "default", tx)?;
+        let view = {
+            if result {
+                format!("{table_name}_default_view")
+            } else {
+                String::from("")
+            }
+        };
 
         // Get the last change for this table:
         let statement = format!(
@@ -72,6 +85,7 @@ impl Table {
 
         Ok(Table {
             name: table_name.to_string(),
+            view,
             change_id,
             columns: Self::_collect_column_info(table_name, tx)?
                 .0
@@ -132,15 +146,67 @@ impl Table {
         }
     }
 
+    /// Determine whether a view of the given type exists for the table in the database.
+    pub async fn view_exists(&self, view_type: &str, rltbl: &Relatable) -> Result<bool> {
+        tracing::trace!("Table::view_exists({self:?}, {view_type}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+
+        let view_exists = Self::_view_exists(&self.name, view_type, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(view_exists)
+    }
+
+    /// Determine whether a view of the given type exists for the table in the database, using the
+    /// given transaction.
+    pub fn _view_exists(table: &str, view_type: &str, tx: &mut DbTransaction<'_>) -> Result<bool> {
+        tracing::trace!("Table::_view_exists({table}, {view_type}, tx)");
+        let (statement, params) = match tx.kind() {
+            DbKind::Sqlite => {
+                let sql_param = SqlParam::new(&tx.kind()).next();
+                (
+                    format!(
+                        r#"SELECT 1
+                           FROM sqlite_master
+                           WHERE type = 'view' AND name = {sql_param}"#
+                    ),
+                    json!([format!("{table}_{view_type}_view")]),
+                )
+            }
+            DbKind::Postgres => {
+                let mut sql_param_gen = SqlParam::new(&tx.kind());
+                let sql_param_1 = sql_param_gen.next();
+                let sql_param_2 = sql_param_gen.next();
+                (
+                    format!(
+                        r#"SELECT 1
+                           FROM "information_schema"."tables"
+                           WHERE "table_name" = {sql_param_1}
+                           AND "table_type" = {sql_param_2}"#,
+                    ),
+                    json!([format!("{table}_{view_type}_view"), "VIEW"]),
+                )
+            }
+        };
+        let result = tx.query_value(&statement, Some(&params))?;
+        match result {
+            None => Ok(false),
+            _ => Ok(true),
+        }
+    }
+
     /// Use the given [relatable](crate) instance to ensure that the default view for this
-    /// table has been created.
+    /// table has been created, and then set the view for this table to it.
     pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::ensure_default_view_created({self:?}, {rltbl:?})");
         let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
-        tracing::debug!(
-            r#"Creating default view "{}_default_view" with columns {columns:?}"#,
-            self.name
-        );
+        let view_name = format!("{}_default_view", self.name);
+        tracing::debug!(r#"Creating default view "{view_name}" with columns {columns:?}"#);
+
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
             true => r#"_id"#,
@@ -159,11 +225,15 @@ impl Table {
         ) {
             rltbl.connection.query(&sql, None).await?;
         }
+
+        // Set the table's view name to the default view:
+        self.view = view_name;
+
         Ok(())
     }
 
     /// Use the given [relatable](crate) instance to ensure that the text view for this
-    /// table has been created.
+    /// table has been created, and then set the view for this table to it.
     pub async fn ensure_text_view_created(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::ensure_text_view_created({self:?}, {rltbl:?})");
 
@@ -171,11 +241,10 @@ impl Table {
         self.ensure_default_view_created(rltbl).await?;
 
         // Create the text view:
+        let view_name = format!("{}_text_view", self.name);
+
         let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
-        tracing::debug!(
-            r#"Creating text view "{}_text_view" with columns {columns:?}"#,
-            self.name
-        );
+        tracing::debug!(r#"Creating text view "{view_name}" with columns {columns:?}"#);
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
             true => r#"_id"#,
@@ -194,6 +263,10 @@ impl Table {
         ) {
             rltbl.connection.query(&sql, None).await?;
         }
+
+        // Set the table's view name to the text view:
+        self.view = view_name;
+
         Ok(())
     }
 

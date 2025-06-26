@@ -7,8 +7,8 @@ use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Relatable},
     select::{Format, Select},
     sql,
-    sql::DbConnection,
     sql::{CachingStrategy, JsonRow, SqlParam, VecInto},
+    table::Table,
     web::{serve, serve_cgi},
 };
 
@@ -61,9 +61,6 @@ pub struct Cli {
 // in the usage statement that is printed when valve is run with the option `--help`.
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    // Test connection (remove this later)
-    TestConnect {},
-
     /// Initialize a database
     Init {
         /// Overwrite an existing database
@@ -367,14 +364,28 @@ pub async fn print_table(
     // TODO: We need to ouput round numbers consistently between PostgreSQL and SQLite.
     // Currently, for instance, 37 is displayed as 37.0 in SQLite and 37 in PostgreSQL.
     tracing::debug!("print_table {table_name}");
+
+    // Initiate a rltbl instance, get the retrieve the Table struct corresponding to the given
+    // table name and ensure that the text view on the table has been created.
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
-    let select = Select::from(table_name)
+        .expect("Error initializing a relatable instance");
+    let mut table = Table::get_table(table_name, &rltbl)
+        .await
+        .expect("Error getting table");
+    // This has the side-effect of assigning the view name of the text view to `Table::view`:
+    table
+        .ensure_text_view_created(&rltbl)
+        .await
+        .expect("Error creating text view");
+
+    // Initialize a Select struct using the table struct, which will use the table's view name:
+    let select = Select::from_table(&table)
         .filters(filters)
         .unwrap()
         .limit(limit)
         .offset(offset);
+
     match format.to_lowercase().as_str() {
         "json" => {
             let json = json!(rltbl.fetch(&select).await.unwrap());
@@ -866,38 +877,6 @@ pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     );
 }
 
-///////////////////////////////////
-
-pub async fn test_connect(path: Option<&str>) -> Result<DbConnection> {
-    tracing::trace!("Relatable::connect({path:?})");
-    let _root = std::env::var("RLTBL_ROOT").unwrap_or_default();
-    // Set up database connection.
-    let _readonly = match std::env::var("RLTBL_READONLY") {
-        Ok(value) if value.to_lowercase() != "false" => true,
-        _ => false,
-    };
-    let path = match path {
-        Some(path) => path.to_string(),
-        None => match std::env::var_os("RLTBL_CONNECTION").and_then(|p| Some(p.into_string())) {
-            Some(Ok(path)) => path,
-            _ => crate::core::RLTBL_DEFAULT_DB.to_string(),
-        },
-    };
-    if !path.starts_with("postgresql://") {
-        let file = std::path::Path::new(&path);
-        if !file.exists() {
-            return Err(crate::core::RelatableError::InitError(
-                "First create a database with `rltbl init`".into(),
-            )
-            .into());
-        }
-    }
-    let (connection, _) = DbConnection::connect(&path).await?;
-    Ok(connection)
-}
-
-///////////////////////////////////
-
 pub async fn process_command() {
     tracing::trace!("process_command()");
     // Handle a CGI request, instead of normal CLI input.
@@ -920,16 +899,6 @@ pub async fn process_command() {
     tracing::debug!("CLI {cli:?}");
 
     match &cli.command {
-        Command::TestConnect {} => {
-            let conn = test_connect(None).await.unwrap();
-            let sql = format!(
-                r#"SELECT "culmen_length" FROM "penguin" WHERE "_id" = {sql_param}"#,
-                sql_param = SqlParam::new(&conn.kind()).next()
-            );
-            let params = json!([10]);
-            let value = conn.query_value(&sql, Some(&params)).await.unwrap();
-            println!("VALUE: {value:?}");
-        }
         Command::Init { force } => init(&cli, force, cli.database.as_deref()).await,
         Command::Get { subcommand } => match subcommand {
             GetSubcommand::Table {

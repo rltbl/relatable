@@ -16,7 +16,7 @@ use serde_json::{json, to_value, Value as JsonValue};
 use std::collections::{BTreeSet, HashSet};
 
 /// Represents a SELECT statement.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Select {
     pub table_name: String,
     pub view_name: String,
@@ -28,28 +28,23 @@ pub struct Select {
     pub order_by: Vec<(String, Order)>,
 }
 
-impl Default for Select {
-    fn default() -> Self {
-        let table_name = "";
-        Self {
-            // By default, the view name and table name are the same.
-            table_name: table_name.to_string(),
-            view_name: table_name.to_string(),
-            select: Vec::default(),
-            joins: Vec::default(),
-            limit: usize::default(),
-            offset: usize::default(),
-            filters: Vec::default(),
-            order_by: Vec::default(),
-        }
-    }
-}
-
 impl Select {
+    /// TODO: Add docstring
     pub fn from(table_name: &str) -> Self {
         tracing::trace!("Select::from({table_name:?})");
         Self {
             table_name: table_name.to_string(),
+            limit: DEFAULT_LIMIT,
+            ..Default::default()
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn from_table(table: &Table) -> Self {
+        tracing::trace!("Select::from_table({table:?})");
+        Self {
+            table_name: table.name.to_string(),
+            view_name: table.view.to_string(),
             limit: DEFAULT_LIMIT,
             ..Default::default()
         }

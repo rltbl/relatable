@@ -592,31 +592,24 @@ impl Relatable {
             .map_err(|e| e.into())
     }
 
-    /// TODO: Add docstring
-    pub async fn fetch_with_view(&self, view_type: &str, select: &Select) -> Result<ResultSet> {
-        tracing::trace!("Relatable::fetch_with_view({view_type}, {select:?})");
+    /// Use the given [Select] to fetch data from the database.
+    pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
+        tracing::trace!("Relatable::fetch({select:?})");
 
-        // Get the table and columns info and ensure that the appropriate view has been created:
+        // Get the table and columns information:
         let mut table = Table::get_table(select.table_name.as_str(), self).await?;
         let mut columns = table.columns.values().cloned().collect::<Vec<_>>();
+
+        // Ensure that the default view has been created, which has the side-effect of setting
+        // `Table::view` to the default view:
+        table.ensure_default_view_created(self).await?;
+
+        // Since we are querying through a Select, `Select::view_name` must also be explicitly set.
+        // But note that we do not modify the select that was passed to fetch(). Instead we create
+        // a clone here that fetches from the default view, but leave the Select struct that was
+        // passed to this function unchanged:
         let mut select = select.clone();
-        select.view_name = match view_type {
-            "default" => {
-                table.ensure_default_view_created(self).await?;
-                format!("{}_default_view", table.name)
-            }
-            "text" => {
-                table.ensure_text_view_created(self).await?;
-                format!("{}_text_view", table.name)
-            }
-            unsupported => {
-                return Err(RelatableError::InputError(format!(
-                    "Unsupported view type: '{unsupported}'. Supported view types are: \
-                     'default', 'text'"
-                ))
-                .into());
-            }
-        };
+        select.view_name = table.view.clone();
 
         // Fetch the data
         let (statement, parameters) = select.to_sql(&self.connection.kind())?;
@@ -666,14 +659,6 @@ impl Relatable {
             columns,
             rows,
         })
-    }
-
-    /// Use the given [Select] to fetch data from the database.
-    pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        tracing::trace!("Relatable::fetch({select:?})");
-        // TODO: I've set this to the default view for dev testing for now, but switch this
-        // back to "text" before merging this PR.
-        self.fetch_with_view("default", select).await
     }
 
     /// Use the given [Select] to fetch data from the database.
