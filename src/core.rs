@@ -412,7 +412,7 @@ impl Relatable {
                 "nulltype": JsonValue::Null,
                 // TODO: We are recording the format specififer in ColumnDatatype but we are not
                 // actually making use of it yet.
-                "datatype": "real:%.4f",
+                "datatype": "real:%.2f",
             }),
             json!({
                 "table": "penguin",
@@ -420,7 +420,7 @@ impl Relatable {
                 "label": "culmen depth (cm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": "numeric:%.4f",
+                "datatype": "numeric:%.2f",
             }),
             json!({
                 "table": "penguin",
@@ -596,20 +596,20 @@ impl Relatable {
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
         tracing::trace!("Relatable::fetch({select:?})");
 
-        // Get the table and columns information:
+        // Get the table and columns information and use the given select to set the table's view:
         let mut table = Table::get_table(select.table_name.as_str(), self).await?;
+        if select.view_name == format!("{}_default_view", table.name) || select.view_name == "" {
+            table.ensure_default_view_created(self).await?;
+        } else if select.view_name == format!("{}_text_view", table.name) {
+            table.ensure_text_view_created(self).await?;
+        } else if select.view_name != "" {
+            tracing::warn!(
+                "Unsupported view name: '{}'. Using default view",
+                select.view_name
+            );
+            table.ensure_default_view_created(self).await?;
+        }
         let mut columns = table.columns.values().cloned().collect::<Vec<_>>();
-
-        // Ensure that the default view has been created, which has the side-effect of setting
-        // `Table::view` to the default view:
-        table.ensure_default_view_created(self).await?;
-
-        // Since we are querying through a Select, `Select::view_name` must also be explicitly set.
-        // But note that we do not modify the select that was passed to fetch(). Instead we create
-        // a clone here that fetches from the default view, but leave the Select struct that was
-        // passed to this function unchanged:
-        let mut select = select.clone();
-        select.view_name = table.view.clone();
 
         // Fetch the data
         let (statement, parameters) = select.to_sql(&self.connection.kind())?;

@@ -8,7 +8,6 @@ use rltbl::{
     select::{Format, Select},
     sql,
     sql::{CachingStrategy, JsonRow, SqlParam, VecInto},
-    table::Table,
     web::{serve, serve_cgi},
 };
 
@@ -370,21 +369,16 @@ pub async fn print_table(
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .expect("Error initializing a relatable instance");
-    let mut table = Table::get_table(table_name, &rltbl)
-        .await
-        .expect("Error getting table");
-    // This has the side-effect of assigning the view name of the text view to `Table::view`:
-    table
-        .ensure_text_view_created(&rltbl)
-        .await
-        .expect("Error creating text view");
 
-    // Initialize a Select struct using the table struct, which will use the table's view name:
-    let select = Select::from_table(&table)
+    // Initialize a Select struct using the table struct:
+    let mut select = Select::from(table_name)
         .filters(filters)
         .unwrap()
         .limit(limit)
         .offset(offset);
+
+    // We will use the text view to retrieve the data:
+    select.view_name = format!("{table_name}_text_view");
 
     match format.to_lowercase().as_str() {
         "json" => {

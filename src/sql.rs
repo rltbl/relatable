@@ -1170,6 +1170,15 @@ pub(crate) fn generate_text_view_ddl(
     let mut inner_columns = columns
         .iter()
         .map(|column| {
+            let column_cast = {
+                let datatype_format = column.datatype.format.clone().unwrap_or("%s".to_string());
+                if *kind == DbKind::Sqlite {
+                    format!(r#"FORMAT("{}", "{}")"#, datatype_format, column.name)
+                } else {
+                    // TODO: Use the formatting specifier here, similarly to sqlite
+                    format!(r#""{}"::TEXT"#, column.name)
+                }
+            };
             format!(
                 r#"CASE
                      WHEN "{column}" {is_clause} NULL THEN (
@@ -1184,19 +1193,7 @@ pub(crate) fn generate_text_view_ddl(
                      ELSE {column_cast}
                    END AS "{column}""#,
                 column = column.name,
-                is_clause = is_clause(kind),
-                column_cast = {
-                    let datatype = column.datatype.name.to_string();
-                    if *kind == DbKind::Sqlite {
-                        if datatype.as_str() == "text" {
-                            format!(r#""{}""#, column.name)
-                        } else {
-                            format!(r#"CAST("{}" AS TEXT)"#, column.name)
-                        }
-                    } else {
-                        format!(r#""{}"::TEXT"#, column.name)
-                    }
-                }
+                is_clause = is_clause(kind)
             )
         })
         .collect::<Vec<_>>();

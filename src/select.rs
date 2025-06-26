@@ -39,16 +39,17 @@ impl Select {
         }
     }
 
+    // MAYBE REMOVE
     /// TODO: Add docstring
-    pub fn from_table(table: &Table) -> Self {
-        tracing::trace!("Select::from_table({table:?})");
-        Self {
-            table_name: table.name.to_string(),
-            view_name: table.view.to_string(),
-            limit: DEFAULT_LIMIT,
-            ..Default::default()
-        }
-    }
+    //pub fn from_table(table: &Table) -> Self {
+    //    tracing::trace!("Select::from_table({table:?})");
+    //    Self {
+    //        table_name: table.name.to_string(),
+    //        view_name: table.view.to_string(),
+    //        limit: DEFAULT_LIMIT,
+    //        ..Default::default()
+    //    }
+    //}
 
     /// Construct a [Select] for the given [relatable](crate) instance from the given path and
     /// query parameters. Note that this function may panic!
