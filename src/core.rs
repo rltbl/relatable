@@ -410,8 +410,6 @@ impl Relatable {
                 "label": "culmen length (cm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                // TODO: We are recording the format specififer in ColumnDatatype but we are not
-                // actually making use of it yet.
                 "datatype": "real:%.2f",
             }),
             json!({

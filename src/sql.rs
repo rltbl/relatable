@@ -1154,6 +1154,145 @@ pub(crate) fn generate_default_view_ddl(
     }
 }
 
+/// TODO: Add docstring
+pub fn sprintf_to_pg_char(
+    flag_opt: &str,
+    width_opt: &str,
+    precision_opt: &str,
+    format_type: &str,
+) -> String {
+    tracing::trace!("sprintf_to_pg_char({flag_opt}, {width_opt}, {precision_opt}, {format_type})");
+
+    if format_type == "s" {
+        if flag_opt != "" || width_opt != "" || precision_opt != "" {
+            tracing::warn!(
+                "Ignoring options: flag: {flag_opt}, width: {width_opt}, precision: \
+                 {precision_opt} for format type {format_type}"
+            );
+        }
+        return "".to_string();
+    }
+
+    let default_width = 99;
+    let default_precision = 2;
+
+    let mut zero_pad = false;
+    let mut pm_sign = false;
+    let mut comma_sep = false;
+    match flag_opt {
+        "" => (),
+        "0" => zero_pad = true,
+        "+" => pm_sign = true,
+        "," => comma_sep = true,
+        "-" => tracing::warn!("Flag '-' is unsupported"),
+        " " => tracing::warn!("Flag ' ' is unsupported"),
+        "#" => tracing::warn!("Flag '#' is unsupported"),
+        "!" => tracing::warn!("Flag '!' is unsupported"),
+        unsupported => tracing::warn!("Flag '{unsupported}' is unsupported"),
+    };
+
+    let width = match width_opt {
+        "" => default_width,
+        width => match width.parse::<usize>() {
+            Ok(width) => width,
+            Err(err) => {
+                tracing::warn!("Could not parse width: {err}");
+                default_width
+            }
+        },
+    };
+
+    let precision = match precision_opt {
+        "" => default_precision,
+        precision => match precision.parse::<usize>() {
+            Ok(precision) => precision,
+            Err(err) => {
+                tracing::warn!("Could not parse precision: {err}");
+                default_precision
+            }
+        },
+    };
+
+    let mut pg_format = "".to_string();
+    if zero_pad {
+        pg_format.push_str("0");
+    } else if pm_sign {
+        pg_format.push_str("SG");
+    }
+
+    let mut digits = "".to_string();
+    for (i, _) in (0..width).enumerate() {
+        digits.push_str("9");
+        let i = i + 1;
+        if comma_sep && i != width {
+            if i % 3 == 0 {
+                digits.push_str(",");
+            }
+        }
+    }
+    let digits = digits.chars().rev().collect::<String>();
+    pg_format.push_str(&digits);
+
+    if precision > 0 {
+        pg_format.push_str(".");
+        for _ in 0..precision {
+            pg_format.push_str("9");
+        }
+    }
+
+    tracing::debug!("Using to_char() format for PostgreSQL: '{pg_format}'");
+    pg_format
+}
+
+/// TODO: Add docstring
+pub fn split_datatype_format(dt_format: Option<&String>) -> (String, String, String, String) {
+    tracing::trace!("split_datatype_format({dt_format:?})");
+
+    let sprintf_regex = Regex::new(r#"^%([\-+ 0#,!])?([1-9]+)?((.)([0-9]+))?([\w%])$"#).unwrap();
+    let valid_format_types = ["d", "i", "c", "o", "u", "x", "e", "f", "g", "a", "s"];
+
+    match dt_format {
+        None => (
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "s".to_string(),
+        ),
+        Some(dt_format) => match sprintf_regex.captures(dt_format) {
+            None => {
+                tracing::warn!("Illegal format: '{}'", dt_format);
+                (
+                    "".to_string(),
+                    "".to_string(),
+                    "".to_string(),
+                    "s".to_string(),
+                )
+            }
+            Some(captures) => {
+                let flag_opt = captures
+                    .get(1)
+                    .and_then(|c| Some(c.as_str().to_string()))
+                    .unwrap_or("".to_string());
+                let width_opt = captures
+                    .get(2)
+                    .and_then(|c| Some(c.as_str().to_string()))
+                    .unwrap_or("".to_string());
+                let precision_opt = captures
+                    .get(5)
+                    .and_then(|c| Some(c.as_str().to_string()))
+                    .unwrap_or("".to_string());
+                let mut format_type = &captures[6];
+                if !valid_format_types.contains(&format_type) {
+                    tracing::warn!("Invalid format type: '{format_type}'");
+                    format_type = "s";
+                }
+
+                (flag_opt, width_opt, precision_opt, format_type.to_string())
+            }
+        },
+    }
+}
+
 /// Generate the DDL for creating the text view on the given table,
 pub(crate) fn generate_text_view_ddl(
     table_name: &str,
@@ -1171,17 +1310,27 @@ pub(crate) fn generate_text_view_ddl(
         .iter()
         .map(|column| {
             let column_cast = {
-                let datatype_format = column.datatype.format.clone().unwrap_or("%s".to_string());
+                let (flag_opt, width_opt, precision_opt, format_type) =
+                    split_datatype_format(column.datatype.format.as_ref());
                 if *kind == DbKind::Sqlite {
-                    format!(r#"FORMAT('{}', "{}")"#, datatype_format, column.name)
+                    let dt_format = format!(
+                        "%{flag_opt}{width_opt}{precision_opt}{format_type}",
+                        precision_opt = match precision_opt.as_str() {
+                            "" => "".to_string(),
+                            _ => format!(".{precision_opt}"),
+                        }
+                    );
+                    tracing::debug!("Formatting column '{}' using '{dt_format}'", column.name);
+                    format!(r#"FORMAT('{}', "{}")"#, dt_format, column.name)
                 } else {
-                    // TODO: Use the formatting specifier here, similarly to what is done for
-                    // sqlite above. However we need to convert to PostgreSQL syntax.
-                    // See the inner function called format_cell() in Valve::save_table() for a
-                    // match statement matching over a sprintf-like format specifier that could
-                    // be reused. What needs to be changed are just the actions, which need to
-                    // mimic PostgreSQL's to_char() function syntax.
-                    format!(r#""{}"::TEXT"#, column.name)
+                    match sprintf_to_pg_char(&flag_opt, &width_opt, &precision_opt, &format_type)
+                        .as_str()
+                    {
+                        "" => format!(r#""{}"::TEXT"#, column.name),
+                        dt_format => {
+                            format!(r#"LTRIM(TO_CHAR("{}", '{dt_format}'), ' ')"#, column.name)
+                        }
+                    }
                 }
             };
             format!(
