@@ -360,9 +360,6 @@ pub async fn print_table(
     offset: &usize,
 ) {
     tracing::trace!("print_table({cli:?}, {table_name}, {filters:?}, {format}, {limit}, {offset})");
-    // TODO: We need to ouput round numbers consistently between PostgreSQL and SQLite.
-    // Currently, for instance, 37 is displayed as 37.0 in SQLite and 37 in PostgreSQL.
-    tracing::debug!("print_table {table_name}");
 
     // Initiate a rltbl instance, get the retrieve the Table struct corresponding to the given
     // table name and ensure that the text view on the table has been created.

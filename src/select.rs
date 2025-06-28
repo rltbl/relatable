@@ -29,7 +29,7 @@ pub struct Select {
 }
 
 impl Select {
-    /// TODO: Add docstring
+    /// Construct a Select with the given table_name and return it
     pub fn from(table_name: &str) -> Self {
         tracing::trace!("Select::from({table_name:?})");
         Self {
@@ -38,18 +38,6 @@ impl Select {
             ..Default::default()
         }
     }
-
-    // MAYBE REMOVE
-    /// TODO: Add docstring
-    //pub fn from_table(table: &Table) -> Self {
-    //    tracing::trace!("Select::from_table({table:?})");
-    //    Self {
-    //        table_name: table.name.to_string(),
-    //        view_name: table.view.to_string(),
-    //        limit: DEFAULT_LIMIT,
-    //        ..Default::default()
-    //    }
-    //}
 
     /// Construct a [Select] for the given [relatable](crate) instance from the given path and
     /// query parameters. Note that this function may panic!
@@ -2013,8 +2001,6 @@ WHERE "sample_number" = {sql_param}"#
             )
         );
         assert_eq!(params, vec![json!(5)]);
-
-        // TODO: Add a test for a URL with a filter on a real column
 
         // A URL with a filter on a string column and a value with a space
         let url = "http://example.com/penguin?penguin.study_name=eq.FAKE 123&limit=1";

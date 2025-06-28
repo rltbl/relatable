@@ -349,7 +349,7 @@ impl Relatable {
         Ok(())
     }
 
-    /// TODO: Add docstring
+    /// Create the column table for the demonstration database
     pub async fn create_demo_column_table(&self, force: &bool) -> Result<()> {
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
@@ -477,8 +477,9 @@ impl Relatable {
         Ok(())
     }
 
-    /// TODO: Add docstring here.
+    /// Create a tableset for the demonstration database
     pub async fn create_demo_tableset(&self, force: &bool, size: usize) -> Result<()> {
+        tracing::trace!("create_demo_tableset({self:?}, {force}, {size})");
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
                 self.connection
@@ -2368,7 +2369,6 @@ impl Relatable {
         Ok(new_row)
     }
 
-    // TODO: Delete any messages associated with the deleted row. Similarly clean up messages when updating a row.
     /// Delete a row from the table. Returns the number of rows deleted.
     async fn _delete_row(
         &self,
@@ -2459,7 +2459,7 @@ impl Relatable {
     ) -> Result<usize> {
         tracing::trace!(
             "Relatable::delete_message({table:?}, {row:?}, {column:?}, \
-                         {target_rule:?}, {target_user:?})"
+             {target_rule:?}, {target_user:?})"
         );
         let mut sql_param = SqlParam::new(&self.connection.kind());
         let mut sql = format!(

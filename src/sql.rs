@@ -1154,7 +1154,9 @@ pub(crate) fn generate_default_view_ddl(
     }
 }
 
-/// TODO: Add docstring
+/// Use the given components of a sprintf-style format string (https://sqlite.org/printf.html) to
+/// construct and return a (numeric) format string suitable for use with PostgreSQL's
+/// [to_char()](https://www.postgresql.org/docs/9.0/functions-formatting.html).
 pub fn sprintf_to_pg_char(
     flag_opt: &str,
     width_opt: &str,
@@ -1163,22 +1165,23 @@ pub fn sprintf_to_pg_char(
 ) -> String {
     tracing::trace!("sprintf_to_pg_char({flag_opt}, {width_opt}, {precision_opt}, {format_type})");
 
+    // We only deal with numeric formats:
     if format_type == "s" {
         if flag_opt != "" || width_opt != "" || precision_opt != "" {
             tracing::warn!(
-                "Ignoring options: flag: {flag_opt}, width: {width_opt}, precision: \
-                 {precision_opt} for format type {format_type}"
+                "Ignoring options: flag: '{flag_opt}', width: '{width_opt}', precision: \
+                 '{precision_opt}' for format type '{format_type}'"
             );
         }
         return "".to_string();
     }
 
     let default_width = 99;
-    let default_precision = 2;
-
+    let default_precision = 6;
     let mut zero_pad = false;
     let mut pm_sign = false;
     let mut comma_sep = false;
+
     match flag_opt {
         "" => (),
         "0" => zero_pad = true,
@@ -1188,7 +1191,7 @@ pub fn sprintf_to_pg_char(
         " " => tracing::warn!("Flag ' ' is unsupported"),
         "#" => tracing::warn!("Flag '#' is unsupported"),
         "!" => tracing::warn!("Flag '!' is unsupported"),
-        unsupported => tracing::warn!("Flag '{unsupported}' is unsupported"),
+        invalid => tracing::warn!("Invalid flag: '{invalid}'"),
     };
 
     let width = match width_opt {
@@ -1213,11 +1216,11 @@ pub fn sprintf_to_pg_char(
         },
     };
 
-    let mut pg_format = "".to_string();
+    let mut to_char_format = "".to_string();
     if zero_pad {
-        pg_format.push_str("0");
+        to_char_format.push_str("0");
     } else if pm_sign {
-        pg_format.push_str("SG");
+        to_char_format.push_str("SG");
     }
 
     let mut digits = "".to_string();
@@ -1231,36 +1234,39 @@ pub fn sprintf_to_pg_char(
         }
     }
     let digits = digits.chars().rev().collect::<String>();
-    pg_format.push_str(&digits);
+    to_char_format.push_str(&digits);
 
     if precision > 0 {
-        pg_format.push_str(".");
+        to_char_format.push_str(".");
         for _ in 0..precision {
-            pg_format.push_str("9");
+            to_char_format.push_str("9");
         }
     }
 
-    tracing::debug!("Using to_char() format for PostgreSQL: '{pg_format}'");
-    pg_format
+    tracing::debug!("Using to_char() format for PostgreSQL: '{to_char_format}'");
+    to_char_format
 }
 
-/// TODO: Add docstring
-pub fn split_datatype_format(dt_format: Option<&String>) -> (String, String, String, String) {
-    tracing::trace!("split_datatype_format({dt_format:?})");
+/// Split the given sprintf-style format string (https://sqlite.org/printf.html) into its various
+/// components, returning the optional flag, width, precision, and conversion specifications that
+/// make up the format string. If no format is given, "%s" is assumed, which yields the returned
+/// tuple: ("", "", "", "s").
+pub fn split_sprintf_format(sprintf_format: Option<&String>) -> (String, String, String, String) {
+    tracing::trace!("split_sprintf_format({sprintf_format:?})");
 
-    let sprintf_regex = Regex::new(r#"^%([\-+ 0#,!])?([1-9]+)?((.)([0-9]+))?([\w%])$"#).unwrap();
+    let sprintf_regex = Regex::new(r#"^%([\-+ 0#,!])?([1-9]+)?((.)([0-9]+))?(\w)$"#).unwrap();
     let valid_format_types = ["d", "i", "c", "o", "u", "x", "e", "f", "g", "a", "s"];
 
-    match dt_format {
+    match sprintf_format {
         None => (
             "".to_string(),
             "".to_string(),
             "".to_string(),
             "s".to_string(),
         ),
-        Some(dt_format) => match sprintf_regex.captures(dt_format) {
+        Some(sprintf_format) => match sprintf_regex.captures(sprintf_format) {
             None => {
-                tracing::warn!("Illegal format: '{}'", dt_format);
+                tracing::warn!("Illegal format: '{}'", sprintf_format);
                 (
                     "".to_string(),
                     "".to_string(),
@@ -1311,7 +1317,7 @@ pub(crate) fn generate_text_view_ddl(
         .map(|column| {
             let column_cast = {
                 let (flag_opt, width_opt, precision_opt, format_type) =
-                    split_datatype_format(column.datatype.format.as_ref());
+                    split_sprintf_format(column.datatype.format.as_ref());
                 if *kind == DbKind::Sqlite {
                     let dt_format = format!(
                         "%{flag_opt}{width_opt}{precision_opt}{format_type}",

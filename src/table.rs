@@ -199,7 +199,8 @@ impl Table {
         }
     }
 
-    /// TODO: Add docstring
+    /// Set the view for the table to the given view type (accepted types are "default" and "text"),
+    /// after first ensuring that a view of the given type exists, creating it if necessary.
     pub async fn set_view(&mut self, rltbl: &Relatable, view_type: &str) -> Result<&Self> {
         match view_type {
             "text" => self.ensure_text_view_created(rltbl).await?,
