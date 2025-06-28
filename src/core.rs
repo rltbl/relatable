@@ -14,6 +14,7 @@ use rltbl::{
 };
 
 use anyhow::Result;
+use colored::Colorize;
 use csv::{QuoteStyle, ReaderBuilder, Writer, WriterBuilder};
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
@@ -3176,7 +3177,8 @@ impl ResultSet {
     }
 
     pub fn to_console(&self) -> String {
-        let mut tw = TabWriter::new(vec![]);
+        let tw = TabWriter::new(vec![]);
+        let mut tw = tw.ansi(true);
         tw.write(format!("{}\n", self.range).as_bytes())
             .unwrap_or_default();
         let header = &self
@@ -3196,7 +3198,7 @@ impl ResultSet {
                         // TODO: Colorize or bold somehow. Note that the colorized crate does not
                         // work as it messes up the column width formatting.
                         contains_errors = true;
-                        format!("{}", cell.text)
+                        format!("{}", cell.text.red())
                     } else {
                         format!("{}", cell.text)
                     }

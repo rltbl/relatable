@@ -15,6 +15,7 @@ use ansi_term::Style;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
+use colored::Colorize;
 use promptly::prompt_opt;
 use regex::Regex;
 use serde_json::{json, to_string_pretty, Value as JsonValue};
@@ -392,8 +393,8 @@ pub async fn print_table(
                         .map(|msg| format!("{} ({}): {}", msg.level, msg.rule, msg.message))
                         .collect::<Vec<_>>();
                     let messages = match messages.is_empty() {
-                        true => "".to_string(),
-                        false => format!(" [{}]", messages.join(", ")),
+                        true => "".to_string().normal(),
+                        false => format!(" [{}]", messages.join(", ")).red(),
                     };
                     println!("{column}: {value}{messages}", value = cell.text);
                 }
