@@ -1154,7 +1154,7 @@ pub(crate) fn generate_default_view_ddl(
     }
 }
 
-/// Use the given components of a sprintf-style format string (https://sqlite.org/printf.html) to
+/// Use the given components of a sprintf-style format string (<https://sqlite.org/printf.html>) to
 /// construct and return a (numeric) format string suitable for use with PostgreSQL's
 /// [to_char()](https://www.postgresql.org/docs/9.0/functions-formatting.html).
 pub fn sprintf_to_pg_char(
@@ -1247,7 +1247,7 @@ pub fn sprintf_to_pg_char(
     to_char_format
 }
 
-/// Split the given sprintf-style format string (https://sqlite.org/printf.html) into its various
+/// Split the given sprintf-style format string (<https://sqlite.org/printf.html>) into its various
 /// components, returning the optional flag, width, precision, and conversion specifications that
 /// make up the format string. If no format is given, "%s" is assumed, which yields the returned
 /// tuple: ("", "", "", "s").
