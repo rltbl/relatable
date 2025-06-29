@@ -358,7 +358,7 @@ async fn main() {
                     let table = table_to_edit;
                     match random_op() {
                         "add" => {
-                            let after_id = random_between(1, *table_size, &mut -1);
+                            let after_id = random_between(1, *table_size, &mut -1) as u64;
                             let row = rltbl
                                 .add_row(table, &user, Some(after_id), &JsonRow::new())
                                 .await
@@ -366,7 +366,7 @@ async fn main() {
                             tracing::info!("Added row {} (order {}) to {table}", row.id, row.order);
                         }
                         "update" => {
-                            let row_to_update = random_between(1, *table_size, &mut -1);
+                            let row_to_update = random_between(1, *table_size, &mut -1) as u64;
                             let num_changes = rltbl
                                 .set_values(&ChangeSet {
                                     user,
@@ -390,8 +390,8 @@ async fn main() {
                             tracing::info!("Updated row {row_to_update} in {table}");
                         }
                         "move" => {
-                            let after_id = random_between(1, *table_size, &mut -1);
-                            let row = random_between(1, *table_size, &mut -1);
+                            let after_id = random_between(1, *table_size, &mut -1) as u64;
+                            let row = random_between(1, *table_size, &mut -1) as u64;
                             let new_order = rltbl
                                 .move_row(table, &user, row, after_id)
                                 .await

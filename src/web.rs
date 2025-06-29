@@ -7,8 +7,7 @@ use rltbl::{
     cli::Cli,
     core::{ChangeSet, Cursor, Relatable, RelatableError},
     select::{joined_query, Format, QueryParams, Select},
-    sql,
-    sql::{CachingStrategy, JsonRow},
+    sql::{CachingStrategy, JsonRow, SqlParam},
     table::{Row, Table},
 };
 use std::io::Write;
@@ -315,7 +314,7 @@ async fn init_user(rltbl: &Relatable, username: &str) -> () {
     let db_kind = rltbl.connection.kind();
     let statement = format!(
         r#"SELECT 1 FROM "user" WHERE "name" = {sql_param}"#,
-        sql_param = sql::SqlParam::new(&db_kind).next()
+        sql_param = SqlParam::new(&db_kind).next()
     );
     let params = json!([username]);
     if let None = rltbl
@@ -326,7 +325,7 @@ async fn init_user(rltbl: &Relatable, username: &str) -> () {
     {
         let statement = format!(
             r#"INSERT INTO user("name", "color") VALUES ({sql_params})"#,
-            sql_params = sql::SqlParam::new(&db_kind).get_as_list(2)
+            sql_params = SqlParam::new(&db_kind).get_as_list(2)
         );
         let params = json!([username, color]);
         rltbl
@@ -384,7 +383,7 @@ async fn post_cursor(
     let username = get_username(session);
     tracing::debug!("post_cursor({cursor:?}, {username})");
     // TODO: sanitize the cursor JSON.
-    let mut sql_param = sql::SqlParam::new(&rltbl.connection.kind());
+    let mut sql_param = SqlParam::new(&rltbl.connection.kind());
     let statement = format!(
         r#"UPDATE user
            SET "cursor" = {sql_param_1},
@@ -404,7 +403,7 @@ async fn post_cursor(
 async fn get_row_menu(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table_name, row_id)): Path<(String, usize)>,
+    Path((table_name, row_id)): Path<(String, u64)>,
 ) -> Response<Body> {
     tracing::info!("get_row_menu({table_name}, {row_id})");
     let username = get_username(session);
@@ -419,7 +418,7 @@ async fn get_row_menu(
             &format!(
                 r#"SELECT * FROM "{}" WHERE _id = {sql_param}"#,
                 table.view,
-                sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
+                sql_param = SqlParam::new(&rltbl.connection.kind()).next()
             ),
             Some(&json!([row_id])),
         )
@@ -484,7 +483,7 @@ async fn get_column_menu(
 async fn get_cell_menu(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table_name, row_id, column)): Path<(String, usize, String)>,
+    Path((table_name, row_id, column)): Path<(String, u64, String)>,
 ) -> Response<Body> {
     tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
     let username = get_username(session);
@@ -499,7 +498,7 @@ async fn get_cell_menu(
             &format!(
                 r#"SELECT * FROM "{}" WHERE _id = {sql_param}"#,
                 table.view,
-                sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
+                sql_param = SqlParam::new(&rltbl.connection.kind()).next()
             ),
             Some(&json!([row_id])),
         )
@@ -530,7 +529,7 @@ async fn get_cell_menu(
 
 async fn get_cell_options(
     State(rltbl): State<Arc<Relatable>>,
-    Path((table, row_id, column)): Path<(String, usize, String)>,
+    Path((table, row_id, column)): Path<(String, u64, String)>,
     Query(query_params): Query<QueryParams>,
 ) -> Response<Body> {
     tracing::info!("get_cell_option({table}, {row_id}, {column}, {query_params:?})");
@@ -560,11 +559,11 @@ async fn get_cell_options(
     Json(json!(values)).into_response()
 }
 
-async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &usize) -> usize {
+async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &u64) -> u64 {
     let sql = format!(
         r#"SELECT "_id", MAX("_order") FROM "{table}"
         WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = {sql_param})"#,
-        sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
+        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
     );
     let after_id = rltbl
         .connection
@@ -574,13 +573,13 @@ async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &usize) -> usiz
         .unwrap_or(Some(json!(0)))
         .unwrap_or(json!(0))
         .as_u64()
-        .unwrap_or_default() as usize
+        .unwrap_or_default() as u64
 }
 
 async fn add_row_before(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table, row_id)): Path<(String, usize)>,
+    Path((table, row_id)): Path<(String, u64)>,
 ) -> Response<Body> {
     tracing::info!("add_row_before({table}, {row_id})");
     let username = get_username(session);
@@ -591,7 +590,7 @@ async fn add_row_before(
 async fn add_row_after(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table, row_id)): Path<(String, usize)>,
+    Path((table, row_id)): Path<(String, u64)>,
 ) -> Response<Body> {
     tracing::info!("add_row_after({table}, {row_id})");
     let username = get_username(session);
@@ -612,7 +611,7 @@ async fn add_row(
     rltbl: &Relatable,
     username: &str,
     table: &str,
-    after_id: Option<usize>,
+    after_id: Option<u64>,
 ) -> Response<Body> {
     if rltbl.readonly {
         return forbid().into();
@@ -635,7 +634,7 @@ async fn add_row(
                 .query_value(
                     &format!(
                         r#"SELECT COUNT() FROM "{table}" WHERE _order <= {sql_param}"#,
-                        sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
+                        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
                     ),
                     Some(&json!([row.order])),
                 )
@@ -655,7 +654,7 @@ async fn add_row(
 async fn delete_row(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table, row_id)): Path<(String, usize)>,
+    Path((table, row_id)): Path<(String, u64)>,
 ) -> Response<Body> {
     tracing::info!("add_row_after({table}, {row_id})");
     if rltbl.readonly {
@@ -672,7 +671,7 @@ async fn delete_row(
                     &format!(
                         r#"SELECT COUNT() FROM "{table}"
                            WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = {sql_param})"#,
-                        sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next()
+                        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
                     ),
                     Some(&json!([prev])),
                 )
