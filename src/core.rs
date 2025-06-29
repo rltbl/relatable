@@ -723,6 +723,11 @@ impl Relatable {
 
         // Add an entry corresponding to the table being loaded to the table table:
         if force {
+            // Delete any messages associated with the table and then delete the table:
+            self.delete_message(table_name, None, None, None, None)
+                .await
+                .expect("Error deleting messages");
+
             let sql = format!(
                 r#"DELETE FROM "table" WHERE "table" = {sql_param}"#,
                 sql_param = SqlParam::new(&db_kind).next(),
