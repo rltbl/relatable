@@ -2039,6 +2039,21 @@ impl Relatable {
                     before,
                     after,
                 } => {
+                    // Delete any existing messages associated with this row and column:
+                    tracing::debug!(
+                        "Deleting existing messages for column '{}.{}'",
+                        table.name,
+                        column
+                    );
+                    self._delete_message(
+                        &mut tx,
+                        &table.name,
+                        Some(*row),
+                        Some(column),
+                        None,
+                        None,
+                    )?;
+
                     // Depending on whether this is an undo/redo or an original action, the
                     // new value will be taken from either `before` or `after`.
                     let before = JsonRow::nullify_value(&table, column, before);
@@ -2417,6 +2432,11 @@ impl Relatable {
             sql_param = SqlParam::new(&self.connection.kind()).next()
         );
         let params = json!([row]);
+        tracing::debug!("Deleted row {row} from table {table_name}");
+
+        // Delete any messages associated with the row
+        self._delete_message(&mut tx, table_name, Some(row), None, None, None)?;
+        tracing::debug!("Deleted messages for deleted row {row} of table {table_name}");
 
         // Record the change to the history table:
         self.record_changeset(&changeset, &mut tx)?;
@@ -2449,7 +2469,7 @@ impl Relatable {
         Ok(num_deleted)
     }
 
-    // Delete messages from the message table. Returns the number of messages deleted.
+    /// Delete messages from the message table. Returns the number of messages deleted.
     pub async fn delete_message(
         &self,
         table: &str,
@@ -2459,9 +2479,40 @@ impl Relatable {
         target_user: Option<&str>,
     ) -> Result<usize> {
         tracing::trace!(
-            "Relatable::delete_message({table:?}, {row:?}, {column:?}, \
+            "Relatable::delete_message({self:?}, {table:?}, {row:?}, {column:?}, \
              {target_rule:?}, {target_user:?})"
         );
+
+        // Begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        // Delete the messages using the transaction
+        let num_deleted =
+            self._delete_message(&mut tx, table, row, column, target_rule, target_user)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(num_deleted)
+    }
+
+    /// Delete messages from the message table using the given transaction. Returns the
+    /// number of messages deleted.
+    fn _delete_message(
+        &self,
+        tx: &mut DbTransaction<'_>,
+        table: &str,
+        row: Option<u64>,
+        column: Option<&str>,
+        target_rule: Option<&str>,
+        target_user: Option<&str>,
+    ) -> Result<usize> {
+        tracing::trace!(
+            "Relatable::_delete_message({self:?}, tx, {table:?}, {row:?}, {column:?}, \
+             {target_rule:?}, {target_user:?})"
+        );
+
         let mut sql_param = SqlParam::new(&self.connection.kind());
         let mut sql = format!(
             r#"DELETE FROM "message" WHERE "table" = {sql_param}"#,
@@ -2499,11 +2550,7 @@ impl Relatable {
         }
 
         sql.push_str(r#" RETURNING 1 AS "deleted""#);
-        let num_deleted = self
-            .connection
-            .query(&sql, Some(&json!(params)))
-            .await?
-            .len();
+        let num_deleted = tx.query(&sql, Some(&json!(params)))?.len();
         Ok(num_deleted)
     }
 
