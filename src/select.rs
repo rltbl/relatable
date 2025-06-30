@@ -104,21 +104,11 @@ impl Select {
                 }
             }
 
-            fn try_parse_as_real(value: &str) -> JsonValue {
-                match value.parse::<f32>() {
-                    Ok(signed) => json!(signed),
-                    _ => {
-                        tracing::warn!("Could not parse {value} as real. Treating as string");
-                        JsonValue::String(value.to_string())
-                    }
-                }
-            }
-
-            fn try_parse_as_numeric(value: &str) -> JsonValue {
+            fn try_parse_as_decimal(value: &str) -> JsonValue {
                 match value.parse::<f64>() {
                     Ok(signed) => json!(signed),
                     _ => {
-                        tracing::warn!("Could not parse {value} as numeric. Treating as string");
+                        tracing::warn!("Could not parse {value} as decimal. Treating as string");
                         JsonValue::String(value.to_string())
                     }
                 }
@@ -131,8 +121,7 @@ impl Select {
             } else {
                 match datatype {
                     Some(datatype) if datatype == "integer" => try_parse_as_int(value),
-                    Some(datatype) if datatype == "real" => try_parse_as_real(value),
-                    Some(datatype) if datatype == "numeric" => try_parse_as_numeric(value),
+                    Some(datatype) if datatype == "decimal" => try_parse_as_decimal(value),
                     Some(datatype) if datatype == "text" => JsonValue::String(value.to_string()),
                     Some(datatype) => {
                         tracing::warn!(

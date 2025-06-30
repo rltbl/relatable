@@ -411,7 +411,7 @@ impl Relatable {
                 "label": "culmen length (cm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": "real:%.2f",
+                "datatype": "decimal:%.2f",
             }),
             json!({
                 "table": "penguin",
@@ -419,7 +419,7 @@ impl Relatable {
                 "label": "culmen depth (cm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": "numeric:%.2f",
+                "datatype": "decimal:%.2f",
             }),
             json!({
                 "table": "penguin",
@@ -3247,8 +3247,6 @@ impl ResultSet {
                 .values()
                 .map(|cell| {
                     if cell.message_level() >= 2 {
-                        // TODO: Colorize or bold somehow. Note that the colorized crate does not
-                        // work as it messes up the column width formatting.
                         contains_errors = true;
                         format!("{}", cell.text.red())
                     } else {
