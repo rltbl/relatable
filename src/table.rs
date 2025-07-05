@@ -51,7 +51,7 @@ impl Table {
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let table = Self::_get_table(table_name, &mut tx)?;
+        let table = Table::_get_table(table_name, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -63,7 +63,7 @@ impl Table {
     pub fn _get_table(table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Self> {
         tracing::trace!("Table::_get_table({table_name:?}, tx)");
         // If the default view exists, set the table's view to it, otherwise leave it blank:
-        let result = Self::_view_exists(table_name, "default", tx)?;
+        let result = Table::_view_exists(table_name, "default", tx)?;
         let view = {
             if result {
                 format!("{table_name}_default_view")
@@ -87,7 +87,7 @@ impl Table {
             name: table_name.to_string(),
             view,
             change_id,
-            columns: Self::_collect_column_info(table_name, tx)?
+            columns: Table::_collect_column_info(table_name, tx)?
                 .0
                 .into_iter()
                 .map(|column| (column.name.clone(), column))
@@ -104,7 +104,7 @@ impl Table {
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let table_exists = Self::_table_exists(table_name, &mut tx)?;
+        let table_exists = Table::_table_exists(table_name, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -153,7 +153,7 @@ impl Table {
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let view_exists = Self::_view_exists(&self.name, view_type, &mut tx)?;
+        let view_exists = Table::_view_exists(&self.name, view_type, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -300,7 +300,7 @@ impl Table {
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let columns = Self::_get_column_table_columns(table_name, &mut tx)?;
+        let columns = Table::_get_column_table_columns(table_name, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -316,7 +316,7 @@ impl Table {
         tx: &mut DbTransaction<'_>,
     ) -> Result<IndexMap<String, Column>> {
         tracing::trace!("Table::_get_column_table_columns({table_name:?}, tx)");
-        if !Self::_table_exists("column", tx)? {
+        if !Table::_table_exists("column", tx)? {
             Ok(IndexMap::new())
         } else {
             let sql = format!(
@@ -402,7 +402,7 @@ impl Table {
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let columns = Self::_collect_column_info(&self.name, &mut tx)?;
+        let columns = Table::_collect_column_info(&self.name, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -420,13 +420,13 @@ impl Table {
         tracing::trace!("Table::collect_column_info({table_name}, tx)");
 
         // Get information about the table's columns from the optional column table:
-        let column_columns = Self::_get_column_table_columns(table_name, tx)?;
+        let column_columns = Table::_get_column_table_columns(table_name, tx)?;
 
         // Get the table's columns from the database and merge it with the information from the
         // column table that we just collected:
         let mut columns = vec![];
         let mut meta_columns = vec![];
-        for db_column in Self::get_db_table_columns(table_name, tx)? {
+        for db_column in Table::get_db_table_columns(table_name, tx)? {
             match db_column.get_string("name")? {
                 column_name if column_name.starts_with("_") => meta_columns.push(Column {
                     name: column_name,
@@ -460,7 +460,8 @@ impl Table {
                     },
                     name: column_name,
                     table: table_name.to_string(),
-                    ..Default::default()
+                    primary_key: todo!(),
+                    unique: todo!(),
                 }),
             };
         }
@@ -575,7 +576,7 @@ impl Table {
     /// transaction.
     pub fn _get_previous_row_id(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
         tracing::trace!("Table::_get_previous_row_id({table}, {row}, tx)");
-        let curr_row_order = Self::_get_row_order(table, row, tx)?;
+        let curr_row_order = Table::_get_row_order(table, row, tx)?;
         let sql = format!(
             r#"SELECT "_id" FROM "{table}" WHERE "_order" < {sql_param}
                ORDER BY "_order" DESC LIMIT 1"#,

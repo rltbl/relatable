@@ -88,10 +88,10 @@ impl FromStr for CachingStrategy {
     fn from_str(strategy: &str) -> Result<Self> {
         tracing::trace!("CachingStrategy::from_str({strategy:?})");
         match strategy.to_lowercase().as_str() {
-            "none" => Ok(Self::None),
-            "truncate_all" => Ok(Self::TruncateAll),
-            "truncate" => Ok(Self::Truncate),
-            "trigger" => Ok(Self::Trigger),
+            "none" => Ok(CachingStrategy::None),
+            "truncate_all" => Ok(CachingStrategy::TruncateAll),
+            "truncate" => Ok(CachingStrategy::Truncate),
+            "trigger" => Ok(CachingStrategy::Trigger),
             strategy if strategy.starts_with("memory:") => {
                 let elems = strategy.split(":").collect::<Vec<_>>();
                 let cache_size = {
@@ -106,7 +106,7 @@ impl FromStr for CachingStrategy {
                         }
                     }
                 };
-                Ok(Self::Memory(cache_size))
+                Ok(CachingStrategy::Memory(cache_size))
             }
             _ => {
                 return Err(RelatableError::InputError(format!(
@@ -221,9 +221,9 @@ impl DbConnection {
         tracing::trace!("DbConnection::kind()");
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(_, kind) => *kind,
+            DbConnection::Sqlx(_, kind) => *kind,
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(_) => DbKind::Sqlite,
+            DbConnection::Rusqlite(_) => DbKind::Sqlite,
         }
     }
 
@@ -250,7 +250,7 @@ impl DbConnection {
                         .max_connections(MAX_DB_CONNECTIONS)
                         .connect_with(connection_options)
                         .await?;
-                    let connection = Self::Sqlx(DbPool::Postgres(pool), db_kind);
+                    let connection = DbConnection::Sqlx(DbPool::Postgres(pool), db_kind);
                     Ok((connection, None))
                 }
             }
@@ -263,7 +263,7 @@ impl DbConnection {
                 #[allow(unused_variables)]
                 #[cfg(feature = "rusqlite")]
                 let tuple = (
-                    Self::Rusqlite(database.to_string()),
+                    DbConnection::Rusqlite(database.to_string()),
                     Some(DbActiveConnection::Rusqlite(rusqlite::Connection::open(
                         database,
                     )?)),
@@ -280,7 +280,7 @@ impl DbConnection {
                     };
                     install_default_drivers();
                     let pool = AnyPool::connect(&url).await?;
-                    let connection = Self::Sqlx(DbPool::Sqlite(pool), DbKind::Sqlite);
+                    let connection = DbConnection::Sqlx(DbPool::Sqlite(pool), DbKind::Sqlite);
                     (connection, None)
                 };
 
@@ -294,9 +294,9 @@ impl DbConnection {
         tracing::trace!("DbConnection::reconnect()");
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(_, _) => Ok(None),
+            DbConnection::Sqlx(_, _) => Ok(None),
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(path) => Ok(Some(DbActiveConnection::Rusqlite(
+            DbConnection::Rusqlite(path) => Ok(Some(DbActiveConnection::Rusqlite(
                 rusqlite::Connection::open(path)?,
             ))),
         }
@@ -310,7 +310,7 @@ impl DbConnection {
         tracing::trace!("DbConnection::begin({self:?}, {conn:?})");
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(db_pool, kind) => match db_pool {
+            DbConnection::Sqlx(db_pool, kind) => match db_pool {
                 DbPool::Sqlite(pool) => {
                     let tx = pool.begin().await?;
                     Ok(DbTransaction::Sqlx(SqlxDbTransaction::Sqlite(tx), *kind))
@@ -321,7 +321,7 @@ impl DbConnection {
                 }
             },
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(_) => match conn {
+            DbConnection::Rusqlite(_) => match conn {
                 None => {
                     return Err(RelatableError::InputError(
                         "Can't begin Rusqlite transaction: No connection provided".to_string(),
@@ -347,7 +347,7 @@ impl DbConnection {
         }
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(db_pool, _) => match db_pool {
+            DbConnection::Sqlx(db_pool, _) => match db_pool {
                 DbPool::Sqlite(pool) => {
                     let query = prepare_sqlx_sqlite_query(&statement, params)?;
                     let mut rows = vec![];
@@ -366,7 +366,7 @@ impl DbConnection {
                 }
             },
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(path) => {
+            DbConnection::Rusqlite(path) => {
                 let conn = self.reconnect()?;
                 match conn {
                     Some(DbActiveConnection::Rusqlite(conn)) => {
@@ -578,9 +578,9 @@ impl DbTransaction<'_> {
         tracing::trace!("DbTransaction::kind({self:?})");
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(_, kind) => *kind,
+            DbTransaction::Sqlx(_, kind) => *kind,
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(_) => DbKind::Sqlite,
+            DbTransaction::Rusqlite(_) => DbKind::Sqlite,
         }
     }
 
@@ -589,12 +589,12 @@ impl DbTransaction<'_> {
         tracing::trace!("DbTransaction::commit({self:?})");
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(tx, _) => match tx {
+            DbTransaction::Sqlx(tx, _) => match tx {
                 SqlxDbTransaction::Sqlite(tx) => block_on(tx.commit())?,
                 SqlxDbTransaction::Postgres(tx) => block_on(tx.commit())?,
             },
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(tx) => tx.commit()?,
+            DbTransaction::Rusqlite(tx) => tx.commit()?,
         };
         Ok(())
     }
@@ -604,12 +604,12 @@ impl DbTransaction<'_> {
         tracing::trace!("DbTransaction::rollback({self:?})");
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(tx, _) => match tx {
+            DbTransaction::Sqlx(tx, _) => match tx {
                 SqlxDbTransaction::Sqlite(tx) => block_on(tx.rollback())?,
                 SqlxDbTransaction::Postgres(tx) => block_on(tx.rollback())?,
             },
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(tx) => tx.rollback()?,
+            DbTransaction::Rusqlite(tx) => tx.rollback()?,
         };
         Ok(())
     }
@@ -625,7 +625,7 @@ impl DbTransaction<'_> {
         }
         match self {
             #[cfg(feature = "sqlx")]
-            Self::Sqlx(tx, _) => match tx {
+            DbTransaction::Sqlx(tx, _) => match tx {
                 SqlxDbTransaction::Sqlite(tx) => {
                     let query = prepare_sqlx_sqlite_query(&statement, params)?;
                     let mut rows = vec![];
@@ -644,7 +644,7 @@ impl DbTransaction<'_> {
                 }
             },
             #[cfg(feature = "rusqlite")]
-            Self::Rusqlite(tx) => {
+            DbTransaction::Rusqlite(tx) => {
                 let mut stmt = tx.prepare(&statement)?;
                 submit_rusqlite_statement(&mut stmt, params)
             }
@@ -1695,7 +1695,7 @@ impl JsonRow {
     /// Set any column values whose content matches that column's nulltype to [JsonValue::Null]
     pub fn nullify(row: &Self, table: &Table) -> Self {
         tracing::trace!("JsonRow::nullify({row:?}, {table:?})");
-        let mut nullified_row = Self::new();
+        let mut nullified_row = JsonRow::new();
         for (column, value) in row.content.iter() {
             let nulltype = table
                 .get_configured_column_attribute(&column, "nulltype")
@@ -1771,7 +1771,7 @@ impl JsonRow {
     /// [JsonValue::Null]
     pub fn from_strings(strings: &Vec<&str>) -> Self {
         tracing::trace!("JsonRow::from_strings({strings:?})");
-        let mut json_row = Self::new();
+        let mut json_row = JsonRow::new();
         for string in strings {
             json_row.content.insert(string.to_string(), JsonValue::Null);
         }
