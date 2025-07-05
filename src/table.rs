@@ -134,7 +134,13 @@ impl Table {
                 (
                     format!(
                         r#"SELECT 1 FROM "information_schema"."tables"
-                           WHERE "table_type" LIKE {sql_param_1} AND "table_name" = {sql_param_2}"#,
+                           WHERE "table_type" LIKE {sql_param_1}
+                             AND "table_name" = {sql_param_2}
+                             AND "table_schema" IN (
+                               SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
+                               FROM "pg_settings"
+                               WHERE "name" = 'search_path'
+                             )"#,
                     ),
                     json!(["%TABLE", table_name]),
                 )
@@ -186,7 +192,12 @@ impl Table {
                         r#"SELECT 1
                            FROM "information_schema"."tables"
                            WHERE "table_name" = {sql_param_1}
-                           AND "table_type" = {sql_param_2}"#,
+                           AND "table_type" = {sql_param_2}
+                           AND "table_schema" IN (
+                               SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
+                               FROM "pg_settings"
+                               WHERE "name" = 'search_path'
+                           )"#,
                     ),
                     json!([format!("{table}_{view_type}_view"), "VIEW"]),
                 )
@@ -405,6 +416,7 @@ impl Table {
                     }
                     columns_info.push(column_info);
                 }
+                tracing::debug!("Returning columns info from db: {columns_info:?}");
                 Ok(columns_info)
             }
             DbKind::Postgres => {
@@ -420,6 +432,11 @@ impl Table {
                            ON "kcu"."constraint_name" = "tco"."constraint_name"
                           AND "kcu"."constraint_schema" = "tco"."constraint_schema"
                           AND "kcu"."table_name" = {sql_param_1}
+                        WHERE "kcu"."table_schema" IN (
+                          SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
+                          FROM "pg_settings"
+                          WHERE "name" = 'search_path'
+                        )
                        )
                        SELECT
                          "columns"."column_name"::TEXT AS "name",
@@ -429,7 +446,12 @@ impl Table {
                          LEFT JOIN "constraints"
                            ON "columns"."table_name" = "constraints"."table_name"
                            AND "columns"."column_name" = "constraints"."column_name"
-                       WHERE "columns"."table_name" = {sql_param_2}
+                       WHERE "columns"."table_schema" IN (
+                          SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
+                          FROM "pg_settings"
+                          WHERE "name" = 'search_path'
+                        )
+                       AND "columns"."table_name" = {sql_param_2}
                        ORDER BY "columns"."ordinal_position""#,
                     sql_param_1 = sql_param_gen.next(),
                     sql_param_2 = sql_param_gen.next()
@@ -471,6 +493,7 @@ impl Table {
                     };
                     columns_info.push(column_info);
                 }
+                tracing::debug!("Returning columns info from db: {columns_info:?}");
                 Ok(columns_info)
             }
         }
