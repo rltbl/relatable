@@ -372,21 +372,106 @@ impl Table {
         match tx.kind() {
             DbKind::Sqlite => {
                 let sql = format!(
-                    r#"SELECT "name", "type" AS "datatype"
+                    r#"SELECT "name", "type" AS "datatype", "pk"
                        FROM pragma_table_info("{table}") ORDER BY "cid""#
                 );
-                tx.query(&sql, None)
+                let mut columns_info = vec![];
+                for column_info in tx.query(&sql, None)? {
+                    let mut column_info = column_info.clone();
+                    if column_info.get_unsigned("pk")? == 1 {
+                        // If the column is a primary key then it is also unique:
+                        column_info.content.insert("unique".to_string(), json!(1));
+                    } else {
+                        // If the column is not a primary key, look through the pragma information
+                        // for the column to see if it has a unique index (requires two queries).
+                        column_info.content.insert("unique".to_string(), json!(0));
+                        let sql = format!(
+                            r#"SELECT "name", "unique"
+                               FROM PRAGMA_INDEX_LIST("{table}")"#
+                        );
+                        for index_info in tx.query(&sql, None)? {
+                            if index_info.get_unsigned("unique")? == 1 {
+                                let idx_name = index_info.get_string("name")?;
+                                let sql = format!(
+                                    r#"SELECT "name" FROM PRAGMA_INDEX_INFO("{idx_name}")"#
+                                );
+                                if let Some(idx_cname) = tx.query_value(&sql, None)? {
+                                    if idx_cname == column_info.get_string("name")? {
+                                        column_info.content.insert("unique".to_string(), json!(1));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    columns_info.push(column_info);
+                }
+                Ok(columns_info)
             }
             DbKind::Postgres => {
+                let mut sql_param_gen = SqlParam::new(&tx.kind());
                 let sql = format!(
-                    r#"SELECT "column_name"::TEXT AS "name", "data_type"::TEXT AS "datatype"
-                       FROM "information_schema"."columns"
-                       WHERE "table_name" = {sql_param}
-                       ORDER BY "ordinal_position""#,
-                    sql_param = SqlParam::new(&tx.kind()).next()
+                    r#"WITH "constraints" as (
+                         SELECT
+                           "kcu"."table_name"::TEXT,
+                           "kcu"."column_name"::TEXT,
+                           "tco"."constraint_type"::TEXT
+                         FROM "information_schema"."table_constraints" "tco"
+                         JOIN "information_schema"."key_column_usage" "kcu"
+                           ON "kcu"."constraint_name" = "tco"."constraint_name"
+                          AND "kcu"."constraint_schema" = "tco"."constraint_schema"
+                          AND "kcu"."table_name" = {sql_param_1}
+                       )
+                       SELECT
+                         "columns"."column_name"::TEXT AS "name",
+                         "columns"."data_type"::TEXT AS "datatype",
+                         "constraints"."constraint_type"::TEXT AS "constraint"
+                       FROM "information_schema"."columns" "columns"
+                         LEFT JOIN "constraints"
+                           ON "columns"."table_name" = "constraints"."table_name"
+                           AND "columns"."column_name" = "constraints"."column_name"
+                       WHERE "columns"."table_name" = {sql_param_2}
+                       ORDER BY "columns"."ordinal_position""#,
+                    sql_param_1 = sql_param_gen.next(),
+                    sql_param_2 = sql_param_gen.next()
                 );
-                let params = json!([table]);
-                tx.query(&sql, Some(&params))
+                let params = json!([table, table]);
+
+                let mut columns_info = vec![];
+                for row in tx.query(&sql, Some(&params))? {
+                    let mut column_info = JsonRow::new();
+                    column_info
+                        .content
+                        .insert("name".to_string(), row.get_value("name")?);
+                    column_info
+                        .content
+                        .insert("datatype".to_string(), row.get_value("datatype")?);
+                    match row.get_string("constraint") {
+                        Ok(constraint) if constraint == "PRIMARY KEY" => {
+                            column_info.content.insert("pk".to_string(), json!(1));
+                            column_info.content.insert("unique".to_string(), json!(1));
+                        }
+                        Ok(constraint) if constraint == "UNIQUE" => {
+                            column_info.content.insert("pk".to_string(), json!(0));
+                            column_info.content.insert("unique".to_string(), json!(1));
+                        }
+                        Ok(constraint) if constraint == "" => {
+                            column_info.content.insert("pk".to_string(), json!(0));
+                            column_info.content.insert("unique".to_string(), json!(0));
+                        }
+                        Ok(unrecognized) => {
+                            tracing::warn!("Unrecognized constraint type '{unrecognized}'");
+                            column_info.content.insert("pk".to_string(), json!(0));
+                            column_info.content.insert("unique".to_string(), json!(0));
+                        }
+                        Err(err) => {
+                            tracing::warn!("Error geting constraint for column: '{err}'");
+                            column_info.content.insert("pk".to_string(), json!(0));
+                            column_info.content.insert("unique".to_string(), json!(0));
+                        }
+                    };
+                    columns_info.push(column_info);
+                }
+                Ok(columns_info)
             }
         }
     }
@@ -431,6 +516,8 @@ impl Table {
                 column_name if column_name.starts_with("_") => meta_columns.push(Column {
                     name: column_name,
                     table: table_name.to_string(),
+                    primary_key: db_column.get_unsigned("pk")? == 1,
+                    unique: db_column.get_unsigned("unique")? == 1,
                     ..Default::default()
                 }),
                 column_name => columns.push(Column {
@@ -460,8 +547,8 @@ impl Table {
                     },
                     name: column_name,
                     table: table_name.to_string(),
-                    primary_key: todo!(),
-                    unique: todo!(),
+                    primary_key: db_column.get_unsigned("pk")? == 1,
+                    unique: db_column.get_unsigned("unique")? == 1,
                 }),
             };
         }
