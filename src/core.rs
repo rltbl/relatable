@@ -767,7 +767,7 @@ impl Relatable {
                         datatype: match table_columns.get(column_name) {
                             None => ColumnDatatype {
                                 name: "text".to_string(),
-                                format: None,
+                                ..Default::default()
                             },
                             Some(col) => col.datatype.clone(),
                         },

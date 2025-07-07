@@ -1250,20 +1250,20 @@ pub fn sprintf_to_pg_char(
 /// components, returning the optional flag, width, precision, and conversion specifications that
 /// make up the format string. If no format is given, "%s" is assumed, which yields the returned
 /// tuple: ("", "", "", "s").
-pub fn split_sprintf_format(sprintf_format: Option<&String>) -> (String, String, String, String) {
+pub fn split_sprintf_format(sprintf_format: &str) -> (String, String, String, String) {
     tracing::trace!("split_sprintf_format({sprintf_format:?})");
 
     let sprintf_regex = Regex::new(r#"^%([\-+ 0#,!])?([1-9]+)?((.)([0-9]+))?(\w)$"#).unwrap();
     let valid_format_types = ["d", "i", "c", "o", "u", "x", "e", "f", "g", "a", "s"];
 
     match sprintf_format {
-        None => (
+        "" => (
             "".to_string(),
             "".to_string(),
             "".to_string(),
             "s".to_string(),
         ),
-        Some(sprintf_format) => match sprintf_regex.captures(sprintf_format) {
+        sprintf_format => match sprintf_regex.captures(sprintf_format) {
             None => {
                 tracing::warn!("Illegal format: '{}'", sprintf_format);
                 (

@@ -349,7 +349,7 @@ impl Table {
                             let (datatype, format) = {
                                 let dt_fmt = json_col.get_string("datatype").ok();
                                 match dt_fmt {
-                                    None => ("text".to_string(), None),
+                                    None => ("text".to_string(), "".to_string()),
                                     Some(dt_fmt) => {
                                         let dt_fmt = dt_fmt.split(":").collect::<Vec<_>>();
                                         (
@@ -357,7 +357,10 @@ impl Table {
                                                 "" => "text".to_string(),
                                                 datatype => datatype.to_lowercase(),
                                             },
-                                            dt_fmt.get(1).and_then(|s| Some(s.to_string())),
+                                            dt_fmt
+                                                .get(1)
+                                                .and_then(|s| Some(s.to_string()))
+                                                .unwrap_or_default(),
                                         )
                                     }
                                 }
@@ -365,6 +368,7 @@ impl Table {
                             ColumnDatatype {
                                 name: datatype,
                                 format,
+                                ..Default::default()
                             }
                         },
                         nulltype: json_col.get_string("nulltype").ok(),
@@ -563,7 +567,7 @@ impl Table {
                                     datatype if datatype == "" => "text".to_string(),
                                     datatype => datatype.to_lowercase(),
                                 },
-                                format: None,
+                                ..Default::default()
                             },
                             Some(col) => col.datatype.clone(),
                         }
@@ -757,7 +761,10 @@ pub struct Column {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ColumnDatatype {
     pub name: String,
-    pub format: Option<String>,
+    pub parent: String,
+    pub condition: String,
+    pub sql_type: String,
+    pub format: String,
 }
 
 /// Represents a row from some table
