@@ -8,23 +8,23 @@ $ rltbl set value penguin 10 species ""
 $ rltbl set value penguin 10 island ""
 $ rltbl get table penguin
 Rows 1-11 of 11
-study_name  sample_number  species             island     individual_id  culmen_length  body_mass
-FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.6           3221
-FAKE123     2              Pygoscelis adeliae  Torgersen  N2             30.5           3685
-FAKE123     3              Pygoscelis adeliae  Torgersen  N3             35.2           1491
-FAKE123     4              Pygoscelis adeliae  Torgersen  N4             31.4           1874
-FAKE123     5              Pygoscelis adeliae  Torgersen  N5             45.8           3469
-FAKE123     6              Pygoscelis adeliae  Torgersen  N6             40.6           4875
-FAKE123     7              Pygoscelis adeliae  Torgersen  N7             49.9           2129
-FAKE123     8              Pygoscelis adeliae  Biscoe     N8             30.9           1451
-FAKE123     9              Pygoscelis adeliae  Biscoe     N9             38.6           2702
-FAKE123     10                                            N10            33.8           4697
-            20                                                                              
+study_name  sample_number  species             island     individual_id  culmen_length  culmen_depth  body_mass
+FAKE123     1              Pygoscelis adeliae  Torgersen  N1             44.60          31.10         4093
+FAKE123     2              Pygoscelis adeliae  Torgersen  N2             30.50          33.40         3336
+FAKE123     3              Pygoscelis adeliae  Torgersen  N3             35.20          22.40         4087
+FAKE123     4              Pygoscelis adeliae  Biscoe     N4             34.30          35.80         3469
+FAKE123     5              Pygoscelis adeliae  Torgersen  N5             40.60          39.90         2129
+FAKE123     6              Pygoscelis adeliae  Biscoe     N6             30.90          22.20         4962
+FAKE123     7              Pygoscelis adeliae  Biscoe     N7             38.60          28.50         3607
+FAKE123     8              Pygoscelis adeliae  Dream      N8             33.80          39.90         1908
+FAKE123     9              Pygoscelis adeliae  Dream      N9             43.70          23.10         3883
+FAKE123     10                                            N10            31.50          30.00         4521
+            20
 $ echo "select * from penguin where species is null and island = '' order by _order" | psql rltbl_db
- _id | _order | study_name | sample_number | species | island | individual_id | culmen_length | body_mass 
------+--------+------------+---------------+---------+--------+---------------+---------------+-----------
-  10 |  10000 | FAKE123    |            10 |         |        | N10           | 33.8          | 4697
-  11 |  11000 |            |            20 |         |        |               |               | 
+ _id | _order | study_name | sample_number | species | island | individual_id | culmen_length | culmen_depth | body_mass
+-----+--------+------------+---------------+---------+--------+---------------+---------------+--------------+-----------
+  10 |  10000 | FAKE123    |            10 |         |        | N10           |          31.5 |           30 |      4521
+  11 |  11000 |            |            20 |         |        |               |               |              |
 (2 rows)
 
 $ rltbl save
@@ -35,12 +35,12 @@ drop cascades to view penguin_text_view
 DROP TABLE
 $ rltbl init --force
 Initialized a relatable database in 'postgresql:///rltbl_db'
-$ rltbl load table penguin.tsv
+$ rltbl load table --validate penguin.tsv
 $ echo "select * from penguin where species is null and island = '' order by _order" | psql rltbl_db
- _id | _order | study_name | sample_number | species | island | individual_id | culmen_length | body_mass 
------+--------+------------+---------------+---------+--------+---------------+---------------+-----------
-  10 |  10000 | FAKE123    |            10 |         |        | N10           | 33.8          | 4697
-  11 |  11000 |            |            20 |         |        |               |               | 
+ _id | _order | study_name | sample_number | species | island | individual_id | culmen_length | culmen_depth | body_mass
+-----+--------+------------+---------------+---------+--------+---------------+---------------+--------------+-----------
+  10 |  10000 | FAKE123    |            10 |         |        | N10           |          31.5 |           30 |      4521
+  11 |  11000 |            |            20 |         |        |               |               |              |
 (2 rows)
 
 $ mv penguin.tsv penguin.tsv.2

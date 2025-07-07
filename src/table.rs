@@ -15,11 +15,12 @@ use serde_json::{json, Value as JsonValue};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Table {
+    /// The name of the table
     pub name: String,
-    /// The name of the view (blank if there is none) associated with the table
+    /// The name of the view (blank if there is none) to be used when querying the table
     pub view: String,
     /// The id of the most recent change to this table.
-    pub change_id: usize,
+    pub change_id: u64,
     // We may eventually want to turn `columns` into a special-purpose struct, but for now a
     // simple IndexMap suffices.
     /// The table's column configuration, implemented as a map from column names to [Column]s.
@@ -61,22 +62,24 @@ impl Table {
     /// Returns a [Table] corresponding to the given table name using the given transaction.
     pub fn _get_table(table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Self> {
         tracing::trace!("Table::_get_table({table_name:?}, tx)");
+        // If the default view exists, set the table's view to it, otherwise leave it blank:
         let result = Self::_view_exists(table_name, "default", tx)?;
         let view = {
             if result {
                 format!("{table_name}_default_view")
             } else {
-                String::from(table_name)
+                String::from("")
             }
         };
 
+        // Get the last change for this table:
         let statement = format!(
             r#"SELECT MAX("change_id") FROM "history" WHERE "table" = {sql_param}"#,
             sql_param = SqlParam::new(&tx.kind()).next()
         );
         let params = json!([table_name]);
         let change_id = match tx.query_value(&statement, Some(&params))? {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            Some(value) => value.as_u64().unwrap_or_default() as u64,
             None => 0,
         };
 
@@ -196,17 +199,32 @@ impl Table {
         }
     }
 
+    /// Set the view for the table to the given view type (accepted types are "default" and "text"),
+    /// after first ensuring that a view of the given type exists, creating it if necessary.
+    pub async fn set_view(&mut self, rltbl: &Relatable, view_type: &str) -> Result<&Self> {
+        match view_type {
+            "text" => self.ensure_text_view_created(rltbl).await?,
+            "default" => self.ensure_default_view_created(rltbl).await?,
+            unsupported => {
+                tracing::warn!(
+                    "Unsupported view name: '{}'. Not changing view '{}' for table '{}",
+                    unsupported,
+                    self.view,
+                    self.name
+                );
+            }
+        };
+        Ok(self)
+    }
+
     /// Use the given [relatable](crate) instance to ensure that the default view for this
-    /// table has been created, and to set the [view name](Table::view) for this table to
-    /// TABLENAME_default_view.
+    /// table has been created, and then set the view for this table to it.
     pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::ensure_default_view_created({self:?}, {rltbl:?})");
         let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
-        self.view = format!("{}_default_view", self.name);
-        tracing::debug!(
-            r#"Creating default view "{}" with columns {columns:?}"#,
-            self.view
-        );
+        let view_name = format!("{}_default_view", self.name);
+        tracing::debug!(r#"Creating default view "{view_name}" with columns {columns:?}"#);
+
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
             true => r#"_id"#,
@@ -218,7 +236,6 @@ impl Table {
 
         for sql in sql::generate_default_view_ddl(
             &self.name,
-            &self.view,
             id_col,
             order_col,
             &columns,
@@ -226,12 +243,15 @@ impl Table {
         ) {
             rltbl.connection.query(&sql, None).await?;
         }
+
+        // Set the table's view name to the default view:
+        self.view = view_name;
+
         Ok(())
     }
 
     /// Use the given [relatable](crate) instance to ensure that the text view for this
-    /// table has been created, and to set the [view name](Table::view) for this table to
-    /// TABLENAME_text_view.
+    /// table has been created, and then set the view for this table to it.
     pub async fn ensure_text_view_created(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::ensure_text_view_created({self:?}, {rltbl:?})");
 
@@ -239,12 +259,10 @@ impl Table {
         self.ensure_default_view_created(rltbl).await?;
 
         // Create the text view:
+        let view_name = format!("{}_text_view", self.name);
+
         let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
-        self.view = format!("{}_text_view", self.name);
-        tracing::debug!(
-            r#"Creating text view "{}" with columns {columns:?}"#,
-            self.view
-        );
+        tracing::debug!(r#"Creating text view "{view_name}" with columns {columns:?}"#);
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
             true => r#"_id"#,
@@ -256,7 +274,6 @@ impl Table {
 
         for sql in sql::generate_text_view_ddl(
             &self.name,
-            &self.view,
             id_col,
             order_col,
             &columns,
@@ -264,6 +281,10 @@ impl Table {
         ) {
             rltbl.connection.query(&sql, None).await?;
         }
+
+        // Set the table's view name to the text view:
+        self.view = view_name;
+
         Ok(())
     }
 
@@ -313,7 +334,28 @@ impl Table {
                         table: json_col.get_string("table")?,
                         label: json_col.get_string("label").ok(),
                         description: json_col.get_string("description").ok(),
-                        datatype: json_col.get_string("datatype").ok(),
+                        datatype: {
+                            let (datatype, format) = {
+                                let dt_fmt = json_col.get_string("datatype").ok();
+                                match dt_fmt {
+                                    None => ("text".to_string(), None),
+                                    Some(dt_fmt) => {
+                                        let dt_fmt = dt_fmt.split(":").collect::<Vec<_>>();
+                                        (
+                                            match dt_fmt[0] {
+                                                "" => "text".to_string(),
+                                                datatype => datatype.to_lowercase(),
+                                            },
+                                            dt_fmt.get(1).and_then(|s| Some(s.to_string())),
+                                        )
+                                    }
+                                }
+                            };
+                            ColumnDatatype {
+                                name: datatype,
+                                format,
+                            }
+                        },
                         nulltype: json_col.get_string("nulltype").ok(),
                         ..Default::default()
                     },
@@ -384,8 +426,8 @@ impl Table {
         // column table that we just collected:
         let mut columns = vec![];
         let mut meta_columns = vec![];
-        for column in Self::get_db_table_columns(table_name, tx)? {
-            match column.get_string("name")? {
+        for db_column in Self::get_db_table_columns(table_name, tx)? {
+            match db_column.get_string("name")? {
                 column_name if column_name.starts_with("_") => meta_columns.push(Column {
                     name: column_name,
                     table: table_name.to_string(),
@@ -402,14 +444,18 @@ impl Table {
                         .get(&column_name)
                         .and_then(|col| col.nulltype.clone()),
                     datatype: {
-                        // Fall back to the SQL type if no datatype is defined in the column
-                        // table or the column table does not exist:
-                        match column_columns
-                            .get(&column_name)
-                            .and_then(|col| col.datatype.clone())
-                        {
-                            Some(datatype) => Some(datatype),
-                            None => Some(column.get_string("datatype")?),
+                        // Fall back to the SQL type (these are returned for each column from
+                        // get_db_table_columns()) if no datatype is defined in the column table
+                        // or the column table does not exist:
+                        match column_columns.get(&column_name) {
+                            None => ColumnDatatype {
+                                name: match db_column.get_string("datatype")? {
+                                    datatype if datatype == "" => "text".to_string(),
+                                    datatype => datatype.to_lowercase(),
+                                },
+                                format: None,
+                            },
+                            Some(col) => col.datatype.clone(),
                         }
                     },
                     name: column_name,
@@ -463,11 +509,7 @@ impl Table {
                 Some(description) if description == "" => None,
                 Some(_) => col.description.clone(),
             },
-            "datatype" => match &col.datatype {
-                None => None,
-                Some(datatype) if datatype == "" => None,
-                Some(_) => col.datatype.clone(),
-            },
+            "datatype" => Some(col.datatype.name.to_string()),
             "nulltype" => match &col.nulltype {
                 None => None,
                 Some(nulltype) if nulltype == "" => None,
@@ -479,11 +521,7 @@ impl Table {
 
     /// Return a [JsonRow] representing the given row of the given table, using the
     /// given transaction.
-    pub fn _get_row(
-        table: &str,
-        row: usize,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<Option<JsonRow>> {
+    pub fn _get_row(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<Option<JsonRow>> {
         tracing::trace!("Table::_get_row({table:}?, {row}, tx)");
         let sql = format!(
             r#"SELECT * FROM "{table}" WHERE "_id" = {sql_param}"#,
@@ -494,7 +532,7 @@ impl Table {
     }
 
     /// Determine what the next created row id for the given table will be
-    pub async fn get_next_id(&self, rltbl: &Relatable) -> Result<usize> {
+    pub async fn get_next_id(&self, rltbl: &Relatable) -> Result<u64> {
         tracing::trace!("Table::get_next_id({self:?}, {rltbl:?})");
         let mut conn = rltbl.connection.reconnect()?;
         // Begin a transaction:
@@ -509,7 +547,7 @@ impl Table {
     }
 
     /// Query the database for what the id of the next created row of the given table will be
-    pub fn _get_next_id(&self, tx: &mut DbTransaction<'_>) -> Result<usize> {
+    pub fn _get_next_id(&self, tx: &mut DbTransaction<'_>) -> Result<u64> {
         tracing::trace!("Table::_get_next_id({self:?}, tx)");
         let current_row_id = match tx.kind() {
             DbKind::Sqlite => {
@@ -527,7 +565,7 @@ impl Table {
             }
         };
         let current_row_id = match current_row_id {
-            Some(value) => value.as_u64().unwrap_or_default() as usize,
+            Some(value) => value.as_u64().unwrap_or_default() as u64,
             None => 0,
         };
         Ok(current_row_id + 1)
@@ -535,11 +573,7 @@ impl Table {
 
     /// Returns the row id that comes before the given row in the given table, using the given
     /// transaction.
-    pub fn _get_previous_row_id(
-        table: &str,
-        row: usize,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<usize> {
+    pub fn _get_previous_row_id(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
         tracing::trace!("Table::_get_previous_row_id({table}, {row}, tx)");
         let curr_row_order = Self::_get_row_order(table, row, tx)?;
         let sql = format!(
@@ -558,7 +592,7 @@ impl Table {
 
     /// Returns the value of the _order column of the given row from the given table using the
     /// given transaction.
-    fn _get_row_order(table: &str, row: usize, tx: &mut DbTransaction<'_>) -> Result<usize> {
+    fn _get_row_order(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
         tracing::trace!("Table::_get_row_order({table:?}, {row}, tx)");
         let sql = format!(
             r#"SELECT "_order" FROM "{table}" WHERE "_id" = {sql_param}"#,
@@ -582,18 +616,25 @@ pub struct Column {
     pub table: String,
     pub label: Option<String>,
     pub description: Option<String>,
-    pub datatype: Option<String>,
+    pub datatype: ColumnDatatype,
     pub nulltype: Option<String>,
     pub primary_key: bool,
     pub unique: bool,
 }
 
+/// Represents' a column's datatype
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ColumnDatatype {
+    pub name: String,
+    pub format: Option<String>,
+}
+
 /// Represents a row from some table
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Row {
-    pub id: usize,
-    pub order: usize,
-    pub change_id: usize,
+    pub id: u64,
+    pub order: u64,
+    pub change_id: u64,
     pub cells: IndexMap<String, Cell>,
 }
 
@@ -630,7 +671,7 @@ impl Row {
         };
         let mut row = Row::from(json_row);
         row.id = table._get_next_id(tx)?;
-        row.order = NEW_ORDER_MULTIPLIER * row.id;
+        row.order = NEW_ORDER_MULTIPLIER as u64 * row.id;
         row.change_id = table.change_id;
         tracing::debug!("Prepared a new row: {row:?}");
         Ok(row)
@@ -694,11 +735,7 @@ impl Row {
     pub fn validate(&mut self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<&Self> {
         for (column, cell) in self.cells.iter_mut() {
             let column_details = table.get_config_for_column(column);
-            let datatype = match column_details.datatype {
-                None => "text".to_string(),
-                Some(ref dt) if dt == "" => "text".to_string(),
-                Some(ref dt) => dt.to_string(),
-            };
+            let datatype = column_details.datatype.name.to_string();
             cell.validate(&column_details)?;
             if cell.message_level() >= 2 {
                 let mut sql_param_gen = SqlParam::new(&tx.kind());
@@ -723,7 +760,7 @@ impl Row {
                     cell.value,
                     "error",
                     format!("datatype:{datatype}"),
-                    "incorrect datatype"
+                    format!("{column} must be of type {datatype}")
                 ]);
                 tx.query(&sql, Some(&params))?;
             }
@@ -747,17 +784,17 @@ impl From<JsonRow> for Row {
             .content
             .get("_id")
             .and_then(|i| i.as_u64())
-            .unwrap_or_default() as usize;
+            .unwrap_or_default() as u64;
         let order = row
             .content
             .get("_order")
             .and_then(|i| i.as_u64())
-            .unwrap_or_default() as usize;
+            .unwrap_or_default() as u64;
         let change_id = row
             .content
             .get("_change_id")
             .and_then(|i| i.as_u64())
-            .unwrap_or_default() as usize;
+            .unwrap_or_default() as u64;
         let mut cells: IndexMap<String, Cell> = row
             .content
             .iter()
@@ -831,29 +868,32 @@ impl Cell {
     /// [messages](Message) to the cell's [messages](Cell::messages) field.
     pub fn validate(&mut self, column: &Column) -> Result<&Self> {
         fn invalidate(cell: &mut Cell, column: &Column) {
+            let datatype = &column.datatype.name;
             cell.messages.push(Message {
                 level: "error".to_string(),
-                rule: format!(
-                    "datatype:{}",
-                    match &column.datatype {
-                        None => "text",
-                        Some(datatype) => datatype,
-                    }
-                ),
-                message: "incorrect datatype".to_string(),
+                rule: format!("datatype:{datatype}"),
+                message: format!("{column} must be of type {datatype}", column = column.name),
             });
         }
 
-        match sql::get_sql_type(&column.datatype)?.to_lowercase().as_str() {
-            "integer" => match &mut self.value {
-                JsonValue::Number(number) => match number.to_string().parse::<isize>() {
+        match sql::get_sql_type(&column.datatype)? {
+            "INTEGER" => match &mut self.value {
+                JsonValue::Number(number) => match number.to_string().parse::<i64>() {
                     Ok(_) => (),
                     Err(_) => invalidate(self, column),
                 },
                 JsonValue::Null => (),
                 _ => invalidate(self, column),
             },
-            "text" | "" => (),
+            "NUMERIC" => match &mut self.value {
+                JsonValue::Number(number) => match number.to_string().parse::<f64>() {
+                    Ok(_) => (),
+                    Err(_) => invalidate(self, column),
+                },
+                JsonValue::Null => (),
+                _ => invalidate(self, column),
+            },
+            "TEXT" => (),
             unsupported => {
                 return Err(RelatableError::InputError(format!(
                     "Unsupported datatype: '{unsupported}'"

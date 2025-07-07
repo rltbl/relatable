@@ -15,6 +15,7 @@ use ansi_term::Style;
 use anyhow::Result;
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
+use colored::Colorize;
 use promptly::prompt_opt;
 use regex::Regex;
 use serde_json::{json, to_string_pretty, Value as JsonValue};
@@ -200,7 +201,7 @@ pub enum GetSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: usize,
+        row: u64,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: String,
@@ -215,7 +216,7 @@ pub enum SetSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: usize,
+        row: u64,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: String,
@@ -229,7 +230,7 @@ pub enum SetSubcommand {
 pub enum AddSubcommand {
     Row {
         #[arg(long, action = ArgAction::Set)]
-        after_id: Option<usize>,
+        after_id: Option<u64>,
 
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
@@ -242,7 +243,7 @@ pub enum AddSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: usize,
+        row: u64,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: String,
@@ -256,11 +257,11 @@ pub enum MoveSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: usize,
+        row: u64,
 
         #[arg(value_name = "AFTER", action = ArgAction::Set,
               help = "The ID of the row after which this one is to be moved")]
-        after: usize,
+        after: u64,
     },
 }
 
@@ -271,7 +272,7 @@ pub enum DeleteSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: usize,
+        row: u64,
     },
 
     Message {
@@ -292,7 +293,7 @@ pub enum DeleteSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: Option<usize>,
+        row: Option<u64>,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: Option<String>,
@@ -360,17 +361,23 @@ pub async fn print_table(
     offset: &usize,
 ) {
     tracing::trace!("print_table({cli:?}, {table_name}, {filters:?}, {format}, {limit}, {offset})");
-    // TODO: We need to ouput round numbers consistently between PostgreSQL and SQLite.
-    // Currently, for instance, 37 is displayed as 37.0 in SQLite and 37 in PostgreSQL.
-    tracing::debug!("print_table {table_name}");
+
+    // Initiate a rltbl instance, get the retrieve the Table struct corresponding to the given
+    // table name and ensure that the text view on the table has been created.
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
-    let select = Select::from(table_name)
+        .expect("Error initializing a relatable instance");
+
+    // Initialize a Select struct using the table struct:
+    let mut select = Select::from(table_name)
         .filters(filters)
         .unwrap()
         .limit(limit)
         .offset(offset);
+
+    // We will use the text view to retrieve the data:
+    select.view_name = format!("{table_name}_text_view");
+
     match format.to_lowercase().as_str() {
         "json" => {
             let json = json!(rltbl.fetch(&select).await.unwrap());
@@ -379,14 +386,23 @@ pub async fn print_table(
         "vertical" => {
             println!("{table_name}\n-----");
             for row in rltbl.fetch(&select).await.unwrap().rows {
-                for (column, value) in row.cells.iter() {
-                    println!("{column}: {value}", value = value.text);
+                for (column, cell) in row.cells.iter() {
+                    let messages = cell
+                        .messages
+                        .iter()
+                        .map(|msg| format!("{} ({}): {}", msg.level, msg.rule, msg.message))
+                        .collect::<Vec<_>>();
+                    let messages = match messages.is_empty() {
+                        true => "".to_string().normal(),
+                        false => format!(" [{}]", messages.join(", ")).red(),
+                    };
+                    println!("{column}: {value}{messages}", value = cell.text);
                 }
                 println!("-----");
             }
         }
         "text" | "" => {
-            print!("{}", rltbl.fetch(&select).await.unwrap().to_string());
+            println!("{}", rltbl.fetch(&select).await.unwrap().to_console());
         }
         _ => unimplemented!("output format {format}"),
     };
@@ -409,7 +425,7 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
     print_text(&rows);
 }
 
-pub async fn print_value(cli: &Cli, table: &str, row: usize, column: &str) {
+pub async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
     tracing::trace!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -523,7 +539,7 @@ pub fn get_username(cli: &Cli) -> String {
     }
 }
 
-pub async fn set_value(cli: &Cli, table: &str, row: usize, column: &str, value: &str) {
+pub async fn set_value(cli: &Cli, table: &str, row: u64, column: &str, value: &str) {
     tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -594,7 +610,7 @@ pub fn prompt_for_column_value(column: &str) -> JsonValue {
 pub async fn prompt_for_json_message(
     rltbl: &Relatable,
     table: &str,
-    row: usize,
+    row: u64,
     column: &str,
 ) -> Result<JsonRow> {
     tracing::trace!("prompt_for_json_message({rltbl:?}, {table}, {row}, {column})");
@@ -647,7 +663,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
 /// Use Relatable, in conformity with the given command-line parameters, to add a row representing
 /// a [Message](rltbl::table::Message) to the message table. The details of the message are read
 /// from STDIN, either interactively or in JSON format.
-pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
+pub async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
     tracing::trace!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -693,7 +709,7 @@ pub async fn add_message(cli: &Cli, table: &str, row: usize, column: &str) {
     tracing::info!("Added message (ID: {mid}) {message:?}");
 }
 
-pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
+pub async fn add_row(cli: &Cli, table: &str, after_id: Option<u64>) {
     tracing::trace!("add_row({cli:?}, {table}, {after_id:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -718,7 +734,7 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<usize>) {
     tracing::info!("Added row {}", row.order);
 }
 
-pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
+pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
     tracing::trace!("move_row({cli:?}, {table}, {row}, {after_id})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -735,7 +751,7 @@ pub async fn move_row(cli: &Cli, table: &str, row: usize, after_id: usize) {
     }
 }
 
-pub async fn delete_row(cli: &Cli, table: &str, row: usize) {
+pub async fn delete_row(cli: &Cli, table: &str, row: u64) {
     tracing::trace!("delete_row({cli:?}, {table}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -757,7 +773,7 @@ pub async fn delete_message(
     target_rule: Option<&str>,
     target_user: Option<&str>,
     table: &str,
-    row: Option<usize>,
+    row: Option<u64>,
     column: Option<&str>,
 ) {
     tracing::trace!(
