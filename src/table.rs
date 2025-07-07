@@ -232,7 +232,7 @@ impl Table {
     /// table has been created, and then set the view for this table to it.
     pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::ensure_default_view_created({self:?}, {rltbl:?})");
-        let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
+        let (columns, meta_columns) = Table::collect_column_info(&self.name, rltbl).await?;
         let view_name = format!("{}_default_view", self.name);
         tracing::debug!(r#"Creating default view "{view_name}" with columns {columns:?}"#);
 
@@ -272,7 +272,7 @@ impl Table {
         // Create the text view:
         let view_name = format!("{}_text_view", self.name);
 
-        let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
+        let (columns, meta_columns) = Table::collect_column_info(&self.name, rltbl).await?;
         tracing::debug!(r#"Creating text view "{view_name}" with columns {columns:?}"#);
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
@@ -502,15 +502,15 @@ impl Table {
     /// Returns a tuple whose first position contains a list of the given table's columns, and whose
     /// second position contains a list of the given table's metacolumns
     pub async fn collect_column_info(
-        &self,
+        table: &str,
         rltbl: &Relatable,
     ) -> Result<(Vec<Column>, Vec<Column>)> {
-        tracing::trace!("Table::get_db_table_columns({self:?}, {rltbl:?})");
+        tracing::trace!("Table::get_db_table_columns({table}, {rltbl:?})");
         let mut conn = rltbl.connection.reconnect()?;
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let columns = Table::_collect_column_info(&self.name, &mut tx)?;
+        let columns = Table::_collect_column_info(table, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -583,6 +583,26 @@ impl Table {
             .into());
         }
         Ok((columns, meta_columns))
+    }
+
+    /// Returns a list of the table's primary key columns.
+    pub async fn primary_key_columns(table: &str, rltbl: &Relatable) -> Result<Vec<Column>> {
+        let (mut columns, mut meta_columns) = Table::collect_column_info(table, rltbl).await?;
+        columns.append(&mut meta_columns);
+        Ok(columns
+            .into_iter()
+            .filter(|col| col.primary_key)
+            .collect::<Vec<_>>())
+    }
+
+    /// Returns a list of the table's primary key columns.
+    pub fn _primary_key_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<Vec<Column>> {
+        let (mut columns, mut meta_columns) = Table::_collect_column_info(table, tx)?;
+        columns.append(&mut meta_columns);
+        Ok(columns
+            .into_iter()
+            .filter(|col| col.primary_key)
+            .collect::<Vec<_>>())
     }
 
     /// Fetches the [Column] struct representing the configuration of the given column from this
