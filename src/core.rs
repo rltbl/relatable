@@ -243,6 +243,7 @@ impl Relatable {
     /// to the column table, and add `size` rows of data to it. Drop the table first if `force` is
     /// set.
     pub async fn create_demo_table(&self, table: &str, force: &bool, size: usize) -> Result<()> {
+        tracing::trace!("create_demo_table({self:?}, {table}, {force}, {size})");
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
                 self.connection
@@ -350,8 +351,91 @@ impl Relatable {
         Ok(())
     }
 
+    // TODO: Add a convenience method to drop all of the tables in the table table
+    // TODO: Add a convenience method to drop all of the metatables
+    // TODO: Add a convenience method to do both of the above.
+
+    /// Create the datatype table for the demonstration database
+    pub async fn create_demo_datatype_table(&self, force: &bool) -> Result<()> {
+        tracing::trace!("create_demo_datatype_table({self:?}, {force})");
+        if *force {
+            if let DbKind::Postgres = self.connection.kind() {
+                self.connection
+                    .query(r#"DROP TABLE IF EXISTS "datatype" CASCADE"#, None)
+                    .await?;
+            }
+        }
+
+        let pkey_clause = match self.connection.kind() {
+            DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+            DbKind::Postgres => "SERIAL PRIMARY KEY",
+        };
+
+        let sql = format!(
+            r#"CREATE TABLE IF NOT EXISTS "datatype" (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             "datatype" TEXT,
+             "description" TEXT,
+             "parent" TEXT,
+             "condition" TEXT,
+             "sql_type" TEXT,
+             "format" TEXT
+           )"#,
+        );
+        self.connection.query(&sql, None).await?;
+
+        let datatype_contents = [json!({
+            "datatype": "decimal",
+            "description": "A decimal number",
+            "parent": "",
+            "condition": "",
+            "sql_type": "NUMERIC",
+            "format": "%.2f"
+        })]
+        .iter()
+        .map(|content| JsonRow {
+            content: content.as_object().expect("Not a map").clone(),
+        })
+        .collect::<Vec<_>>();
+
+        let mut sql_param_gen = SqlParam::new(&self.connection.kind());
+        let mut param_values = vec![];
+        let mut get_param = |row: &JsonRow, cname: &str| -> Result<String> {
+            match row.get_value(cname)? {
+                JsonValue::Null => Ok("NULL".to_string()),
+                JsonValue::String(value) => {
+                    param_values.push(value.to_string());
+                    Ok(sql_param_gen.next().to_string())
+                }
+                _ => panic!("Invalid value type for datatype table"),
+            }
+        };
+        let mut value_clauses = vec![];
+        for row in &datatype_contents {
+            let s1 = get_param(row, "datatype")?;
+            let s2 = get_param(row, "description")?;
+            let s3 = get_param(row, "parent")?;
+            let s4 = get_param(row, "condition")?;
+            let s5 = get_param(row, "sql_type")?;
+            let s6 = get_param(row, "format")?;
+            value_clauses.push(format!("({s1}, {s2}, {s3}, {s4}, {s5}, {s6})"));
+        }
+
+        let sql = format!(
+            r#"INSERT INTO "datatype"
+               ("datatype", "description", "parent", "condition", "sql_type", "format")
+               VALUES {values}"#,
+            values = value_clauses.join(", ")
+        );
+        let param_values = json!(param_values);
+        self.connection.query(&sql, Some(&param_values)).await?;
+        Ok(())
+    }
+
     /// Create the column table for the demonstration database
     pub async fn create_demo_column_table(&self, force: &bool) -> Result<()> {
+        tracing::trace!("create_demo_column_table({self:?}, {force})");
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
                 self.connection
@@ -411,7 +495,7 @@ impl Relatable {
                 "label": "culmen length (cm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": "decimal:%.2f",
+                "datatype": "decimal",
             }),
             json!({
                 "table": "penguin",
@@ -419,7 +503,7 @@ impl Relatable {
                 "label": "culmen depth (cm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": "decimal:%.2f",
+                "datatype": "decimal",
             }),
             json!({
                 "table": "penguin",
