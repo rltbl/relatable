@@ -11,7 +11,7 @@
 use crate as rltbl;
 use rltbl::{
     core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
-    table::{Column, ColumnDatatype, Table},
+    table::{Column, Table},
 };
 
 ////////////////////////////////////
@@ -714,22 +714,6 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
     }
 }
 
-/// Return the SQL type corresponding to the given datatype
-pub fn get_sql_type(datatype: &ColumnDatatype) -> Result<&str> {
-    tracing::trace!("get_sql_type({datatype:?})");
-    match datatype.name.as_str() {
-        "text" => Ok("TEXT"),
-        "integer" => Ok("INTEGER"),
-        "decimal" => Ok("NUMERIC"),
-        unsupported => {
-            return Err(RelatableError::InputError(format!(
-                "Unsupported datatype: '{unsupported}'",
-            ))
-            .into());
-        }
-    }
-}
-
 // TODO (maybe): Possibly define a new enum called DbQuery and save some lines of code by
 // refactoring prepare_sqlx_sqlite_query() and prepare_sqlx_pg_query() into one function that
 // accepts a DbQuery, unless doing that makes things unnecessarily complicated in other ways.
@@ -889,7 +873,7 @@ pub fn generate_table_ddl(
             ))
             .into());
         }
-        let sql_type = get_sql_type(&col.datatype)?;
+        let sql_type = col.datatype.get_sql_type();
         let clause = format!(
             r#""{cname}" {sql_type}{unique}"#,
             unique = match col.unique {

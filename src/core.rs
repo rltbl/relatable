@@ -227,14 +227,9 @@ impl Relatable {
             "Relatable::build_demo({database:?}, {force}, {size}, {caching_strategy:?})"
         );
         let rltbl = Relatable::init(force, database.as_deref(), caching_strategy).await?;
-        if *force {
-            if let DbKind::Postgres = rltbl.connection.kind() {
-                rltbl
-                    .connection
-                    .query(r#"DROP TABLE IF EXISTS "column" CASCADE"#, None)
-                    .await?;
-            }
-        }
+
+        rltbl.create_demo_column_table(force).await?;
+        rltbl.create_demo_datatype_table(force).await?;
         rltbl.create_demo_table("penguin", force, size).await?;
         Ok(rltbl)
     }
@@ -260,9 +255,6 @@ impl Relatable {
             DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
             DbKind::Postgres => "SERIAL PRIMARY KEY",
         };
-
-        // Create and populate a column table:
-        self.create_demo_column_table(force).await?;
 
         // Create the demo table:
         let sql = format!(

@@ -343,10 +343,30 @@ impl Table {
         if !Table::_table_exists("column", tx)? {
             Ok(IndexMap::new())
         } else {
-            let sql = format!(
-                r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
-                sql_param = SqlParam::new(&tx.kind()).next()
-            );
+            let sql = match Table::_table_exists("datatype", tx)? {
+                true => format!(
+                    r#"SELECT
+                         c."table",
+                         c."column",
+                         c."label",
+                         c."description",
+                         c."nulltype",
+                         c."datatype",
+                         d."description" AS "datatype_description",
+                         d."parent" AS "datatype_parent",
+                         d."condition" AS "datatype_condition",
+                         d."sql_type" AS "datatype_sql_type",
+                         d."format" AS "datatype_format"
+                       FROM "column" c
+                         LEFT JOIN "datatype" d ON c."datatype" = d."datatype"
+                       WHERE c."table" = {sql_param}"#,
+                    sql_param = SqlParam::new(&tx.kind()).next()
+                ),
+                false => format!(
+                    r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
+                    sql_param = SqlParam::new(&tx.kind()).next()
+                ),
+            };
             let params = json!([table_name]);
             let json_columns = tx.query(&sql, Some(&params))?;
             let mut columns = IndexMap::new();
@@ -358,31 +378,23 @@ impl Table {
                         table: json_col.get_string("table")?,
                         label: json_col.get_string("label").ok(),
                         description: json_col.get_string("description").ok(),
-                        datatype: {
-                            let (datatype, format) = {
-                                let dt_fmt = json_col.get_string("datatype").ok();
-                                match dt_fmt {
-                                    None => ("text".to_string(), "".to_string()),
-                                    Some(dt_fmt) => {
-                                        let dt_fmt = dt_fmt.split(":").collect::<Vec<_>>();
-                                        (
-                                            match dt_fmt[0] {
-                                                "" => "text".to_string(),
-                                                datatype => datatype.to_lowercase(),
-                                            },
-                                            dt_fmt
-                                                .get(1)
-                                                .and_then(|s| Some(s.to_string()))
-                                                .unwrap_or_default(),
-                                        )
-                                    }
-                                }
-                            };
-                            ColumnDatatype {
-                                name: datatype,
-                                format,
+                        datatype: match json_col.get_string("datatype").unwrap_or_default().as_str()
+                        {
+                            "" => ColumnDatatype {
+                                name: "text".to_string(),
                                 ..Default::default()
-                            }
+                            },
+                            datatype => ColumnDatatype {
+                                name: datatype.to_string(),
+                                description: json_col
+                                    .get_string("datatype_description")
+                                    .unwrap_or_default(),
+                                parent: json_col.get_string("datatype_parent").unwrap_or_default(),
+                                condition: json_col
+                                    .get_string("datatype_condition")
+                                    .unwrap_or_default(),
+                                format: json_col.get_string("datatype_format").unwrap_or_default(),
+                            },
                         },
                         nulltype: json_col.get_string("nulltype").ok(),
                         ..Default::default()
@@ -575,13 +587,16 @@ impl Table {
                         // get_db_table_columns()) if no datatype is defined in the column table
                         // or the column table does not exist:
                         match column_columns.get(&column_name) {
-                            None => ColumnDatatype {
-                                name: match db_column.get_string("datatype")? {
+                            None => {
+                                let db_datatype = match db_column.get_string("datatype")? {
                                     datatype if datatype == "" => "text".to_string(),
-                                    datatype => datatype.to_lowercase(),
-                                },
-                                ..Default::default()
-                            },
+                                    datatype => datatype,
+                                };
+                                ColumnDatatype {
+                                    name: db_datatype.to_lowercase(),
+                                    ..Default::default()
+                                }
+                            }
                             Some(col) => col.datatype.clone(),
                         }
                     },
@@ -770,10 +785,36 @@ pub struct Column {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ColumnDatatype {
     pub name: String,
+    pub description: String,
     pub parent: String,
     pub condition: String,
-    pub sql_type: String,
     pub format: String,
+}
+
+impl ColumnDatatype {
+    /// Return the SQL type corresponding to the given datatype
+    pub fn get_sql_type(&self) -> &str {
+        tracing::trace!("ColumnDatatype::get_sql_type({self:?})");
+        match self.name.to_lowercase().as_str() {
+            "text" => "text",
+            "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" => "integer",
+            "real" | "decimal" | "numeric" => "numeric",
+            datatype
+                if (datatype.starts_with("real")
+                    || datatype.starts_with("numeric")
+                    || datatype.starts_with("decimal")) =>
+            {
+                "numeric"
+            }
+            datatype if (datatype.starts_with("varchar") || datatype.starts_with("character")) => {
+                "text"
+            }
+            _custom => {
+                // TODO: Look up the datatype in the datatype table.
+                "text"
+            }
+        }
+    }
 }
 
 /// Represents a row from some table
@@ -1023,8 +1064,8 @@ impl Cell {
             });
         }
 
-        match sql::get_sql_type(&column.datatype)? {
-            "INTEGER" => match &mut self.value {
+        match column.datatype.get_sql_type() {
+            "integer" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<i64>() {
                     Ok(_) => (),
                     Err(_) => invalidate(self, column),
@@ -1032,7 +1073,7 @@ impl Cell {
                 JsonValue::Null => (),
                 _ => invalidate(self, column),
             },
-            "NUMERIC" => match &mut self.value {
+            "numeric" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<f64>() {
                     Ok(_) => (),
                     Err(_) => invalidate(self, column),
@@ -1040,10 +1081,10 @@ impl Cell {
                 JsonValue::Null => (),
                 _ => invalidate(self, column),
             },
-            "TEXT" => (),
+            "text" => (),
             unsupported => {
                 return Err(RelatableError::InputError(format!(
-                    "Unsupported datatype: '{unsupported}'"
+                    "Unsupported SQL type: '{unsupported}'"
                 ))
                 .into())
             }
