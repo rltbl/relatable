@@ -351,10 +351,6 @@ impl Relatable {
         Ok(())
     }
 
-    // TODO: Add a convenience method to drop all of the tables in the table table
-    // TODO: Add a convenience method to drop all of the metatables
-    // TODO: Add a convenience method to do both of the above.
-
     /// Create the datatype table for the demonstration database
     pub async fn create_demo_datatype_table(&self, force: &bool) -> Result<()> {
         tracing::trace!("create_demo_datatype_table({self:?}, {force})");
@@ -372,7 +368,7 @@ impl Relatable {
         };
 
         let sql = format!(
-            r#"CREATE TABLE IF NOT EXISTS "datatype" (
+            r#"CREATE TABLE "datatype" (
              _id {pkey_clause},
              _order INTEGER UNIQUE,
              "datatype" TEXT,
@@ -450,7 +446,7 @@ impl Relatable {
         };
 
         let sql = format!(
-            r#"CREATE TABLE IF NOT EXISTS "column" (
+            r#"CREATE TABLE "column" (
              _id {pkey_clause},
              _order INTEGER UNIQUE,
              "table" TEXT,
@@ -635,6 +631,43 @@ impl Relatable {
         (0, 0, 'E1', 'N1')"#;
         self.connection.query(sql, None).await.unwrap();
 
+        Ok(())
+    }
+
+    // Drop all of the tables in the table table
+    pub async fn drop_data_tables(&self) -> Result<()> {
+        tracing::trace!("Relatable::drop_data_tables({self:?})");
+        if !Table::table_exists("table", self).await? {
+            tracing::warn!("Can't get list of tables to drop: The table table does not exist");
+        } else {
+            let mut tables = self.get_tables().await?;
+            for (_, table) in tables.iter_mut() {
+                table.drop_table(self).await?;
+            }
+        }
+        Ok(())
+    }
+
+    // Drop all of the meta tables
+    pub async fn drop_meta_tables(&self) -> Result<()> {
+        tracing::trace!("Relatable::drop_meta_tables({self:?})");
+        for table_name in [
+            "cache", "user", "change", "message", "history", "datatype", "column", "table",
+        ] {
+            let mut table = Table {
+                name: table_name.to_string(),
+                ..Default::default()
+            };
+            table.drop_table(self).await?;
+        }
+        Ok(())
+    }
+
+    // Drop all of the data tables and metatables in the database
+    pub async fn drop_database(&self) -> Result<()> {
+        tracing::trace!("Relatable::drop_database({self:?})");
+        self.drop_data_tables().await?;
+        self.drop_meta_tables().await?;
         Ok(())
     }
 

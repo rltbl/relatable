@@ -210,6 +210,19 @@ impl Table {
         }
     }
 
+    /// Drop the given table in the database
+    pub async fn drop_table(&mut self, rltbl: &Relatable) -> Result<()> {
+        tracing::trace!("Table::drop_data_tables({self:?}, {rltbl:?})");
+        let sql = match rltbl.connection.kind() {
+            DbKind::Postgres => {
+                format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.name)
+            }
+            DbKind::Sqlite => format!(r#"DROP TABLE IF EXISTS "{}""#, self.name),
+        };
+        rltbl.connection.query(&sql, None).await?;
+        Ok(())
+    }
+
     /// Set the view for the table to the given view type (accepted types are "default" and "text"),
     /// after first ensuring that a view of the given type exists, creating it if necessary.
     pub async fn set_view(&mut self, rltbl: &Relatable, view_type: &str) -> Result<&Self> {
@@ -580,11 +593,7 @@ impl Table {
             };
         }
         if columns.is_empty() && meta_columns.is_empty() {
-            return Err(RelatableError::DataError(format!(
-                "No db columns found for: {}",
-                table_name
-            ))
-            .into());
+            tracing::warn!("No db columns found for: {}", table_name);
         }
         Ok((columns, meta_columns))
     }

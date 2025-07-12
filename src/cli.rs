@@ -126,6 +126,12 @@ pub enum Command {
         save_dir: Option<String>,
     },
 
+    /// Drop database tables
+    Drop {
+        #[command(subcommand)]
+        subcommand: DropSubcommand,
+    },
+
     /// Run a Relatable server
     Serve {
         /// Server host address
@@ -314,6 +320,11 @@ pub enum LoadSubcommand {
               help = "The path(s) to load from")]
         paths: Vec<String>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DropSubcommand {
+    Database {},
 }
 
 pub async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
@@ -855,6 +866,17 @@ pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
     rltbl.save_all(save_dir).await.expect("Error saving all");
 }
 
+pub async fn drop_database(cli: &Cli) {
+    tracing::trace!("drop_database({cli:?})");
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+    rltbl
+        .drop_database()
+        .await
+        .expect("Error dropping database");
+}
+
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     tracing::trace!("build_demo({cli:?}, {force}, {size})");
     Relatable::build_demo(cli.database.as_deref(), force, size, &cli.caching)
@@ -957,6 +979,9 @@ pub async fn process_command() {
             } => load_tables(&cli, paths, *force, *validate).await,
         },
         Command::Save { save_dir } => save_all(&cli, save_dir.as_deref()).await,
+        Command::Drop { subcommand } => match subcommand {
+            DropSubcommand::Database {} => drop_database(&cli).await,
+        },
         Command::Serve {
             host,
             port,

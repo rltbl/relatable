@@ -1073,7 +1073,7 @@ pub(crate) fn generate_default_view_ddl(
         DbKind::Sqlite => vec![
             format!(r#"DROP VIEW IF EXISTS "{}""#, view_name),
             format!(
-                r#"CREATE VIEW IF NOT EXISTS "{view}" AS
+                r#"CREATE VIEW "{view}" AS
                      SELECT
                        {id_col} AS _id,
                        {order_col} AS _order,
