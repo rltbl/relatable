@@ -6,6 +6,7 @@ use crate::{self as rltbl};
 
 use anyhow::Result;
 use indexmap::IndexMap;
+use lazy_static::lazy_static;
 use rltbl::{
     core::{Relatable, RelatableError, NEW_ORDER_MULTIPLIER},
     sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
@@ -384,6 +385,13 @@ impl Table {
                                 name: "text".to_string(),
                                 ..Default::default()
                             },
+                            datatype if BUILTIN_DATATYPES.contains(&datatype) => {
+                                tracing::info!(
+                                    "Ignoring datatype table entry for built-in datatype \
+                                     '{datatype}'"
+                                );
+                                ColumnDatatype::builtin_datatype(datatype)?
+                            }
                             datatype => ColumnDatatype {
                                 name: datatype.to_string(),
                                 description: json_col
@@ -781,6 +789,12 @@ pub struct Column {
     pub unique: bool,
 }
 
+lazy_static! {
+    /// Relatable's core built-in datatypes
+    pub static ref BUILTIN_DATATYPES: Vec<&'static str> =
+        vec!["text", "empty", "line", "trimmed_line", "nonspace", "word"];
+}
+
 /// Represents' a column's datatype
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ColumnDatatype {
@@ -792,6 +806,58 @@ pub struct ColumnDatatype {
 }
 
 impl ColumnDatatype {
+    /// Return a ColumnDatatype struct corresponding to the given default datatype
+    pub fn builtin_datatype(datatype: &str) -> Result<Self> {
+        tracing::trace!("ColumnDatatype::builtin_datatype({datatype})");
+        match datatype {
+            "text" => Ok(ColumnDatatype {
+                name: "text".to_string(),
+                description: "any text".to_string(),
+                ..Default::default()
+            }),
+            "empty" => Ok(ColumnDatatype {
+                name: "empty".to_string(),
+                description: "the empty string".to_string(),
+                parent: "text".to_string(),
+                condition: "equals('')".to_string(),
+                ..Default::default()
+            }),
+            "line" => Ok(ColumnDatatype {
+                name: "line".to_string(),
+                description: "a line of text".to_string(),
+                parent: "text".to_string(),
+                condition: "".to_string(), // TODO: Add the right condition here once implemented.
+                ..Default::default()
+            }),
+            "trimmed_line" => Ok(ColumnDatatype {
+                name: "trimmed_line".to_string(),
+                description: "a line of text that deos not begin or end with whitespace"
+                    .to_string(),
+                parent: "line".to_string(),
+                condition: "".to_string(), // TODO: Add the right condition here once implemented.
+                ..Default::default()
+            }),
+            "nonspace" => Ok(ColumnDatatype {
+                name: "nonspace".to_string(),
+                description: "text without whitespace".to_string(),
+                parent: "trimmed_line".to_string(),
+                condition: "".to_string(), // TODO: Add the right condition here once implemented.
+                ..Default::default()
+            }),
+            "word" => Ok(ColumnDatatype {
+                name: "word".to_string(),
+                description: "a single word: letters, numbers, underscore".to_string(),
+                parent: "nonspace".to_string(),
+                condition: "".to_string(), // TODO: Add the right condition here once implemented.
+                ..Default::default()
+            }),
+            unrecognized => Err(RelatableError::InputError(format!(
+                "Unrecognized built-in datatype: '{unrecognized}'"
+            ))
+            .into()),
+        }
+    }
+
     /// Return the SQL type corresponding to the given datatype
     pub fn get_sql_type(&self) -> &str {
         tracing::trace!("ColumnDatatype::get_sql_type({self:?})");
@@ -809,6 +875,7 @@ impl ColumnDatatype {
             datatype if (datatype.starts_with("varchar") || datatype.starts_with("character")) => {
                 "text"
             }
+            datatype if BUILTIN_DATATYPES.contains(&datatype) => "text",
             _custom => {
                 // TODO: Look up the datatype in the datatype table.
                 "text"
