@@ -13,6 +13,7 @@ use rltbl::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Table {
@@ -381,7 +382,7 @@ impl Table {
                         description: json_col.get_string("description").ok(),
                         datatype: match json_col.get_string("datatype").unwrap_or_default().as_str()
                         {
-                            "" => ColumnDatatype {
+                            "" => Datatype {
                                 name: "text".to_string(),
                                 ..Default::default()
                             },
@@ -390,9 +391,9 @@ impl Table {
                                     "Ignoring datatype table entry for built-in datatype \
                                      '{datatype}'"
                                 );
-                                ColumnDatatype::builtin_datatype(datatype)?
+                                Datatype::builtin_datatype(datatype)?
                             }
-                            datatype => ColumnDatatype {
+                            datatype => Datatype {
                                 name: datatype.to_string(),
                                 description: json_col
                                     .get_string("datatype_description")
@@ -400,6 +401,9 @@ impl Table {
                                 parent: json_col.get_string("datatype_parent").unwrap_or_default(),
                                 condition: json_col
                                     .get_string("datatype_condition")
+                                    .unwrap_or_default(),
+                                sql_type: json_col
+                                    .get_string("datatype_sql_type")
                                     .unwrap_or_default(),
                                 format: json_col.get_string("datatype_format").unwrap_or_default(),
                             },
@@ -600,7 +604,7 @@ impl Table {
                                     datatype if datatype == "" => "text".to_string(),
                                     datatype => datatype,
                                 };
-                                ColumnDatatype {
+                                Datatype {
                                     name: db_datatype.to_lowercase(),
                                     ..Default::default()
                                 }
@@ -783,7 +787,7 @@ pub struct Column {
     pub table: String,
     pub label: Option<String>,
     pub description: Option<String>,
-    pub datatype: ColumnDatatype,
+    pub datatype: Datatype,
     pub nulltype: Option<String>,
     pub primary_key: bool,
     pub unique: bool,
@@ -792,95 +796,239 @@ pub struct Column {
 lazy_static! {
     /// Relatable's core built-in datatypes
     pub static ref BUILTIN_DATATYPES: Vec<&'static str> =
-        vec!["text", "empty", "line", "trimmed_line", "nonspace", "word"];
+        vec!["text", "empty", "line", "trimmed_line", "nonspace", "word", "integer"];
 }
 
 /// Represents' a column's datatype
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct ColumnDatatype {
+pub struct Datatype {
     pub name: String,
     pub description: String,
     pub parent: String,
     pub condition: String,
+    pub sql_type: String,
     pub format: String,
 }
 
-impl ColumnDatatype {
-    /// Return a ColumnDatatype struct corresponding to the given default datatype
-    pub fn builtin_datatype(datatype: &str) -> Result<Self> {
-        tracing::trace!("ColumnDatatype::builtin_datatype({datatype})");
-        match datatype {
-            "text" => Ok(ColumnDatatype {
-                name: "text".to_string(),
-                description: "any text".to_string(),
-                ..Default::default()
-            }),
-            "empty" => Ok(ColumnDatatype {
-                name: "empty".to_string(),
-                description: "the empty string".to_string(),
-                parent: "text".to_string(),
-                condition: "equals('')".to_string(),
-                ..Default::default()
-            }),
-            "line" => Ok(ColumnDatatype {
-                name: "line".to_string(),
-                description: "a line of text".to_string(),
-                parent: "text".to_string(),
-                condition: "".to_string(), // TODO: Add the right condition here once implemented.
-                ..Default::default()
-            }),
-            "trimmed_line" => Ok(ColumnDatatype {
-                name: "trimmed_line".to_string(),
-                description: "a line of text that deos not begin or end with whitespace"
-                    .to_string(),
-                parent: "line".to_string(),
-                condition: "".to_string(), // TODO: Add the right condition here once implemented.
-                ..Default::default()
-            }),
-            "nonspace" => Ok(ColumnDatatype {
-                name: "nonspace".to_string(),
-                description: "text without whitespace".to_string(),
-                parent: "trimmed_line".to_string(),
-                condition: "".to_string(), // TODO: Add the right condition here once implemented.
-                ..Default::default()
-            }),
-            "word" => Ok(ColumnDatatype {
-                name: "word".to_string(),
-                description: "a single word: letters, numbers, underscore".to_string(),
-                parent: "nonspace".to_string(),
-                condition: "".to_string(), // TODO: Add the right condition here once implemented.
-                ..Default::default()
-            }),
-            unrecognized => Err(RelatableError::InputError(format!(
-                "Unrecognized built-in datatype: '{unrecognized}'"
-            ))
-            .into()),
+impl Datatype {
+    /// Return the SQL type corresponding to the given datatype
+    pub fn infer_sql_type(&self) -> String {
+        tracing::trace!("Datatype::get_sql_type({self:?})");
+        if self.sql_type != "" {
+            self.sql_type.to_lowercase()
+        } else {
+            let sql_type = match self.name.to_lowercase().as_str() {
+                "text" => "text",
+                "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" => "integer",
+                "real" | "decimal" | "numeric" => "numeric",
+                datatype
+                    if (datatype.starts_with("real")
+                        || datatype.starts_with("numeric")
+                        || datatype.starts_with("decimal")) =>
+                {
+                    "numeric"
+                }
+                datatype
+                    if (datatype.starts_with("varchar") || datatype.starts_with("character")) =>
+                {
+                    "text"
+                }
+                datatype if BUILTIN_DATATYPES.contains(&datatype) => "text",
+                _custom => {
+                    // TODO: Look up the datatype in the datatype table.
+                    "text"
+                }
+            };
+            sql_type.to_string()
         }
     }
 
-    /// Return the SQL type corresponding to the given datatype
-    pub fn get_sql_type(&self) -> &str {
-        tracing::trace!("ColumnDatatype::get_sql_type({self:?})");
-        match self.name.to_lowercase().as_str() {
-            "text" => "text",
-            "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" => "integer",
-            "real" | "decimal" | "numeric" => "numeric",
-            datatype
-                if (datatype.starts_with("real")
-                    || datatype.starts_with("numeric")
-                    || datatype.starts_with("decimal")) =>
-            {
-                "numeric"
+    /// Return a Datatype struct corresponding to the given built-in datatype
+    pub fn builtin_datatype(datatype: &str) -> Result<Self> {
+        tracing::trace!("Datatype::builtin_datatype({datatype})");
+        let builtins = Datatype::builtin_datatypes();
+        let builtin = match datatype {
+            "text" => builtins.get("text").expect("Builtin 'text' not found"),
+            "empty" => builtins.get("empty").expect("Builtin 'empty' not found"),
+            "line" => builtins.get("line").expect("Builtin 'line' not found"),
+            "trimmed_line" => builtins
+                .get("trimmed_line")
+                .expect("Builtin 'trimmed_line' not found"),
+            "nonspace" => builtins
+                .get("nonspace")
+                .expect("Builtin 'nonspace' not found"),
+            "word" => builtins.get("word").expect("Builtin 'word' not found"),
+            "integer" => builtins
+                .get("integer")
+                .expect("Builtin 'integer' not found"),
+            unrecognized => {
+                return Err(RelatableError::InputError(format!(
+                    "Unrecognized built-in datatype: '{unrecognized}'"
+                ))
+                .into())
             }
-            datatype if (datatype.starts_with("varchar") || datatype.starts_with("character")) => {
-                "text"
+        };
+        Ok(builtin.to_owned())
+    }
+
+    // Returns a [HashMap] representing all of the built-in datatypes, indexed by datatype name
+    pub fn builtin_datatypes<'a>() -> HashMap<&'a str, Self> {
+        tracing::trace!("Datatype::builtin_datatypes()");
+        [
+            (
+                "text",
+                Datatype {
+                    name: "text".to_string(),
+                    description: "any text".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "empty",
+                Datatype {
+                    name: "empty".to_string(),
+                    description: "the empty string".to_string(),
+                    parent: "text".to_string(),
+                    condition: "equals('')".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "line",
+                Datatype {
+                    name: "line".to_string(),
+                    description: "a line of text".to_string(),
+                    parent: "text".to_string(),
+                    // TODO: Add the right condition here once implemented.
+                    condition: "".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "trimmed_line",
+                Datatype {
+                    name: "trimmed_line".to_string(),
+                    description: "a line of text that deos not begin or end with whitespace"
+                        .to_string(),
+                    parent: "line".to_string(),
+                    // TODO: Add the right condition here once implemented.
+                    condition: "".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "nonspace",
+                Datatype {
+                    name: "nonspace".to_string(),
+                    description: "text without whitespace".to_string(),
+                    parent: "trimmed_line".to_string(),
+                    // TODO: Add the right condition here once implemented.
+                    condition: "".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "word",
+                Datatype {
+                    name: "word".to_string(),
+                    description: "a single word: letters, numbers, underscore".to_string(),
+                    parent: "nonspace".to_string(),
+                    // TODO: Add the right condition here once implemented.
+                    condition: "".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "integer",
+                Datatype {
+                    name: "integer".to_string(),
+                    description: "an integer".to_string(),
+                    parent: "nonspace".to_string(),
+                    // TODO: Add the right condition here once implemented.
+                    condition: "".to_string(),
+                    ..Default::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>()
+    }
+
+    // TODO: Add docstring here
+    pub fn get_all_ancestors(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
+        tracing::trace!("Datatype::get_all_ancestors({self:?}, tx)");
+        let datatypes = {
+            let mut datatypes = Datatype::builtin_datatypes()
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_owned()))
+                .collect::<HashMap<_, _>>();
+            let builtin_names = datatypes.keys().cloned().collect::<Vec<_>>();
+            let sql = r#"SELECT * from "datatype""#;
+            for row in tx.query(sql, None)? {
+                let dt_name = row.get_string("datatype")?;
+                if builtin_names.contains(&dt_name) {
+                    tracing::info!("Ignoring redefinition of built-in datatype '{dt_name}'");
+                } else {
+                    datatypes.insert(
+                        dt_name.to_string(),
+                        Datatype {
+                            name: dt_name,
+                            description: row.get_string("description").unwrap_or_default(),
+                            parent: row.get_string("parent").unwrap_or_default(),
+                            condition: row.get_string("condition").unwrap_or_default(),
+                            sql_type: row.get_string("sql_type").unwrap_or_default(),
+                            format: row.get_string("format").unwrap_or_default(),
+                        },
+                    );
+                }
             }
-            datatype if BUILTIN_DATATYPES.contains(&datatype) => "text",
-            _custom => {
-                // TODO: Look up the datatype in the datatype table.
-                "text"
+            datatypes
+        };
+
+        fn build_hierarchy(
+            dt_map: &HashMap<String, Datatype>,
+            start_dt_name: &str,
+            dt_name: &str,
+        ) -> Result<Vec<Datatype>> {
+            tracing::trace!(
+                "Datatype::get_all_ancestors()::build_hierarchy({dt_map:?}, {start_dt_name}, \
+                 {dt_name})"
+            );
+            let mut datatypes = vec![];
+            if dt_name != "" {
+                let datatype = match dt_map.get(dt_name) {
+                    Some(datatype) => datatype,
+                    None => {
+                        return Err(RelatableError::InputError(format!(
+                            "Undefined datatype '{}'",
+                            dt_name
+                        ))
+                        .into())
+                    }
+                };
+                let dt_name = datatype.name.as_str();
+                let dt_parent = datatype.parent.as_str();
+                if dt_name != start_dt_name {
+                    datatypes.push(datatype.clone());
+                }
+                let mut more_datatypes = build_hierarchy(dt_map, start_dt_name, &dt_parent)?;
+                datatypes.append(&mut more_datatypes);
             }
+            Ok(datatypes)
         }
+
+        build_hierarchy(&datatypes, &self.name, &self.name)
+    }
+
+    // TODO: Add docstring here
+    pub fn get_conditioned_ancestors(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
+        tracing::trace!("Datatype::get_conditioned_ancestors({self:?}, tx)");
+        Ok(self
+            .get_all_ancestors(tx)?
+            .iter()
+            .filter(|datatype| datatype.condition != "")
+            .cloned()
+            .collect::<Vec<_>>())
     }
 }
 
@@ -1131,7 +1279,7 @@ impl Cell {
             });
         }
 
-        match column.datatype.get_sql_type() {
+        match column.datatype.infer_sql_type().as_str() {
             "integer" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<i64>() {
                     Ok(_) => (),

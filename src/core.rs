@@ -10,7 +10,7 @@ use rltbl::{
         self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
         MemoryCacheKey, SqlParam, VecInto as _,
     },
-    table::{Cell, Column, ColumnDatatype, Message, Row, Table},
+    table::{Cell, Column, Datatype, Message, Row, Table},
 };
 
 use anyhow::Result;
@@ -874,7 +874,7 @@ impl Relatable {
                         name: column_name.to_string(),
                         table: table_name.to_string(),
                         datatype: match table_columns.get(column_name) {
-                            None => ColumnDatatype {
+                            None => Datatype {
                                 name: "text".to_string(),
                                 ..Default::default()
                             },
