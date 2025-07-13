@@ -818,25 +818,26 @@ impl Datatype {
             self.sql_type.to_lowercase()
         } else {
             let sql_type = match self.name.to_lowercase().as_str() {
-                "text" => "text",
-                "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" => "integer",
-                "real" | "decimal" | "numeric" => "numeric",
+                "text" => "TEXT",
+                "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" => "INTEGER",
+                "real" | "decimal" | "numeric" => "NUMERIC",
                 datatype
                     if (datatype.starts_with("real")
                         || datatype.starts_with("numeric")
                         || datatype.starts_with("decimal")) =>
                 {
-                    "numeric"
+                    "NUMERIC"
                 }
                 datatype
                     if (datatype.starts_with("varchar") || datatype.starts_with("character")) =>
                 {
-                    "text"
+                    "TEXT"
                 }
-                datatype if BUILTIN_DATATYPES.contains(&datatype) => "text",
-                _custom => {
-                    // TODO: Look up the datatype in the datatype table.
-                    "text"
+                datatype if BUILTIN_DATATYPES.contains(&datatype) => "TEXT",
+                custom => {
+                    // TODO: Infer the SQL type by looking at `self.condition` and/or the
+                    // parent SQL type ...
+                    "TEXT"
                 }
             };
             sql_type.to_string()
@@ -962,24 +963,26 @@ impl Datatype {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_owned()))
                 .collect::<HashMap<_, _>>();
-            let builtin_names = datatypes.keys().cloned().collect::<Vec<_>>();
-            let sql = r#"SELECT * from "datatype""#;
-            for row in tx.query(sql, None)? {
-                let dt_name = row.get_string("datatype")?;
-                if builtin_names.contains(&dt_name) {
-                    tracing::info!("Ignoring redefinition of built-in datatype '{dt_name}'");
-                } else {
-                    datatypes.insert(
-                        dt_name.to_string(),
-                        Datatype {
-                            name: dt_name,
-                            description: row.get_string("description").unwrap_or_default(),
-                            parent: row.get_string("parent").unwrap_or_default(),
-                            condition: row.get_string("condition").unwrap_or_default(),
-                            sql_type: row.get_string("sql_type").unwrap_or_default(),
-                            format: row.get_string("format").unwrap_or_default(),
-                        },
-                    );
+            if Table::_table_exists("datatype", tx)? {
+                let builtin_names = datatypes.keys().cloned().collect::<Vec<_>>();
+                let sql = r#"SELECT * from "datatype""#;
+                for row in tx.query(sql, None)? {
+                    let dt_name = row.get_string("datatype")?;
+                    if builtin_names.contains(&dt_name) {
+                        tracing::info!("Ignoring redefinition of built-in datatype '{dt_name}'");
+                    } else {
+                        datatypes.insert(
+                            dt_name.to_string(),
+                            Datatype {
+                                name: dt_name,
+                                description: row.get_string("description").unwrap_or_default(),
+                                parent: row.get_string("parent").unwrap_or_default(),
+                                condition: row.get_string("condition").unwrap_or_default(),
+                                sql_type: row.get_string("sql_type").unwrap_or_default(),
+                                format: row.get_string("format").unwrap_or_default(),
+                            },
+                        );
+                    }
                 }
             }
             datatypes
@@ -1139,7 +1142,8 @@ impl Row {
         for (column, cell) in self.cells.iter_mut() {
             let column_details = table.get_config_for_column(column);
             let datatype = column_details.datatype.name.to_string();
-            cell.validate(&column_details)?;
+            let dt_hierarchy = column_details.datatype.get_all_ancestors(tx)?;
+            cell.validate(&column_details, &dt_hierarchy)?;
             if cell.message_level() >= 2 {
                 let mut sql_param_gen = SqlParam::new(&tx.kind());
                 let sql = format!(
@@ -1267,9 +1271,16 @@ impl From<&JsonValue> for Cell {
 }
 
 impl Cell {
+    // TODO: Pass a transaction / connection to validate, which will probably have to be passed
+    // to infer_sql_type() to look up the sql type of the datatype's parent if none is defined
+    // for the given cell's datatype.
+
     /// Validate this cell, which belongs to the given [Column], adding any validation
     /// [messages](Message) to the cell's [messages](Cell::messages) field.
-    pub fn validate(&mut self, column: &Column) -> Result<&Self> {
+    pub fn validate(&mut self, column: &Column, dt_hierarchy: &Vec<Datatype>) -> Result<&Self> {
+        // TODO: Uncomment this:
+        //tracing::trace!("validate({self:?}, {column:?}, {dt_hierarchy:?}");
+
         fn invalidate(cell: &mut Cell, column: &Column) {
             let datatype = &column.datatype.name;
             cell.messages.push(Message {
@@ -1280,7 +1291,7 @@ impl Cell {
         }
 
         match column.datatype.infer_sql_type().as_str() {
-            "integer" => match &mut self.value {
+            "INTEGER" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<i64>() {
                     Ok(_) => (),
                     Err(_) => invalidate(self, column),
@@ -1288,7 +1299,7 @@ impl Cell {
                 JsonValue::Null => (),
                 _ => invalidate(self, column),
             },
-            "numeric" => match &mut self.value {
+            "NUMERIC" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<f64>() {
                     Ok(_) => (),
                     Err(_) => invalidate(self, column),
@@ -1296,7 +1307,7 @@ impl Cell {
                 JsonValue::Null => (),
                 _ => invalidate(self, column),
             },
-            "text" => (),
+            "TEXT" => (),
             unsupported => {
                 return Err(RelatableError::InputError(format!(
                     "Unsupported SQL type: '{unsupported}'"

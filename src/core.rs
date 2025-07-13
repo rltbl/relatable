@@ -859,7 +859,8 @@ impl Relatable {
         tracing::debug!("Table {table_name} (path: {path}) added to table table");
 
         // Initialize a new table struct and collect its columns configuration:
-        let table = {
+        let (table, dt_hierarchies) = {
+            let mut dt_hierarchies = HashMap::new();
             let mut table = Table {
                 name: table_name.to_string(),
                 ..Default::default()
@@ -867,27 +868,39 @@ impl Relatable {
             let table_columns = Table::get_column_table_columns(table_name, self)
                 .await
                 .expect(&format!("Error getting columns for table '{table_name}'"));
+            let mut conn = self.connection.reconnect().expect("Error reconnecting");
+            let mut tx = self
+                .connection
+                .begin(&mut conn)
+                .await
+                .expect("Error beginning transaction");
             for column_name in headers.iter() {
-                table.columns.insert(
-                    column_name.to_string(),
-                    Column {
-                        name: column_name.to_string(),
-                        table: table_name.to_string(),
-                        datatype: match table_columns.get(column_name) {
-                            None => Datatype {
-                                name: "text".to_string(),
-                                ..Default::default()
-                            },
-                            Some(col) => col.datatype.clone(),
+                let column = Column {
+                    name: column_name.to_string(),
+                    table: table_name.to_string(),
+                    datatype: match table_columns.get(column_name) {
+                        None => Datatype {
+                            name: "text".to_string(),
+                            ..Default::default()
                         },
-                        nulltype: table_columns
-                            .get(column_name)
-                            .and_then(|col| col.nulltype.clone()),
-                        ..Default::default()
+                        Some(col) => col.datatype.clone(),
                     },
+                    nulltype: table_columns
+                        .get(column_name)
+                        .and_then(|col| col.nulltype.clone()),
+                    ..Default::default()
+                };
+                dt_hierarchies.insert(
+                    column_name.to_string(),
+                    column
+                        .datatype
+                        .get_all_ancestors(&mut tx)
+                        .expect("Error getting datatype hierarchy"),
                 );
+                table.columns.insert(column_name.to_string(), column);
             }
-            table
+            tx.commit().expect("Error committing transaction");
+            (table, dt_hierarchies)
         };
 
         // Generate the SQL statements needed to create the table and execute them:
@@ -989,7 +1002,10 @@ impl Relatable {
 
                             // Validate the cell and add any messages to the message table:
                             if validate {
-                                cell.validate(&table.get_config_for_column(column))
+                                let dt_hierarchy = dt_hierarchies
+                                    .get(column)
+                                    .expect("Error getting datatype hierarchy");
+                                cell.validate(&table.get_config_for_column(column), &dt_hierarchy)
                                     .expect("Error validating cell");
                                 for message in cell.messages.iter() {
                                     let (msg_id, msg) = self
@@ -2186,7 +2202,9 @@ impl Relatable {
                     };
 
                     // Validate the cell and add any messages to the message table:
-                    cell.validate(&table.get_config_for_column(column))
+                    let column_config = table.get_config_for_column(column);
+                    let dt_hierarchy = column_config.datatype.get_all_ancestors(&mut tx)?;
+                    cell.validate(&column_config, &dt_hierarchy)
                         .expect("Error validating cell");
                     for message in cell.messages.iter() {
                         let (msg_id, msg) = self._add_message(
