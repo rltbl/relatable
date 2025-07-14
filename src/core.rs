@@ -2372,7 +2372,7 @@ impl Relatable {
         message: &str,
     ) -> Result<(u64, Message)> {
         tracing::trace!(
-            "Relatable::add_message({user:?}, {table_name:?}, {row}, \
+            "Relatable::add_message({self:?},  {user:?}, {table_name:?}, {row}, \
              {column:?}, {value:?}, {level:?}, {rule:?}, {message:?})"
         );
 
@@ -2386,6 +2386,9 @@ impl Relatable {
 
         // Commit the transaction:
         tx.commit()?;
+
+        // Commit to git:
+        self.commit_to_git().await?;
 
         Ok((message_id, message))
     }
@@ -2981,6 +2984,32 @@ impl Relatable {
             self.commit_to_git().await?;
         }
         Ok(new_order)
+    }
+
+    /// TODO: Add docstring
+    pub async fn validate_tables(&self, table_names: &Vec<&str>) -> Result<()> {
+        tracing::trace!("Relatable::validate({self:?}, {table_names:?})");
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        Relatable::_validate_tables(table_names, &mut tx)?;
+
+        tx.commit()?;
+        self.commit_to_git().await?;
+
+        Ok(())
+    }
+
+    /// TODO: Add docstring
+    pub fn _validate_tables(table_names: &Vec<&str>, tx: &mut DbTransaction<'_>) -> Result<()> {
+        tracing::trace!("Relatable::validate({table_names:?}, tx)");
+
+        for table_name in table_names {
+            let table = Table::_get_table(table_name, tx)?;
+            table._validate(tx)?;
+        }
+
+        Ok(())
     }
 
     /// Delete all entries from the cache corresponding to the given table, or clear it completely

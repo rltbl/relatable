@@ -92,6 +92,12 @@ pub enum Command {
         subcommand: MoveSubcommand,
     },
 
+    /// Validate data
+    Validate {
+        #[command(subcommand)]
+        subcommand: ValidateSubcommand,
+    },
+
     /// Delete data from the database
     Delete {
         #[command(subcommand)]
@@ -268,6 +274,14 @@ pub enum MoveSubcommand {
         #[arg(value_name = "AFTER", action = ArgAction::Set,
               help = "The ID of the row after which this one is to be moved")]
         after: u64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ValidateSubcommand {
+    Table {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
     },
 }
 
@@ -762,6 +776,18 @@ pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
     }
 }
 
+pub async fn validate_table(cli: &Cli, table: &str) {
+    tracing::trace!("validate_table({cli:?}, {table})");
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+    rltbl
+        .validate_tables(&vec![table])
+        .await
+        .expect("Error while validating tables");
+    tracing::info!("Validated table {table}");
+}
+
 pub async fn delete_row(cli: &Cli, table: &str, row: u64) {
     tracing::trace!("delete_row({cli:?}, {table}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
@@ -947,6 +973,9 @@ pub async fn process_command() {
         },
         Command::Move { subcommand } => match subcommand {
             MoveSubcommand::Row { table, row, after } => move_row(&cli, table, *row, *after).await,
+        },
+        Command::Validate { subcommand } => match subcommand {
+            ValidateSubcommand::Table { table } => validate_table(&cli, table).await,
         },
         Command::Delete { subcommand } => match subcommand {
             DeleteSubcommand::Row { table, row } => delete_row(&cli, table, *row).await,

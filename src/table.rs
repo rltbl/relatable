@@ -98,6 +98,19 @@ impl Table {
         })
     }
 
+    /// Drop the given table in the database
+    pub async fn drop_table(&mut self, rltbl: &Relatable) -> Result<()> {
+        tracing::trace!("Table::drop_data_tables({self:?}, {rltbl:?})");
+        let sql = match rltbl.connection.kind() {
+            DbKind::Postgres => {
+                format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.name)
+            }
+            DbKind::Sqlite => format!(r#"DROP TABLE IF EXISTS "{}""#, self.name),
+        };
+        rltbl.connection.query(&sql, None).await?;
+        Ok(())
+    }
+
     /// Query the database through the given [Relatable] instance to determine whether the given
     /// table exists.
     pub async fn table_exists(table_name: &str, rltbl: &Relatable) -> Result<bool> {
@@ -212,19 +225,6 @@ impl Table {
         }
     }
 
-    /// Drop the given table in the database
-    pub async fn drop_table(&mut self, rltbl: &Relatable) -> Result<()> {
-        tracing::trace!("Table::drop_data_tables({self:?}, {rltbl:?})");
-        let sql = match rltbl.connection.kind() {
-            DbKind::Postgres => {
-                format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.name)
-            }
-            DbKind::Sqlite => format!(r#"DROP TABLE IF EXISTS "{}""#, self.name),
-        };
-        rltbl.connection.query(&sql, None).await?;
-        Ok(())
-    }
-
     /// Set the view for the table to the given view type (accepted types are "default" and "text"),
     /// after first ensuring that a view of the given type exists, creating it if necessary.
     pub async fn set_view(&mut self, rltbl: &Relatable, view_type: &str) -> Result<&Self> {
@@ -310,6 +310,28 @@ impl Table {
 
         // Set the table's view name to the text view:
         self.view = view_name;
+
+        Ok(())
+    }
+
+    /// TODO: Add docstring
+    pub async fn validate(&self, rltbl: &Relatable) -> Result<()> {
+        tracing::trace!("validate({self:?}, {rltbl:?}");
+
+        let mut conn = rltbl.connection.reconnect()?;
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+
+        self._validate(&mut tx)?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// TODO: Add docstring
+    pub fn _validate(&self, tx: &mut DbTransaction<'_>) -> Result<()> {
+        tracing::trace!("validate({self:?}, tx");
+
+        // TODO ...
 
         Ok(())
     }
@@ -834,7 +856,7 @@ impl Datatype {
                     "TEXT"
                 }
                 datatype if BUILTIN_DATATYPES.contains(&datatype) => "TEXT",
-                custom => {
+                _custom => {
                     // TODO: Infer the SQL type by looking at `self.condition` and/or the
                     // parent SQL type ...
                     "TEXT"
