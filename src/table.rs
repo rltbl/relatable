@@ -331,7 +331,45 @@ impl Table {
     pub fn _validate(&self, tx: &mut DbTransaction<'_>) -> Result<()> {
         tracing::trace!("validate({self:?}, tx");
 
-        // TODO ...
+        let (columns, _) = Table::_collect_column_info(&self.name, tx)?;
+        let dt_hierarchies = {
+            let mut dt_hierarchies = HashMap::new();
+            for column in &columns {
+                dt_hierarchies.insert(
+                    column.name.to_string(),
+                    column.datatype.get_all_ancestors(tx)?,
+                );
+            }
+            dt_hierarchies
+        };
+
+        // TODO:
+        // 1. Use the columns_config to construct a SQL SELECT query that looks something like:
+        //    SELECT
+        //      CASE WHEN foo ... ELSE NULL END AS foo,
+        //      CASE WHEN foo ... ELSE <empty_array> END AS foo_message
+        //      CASE WHEN bar ... ELSE NULL END AS bar,
+        //      CASE WHEN bar ... ELSE <empty_array> END AS bar_message
+        //      ...
+        //    FROM my_table
+        // 2. Add messages to the message table corresponding to the foo_message, bar_message, etc.
+        //    columns.
+        // 3. Truncate the data table and reload it with the validated results.
+
+        let mut column_clauses: Vec<String> = vec![];
+        for column in &columns {
+            let mut these_clauses = match column.datatype.condition.as_str() {
+                "" => vec![
+                    format!(r#""{}""#, column.name),
+                    "[]".to_string(), // TODO: Proper empty array syntax
+                ],
+                condition if condition.to_lowercase().starts_with("equals") => todo!(),
+                condition if condition.to_lowercase().starts_with("in") => todo!(),
+                _ => todo!(),
+            };
+
+            column_clauses.append(&mut these_clauses);
+        }
 
         Ok(())
     }

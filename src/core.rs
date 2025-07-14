@@ -865,6 +865,9 @@ impl Relatable {
                 name: table_name.to_string(),
                 ..Default::default()
             };
+            // TODO: Make get_column_table_columns() a private function and use
+            // collect_column_info() instead, though note that the output will need to be
+            // converted into an IndexMap.
             let table_columns = Table::get_column_table_columns(table_name, self)
                 .await
                 .expect(&format!("Error getting columns for table '{table_name}'"));
@@ -2386,9 +2389,6 @@ impl Relatable {
 
         // Commit the transaction:
         tx.commit()?;
-
-        // Commit to git:
-        self.commit_to_git().await?;
 
         Ok((message_id, message))
     }
