@@ -859,51 +859,38 @@ impl Relatable {
         tracing::debug!("Table {table_name} (path: {path}) added to table table");
 
         // Initialize a new table struct and collect its columns configuration:
-        let (table, dt_hierarchies) = {
-            let mut dt_hierarchies = HashMap::new();
+        let table = {
             let mut table = Table {
                 name: table_name.to_string(),
                 ..Default::default()
             };
-            // TODO: Make get_column_table_columns() a private function and use
-            // collect_column_info() instead, though note that the output will need to be
-            // converted into an IndexMap.
             let table_columns = Table::get_column_table_columns(table_name, self)
                 .await
                 .expect(&format!("Error getting columns for table '{table_name}'"));
-            let mut conn = self.connection.reconnect().expect("Error reconnecting");
-            let mut tx = self
-                .connection
-                .begin(&mut conn)
-                .await
-                .expect("Error beginning transaction");
             for column_name in headers.iter() {
+                let datatype = match table_columns.get(column_name) {
+                    None => Datatype {
+                        name: "text".to_string(),
+                        ..Default::default()
+                    },
+                    Some(col) => col.datatype.clone(),
+                };
                 let column = Column {
                     name: column_name.to_string(),
                     table: table_name.to_string(),
-                    datatype: match table_columns.get(column_name) {
-                        None => Datatype {
-                            name: "text".to_string(),
-                            ..Default::default()
-                        },
-                        Some(col) => col.datatype.clone(),
-                    },
+                    datatype_hierarchy: datatype.get_all_ancestors(self).await.expect(&format!(
+                        "Error getting datatype hierarchy for '{}'",
+                        datatype.name
+                    )),
+                    datatype: datatype,
                     nulltype: table_columns
                         .get(column_name)
                         .and_then(|col| col.nulltype.clone()),
                     ..Default::default()
                 };
-                dt_hierarchies.insert(
-                    column_name.to_string(),
-                    column
-                        .datatype
-                        .get_all_ancestors(&mut tx)
-                        .expect("Error getting datatype hierarchy"),
-                );
                 table.columns.insert(column_name.to_string(), column);
             }
-            tx.commit().expect("Error committing transaction");
-            (table, dt_hierarchies)
+            table
         };
 
         // Generate the SQL statements needed to create the table and execute them:
@@ -1005,10 +992,7 @@ impl Relatable {
 
                             // Validate the cell and add any messages to the message table:
                             if validate {
-                                let dt_hierarchy = dt_hierarchies
-                                    .get(column)
-                                    .expect("Error getting datatype hierarchy");
-                                cell.validate(&table.get_config_for_column(column), &dt_hierarchy)
+                                cell.validate_datatype(&table.get_config_for_column(column))
                                     .expect("Error validating cell");
                                 for message in cell.messages.iter() {
                                     let (msg_id, msg) = self
@@ -2205,9 +2189,7 @@ impl Relatable {
                     };
 
                     // Validate the cell and add any messages to the message table:
-                    let column_config = table.get_config_for_column(column);
-                    let dt_hierarchy = column_config.datatype.get_all_ancestors(&mut tx)?;
-                    cell.validate(&column_config, &dt_hierarchy)
+                    cell.validate_datatype(&table.get_config_for_column(column))
                         .expect("Error validating cell");
                     for message in cell.messages.iter() {
                         let (msg_id, msg) = self._add_message(
@@ -2987,29 +2969,43 @@ impl Relatable {
     }
 
     /// TODO: Add docstring
-    pub async fn validate_tables(&self, table_names: &Vec<&str>) -> Result<()> {
-        tracing::trace!("Relatable::validate({self:?}, {table_names:?})");
+    pub async fn validate_row(&self, table_name: &str, row_num: &u64) -> Result<Row> {
+        // TODO: Add tracing statement
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        Relatable::_validate_tables(table_names, &mut tx)?;
+        let table = Table::_get_table(table_name, &mut tx)?;
+        let mut row = {
+            let sql_param = SqlParam::new(&tx.kind()).next();
+            let sql = format!(r#"SELECT * FROM "{table_name}" WHERE "_id" = {sql_param}"#);
+            let params = json!([row_num]);
+            let row = tx.query_one(&sql, Some(&params))?;
+            match row {
+                Some(row) => Row::from(row),
+                None => {
+                    return Err(RelatableError::InputError(format!(
+                        "No row found with _id {row_num}"
+                    ))
+                    .into())
+                }
+            }
+        };
+
+        row.validate(&table, &mut tx)?;
 
         tx.commit()?;
-        self.commit_to_git().await?;
-
-        Ok(())
+        Ok(row)
     }
 
     /// TODO: Add docstring
-    pub fn _validate_tables(table_names: &Vec<&str>, tx: &mut DbTransaction<'_>) -> Result<()> {
-        tracing::trace!("Relatable::validate({table_names:?}, tx)");
-
-        for table_name in table_names {
-            let table = Table::_get_table(table_name, tx)?;
-            table._validate(tx)?;
-        }
-
-        Ok(())
+    pub async fn validate_cell(
+        &self,
+        _table_name: &str,
+        _row: &u64,
+        _column: &str,
+    ) -> Result<Cell> {
+        // TODO Add trace statement
+        todo!()
     }
 
     /// Delete all entries from the cache corresponding to the given table, or clear it completely

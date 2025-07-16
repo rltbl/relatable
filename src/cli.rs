@@ -279,9 +279,25 @@ pub enum MoveSubcommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ValidateSubcommand {
-    Table {
+    /// Validate the value of the given row from a given table.
+    Row {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: u64,
+    },
+
+    /// Validate the value of the given column of the given row from the given table.
+    Cell {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: u64,
+
+        #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
+        column: String,
     },
 }
 
@@ -776,16 +792,30 @@ pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
     }
 }
 
-pub async fn validate_table(cli: &Cli, table: &str) {
-    tracing::trace!("validate_table({cli:?}, {table})");
+/// TODO: Add docstring here (and to the other functions in this file).
+pub async fn validate_row(cli: &Cli, table: &str, row: &u64) {
+    tracing::trace!("validate_row({cli:?}, {table}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
     rltbl
-        .validate_tables(&vec![table])
+        .validate_row(table, row)
         .await
-        .expect("Error while validating tables");
-    tracing::info!("Validated table {table}");
+        .expect("Error while validating row");
+    tracing::info!("Validated row {row} of table '{table}'");
+}
+
+/// TODO: Add docstring here (and to the other functions in this file).
+pub async fn validate_cell(cli: &Cli, table: &str, row: &u64, column: &str) {
+    tracing::trace!("validate_cell({cli:?}, {table}, {row}, {column})");
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+    rltbl
+        .validate_cell(table, row, column)
+        .await
+        .expect("Error while validating cell");
+    tracing::info!("Validated cell '{column}' of row {row} of table '{table}'");
 }
 
 pub async fn delete_row(cli: &Cli, table: &str, row: u64) {
@@ -975,7 +1005,10 @@ pub async fn process_command() {
             MoveSubcommand::Row { table, row, after } => move_row(&cli, table, *row, *after).await,
         },
         Command::Validate { subcommand } => match subcommand {
-            ValidateSubcommand::Table { table } => validate_table(&cli, table).await,
+            ValidateSubcommand::Row { table, row } => validate_row(&cli, table, row).await,
+            ValidateSubcommand::Cell { table, row, column } => {
+                validate_cell(&cli, table, row, column).await
+            }
         },
         Command::Delete { subcommand } => match subcommand {
             DeleteSubcommand::Row { table, row } => delete_row(&cli, table, *row).await,
