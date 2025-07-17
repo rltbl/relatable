@@ -79,7 +79,8 @@ pub enum CachingStrategy {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct MemoryCacheKey {
     pub tables: String,
-    pub sql: String,
+    pub statement: String,
+    pub parameters: String,
 }
 
 impl FromStr for CachingStrategy {
@@ -437,7 +438,10 @@ impl DbConnection {
                             r#"SELECT {}||rtrim(ltrim("value", '['), ']')||{} AS "value"
                                FROM "cache"
                                WHERE "tables"::TEXT = {}
-                               AND "key" = {} LIMIT 1"#,
+                               AND "statement" = {}
+                               AND "parameters" = {}
+                               LIMIT 1"#,
+                            sql_param.next(),
                             sql_param.next(),
                             sql_param.next(),
                             sql_param.next(),
@@ -450,7 +454,10 @@ impl DbConnection {
                             r#"SELECT {}||rtrim(ltrim("value", '['), ']')||{} AS "value"
                                FROM "cache"
                                WHERE CAST("tables" AS TEXT) = {}
-                               AND "key" = {} LIMIT 1"#,
+                               AND "statement" = {}
+                               AND "parameters" = {}
+                               LIMIT 1"#,
+                            sql_param.next(),
                             sql_param.next(),
                             sql_param.next(),
                             sql_param.next(),
@@ -460,8 +467,8 @@ impl DbConnection {
                     }
                 }
             };
-            let interpolated_sql = interpolate_sql(sql, params, &conn.kind())?;
-            let cache_params = json!([r#"[{"content": "#, "}]", tables, interpolated_sql]);
+            let cache_params =
+                json!([r#"[{"content": "#, "}]", tables, sql, format!("{params:?}")]);
             match conn.query_one(&cache_sql, Some(&cache_params)).await? {
                 Some(json_row) => {
                     tracing::debug!("Cache hit for tables {tables}");
@@ -480,8 +487,10 @@ impl DbConnection {
                     let update_cache_sql = match conn.kind() {
                         DbKind::Postgres => {
                             format!(
-                                r#"INSERT INTO "cache" ("tables", "key", "value")
-                                   VALUES ({}::JSONB, {}, {})"#,
+                                r#"INSERT INTO "cache"
+                                   ("tables", "statement", "parameters", "value")
+                                   VALUES ({}::JSONB, {}, {}, {})"#,
+                                sql_param.next(),
                                 sql_param.next(),
                                 sql_param.next(),
                                 sql_param.next(),
@@ -489,15 +498,18 @@ impl DbConnection {
                         }
                         DbKind::Sqlite => {
                             format!(
-                                r#"INSERT INTO "cache" ("tables", "key", "value")
-                                   VALUES ({}, {}, {})"#,
+                                r#"INSERT INTO "cache"
+                                   ("tables", "statement", "parameters", "value")
+                                   VALUES ({}, {}, {}, {})"#,
+                                sql_param.next(),
                                 sql_param.next(),
                                 sql_param.next(),
                                 sql_param.next(),
                             )
                         }
                     };
-                    let update_cache_params = json!([tables, interpolated_sql, json_rows_content]);
+                    let update_cache_params =
+                        json!([tables, sql, format!("{params:?}"), json_rows_content]);
                     conn.query(&update_cache_sql, Some(&update_cache_params))
                         .await?;
                     Ok(json_rows)
@@ -528,10 +540,10 @@ impl DbConnection {
                     .map(|t| json!(t).to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
-                let interpolated_sql = interpolate_sql(sql, params, &self.kind())?;
                 let mem_key = MemoryCacheKey {
                     tables: tables.to_string(),
-                    sql: interpolated_sql.to_string(),
+                    statement: sql.to_string(),
+                    parameters: format!("{params:?}"),
                 };
                 match cache.get(&mem_key) {
                     Some(json_rows) => {
@@ -545,7 +557,8 @@ impl DbConnection {
                         cache.insert(
                             MemoryCacheKey {
                                 tables: tables.to_string(),
-                                sql: interpolated_sql,
+                                statement: sql.to_string(),
+                                parameters: format!("{params:?}"),
                             },
                             json_rows.to_vec(),
                         );
@@ -1495,9 +1508,10 @@ pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl.push(format!(
         r#"CREATE TABLE "cache" (
              "tables" {json_type},
-             "key" TEXT,
+             "statement" TEXT,
+             "parameters" TEXT,
              "value" TEXT,
-              PRIMARY KEY ("tables", "key")
+              PRIMARY KEY ("tables", "statement", "parameters")
            )"#
     ));
     ddl
