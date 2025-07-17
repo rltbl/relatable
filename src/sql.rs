@@ -92,7 +92,7 @@ impl FromStr for CachingStrategy {
             "truncate_all" => Ok(Self::TruncateAll),
             "truncate" => Ok(Self::Truncate),
             "trigger" => Ok(Self::Trigger),
-            strategy if strategy.starts_with("memory:") => {
+            strategy if strategy.starts_with("memory") => {
                 let elems = strategy.split(":").collect::<Vec<_>>();
                 let cache_size = {
                     if elems.len() < 2 {
@@ -106,6 +106,7 @@ impl FromStr for CachingStrategy {
                         }
                     }
                 };
+                tracing::debug!("Using memory cache with size: {cache_size}");
                 Ok(Self::Memory(cache_size))
             }
             _ => {
@@ -459,7 +460,8 @@ impl DbConnection {
                     }
                 }
             };
-            let cache_params = json!([r#"[{"content": "#, "}]", tables, sql]);
+            let interpolated_sql = interpolate_sql(sql, params, &conn.kind())?;
+            let cache_params = json!([r#"[{"content": "#, "}]", tables, interpolated_sql]);
             match conn.query_one(&cache_sql, Some(&cache_params)).await? {
                 Some(json_row) => {
                     tracing::debug!("Cache hit for tables {tables}");
@@ -495,7 +497,7 @@ impl DbConnection {
                             )
                         }
                     };
-                    let update_cache_params = json!([tables, sql, json_rows_content]);
+                    let update_cache_params = json!([tables, interpolated_sql, json_rows_content]);
                     conn.query(&update_cache_sql, Some(&update_cache_params))
                         .await?;
                     Ok(json_rows)
@@ -526,9 +528,10 @@ impl DbConnection {
                     .map(|t| json!(t).to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
+                let interpolated_sql = interpolate_sql(sql, params, &self.kind())?;
                 let mem_key = MemoryCacheKey {
                     tables: tables.to_string(),
-                    sql: sql.to_string(),
+                    sql: interpolated_sql.to_string(),
                 };
                 match cache.get(&mem_key) {
                     Some(json_rows) => {
@@ -542,7 +545,7 @@ impl DbConnection {
                         cache.insert(
                             MemoryCacheKey {
                                 tables: tables.to_string(),
-                                sql: sql.to_string(),
+                                sql: interpolated_sql,
                             },
                             json_rows.to_vec(),
                         );
@@ -680,6 +683,68 @@ impl DbTransaction<'_> {
 ///////////////////////////////////////////////////////////////////////////////
 // Database-specific utilities and functions
 ///////////////////////////////////////////////////////////////////////////////
+
+/// Given a database pool, a SQL string possibly including placeholders representing bound
+/// parameters, and (optionally) a vector with the parameters corresponding to each placeholder,
+/// combine the information into an interpolated string that is then returned, using the given
+/// database kind to determine the placeholder syntax (SQLite or PostgreSQL)
+pub fn interpolate_sql(sql: &str, params: Option<&JsonValue>, kind: &DbKind) -> Result<String> {
+    tracing::trace!("interpolate_sql({sql}, {params:?}, {kind:?})");
+    let params = match params {
+        Some(JsonValue::Array(params)) => params.iter().collect::<Vec<_>>(),
+        None => vec![],
+        Some(params) => {
+            tracing::warn!("Invalid parameter list: {params:?}");
+            vec![]
+        }
+    };
+
+    let mut final_sql = String::from("");
+    let mut saved_start = 0;
+
+    let quotes = r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")"#;
+    let rx = match kind {
+        DbKind::Sqlite => Regex::new(&format!(r#"{}|\B[?]\B"#, quotes))?,
+        DbKind::Postgres => Regex::new(&format!(r#"{}|\B[$]\d+\b"#, quotes))?,
+    };
+
+    let mut param_index = 0;
+    for m in rx.find_iter(&sql) {
+        let this_match = &sql[m.start()..m.end()];
+        final_sql.push_str(&sql[saved_start..m.start()]);
+        if !((this_match.starts_with("\"") && this_match.ends_with("\""))
+            || (this_match.starts_with("'") && this_match.ends_with("'")))
+        {
+            let param = params.get(param_index);
+            match param {
+                None => {
+                    return Err(RelatableError::InputError(format!(
+                        "No parameter at index {param_index}"
+                    ))
+                    .into())
+                }
+                Some(param) => {
+                    match param {
+                        JsonValue::String(param) => final_sql.push_str(&format!("'{param}'")),
+                        JsonValue::Number(param) => final_sql.push_str(&format!("{param}")),
+                        JsonValue::Bool(param) => final_sql.push_str(&param.to_string()),
+                        JsonValue::Array(param) => final_sql.push_str(&format!("{param:?}")),
+                        JsonValue::Object(param) => final_sql.push_str(&format!("{param:?}")),
+                        // We should never get a NULL in the parameter list, actually, but we
+                        // handle it anyway.
+                        JsonValue::Null => final_sql.push_str(&"NULL".to_string()),
+                    };
+                }
+            };
+            param_index += 1;
+        } else {
+            final_sql.push_str(&format!("{}", this_match));
+        }
+        saved_start = m.start() + this_match.len();
+    }
+    final_sql.push_str(&sql[saved_start..]);
+    Ok(final_sql)
+}
 
 /// Helper function to determine whether the given name is 'simple', as defined by
 /// [DB_OBJECT_MATCH_STR]
