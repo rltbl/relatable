@@ -39,7 +39,7 @@ pub struct Cli {
     #[arg(long, action = ArgAction::Set, env = "RLTBL_USER")]
     user: Option<String>,
 
-    /// Can be one of: JSON (that's it for now). If unspecified Valve will attempt to read the
+    /// Can be one of: JSON (that's it for now). If unspecified Relatable will attempt to read the
     /// environment variable RLTBL_INPUT. If that is also unset, the user will be presented with
     /// questions whenever input is required.
     #[arg(long, action = ArgAction::Set, env = "RLTBL_INPUT")]

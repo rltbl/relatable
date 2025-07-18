@@ -228,6 +228,25 @@ impl Table {
         Ok(self)
     }
 
+    fn get_id_order_columns(&self, meta_columns: &Vec<Column>) -> (&str, &str) {
+        match self.name.as_str() {
+            "message" => ("message_id", "message_id"),
+            "change" => ("change_id", "change_id"),
+            "history" => ("history_id", "history_id"),
+            _ => {
+                let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
+                    false => r#"rowid"#, // This *must* be lowercase.
+                    true => r#"_id"#,
+                };
+                let order_col = match meta_columns.iter().any(|c| c.name == "_order") {
+                    false => r#"rowid"#, // This *must* be lowercase.
+                    true => r#"_order"#,
+                };
+                (id_col, order_col)
+            }
+        }
+    }
+
     /// Use the given [relatable](crate) instance to ensure that the default view for this
     /// table has been created, and then set the view for this table to it.
     pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<()> {
@@ -236,14 +255,7 @@ impl Table {
         let view_name = format!("{}_default_view", self.name);
         tracing::debug!(r#"Creating default view "{view_name}" with columns {columns:?}"#);
 
-        let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
-            false => r#"rowid"#, // This *must* be lowercase.
-            true => r#"_id"#,
-        };
-        let order_col = match meta_columns.iter().any(|c| c.name == "_order") {
-            false => r#"rowid"#, // This *must* be lowercase.
-            true => r#"_order"#,
-        };
+        let (id_col, order_col) = self.get_id_order_columns(&meta_columns);
 
         for sql in sql::generate_default_view_ddl(
             &self.name,
@@ -274,14 +286,7 @@ impl Table {
 
         let (columns, meta_columns) = Table::collect_column_info(&self.name, rltbl).await?;
         tracing::debug!(r#"Creating text view "{view_name}" with columns {columns:?}"#);
-        let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
-            false => r#"rowid"#, // This *must* be lowercase.
-            true => r#"_id"#,
-        };
-        let order_col = match meta_columns.iter().any(|c| c.name == "_order") {
-            false => r#"rowid"#, // This *must* be lowercase.
-            true => r#"_order"#,
-        };
+        let (id_col, order_col) = self.get_id_order_columns(&meta_columns);
 
         for sql in sql::generate_text_view_ddl(
             &self.name,
@@ -475,6 +480,10 @@ impl Table {
                         Ok(constraint) if constraint == "UNIQUE" => {
                             column_info.content.insert("pk".to_string(), json!(0));
                             column_info.content.insert("unique".to_string(), json!(1));
+                        }
+                        Ok(constraint) if constraint == "FOREIGN KEY" => {
+                            column_info.content.insert("pk".to_string(), json!(0));
+                            column_info.content.insert("unique".to_string(), json!(0));
                         }
                         Ok(constraint) if constraint == "" => {
                             column_info.content.insert("pk".to_string(), json!(0));
@@ -884,7 +893,7 @@ impl Row {
                     p8 = sql_param_gen.next(),
                 );
                 let params = json!([
-                    "Valve",
+                    "rltbl",
                     table.name,
                     self.id,
                     column,
@@ -1016,7 +1025,7 @@ impl Cell {
                 JsonValue::Null => (),
                 _ => invalidate(self, column),
             },
-            "NUMERIC" => match &mut self.value {
+            "REAL" | "NUMERIC" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<f64>() {
                     Ok(_) => (),
                     Err(_) => invalidate(self, column),
