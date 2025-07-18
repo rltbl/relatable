@@ -3,8 +3,9 @@
 **rltbl** can be used to directly add and delete messages to and from the message table. The purpose of a message is to provide information about some problem, or something else of note, about a particular value of a particular column of a particular row in some table. Each message, in addition, must specify a **level**, a **rule**, and the **message** text and is associated with a particular user, which may be specified via the environment variable, `RLTBL_USER`.  Let's begin by adding two messages to the penguin table.
 
 ```console tesh-session="message"
+$ export RLTBL_CONNECTION=postgresql:///rltbl_db
 $ rltbl -v demo --size 10 --force
-Created a demonstration database in '.relatable/relatable.db'
+Created a demonstration database in ...
 $ echo '{"study_name": "FAKE123", "sample_number": "SAMPLE #11", "species": "Pygoscelis adeliae", "island": "Biscoe", "individual_id": "N6A1", "bill_length": 35.4, "body_mass": 2001}' | rltbl --input JSON add row penguin
 $ rltbl set value penguin 9 sample_number SAMPLE09
 $ rltbl get table penguin
@@ -21,11 +22,11 @@ FAKE123     8              Pygoscelis adeliae  Dream      N4A2           33.8   
 FAKE123     SAMPLE09       Pygoscelis adeliae  Dream      N5A1           43.7         23.1        3883
 FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5         30.0        4521
 FAKE123     SAMPLE #11     Pygoscelis adeliae  Biscoe     N6A1           35.4                     2001
-$ sqlite3 -header .relatable/relatable.db 'select * from message order by message_id'
-message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
-
+$ rltbl get table message
+Rows 1-2 of 2
+message_id  added_by  table    row  column         value       level  rule              message
+1           Valve     penguin  11   sample_number  SAMPLE #11  error  datatype:integer  sample_number must be of type integer
+2           Valve     penguin  9    sample_number  SAMPLE09    error  datatype:integer  sample_number must be of type integer
 $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
 $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
 ```
@@ -52,20 +53,20 @@ FAKE123     SAMPLE #11     Pygoscelis adeliae  Biscoe     N6A1           35.4   
 In any case the messages have been added to the message table in the database:
 
 ```
-$ sqlite3 -header .relatable/relatable.db 'select * from message'
-message_id|added_by|table|row|column|value|level|rule|message
-1|mike|penguin|3|species|Pygoscelis adeliae|info|custom-a|this is not a good species
-2|mike|penguin|4|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
+message_id  added_by  table    row   column         value       level  rule              message
+1           Valve     penguin  1001  sample_number  SAMPLE #11  error  datatype:integer  sample_number must be of type integer
+2           Valve     penguin  9     sample_number  SAMPLE09    error  datatype:integer  sample_number must be of type integer
 ```
 
 We delete messages using `rltbl delete message TABLE [ROW] [COLUMN]`. If row is unspecified, all messages in the given table are deleted. If column is unspecified, all messages in the given row are deleted. You can also use the `--rule RULE` flag to further filter the messsages to be deleted so that only those whose rule matches the given string are actually deleted, as opposed to all of the messages in the given table, column, or row. Note that SQL wildcard characters are allowed. In the current example, the string `custom%` happens to match all of the rules input thus far:
 
 ```console tesh-session="message"
 $ rltbl -v delete message penguin --rule custom%
-$ sqlite3 -header .relatable/relatable.db 'select * from message'
-message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
+$ rltbl get table message
+Rows 1-2 of 2
+message_id  added_by  table    row  column         value       level  rule              message
+1           Valve     penguin  11   sample_number  SAMPLE #11  error  datatype:integer  sample_number must be of type integer
+2           Valve     penguin  9    sample_number  SAMPLE09    error  datatype:integer  sample_number must be of type integer
 ```
 
 Let's add a few more messages to the message table. Two of them will be by the user **mike** and the rest by the user **afreen**.
@@ -77,61 +78,66 @@ $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-b", "me
 $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 species
 $ echo '{"value": "FAKE123", "level": "info", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 study_name
 $ echo '{"value": "FAKE123", "level": "info", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 7 study_name
-$ sqlite3 -header .relatable/relatable.db 'select * from message'
-message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
-5|mike|penguin|3|species|Pygoscelis adeliae|info|custom-a|this is not a good species
-6|mike|penguin|4|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
-7|afreen|penguin|5|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
-8|afreen|penguin|6|species|Pygoscelis adeliae|info|custom-a|this is not a good species
-9|afreen|penguin|6|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
-10|afreen|penguin|7|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
+$ rltbl get table message
+Rows 1-8 of 2
+message_id  added_by  table    row  column         value               level  rule              message
+1           Valve     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
+2           Valve     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
+5           mike      penguin  3    species        Pygoscelis adeliae  info   custom-a          this is not a good species
+6           mike      penguin  4    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
+7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
+8           afreen    penguin  6    species        Pygoscelis adeliae  info   custom-a          this is not a good species
+9           afreen    penguin  6    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
+10          afreen    penguin  7    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
 ```
 
 Let's now delete all the messages added to the table by **mike** using the `--user USER` option (which does not permit wildcards):
 
 ```console tesh-session="message"
 $ rltbl -v delete message penguin --user mike
-$ sqlite3 -header .relatable/relatable.db 'select * from message'
-message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
-7|afreen|penguin|5|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
-8|afreen|penguin|6|species|Pygoscelis adeliae|info|custom-a|this is not a good species
-9|afreen|penguin|6|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
-10|afreen|penguin|7|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
+$ rltbl get table message
+Rows 1-6 of 2
+message_id  added_by  table    row  column         value               level  rule              message
+1           Valve     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
+2           Valve     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
+7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
+8           afreen    penguin  6    species        Pygoscelis adeliae  info   custom-a          this is not a good species
+9           afreen    penguin  6    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
+10          afreen    penguin  7    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
 ```
 
 Now delete all messages associated with the column **species** in row 6:
 
 ```console tesh-session="message"
 $ rltbl -v delete message penguin 6 species
-$ sqlite3 -header .relatable/relatable.db 'select * from message'
-message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
-7|afreen|penguin|5|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
-9|afreen|penguin|6|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
-10|afreen|penguin|7|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
+$ rltbl get table message
+Rows 1-5 of 2
+message_id  added_by  table    row  column         value               level  rule              message
+1           Valve     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
+2           Valve     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
+7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
+9           afreen    penguin  6    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
+10          afreen    penguin  7    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
 ```
 
 Delete any remaining messages in row 6:
 
 ```console tesh-session="message"
 $ rltbl -v delete message penguin 6
-$ sqlite3 -header .relatable/relatable.db 'select * from message'
-message_id|added_by|table|row|column|value|level|rule|message
-1|Valve|penguin|11|sample_number|SAMPLE #11|error|datatype:integer|sample_number must be of type integer
-2|Valve|penguin|9|sample_number|SAMPLE09|error|datatype:integer|sample_number must be of type integer
-7|afreen|penguin|5|species|Pygoscelis adeliae|info|custom-b|this is a terrible species
-10|afreen|penguin|7|study_name|FAKE123|info|custom-c|this is an inappropriate study_name
+$ rltbl get table message
+Rows 1-4 of 2
+message_id  added_by  table    row  column         value               level  rule              message
+1           Valve     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
+2           Valve     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
+7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
+10          afreen    penguin  7    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
 ```
 
 Delete all remaining messages:
 
 ```console tesh-session="message"
 $ rltbl -v delete message penguin
-$ sqlite3 -header .relatable/relatable.db 'select * from message'
-
+$ rltbl get table message
+Rows 1-0 of 2
+message_id  added_by  table  row  column  value  level  rule  message
 ```
