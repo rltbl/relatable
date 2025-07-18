@@ -373,14 +373,24 @@ impl Relatable {
         );
         self.connection.query(&sql, None).await?;
 
-        let datatype_contents = [json!({
-            "datatype": "decimal",
-            "description": "A decimal number",
-            "parent": "",
-            "condition": "",
-            "sql_type": "NUMERIC",
-            "format": "%.2f"
-        })]
+        let datatype_contents = [
+            json!({
+                "datatype": "decimal",
+                "description": "A decimal number",
+                "parent": "",
+                "condition": "",
+                "sql_type": "NUMERIC",
+                "format": "%.2f"
+            }),
+            json!({
+                "datatype": "fakename",
+                "description": "",
+                "parent": "text",
+                "condition": "equals(FAKE123)",
+                "sql_type": "",
+                "format": ""
+            }),
+        ]
         .iter()
         .map(|content| JsonRow {
             content: content.as_object().expect("Not a map").clone(),
@@ -458,7 +468,7 @@ impl Relatable {
                 "label": "muddy_name",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": JsonValue::Null,
+                "datatype": "fakename",
             }),
             json!({
                 "table": "penguin",
@@ -499,7 +509,7 @@ impl Relatable {
                 "label": JsonValue::Null,
                 "description": JsonValue::Null,
                 "nulltype": "empty",
-                "datatype": "text",
+                "datatype": JsonValue::Null,
             }),
             json!({
                 "table": "penguin",
@@ -992,7 +1002,7 @@ impl Relatable {
 
                             // Validate the cell and add any messages to the message table:
                             if validate {
-                                cell.validate_datatype(&table.get_config_for_column(column))
+                                cell.validate_sql_type(&table.get_config_for_column(column))
                                     .expect("Error validating cell");
                                 for message in cell.messages.iter() {
                                     let (msg_id, msg) = self
@@ -1013,7 +1023,7 @@ impl Relatable {
                             }
 
                             // Add the parameter for the value to the SQL insert statement:
-                            if cell.message_level() >= 2 || cell.value == JsonValue::Null {
+                            if cell.has_sql_type_error() || cell.value == JsonValue::Null {
                                 sql_params.push("NULL".to_string());
                             } else {
                                 sql_params.push(sql_param_gen.next());
@@ -2189,10 +2199,10 @@ impl Relatable {
                     };
 
                     // Validate the cell and add any messages to the message table:
-                    cell.validate_datatype(&table.get_config_for_column(column))
+                    cell.validate_sql_type(&table.get_config_for_column(column))
                         .expect("Error validating cell");
                     for message in cell.messages.iter() {
-                        let (msg_id, msg) = self._add_message(
+                        let (msg_id, msg) = Relatable::_add_message(
                             "Valve",
                             &table.name,
                             &row,
@@ -2208,7 +2218,7 @@ impl Relatable {
 
                     // If the cell is invalid, insert a NULL instead of its actual value
                     let sql_value = {
-                        if cell.message_level() >= 2 {
+                        if cell.has_sql_type_error() {
                             JsonValue::Null
                         } else {
                             cell.value
@@ -2300,8 +2310,7 @@ impl Relatable {
     }
 
     /// Add a message to the message table using the given [DbTransaction]
-    fn _add_message(
-        &self,
+    pub fn _add_message(
         user: &str,
         table_name: &str,
         row: &u64,
@@ -2365,7 +2374,7 @@ impl Relatable {
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        let (message_id, message) = self._add_message(
+        let (message_id, message) = Relatable::_add_message(
             user, table_name, &row, column, value, level, rule, message, &mut tx,
         )?;
 
@@ -2420,9 +2429,9 @@ impl Relatable {
         }
 
         // Validate the row and add it to the table:
-        new_row.validate(&table, &mut tx)?;
+        new_row.validate_sql_types(&table, &mut tx)?;
         for (_column, cell) in new_row.cells.iter_mut() {
-            if cell.message_level() >= 2 {
+            if cell.has_sql_type_error() {
                 cell.value = JsonValue::Null;
                 cell.text = "".to_string(); // Should it be "null" instead of blank?
             }
@@ -2969,42 +2978,119 @@ impl Relatable {
     }
 
     /// TODO: Add docstring
-    pub async fn validate_row(&self, table_name: &str, row_num: &u64) -> Result<Row> {
+    pub async fn validate_table(&self, table_name: &str) -> Result<()> {
         // TODO: Add tracing statement
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
 
-        let table = Table::_get_table(table_name, &mut tx)?;
-        let mut row = {
-            let sql_param = SqlParam::new(&tx.kind()).next();
-            let sql = format!(r#"SELECT * FROM "{table_name}" WHERE "_id" = {sql_param}"#);
-            let params = json!([row_num]);
-            let row = tx.query_one(&sql, Some(&params))?;
-            match row {
-                Some(row) => Row::from(row),
-                None => {
-                    return Err(RelatableError::InputError(format!(
-                        "No row found with _id {row_num}"
-                    ))
-                    .into())
-                }
-            }
-        };
+        let table = Table::get_table(table_name, self)
+            .await
+            .expect("Error getting table");
 
-        row.validate(&table, &mut tx)?;
+        for (_, column) in table.columns.iter() {
+            self.validate_column(column).await?;
+        }
 
-        tx.commit()?;
-        Ok(row)
+        Ok(())
     }
 
     /// TODO: Add docstring
-    pub async fn validate_cell(
+    pub async fn validate_column(&self, column: &Column) -> Result<()> {
+        // TODO: Add tracing statement
+
+        let column_name = column.name.as_str();
+        let table_name = column.table.as_str();
+
+        // Get the table config:
+        let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
+
+        // Reconnect and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        // Delete pre-existing datatype validation messages for this column
+        self._delete_message(
+            &mut tx,
+            table_name,
+            None,
+            Some(&column.name),
+            Some("datatype:%"),
+            None,
+        )?;
+
+        // Validate datatype conditions:
+
+        let mut datatypes_to_check = vec![column.datatype.clone()];
+        datatypes_to_check.append(&mut column.datatype_hierarchy.clone());
+
+        for datatype in datatypes_to_check {
+            match datatype.condition.as_str() {
+                "" => (),
+                condition if condition.starts_with("equals(") => {
+                    let re = regex::Regex::new(r"equals\((.+?)\)").unwrap();
+                    if let Some(captures) = re.captures(condition) {
+                        let condition = &captures[1];
+                        let condition = unquoted_re.replace(&condition, "$unquoted");
+                        let mut sql_param_gen = SqlParam::new(&self.connection.kind());
+                        let sql = format!(
+                            r#"INSERT INTO "message"
+                                 ("added_by", "table", "row", "column", "value", "level", "rule",
+                                  "message")
+                               SELECT
+                                 'Relatable' AS "added_by",
+                                 {sql_param_1} AS "table",
+                                 "_id" AS "row",
+                                 {sql_param_2} AS "column",
+                                 "{column_name}" AS "value",
+                                 'error' AS "level",
+                                 {sql_param_3} AS "rule",
+                                 {sql_param_4} AS "message"
+                               FROM "{table_name}"
+                               WHERE "{column_name}" != {sql_param_5}"#,
+                            sql_param_1 = sql_param_gen.next(),
+                            sql_param_2 = sql_param_gen.next(),
+                            sql_param_3 = sql_param_gen.next(),
+                            sql_param_4 = sql_param_gen.next(),
+                            sql_param_5 = sql_param_gen.next(),
+                        );
+                        let params = json!([
+                            table_name,
+                            column_name,
+                            format!("datatype:{}", column.datatype.name),
+                            format!("{column_name} must be a {}", column.datatype.name),
+                            condition
+                        ]);
+                        tx.query(&sql, Some(&params))?;
+                    }
+                }
+                condition if condition.starts_with("in(") => {
+                    todo!()
+                }
+                invalid => tracing::warn!("Unrecognized datatype condition '{invalid}'"),
+            };
+        }
+
+        // TODO: Validate structure conditions
+
+        tx.commit()?;
+
+        Ok(())
+    }
+
+    /// TODO: Add docstring
+    pub async fn validate_row(&self, _table_name: &str, _row_num: &u64) -> Result<Row> {
+        // TODO: Add tracing statement
+
+        todo!()
+    }
+
+    /// TODO: Add docstring
+    pub async fn validate_value(
         &self,
         _table_name: &str,
         _row: &u64,
         _column: &str,
     ) -> Result<Cell> {
         // TODO Add trace statement
+
         todo!()
     }
 

@@ -1160,37 +1160,27 @@ impl Row {
 
     /// Validate this row, which belongs to the given [Table], using the given [DbTransaction],
     /// and add any resulting validation [messages](Message) to the message table
-    pub fn validate(&mut self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<&Self> {
+    pub fn validate_sql_types(
+        &mut self,
+        table: &Table,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<&Self> {
         for (column, cell) in self.cells.iter_mut() {
             let column_details = table.get_config_for_column(column);
-            let datatype = column_details.datatype.name.to_string();
-            cell.validate_datatype(&column_details)?;
-            if cell.message_level() >= 2 {
-                let mut sql_param_gen = SqlParam::new(&tx.kind());
-                let sql = format!(
-                    r#"INSERT INTO "message"
-                       ("added_by", "table", "row", "column", "value", "level", "rule", "message")
-                       VALUES ({p1}, {p2}, {p3}, {p4}, {p5}, {p6}, {p7}, {p8})"#,
-                    p1 = sql_param_gen.next(),
-                    p2 = sql_param_gen.next(),
-                    p3 = sql_param_gen.next(),
-                    p4 = sql_param_gen.next(),
-                    p5 = sql_param_gen.next(),
-                    p6 = sql_param_gen.next(),
-                    p7 = sql_param_gen.next(),
-                    p8 = sql_param_gen.next(),
-                );
-                let params = json!([
+            cell.validate_sql_type(&column_details)?;
+            for message in cell.messages.iter() {
+                let (msg_id, msg) = Relatable::_add_message(
                     "Valve",
-                    table.name,
-                    self.id,
+                    &table.name,
+                    &self.id,
                     column,
-                    cell.value,
-                    "error",
-                    format!("datatype:{datatype}"),
-                    format!("{column} must be of type {datatype}")
-                ]);
-                tx.query(&sql, Some(&params))?;
+                    &cell.value,
+                    &message.level,
+                    &message.rule,
+                    &message.message,
+                    tx,
+                )?;
+                tracing::debug!("Added message (ID {msg_id}): {msg:?}");
             }
         }
 
@@ -1294,14 +1284,14 @@ impl From<&JsonValue> for Cell {
 impl Cell {
     /// Validate this cell, which belongs to the given [Column], adding any validation
     /// [messages](Message) to the cell's [messages](Cell::messages) field.
-    pub fn validate_datatype(&mut self, column: &Column) -> Result<&Self> {
+    pub fn validate_sql_type(&mut self, column: &Column) -> Result<&Self> {
         // TODO: Add trace statement
 
         fn invalidate(cell: &mut Cell, column: &Column) {
             let datatype = &column.datatype.name;
             cell.messages.push(Message {
                 level: "error".to_string(),
-                rule: format!("datatype:{datatype}"),
+                rule: format!("sql_type:{datatype}"),
                 message: format!("{column} must be of type {datatype}", column = column.name),
             });
         }
@@ -1362,6 +1352,16 @@ impl Cell {
             };
         }
         level
+    }
+
+    /// TODO: Add docstring
+    pub fn has_sql_type_error(&self) -> bool {
+        self.messages
+            .iter()
+            .filter(|m| m.level == "error" && m.rule.starts_with("sql_type:"))
+            .collect::<Vec<_>>()
+            .len()
+            > 0
     }
 }
 

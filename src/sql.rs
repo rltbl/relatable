@@ -697,10 +697,10 @@ impl DbTransaction<'_> {
 // Database-specific utilities and functions
 ///////////////////////////////////////////////////////////////////////////////
 
-/// Given a database pool, a SQL string possibly including placeholders representing bound
-/// parameters, and (optionally) a vector with the parameters corresponding to each placeholder,
-/// combine the information into an interpolated string that is then returned, using the given
-/// database kind to determine the placeholder syntax (SQLite or PostgreSQL)
+/// Given a SQL string (whose syntax is appropriate for the given database kind) that may
+/// include placeholders representing bound parameters, and (optionally) a vector with the
+/// parameter values corresponding to each placeholder, combine this information into an
+/// interpolated string that is then returned.
 pub fn interpolate_sql(sql: &str, params: Option<&JsonValue>, kind: &DbKind) -> Result<String> {
     tracing::trace!("interpolate_sql({sql}, {params:?}, {kind:?})");
     let params = match params {

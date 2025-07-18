@@ -8,6 +8,7 @@ use rltbl::{
     select::{Format, Select},
     sql,
     sql::{CachingStrategy, JsonRow, SqlParam, VecInto},
+    table::Table,
     web::{serve, serve_cgi},
 };
 
@@ -289,12 +290,9 @@ pub enum ValidateSubcommand {
     },
 
     /// Validate the value of the given column of the given row from the given table.
-    Cell {
+    Column {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
-
-        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: u64,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: String,
@@ -806,16 +804,24 @@ pub async fn validate_row(cli: &Cli, table: &str, row: &u64) {
 }
 
 /// TODO: Add docstring here (and to the other functions in this file).
-pub async fn validate_cell(cli: &Cli, table: &str, row: &u64, column: &str) {
-    tracing::trace!("validate_cell({cli:?}, {table}, {row}, {column})");
+pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
+    tracing::trace!("validate_column({cli:?}, {table_name}, {column_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
-    rltbl
-        .validate_cell(table, row, column)
+
+    let table = Table::get_table(table_name, &rltbl)
         .await
-        .expect("Error while validating cell");
-    tracing::info!("Validated cell '{column}' of row {row} of table '{table}'");
+        .expect("Error getting table");
+    let column = table.columns.get(column_name).expect(&format!(
+        "Column '{column_name}' not found in table '{table_name}'"
+    ));
+
+    rltbl
+        .validate_column(column)
+        .await
+        .expect("Error while validating column");
+    tracing::info!("Validated column '{column_name}' of table '{table_name}'");
 }
 
 pub async fn delete_row(cli: &Cli, table: &str, row: u64) {
@@ -1006,8 +1012,8 @@ pub async fn process_command() {
         },
         Command::Validate { subcommand } => match subcommand {
             ValidateSubcommand::Row { table, row } => validate_row(&cli, table, row).await,
-            ValidateSubcommand::Cell { table, row, column } => {
-                validate_cell(&cli, table, row, column).await
+            ValidateSubcommand::Column { table, column } => {
+                validate_column(&cli, table, column).await
             }
         },
         Command::Delete { subcommand } => match subcommand {
