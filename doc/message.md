@@ -78,7 +78,7 @@ $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "me
 $ echo '{"value": "FAKE123", "level": "info", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 study_name
 $ echo '{"value": "FAKE123", "level": "info", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 7 study_name
 $ rltbl get table message
-Rows 1-8 of 2
+Rows 1-8 of 8
 message_id  added_by  table    row  column         value               level  rule              message
 1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
 2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
@@ -95,7 +95,7 @@ Let's now delete all the messages added to the table by **mike** using the `--us
 ```console tesh-session="message"
 $ rltbl -v delete message penguin --user mike
 $ rltbl get table message
-Rows 1-6 of 2
+Rows 1-6 of 6
 message_id  added_by  table    row  column         value               level  rule              message
 1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
 2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
@@ -110,7 +110,7 @@ Now delete all messages associated with the column **species** in row 6:
 ```console tesh-session="message"
 $ rltbl -v delete message penguin 6 species
 $ rltbl get table message
-Rows 1-5 of 2
+Rows 1-5 of 5
 message_id  added_by  table    row  column         value               level  rule              message
 1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
 2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
@@ -124,7 +124,7 @@ Delete any remaining messages in row 6:
 ```console tesh-session="message"
 $ rltbl -v delete message penguin 6
 $ rltbl get table message
-Rows 1-4 of 2
+Rows 1-4 of 4
 message_id  added_by  table    row  column         value               level  rule              message
 1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
 2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
@@ -137,6 +137,6 @@ Delete all remaining messages:
 ```console tesh-session="message"
 $ rltbl -v delete message penguin
 $ rltbl get table message
-Rows 1-0 of 2
+Rows 1-0 of 0
 message_id  added_by  table  row  column  value  level  rule  message
 ```
