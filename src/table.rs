@@ -477,7 +477,8 @@ impl Table {
                             column_info.content.insert("unique".to_string(), json!(1));
                         }
                         Ok(constraint) if constraint == "FOREIGN KEY" => {
-                            // TODO
+                            column_info.content.insert("pk".to_string(), json!(0));
+                            column_info.content.insert("unique".to_string(), json!(0));
                         }
                         Ok(constraint) if constraint == "" => {
                             column_info.content.insert("pk".to_string(), json!(0));
