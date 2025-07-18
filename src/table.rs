@@ -893,7 +893,7 @@ impl Row {
                     p8 = sql_param_gen.next(),
                 );
                 let params = json!([
-                    "Valve",
+                    "rltbl",
                     table.name,
                     self.id,
                     column,

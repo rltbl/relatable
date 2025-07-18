@@ -893,7 +893,7 @@ impl Relatable {
                                 for message in cell.messages.iter() {
                                     let (msg_id, msg) = self
                                         .add_message(
-                                            "Valve",
+                                            "rltbl",
                                             &table.name,
                                             id,
                                             column,
@@ -2089,7 +2089,7 @@ impl Relatable {
                         .expect("Error validating cell");
                     for message in cell.messages.iter() {
                         let (msg_id, msg) = self._add_message(
-                            "Valve",
+                            "rltbl",
                             &table.name,
                             &row,
                             column,
