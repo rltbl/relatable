@@ -2737,8 +2737,8 @@ FROM "penguin""#
     species TEXT,
     island TEXT,
     individual_id TEXT,
-    culmen_length REAL,
-    culmen_depth NUMERIC,
+    bill_length REAL,
+    bill_depth NUMERIC,
     body_mass BIGINT
 )"#;
         block_on(rltbl.connection.query(drop_sql, None)).unwrap();
@@ -2832,8 +2832,8 @@ FROM "penguin_test""#
   "species",
   "island",
   "individual_id",
-  "culmen_length",
-  "culmen_depth",
+  "bill_length",
+  "bill_depth",
   "body_mass"
 FROM "penguin_test"
 ORDER BY "penguin_test"._order ASC

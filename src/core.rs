@@ -242,6 +242,7 @@ impl Relatable {
     /// Create a demonstration table with the given name, add entries corresponding to it
     /// to the column table, and add `size` rows of data to it. Drop the table first if `force` is
     /// set.
+    /// Based on https://github.com/allisonhorst/palmerpenguins
     pub async fn create_demo_table(&self, table: &str, force: &bool, size: usize) -> Result<()> {
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
@@ -273,8 +274,8 @@ impl Relatable {
              species TEXT,
              island TEXT,
              individual_id TEXT,
-             culmen_length REAL,
-             culmen_depth NUMERIC,
+             bill_length REAL,
+             bill_depth NUMERIC,
              body_mass BIGINT
            )"#,
         );
@@ -299,7 +300,7 @@ impl Relatable {
             DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
             DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
         };
-        for i in 1..=size {
+        for i in 0..size {
             if (param_values.len() + 8) >= max_params {
                 let sql = format!(
                     "{sql_first_part} {sql_value_part}",
@@ -316,11 +317,11 @@ impl Relatable {
                 sql_param.reset();
             }
 
-            let id = i;
-            let order = i * NEW_ORDER_MULTIPLIER;
+            let id = i + 1;
+            let order = id * NEW_ORDER_MULTIPLIER;
             let island = islands.iter().choose(&mut rng);
-            let culmen_length = rng.gen_range(300..500) as f32 / 10.0;
-            let culmen_depth = rng.gen_range(200..400) as f64 / 10.0;
+            let bill_length = rng.gen_range(300..500) as f64 / 10.0;
+            let bill_depth = rng.gen_range(200..400) as f64 / 10.0;
             let body_mass = rng.gen_range(1000..5000);
             sql_value_parts.push(format!(
                 "({sql_param_list_1}, 'FAKE123', {lone_sql_param}, 'Pygoscelis adeliae', \
@@ -333,9 +334,9 @@ impl Relatable {
             param_values.push(json!(order));
             param_values.push(json!(id));
             param_values.push(json!(island));
-            param_values.push(json!(format!("N{id}")));
-            param_values.push(json!(culmen_length));
-            param_values.push(json!(culmen_depth));
+            param_values.push(json!(format!("N{}A{}", (i / 2) + 1, (i % 2) + 1)));
+            param_values.push(json!(bill_length));
+            param_values.push(json!(bill_depth));
             param_values.push(json!(body_mass));
         }
         if param_values.len() > 0 {
@@ -383,7 +384,7 @@ impl Relatable {
             json!({
                 "table": "penguin",
                 "column": "study_name",
-                "label": "muddy_name",
+                "label": "study name",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
                 "datatype": JsonValue::Null,
@@ -391,48 +392,55 @@ impl Relatable {
             json!({
                 "table": "penguin",
                 "column": "sample_number",
-                "label": JsonValue::Null,
+                "label": "sample number",
                 "description": "a sample number",
                 "nulltype": JsonValue::Null,
                 "datatype": "integer",
             }),
-            // A non-existent column, which relatable should silently ignore:
-            json!({
-                "table": "penguin",
-                "column": "maple_syrup",
-                "label": "maple syrup",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
-                "datatype": "text",
-            }),
-            json!({
-                "table": "penguin",
-                "column": "culmen_length",
-                "label": "culmen length (cm)",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
-                "datatype": "decimal:%.2f",
-            }),
-            json!({
-                "table": "penguin",
-                "column": "culmen_depth",
-                "label": "culmen depth (cm)",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
-                "datatype": "decimal:%.2f",
-            }),
             json!({
                 "table": "penguin",
                 "column": "species",
-                "label": JsonValue::Null,
+                "label": "species",
                 "description": JsonValue::Null,
                 "nulltype": "empty",
                 "datatype": "text",
             }),
             json!({
                 "table": "penguin",
+                "column": "island",
+                "label": "island",
+                "description": JsonValue::Null,
+                "nulltype": JsonValue::Null,
+                "datatype": "text",
+            }),
+            json!({
+                "table": "penguin",
+                "column": "individual_id",
+                "label": "individual id",
+                "description": JsonValue::Null,
+                "nulltype": "empty",
+                "datatype": "text",
+            }),
+            json!({
+                "table": "penguin",
+                "column": "bill_length",
+                "label": "bill length (mm)",
+                "description": JsonValue::Null,
+                "nulltype": JsonValue::Null,
+                "datatype": "decimal:%.1f",
+            }),
+            json!({
+                "table": "penguin",
+                "column": "bill_depth",
+                "label": "bill depth (mm)",
+                "description": JsonValue::Null,
+                "nulltype": JsonValue::Null,
+                "datatype": "decimal:%.1f",
+            }),
+            json!({
+                "table": "penguin",
                 "column": "body_mass",
-                "label": JsonValue::Null,
+                "label": "body mass (g)",
                 "description": JsonValue::Null,
                 "nulltype": "empty",
                 "datatype": "integer",
