@@ -419,6 +419,14 @@ impl DbConnection {
     ) -> Result<Vec<JsonRow>> {
         tracing::trace!("cache({sql}, {params:?}, {strategy:?})");
 
+        // Do not cache queries to these special tables,
+        // because change to them are not recorded in the usual way.
+        for t in vec!["message", "history", "change", "user"] {
+            if tables.contains(&t.to_string()) {
+                return self.query(&sql, params).await;
+            }
+        }
+
         async fn _cache(
             conn: &DbConnection,
             tables: &Vec<String>,
@@ -467,8 +475,9 @@ impl DbConnection {
                     }
                 }
             };
-            let cache_params =
-                json!([r#"[{"content": "#, "}]", tables, sql, format!("{params:?}")]);
+            let empty = json!("[]");
+            let json_params = params.unwrap_or(&empty);
+            let cache_params = json!([r#"[{"content": "#, "}]", tables, sql, json_params]);
             match conn.query_one(&cache_sql, Some(&cache_params)).await? {
                 Some(json_row) => {
                     tracing::debug!("Cache hit for tables {tables}");
@@ -508,8 +517,7 @@ impl DbConnection {
                             )
                         }
                     };
-                    let update_cache_params =
-                        json!([tables, sql, format!("{params:?}"), json_rows_content]);
+                    let update_cache_params = json!([tables, sql, json_params, json_rows_content]);
                     conn.query(&update_cache_sql, Some(&update_cache_params))
                         .await?;
                     Ok(json_rows)
@@ -2038,5 +2046,39 @@ impl std::fmt::Debug for JsonRow {
 impl From<JsonRow> for Vec<String> {
     fn from(row: JsonRow) -> Self {
         row.to_strings()
+    }
+}
+
+// Tests
+
+#[cfg(test)]
+mod tests {
+    use crate::{core::Relatable, select::Select, sql::CachingStrategy};
+    use async_std::task::block_on;
+    use pretty_assertions::assert_eq;
+
+    // use super::*;
+
+    #[test]
+    fn test_cache() {
+        let rltbl = block_on(Relatable::build_demo(
+            Some("build/test_cache.db"),
+            &true,
+            10,
+            &CachingStrategy::Trigger,
+        ))
+        .unwrap();
+
+        let select = Select::from("penguin")
+            .filters(&vec![format!("island = Dream")])
+            .unwrap();
+        let count = block_on(rltbl.count(&select)).unwrap();
+        assert_eq!(count, 2);
+
+        let select = Select::from("penguin")
+            .filters(&vec![format!("island = Torgersen")])
+            .unwrap();
+        let count = block_on(rltbl.count(&select)).unwrap();
+        assert_eq!(count, 5);
     }
 }
