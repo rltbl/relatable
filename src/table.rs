@@ -51,7 +51,7 @@ impl Table {
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let table = Self::_get_table(table_name, &mut tx)?;
+        let table = Table::_get_table(table_name, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -63,7 +63,7 @@ impl Table {
     pub fn _get_table(table_name: &str, tx: &mut DbTransaction<'_>) -> Result<Self> {
         tracing::trace!("Table::_get_table({table_name:?}, tx)");
         // If the default view exists, set the table's view to it, otherwise leave it blank:
-        let result = Self::_view_exists(table_name, "default", tx)?;
+        let result = Table::_view_exists(table_name, "default", tx)?;
         let view = {
             if result {
                 format!("{table_name}_default_view")
@@ -87,7 +87,7 @@ impl Table {
             name: table_name.to_string(),
             view,
             change_id,
-            columns: Self::_collect_column_info(table_name, tx)?
+            columns: Table::_collect_column_info(table_name, tx)?
                 .0
                 .into_iter()
                 .map(|column| (column.name.clone(), column))
@@ -104,7 +104,7 @@ impl Table {
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let table_exists = Self::_table_exists(table_name, &mut tx)?;
+        let table_exists = Table::_table_exists(table_name, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -134,7 +134,13 @@ impl Table {
                 (
                     format!(
                         r#"SELECT 1 FROM "information_schema"."tables"
-                           WHERE "table_type" LIKE {sql_param_1} AND "table_name" = {sql_param_2}"#,
+                           WHERE "table_type" LIKE {sql_param_1}
+                             AND "table_name" = {sql_param_2}
+                             AND "table_schema" IN (
+                               SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
+                               FROM "pg_settings"
+                               WHERE "name" = 'search_path'
+                             )"#,
                     ),
                     json!(["%TABLE", table_name]),
                 )
@@ -153,7 +159,7 @@ impl Table {
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let view_exists = Self::_view_exists(&self.name, view_type, &mut tx)?;
+        let view_exists = Table::_view_exists(&self.name, view_type, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -186,7 +192,12 @@ impl Table {
                         r#"SELECT 1
                            FROM "information_schema"."tables"
                            WHERE "table_name" = {sql_param_1}
-                           AND "table_type" = {sql_param_2}"#,
+                           AND "table_type" = {sql_param_2}
+                           AND "table_schema" IN (
+                               SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
+                               FROM "pg_settings"
+                               WHERE "name" = 'search_path'
+                           )"#,
                     ),
                     json!([format!("{table}_{view_type}_view"), "VIEW"]),
                 )
@@ -221,7 +232,7 @@ impl Table {
     /// table has been created, and then set the view for this table to it.
     pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::ensure_default_view_created({self:?}, {rltbl:?})");
-        let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
+        let (columns, meta_columns) = Table::collect_column_info(&self.name, rltbl).await?;
         let view_name = format!("{}_default_view", self.name);
         tracing::debug!(r#"Creating default view "{view_name}" with columns {columns:?}"#);
 
@@ -261,7 +272,7 @@ impl Table {
         // Create the text view:
         let view_name = format!("{}_text_view", self.name);
 
-        let (columns, meta_columns) = self.collect_column_info(rltbl).await?;
+        let (columns, meta_columns) = Table::collect_column_info(&self.name, rltbl).await?;
         tracing::debug!(r#"Creating text view "{view_name}" with columns {columns:?}"#);
         let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
             false => r#"rowid"#, // This *must* be lowercase.
@@ -300,7 +311,7 @@ impl Table {
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let columns = Self::_get_column_table_columns(table_name, &mut tx)?;
+        let columns = Table::_get_column_table_columns(table_name, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -316,7 +327,7 @@ impl Table {
         tx: &mut DbTransaction<'_>,
     ) -> Result<IndexMap<String, Column>> {
         tracing::trace!("Table::_get_column_table_columns({table_name:?}, tx)");
-        if !Self::_table_exists("column", tx)? {
+        if !Table::_table_exists("column", tx)? {
             Ok(IndexMap::new())
         } else {
             let sql = format!(
@@ -372,21 +383,118 @@ impl Table {
         match tx.kind() {
             DbKind::Sqlite => {
                 let sql = format!(
-                    r#"SELECT "name", "type" AS "datatype"
+                    r#"SELECT "name", "type" AS "datatype", "pk"
                        FROM pragma_table_info("{table}") ORDER BY "cid""#
                 );
-                tx.query(&sql, None)
+                let mut columns_info = vec![];
+                for column_info in tx.query(&sql, None)? {
+                    let mut column_info = column_info.clone();
+                    if column_info.get_unsigned("pk")? == 1 {
+                        // If the column is a primary key then it is also unique:
+                        column_info.content.insert("unique".to_string(), json!(1));
+                    } else {
+                        // If the column is not a primary key, look through the pragma information
+                        // for the column to see if it has a unique index (requires two queries).
+                        column_info.content.insert("unique".to_string(), json!(0));
+                        let sql = format!(
+                            r#"SELECT "name", "unique"
+                               FROM PRAGMA_INDEX_LIST("{table}")"#
+                        );
+                        for index_info in tx.query(&sql, None)? {
+                            if index_info.get_unsigned("unique")? == 1 {
+                                let idx_name = index_info.get_string("name")?;
+                                let sql = format!(
+                                    r#"SELECT "name" FROM PRAGMA_INDEX_INFO("{idx_name}")"#
+                                );
+                                if let Some(idx_cname) = tx.query_value(&sql, None)? {
+                                    if idx_cname == column_info.get_string("name")? {
+                                        column_info.content.insert("unique".to_string(), json!(1));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    columns_info.push(column_info);
+                }
+                tracing::debug!("Returning columns info from db: {columns_info:?}");
+                Ok(columns_info)
             }
             DbKind::Postgres => {
+                let mut sql_param_gen = SqlParam::new(&tx.kind());
                 let sql = format!(
-                    r#"SELECT "column_name"::TEXT AS "name", "data_type"::TEXT AS "datatype"
-                       FROM "information_schema"."columns"
-                       WHERE "table_name" = {sql_param}
-                       ORDER BY "ordinal_position""#,
-                    sql_param = SqlParam::new(&tx.kind()).next()
+                    r#"WITH "constraints" as (
+                         SELECT
+                           "kcu"."table_name"::TEXT,
+                           "kcu"."column_name"::TEXT,
+                           "tco"."constraint_type"::TEXT
+                         FROM "information_schema"."table_constraints" "tco"
+                         JOIN "information_schema"."key_column_usage" "kcu"
+                           ON "kcu"."constraint_name" = "tco"."constraint_name"
+                          AND "kcu"."constraint_schema" = "tco"."constraint_schema"
+                          AND "kcu"."table_name" = {sql_param_1}
+                        WHERE "kcu"."table_schema" IN (
+                          SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
+                          FROM "pg_settings"
+                          WHERE "name" = 'search_path'
+                        )
+                       )
+                       SELECT
+                         "columns"."column_name"::TEXT AS "name",
+                         "columns"."data_type"::TEXT AS "datatype",
+                         "constraints"."constraint_type"::TEXT AS "constraint"
+                       FROM "information_schema"."columns" "columns"
+                         LEFT JOIN "constraints"
+                           ON "columns"."table_name" = "constraints"."table_name"
+                           AND "columns"."column_name" = "constraints"."column_name"
+                       WHERE "columns"."table_schema" IN (
+                          SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
+                          FROM "pg_settings"
+                          WHERE "name" = 'search_path'
+                        )
+                       AND "columns"."table_name" = {sql_param_2}
+                       ORDER BY "columns"."ordinal_position""#,
+                    sql_param_1 = sql_param_gen.next(),
+                    sql_param_2 = sql_param_gen.next()
                 );
-                let params = json!([table]);
-                tx.query(&sql, Some(&params))
+                let params = json!([table, table]);
+
+                let mut columns_info = vec![];
+                for row in tx.query(&sql, Some(&params))? {
+                    let mut column_info = JsonRow::new();
+                    column_info
+                        .content
+                        .insert("name".to_string(), row.get_value("name")?);
+                    column_info
+                        .content
+                        .insert("datatype".to_string(), row.get_value("datatype")?);
+                    match row.get_string("constraint") {
+                        Ok(constraint) if constraint == "PRIMARY KEY" => {
+                            column_info.content.insert("pk".to_string(), json!(1));
+                            column_info.content.insert("unique".to_string(), json!(1));
+                        }
+                        Ok(constraint) if constraint == "UNIQUE" => {
+                            column_info.content.insert("pk".to_string(), json!(0));
+                            column_info.content.insert("unique".to_string(), json!(1));
+                        }
+                        Ok(constraint) if constraint == "" => {
+                            column_info.content.insert("pk".to_string(), json!(0));
+                            column_info.content.insert("unique".to_string(), json!(0));
+                        }
+                        Ok(unrecognized) => {
+                            tracing::warn!("Unrecognized constraint type '{unrecognized}'");
+                            column_info.content.insert("pk".to_string(), json!(0));
+                            column_info.content.insert("unique".to_string(), json!(0));
+                        }
+                        Err(err) => {
+                            tracing::warn!("Error geting constraint for column: '{err}'");
+                            column_info.content.insert("pk".to_string(), json!(0));
+                            column_info.content.insert("unique".to_string(), json!(0));
+                        }
+                    };
+                    columns_info.push(column_info);
+                }
+                tracing::debug!("Returning columns info from db: {columns_info:?}");
+                Ok(columns_info)
             }
         }
     }
@@ -394,15 +502,15 @@ impl Table {
     /// Returns a tuple whose first position contains a list of the given table's columns, and whose
     /// second position contains a list of the given table's metacolumns
     pub async fn collect_column_info(
-        &self,
+        table: &str,
         rltbl: &Relatable,
     ) -> Result<(Vec<Column>, Vec<Column>)> {
-        tracing::trace!("Table::get_db_table_columns({self:?}, {rltbl:?})");
+        tracing::trace!("Table::get_db_table_columns({table}, {rltbl:?})");
         let mut conn = rltbl.connection.reconnect()?;
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let columns = Self::_collect_column_info(&self.name, &mut tx)?;
+        let columns = Table::_collect_column_info(table, &mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -420,17 +528,19 @@ impl Table {
         tracing::trace!("Table::collect_column_info({table_name}, tx)");
 
         // Get information about the table's columns from the optional column table:
-        let column_columns = Self::_get_column_table_columns(table_name, tx)?;
+        let column_columns = Table::_get_column_table_columns(table_name, tx)?;
 
         // Get the table's columns from the database and merge it with the information from the
         // column table that we just collected:
         let mut columns = vec![];
         let mut meta_columns = vec![];
-        for db_column in Self::get_db_table_columns(table_name, tx)? {
+        for db_column in Table::get_db_table_columns(table_name, tx)? {
             match db_column.get_string("name")? {
                 column_name if column_name.starts_with("_") => meta_columns.push(Column {
                     name: column_name,
                     table: table_name.to_string(),
+                    primary_key: db_column.get_unsigned("pk")? == 1,
+                    unique: db_column.get_unsigned("unique")? == 1,
                     ..Default::default()
                 }),
                 column_name => columns.push(Column {
@@ -460,7 +570,8 @@ impl Table {
                     },
                     name: column_name,
                     table: table_name.to_string(),
-                    ..Default::default()
+                    primary_key: db_column.get_unsigned("pk")? == 1,
+                    unique: db_column.get_unsigned("unique")? == 1,
                 }),
             };
         }
@@ -472,6 +583,26 @@ impl Table {
             .into());
         }
         Ok((columns, meta_columns))
+    }
+
+    /// Returns a list of the table's primary key columns.
+    pub async fn primary_key_columns(table: &str, rltbl: &Relatable) -> Result<Vec<Column>> {
+        let (mut columns, mut meta_columns) = Table::collect_column_info(table, rltbl).await?;
+        columns.append(&mut meta_columns);
+        Ok(columns
+            .into_iter()
+            .filter(|col| col.primary_key)
+            .collect::<Vec<_>>())
+    }
+
+    /// Returns a list of the table's primary key columns.
+    pub fn _primary_key_columns(table: &str, tx: &mut DbTransaction<'_>) -> Result<Vec<Column>> {
+        let (mut columns, mut meta_columns) = Table::_collect_column_info(table, tx)?;
+        columns.append(&mut meta_columns);
+        Ok(columns
+            .into_iter()
+            .filter(|col| col.primary_key)
+            .collect::<Vec<_>>())
     }
 
     /// Fetches the [Column] struct representing the configuration of the given column from this
@@ -575,7 +706,7 @@ impl Table {
     /// transaction.
     pub fn _get_previous_row_id(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
         tracing::trace!("Table::_get_previous_row_id({table}, {row}, tx)");
-        let curr_row_order = Self::_get_row_order(table, row, tx)?;
+        let curr_row_order = Table::_get_row_order(table, row, tx)?;
         let sql = format!(
             r#"SELECT "_id" FROM "{table}" WHERE "_order" < {sql_param}
                ORDER BY "_order" DESC LIMIT 1"#,

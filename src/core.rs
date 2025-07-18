@@ -1279,8 +1279,8 @@ impl Relatable {
             // this step automatically every time the table is edited in that case.
             CachingStrategy::None | CachingStrategy::Trigger => (),
             CachingStrategy::Memory(_) => self.clear_mem_cache(&table),
-            CachingStrategy::TruncateAll => Self::clear_cache(tx, None)?,
-            CachingStrategy::Truncate => Self::clear_cache(tx, Some(&table))?,
+            CachingStrategy::TruncateAll => Relatable::clear_cache(tx, None)?,
+            CachingStrategy::Truncate => Relatable::clear_cache(tx, Some(&table))?,
         };
 
         Ok(())
@@ -2979,9 +2979,9 @@ impl FromStr for ChangeAction {
     fn from_str(action: &str) -> Result<Self> {
         tracing::trace!("ChangeAction::from_str({action:?})");
         match action.to_lowercase().as_str() {
-            "do" => Ok(Self::Do),
-            "undo" => Ok(Self::Undo),
-            "redo" => Ok(Self::Redo),
+            "do" => Ok(ChangeAction::Do),
+            "undo" => Ok(ChangeAction::Undo),
+            "redo" => Ok(ChangeAction::Redo),
             _ => {
                 return Err(
                     RelatableError::InputError(format!("Unrecognized action: {action}")).into(),
@@ -3104,22 +3104,22 @@ impl Change {
     pub fn from_json_row(json_row: &JsonRow) -> Result<Self> {
         tracing::trace!("Change::from_json_row({json_row:?})");
         match json_row.get_string("type")?.as_str() {
-            "Update" => Ok(Self::Update {
+            "Update" => Ok(Change::Update {
                 row: json_row.get_unsigned("row")?,
                 column: json_row.get_string("column")?,
                 before: json_row.get_value("before")?,
                 after: json_row.get_value("after")?,
             }),
-            "Add" => Ok(Self::Add {
+            "Add" => Ok(Change::Add {
                 row: json_row.get_unsigned("row")?,
                 after: json_row.get_unsigned("after")?,
             }),
-            "Move" => Ok(Self::Move {
+            "Move" => Ok(Change::Move {
                 row: json_row.get_unsigned("row")?,
                 from_after: json_row.get_unsigned("from_after")?,
                 to_after: json_row.get_unsigned("to_after")?,
             }),
-            "Delete" => Ok(Self::Delete {
+            "Delete" => Ok(Change::Delete {
                 row: json_row.get_unsigned("row")?,
                 after: json_row.get_unsigned("after")?,
             }),
