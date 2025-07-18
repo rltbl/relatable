@@ -1196,15 +1196,15 @@ pub(crate) fn generate_default_view_ddl(
         DbKind::Postgres => vec![format!(
             r#"CREATE OR REPLACE VIEW "{view}" AS
                  SELECT
-                   "{table}"._id,
-                   "{table}"._order,
+                   "{id_col}" AS _id,
+                   "{order_col}" AS _order,
                    (
                      SELECT ('['::TEXT || string_agg(h.after, ','::TEXT)) || ']'::TEXT
                      FROM ( SELECT "history"."after"
                             FROM "history"
                             WHERE "history"."table" = '{table}'
                             AND "after" IS DISTINCT FROM NULL
-                            AND "row" = "{table}"._id
+                            AND "row" = "{id_col}"
                             ORDER BY "history_id" ) h
                    ) AS "_history",
                    (
@@ -1215,7 +1215,7 @@ pub(crate) fn generate_default_view_ddl(
                                    "message"."rule",
                                    "message"."message"
                             FROM "message"
-                     WHERE "message"."table" = '{table}' AND "message"."row" = "{table}"._id
+                     WHERE "message"."table" = '{table}' AND "message"."row" = "{id_col}"
                      ORDER BY "message"."column", "message"."message_id") m
                    ) AS "_message",
                    {columns}
