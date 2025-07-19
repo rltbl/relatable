@@ -2985,15 +2985,39 @@ impl Relatable {
             .await
             .expect("Error getting table");
 
+        // Reconnect and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
         for (_, column) in table.columns.iter() {
-            self.validate_column(column).await?;
+            self._validate_column_for_row(column, None, &mut tx)?;
         }
+
+        tx.commit()?;
 
         Ok(())
     }
 
     /// TODO: Add docstring
     pub async fn validate_column(&self, column: &Column) -> Result<()> {
+        // Reconnect and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        self._validate_column_for_row(column, None, &mut tx)?;
+
+        tx.commit()?;
+
+        Ok(())
+    }
+
+    /// TODO: Add docstring
+    pub fn _validate_column_for_row(
+        &self,
+        column: &Column,
+        row: Option<&u64>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
         // TODO: Add tracing statement
 
         let column_name = column.name.as_str();
@@ -3002,13 +3026,9 @@ impl Relatable {
         // Get the table config:
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
 
-        // Reconnect and begin a transaction:
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-
         // Delete pre-existing datatype validation messages for this column
         self._delete_message(
-            &mut tx,
+            tx,
             table_name,
             None,
             Some(&column.name),
@@ -3030,7 +3050,7 @@ impl Relatable {
                         let condition = &captures[1];
                         let condition = unquoted_re.replace(&condition, "$unquoted");
                         let mut sql_param_gen = SqlParam::new(&self.connection.kind());
-                        let sql = format!(
+                        let mut sql = format!(
                             r#"INSERT INTO "message"
                                  ("added_by", "table", "row", "column", "value", "level", "rule",
                                   "message")
@@ -3051,13 +3071,32 @@ impl Relatable {
                             sql_param_4 = sql_param_gen.next(),
                             sql_param_5 = sql_param_gen.next(),
                         );
-                        let params = json!([
-                            table_name,
-                            column_name,
-                            format!("datatype:{}", column.datatype.name),
-                            format!("{column_name} must be a {}", column.datatype.name),
-                            condition
-                        ]);
+                        let params;
+                        match row {
+                            Some(row) => {
+                                sql.push_str(&format!(
+                                    r#" AND "row" = {sql_param}"#,
+                                    sql_param = sql_param_gen.next()
+                                ));
+                                params = json!([
+                                    table_name,
+                                    column_name,
+                                    format!("datatype:{}", column.datatype.name),
+                                    format!("{column_name} must be a {}", column.datatype.name),
+                                    condition,
+                                    row
+                                ]);
+                            }
+                            None => {
+                                params = json!([
+                                    table_name,
+                                    column_name,
+                                    format!("datatype:{}", column.datatype.name),
+                                    format!("{column_name} must be a {}", column.datatype.name),
+                                    condition
+                                ]);
+                            }
+                        };
                         tx.query(&sql, Some(&params))?;
                     }
                 }
@@ -3070,28 +3109,28 @@ impl Relatable {
 
         // TODO: Validate structure conditions
 
-        tx.commit()?;
-
         Ok(())
     }
 
     /// TODO: Add docstring
-    pub async fn validate_row(&self, _table_name: &str, _row_num: &u64) -> Result<Row> {
+    pub async fn validate_row(&self, table_name: &str, row: &u64) -> Result<()> {
         // TODO: Add tracing statement
 
-        todo!()
-    }
+        let table = Table::get_table(table_name, self)
+            .await
+            .expect("Error getting table");
 
-    /// TODO: Add docstring
-    pub async fn validate_value(
-        &self,
-        _table_name: &str,
-        _row: &u64,
-        _column: &str,
-    ) -> Result<Cell> {
-        // TODO Add trace statement
+        // Reconnect and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
 
-        todo!()
+        for (_, column) in table.columns.iter() {
+            self._validate_column_for_row(column, Some(row), &mut tx)?;
+        }
+
+        tx.commit()?;
+
+        Ok(())
     }
 
     /// Delete all entries from the cache corresponding to the given table, or clear it completely
