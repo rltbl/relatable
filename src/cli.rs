@@ -280,7 +280,13 @@ pub enum MoveSubcommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ValidateSubcommand {
-    /// Validate the value of the given row from a given table.
+    /// TODO: Add docstring
+    Table {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+    },
+
+    /// Validate the given row from the given table.
     Row {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
@@ -289,10 +295,22 @@ pub enum ValidateSubcommand {
         row: u64,
     },
 
-    /// Validate the value of the given column of the given row from the given table.
+    /// TODO: Add docstring
     Column {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
+
+        #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
+        column: String,
+    },
+
+    /// Validate the value of the given column of the given row from the given table.
+    Value {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: u64,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: String,
@@ -804,6 +822,20 @@ pub async fn validate_row(cli: &Cli, table: &str, row: &u64) {
 }
 
 /// TODO: Add docstring here (and to the other functions in this file).
+pub async fn validate_table(cli: &Cli, table_name: &str) {
+    tracing::trace!("validate_table({cli:?}, {table_name}, {table_name})");
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+
+    rltbl
+        .validate_table(table_name)
+        .await
+        .expect("Error while validating table");
+    tracing::info!("Validated table '{table_name}'");
+}
+
+/// TODO: Add docstring here (and to the other functions in this file).
 pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
     tracing::trace!("validate_column({cli:?}, {table_name}, {column_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
@@ -822,6 +854,27 @@ pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
         .await
         .expect("Error while validating column");
     tracing::info!("Validated column '{column_name}' of table '{table_name}'");
+}
+
+/// TODO: Add docstring here (and to the other functions in this file).
+pub async fn validate_value(cli: &Cli, table_name: &str, row: &u64, column_name: &str) {
+    tracing::trace!("validate_value({cli:?}, {table_name}, {row}, {column_name})");
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+
+    let table = Table::get_table(table_name, &rltbl)
+        .await
+        .expect("Error getting table");
+    let column = table.columns.get(column_name).expect(&format!(
+        "Column '{column_name}' not found in table '{table_name}'"
+    ));
+
+    rltbl
+        .validate_value(column, row)
+        .await
+        .expect("Error while validating value");
+    tracing::info!("Validated value of column '{column_name}' of table '{table_name}'");
 }
 
 pub async fn delete_row(cli: &Cli, table: &str, row: u64) {
@@ -1011,9 +1064,13 @@ pub async fn process_command() {
             MoveSubcommand::Row { table, row, after } => move_row(&cli, table, *row, *after).await,
         },
         Command::Validate { subcommand } => match subcommand {
+            ValidateSubcommand::Table { table } => validate_table(&cli, table).await,
             ValidateSubcommand::Row { table, row } => validate_row(&cli, table, row).await,
             ValidateSubcommand::Column { table, column } => {
                 validate_column(&cli, table, column).await
+            }
+            ValidateSubcommand::Value { table, row, column } => {
+                validate_value(&cli, table, row, column).await
             }
         },
         Command::Delete { subcommand } => match subcommand {

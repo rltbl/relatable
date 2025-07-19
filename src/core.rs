@@ -3012,6 +3012,19 @@ impl Relatable {
     }
 
     /// TODO: Add docstring
+    pub async fn validate_value(&self, column: &Column, row: &u64) -> Result<()> {
+        // Reconnect and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        self._validate_column_for_row(column, Some(row), &mut tx)?;
+
+        tx.commit()?;
+
+        Ok(())
+    }
+
+    /// TODO: Add docstring
     pub fn _validate_column_for_row(
         &self,
         column: &Column,
@@ -3030,7 +3043,7 @@ impl Relatable {
         self._delete_message(
             tx,
             table_name,
-            None,
+            row.copied(),
             Some(&column.name),
             Some("datatype:%"),
             None,
@@ -3075,7 +3088,7 @@ impl Relatable {
                         match row {
                             Some(row) => {
                                 sql.push_str(&format!(
-                                    r#" AND "row" = {sql_param}"#,
+                                    r#" AND "_id" = {sql_param}"#,
                                     sql_param = sql_param_gen.next()
                                 ));
                                 params = json!([
