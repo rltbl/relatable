@@ -389,7 +389,7 @@ impl Relatable {
                 "datatype": "fakename",
                 "description": "",
                 "parent": "text",
-                "condition": "equals(FAKE123)",
+                "condition": "in(FAKE123, MIKE123)",
                 "sql_type": "",
                 "format": ""
             }),

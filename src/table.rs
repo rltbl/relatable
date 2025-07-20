@@ -1064,6 +1064,7 @@ impl Datatype {
         tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
         // TODO: Add a tracing statement here.
+
         let table_name = column.table.as_str();
         let column_name = column.name.as_str();
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
@@ -1077,19 +1078,19 @@ impl Datatype {
                     let mut sql_param_gen = SqlParam::new(&tx.kind());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
-                                 ("added_by", "table", "row", "column", "value", "level", "rule",
-                                  "message")
-                               SELECT
-                                 'Relatable' AS "added_by",
-                                 {sql_param_1} AS "table",
-                                 "_id" AS "row",
-                                 {sql_param_2} AS "column",
-                                 "{column_name}" AS "value",
-                                 'error' AS "level",
-                                 {sql_param_3} AS "rule",
-                                 {sql_param_4} AS "message"
-                               FROM "{table_name}"
-                               WHERE "{column_name}" != {sql_param_5}"#,
+                             ("added_by", "table", "row", "column", "value", "level", "rule",
+                              "message")
+                           SELECT
+                             'Relatable' AS "added_by",
+                             {sql_param_1} AS "table",
+                             "_id" AS "row",
+                             {sql_param_2} AS "column",
+                             "{column_name}" AS "value",
+                             'error' AS "level",
+                             {sql_param_3} AS "rule",
+                             {sql_param_4} AS "message"
+                           FROM "{table_name}"
+                           WHERE "{column_name}" != {sql_param_5}"#,
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
@@ -1126,7 +1127,58 @@ impl Datatype {
                 }
             }
             condition if condition.starts_with("in(") => {
-                todo!()
+                let re = regex::Regex::new(r"in\((.+?)\)").unwrap();
+                if let Some(captures) = re.captures(condition) {
+                    let list_separator = regex::Regex::new(r"\s*,\s*").unwrap();
+                    let condition_list_str = &captures[1];
+                    let condition_list = list_separator
+                        .split(condition_list_str)
+                        .map(|item| unquoted_re.replace(item, "$unquoted"))
+                        .collect::<Vec<_>>();
+                    let mut sql_param_gen = SqlParam::new(&tx.kind());
+                    let mut sql = format!(
+                        r#"INSERT INTO "message"
+                             ("added_by", "table", "row", "column", "value", "level", "rule",
+                              "message")
+                           SELECT
+                             'Relatable' AS "added_by",
+                             {sql_param_1} AS "table",
+                             "_id" AS "row",
+                             {sql_param_2} AS "column",
+                             "{column_name}" AS "value",
+                             'error' AS "level",
+                             {sql_param_3} AS "rule",
+                             {sql_param_4} AS "message"
+                           FROM "{table_name}"
+                           WHERE "{column_name}" NOT IN ({sql_param_5})"#,
+                        sql_param_1 = sql_param_gen.next(),
+                        sql_param_2 = sql_param_gen.next(),
+                        sql_param_3 = sql_param_gen.next(),
+                        sql_param_4 = sql_param_gen.next(),
+                        sql_param_5 = sql_param_gen.get_as_list(condition_list.len()),
+                    );
+                    let mut params = json!([
+                        table_name,
+                        column_name,
+                        format!("datatype:{}", column.datatype.name),
+                        format!("{column_name} must be a {}", column.datatype.name),
+                    ]);
+                    for item in &condition_list {
+                        if let JsonValue::Array(ref mut v) = params {
+                            v.push(json!(item));
+                        }
+                    }
+                    if let Some(row) = row {
+                        sql.push_str(&format!(
+                            r#" AND "_id" = {sql_param}"#,
+                            sql_param = sql_param_gen.next()
+                        ));
+                        if let JsonValue::Array(ref mut v) = params {
+                            v.push(json!(row));
+                        }
+                    }
+                    tx.query(&sql, Some(&params))?;
+                }
             }
             invalid => tracing::warn!("Unrecognized datatype condition '{invalid}'"),
         };
