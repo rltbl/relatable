@@ -2207,32 +2207,32 @@ impl Relatable {
                         },
                     };
 
-                    // Validate the cell and add any messages to the message table:
-                    cell.validate_sql_type(&table.get_config_for_column(column))
-                        .expect("Error validating cell");
-                    for message in cell.messages.iter() {
-                        let (msg_id, msg) = Relatable::_add_message(
-                            "Valve",
-                            &table.name,
-                            &row,
-                            column,
-                            &cell.value,
-                            &message.level,
-                            &message.rule,
-                            &message.message,
-                            &mut tx,
-                        )?;
-                        tracing::debug!("Added message (ID {msg_id}): {msg:?}");
-                    }
-
-                    // If the cell is invalid, insert a NULL instead of its actual value
-                    let sql_value = {
-                        if cell.has_sql_type_error() {
-                            JsonValue::Null
-                        } else {
-                            cell.value
+                    // Validate the cell's SQL type and add any messages to the message table:
+                    let column_config = table.get_config_for_column(column);
+                    let mut sql_value = cell.value.clone();
+                    if self.validation_level != ValidationLevel::None {
+                        cell.validate_sql_type(&column_config)
+                            .expect("Error validating cell");
+                        for message in cell.messages.iter() {
+                            let (msg_id, msg) = Relatable::_add_message(
+                                "Valve",
+                                &table.name,
+                                &row,
+                                column,
+                                &cell.value,
+                                &message.level,
+                                &message.rule,
+                                &message.message,
+                                &mut tx,
+                            )?;
+                            tracing::debug!("Added message (ID {msg_id}): {msg:?}");
                         }
-                    };
+
+                        // If the cell is invalid, insert a NULL instead of its actual value
+                        if cell.has_sql_type_error() {
+                            sql_value = JsonValue::Null;
+                        }
+                    }
 
                     // Generate the UPDATE statement:
                     let (sql, params) = {
@@ -2277,6 +2277,16 @@ impl Relatable {
                                 ChangeAction::Do => after.clone(),
                             },
                         });
+                    }
+
+                    // Optionally do full validation on the newly updated cell and add further
+                    // messages to the message table:
+                    if self.validation_level == ValidationLevel::Full {
+                        self._validate_column_with_optional_row(
+                            &column_config,
+                            Some(row),
+                            &mut tx,
+                        )?;
                     }
                 }
                 _ => {
@@ -2438,16 +2448,22 @@ impl Relatable {
         }
 
         // Validate the row and add it to the table:
-        new_row.validate_sql_types(&table, &mut tx)?;
-        for (_column, cell) in new_row.cells.iter_mut() {
-            if cell.has_sql_type_error() {
-                cell.value = JsonValue::Null;
-                cell.text = "".to_string(); // Should it be "null" instead of blank?
+        if self.validation_level != ValidationLevel::None {
+            new_row.validate_sql_types(&table, &mut tx)?;
+            for (_column, cell) in new_row.cells.iter_mut() {
+                if cell.has_sql_type_error() {
+                    cell.value = JsonValue::Null;
+                    cell.text = "".to_string(); // Should it be "null" instead of blank?
+                }
             }
         }
         let (sql, params) = new_row.as_insert(&table.name, &tx.kind());
-        tracing::debug!("_add_row {sql} {params:?}");
         tx.query(&sql, Some(&params))?;
+
+        // Optionally do full validation on the row after it has been inserted:
+        if self.validation_level == ValidationLevel::Full {
+            self._validate_row(&table, &new_row.id, &mut tx)?;
+        }
 
         let after_id = match after_id {
             None => Table::_get_previous_row_id(&table.name, new_row.id, &mut tx)?,
@@ -2995,7 +3011,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         for (_, column) in table.columns.iter() {
-            self._validate_column_for_row(column, None, &mut tx)?;
+            self._validate_column_with_optional_row(column, None, &mut tx)?;
         }
 
         tx.commit()?;
@@ -3009,7 +3025,7 @@ impl Relatable {
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        self._validate_column_for_row(column, None, &mut tx)?;
+        self._validate_column_with_optional_row(column, None, &mut tx)?;
 
         tx.commit()?;
 
@@ -3022,7 +3038,7 @@ impl Relatable {
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        self._validate_column_for_row(column, Some(row), &mut tx)?;
+        self._validate_column_with_optional_row(column, Some(row), &mut tx)?;
 
         tx.commit()?;
 
@@ -3030,7 +3046,7 @@ impl Relatable {
     }
 
     /// TODO: Add docstring
-    pub fn _validate_column_for_row(
+    pub fn _validate_column_with_optional_row(
         &self,
         column: &Column,
         row: Option<&u64>,
@@ -3131,22 +3147,32 @@ impl Relatable {
     }
 
     /// TODO: Add docstring
-    pub async fn validate_row(&self, table_name: &str, row: &u64) -> Result<()> {
+    pub async fn validate_row(&self, table: &Table, row: &u64) -> Result<()> {
         // TODO: Add tracing statement
-
-        let table = Table::get_table(table_name, self)
-            .await
-            .expect("Error getting table");
 
         // Reconnect and begin a transaction:
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        for (_, column) in table.columns.iter() {
-            self._validate_column_for_row(column, Some(row), &mut tx)?;
-        }
+        self._validate_row(table, row, &mut tx)?;
 
         tx.commit()?;
+
+        Ok(())
+    }
+
+    /// TODO: Add docstring
+    pub fn _validate_row(
+        &self,
+        table: &Table,
+        row: &u64,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        // TODO: Add tracing statement
+
+        for (_, column) in table.columns.iter() {
+            self._validate_column_with_optional_row(column, Some(row), tx)?;
+        }
 
         Ok(())
     }

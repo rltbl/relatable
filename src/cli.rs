@@ -239,7 +239,7 @@ pub enum SetSubcommand {
         value: String,
 
         #[arg(long,
-              default_value = "sql_type",
+              default_value = "full",
               action = ArgAction::Set,
               help = VALIDATION_LEVEL_HELP)
         ]
@@ -257,7 +257,7 @@ pub enum AddSubcommand {
         table: String,
 
         #[arg(long,
-              default_value = "sql_type",
+              default_value = "full",
               action = ArgAction::Set,
               help = VALIDATION_LEVEL_HELP)
         ]
@@ -615,11 +615,19 @@ pub fn get_username(cli: &Cli) -> String {
     }
 }
 
-pub async fn set_value(cli: &Cli, table: &str, row: u64, column: &str, value: &str) {
-    tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+pub async fn set_value(
+    cli: &Cli,
+    table: &str,
+    row: u64,
+    column: &str,
+    value: &str,
+    validation_level: &ValidationLevel,
+) {
+    tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value}, {validation_level:?})");
+    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
+    rltbl.validation_level = *validation_level;
 
     // Fetch the current value from the db:
     let sql = format!(
@@ -785,11 +793,18 @@ pub async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
     tracing::info!("Added message (ID: {mid}) {message:?}");
 }
 
-pub async fn add_row(cli: &Cli, table: &str, after_id: Option<u64>) {
-    tracing::trace!("add_row({cli:?}, {table}, {after_id:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+pub async fn add_row(
+    cli: &Cli,
+    table: &str,
+    after_id: Option<u64>,
+    validation_level: &ValidationLevel,
+) {
+    tracing::trace!("add_row({cli:?}, {table}, {after_id:?}, {validation_level:?})");
+    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
+    rltbl.validation_level = *validation_level;
+
     let json_row = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
@@ -828,16 +843,21 @@ pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
 }
 
 /// TODO: Add docstring here (and to the other functions in this file).
-pub async fn validate_row(cli: &Cli, table: &str, row: &u64) {
-    tracing::trace!("validate_row({cli:?}, {table}, {row})");
+pub async fn validate_row(cli: &Cli, table_name: &str, row: &u64) {
+    tracing::trace!("validate_row({cli:?}, {table_name}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
+
+    let table = Table::get_table(table_name, &rltbl)
+        .await
+        .expect("Error getting table");
+
     rltbl
-        .validate_row(table, row)
+        .validate_row(&table, row)
         .await
         .expect("Error while validating row");
-    tracing::info!("Validated row {row} of table '{table}'");
+    tracing::info!("Validated row {row} of table '{table_name}'");
 }
 
 /// TODO: Add docstring here (and to the other functions in this file).
@@ -1083,14 +1103,14 @@ pub async fn process_command() {
                 column,
                 value,
                 validation_level,
-            } => set_value(&cli, table, *row, column, value).await,
+            } => set_value(&cli, table, *row, column, value, validation_level).await,
         },
         Command::Add { subcommand } => match subcommand {
             AddSubcommand::Row {
                 table,
                 after_id,
                 validation_level,
-            } => add_row(&cli, table, *after_id).await,
+            } => add_row(&cli, table, *after_id, validation_level).await,
             AddSubcommand::Message { table, row, column } => {
                 add_message(&cli, table, *row, column).await
             }
