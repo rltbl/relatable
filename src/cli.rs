@@ -4,7 +4,7 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Relatable},
+    core::{Change, ChangeAction, ChangeSet, Relatable, ValidationLevel},
     select::{Format, Select},
     sql,
     sql::{CachingStrategy, JsonRow, SqlParam, VecInto},
@@ -358,8 +358,12 @@ pub enum LoadSubcommand {
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
 
-        #[arg(long, action = ArgAction::SetTrue)]
-        validate: bool,
+        #[arg(long,
+              default_value = "sql_type",
+              action = ArgAction::Set,
+              help = "One of 'none', 'sql_type', 'full'")
+        ]
+        validation_level: ValidationLevel,
 
         #[arg(value_name = "PATH", num_args=1..,
               action = ArgAction::Set,
@@ -945,15 +949,15 @@ pub async fn redo(cli: &Cli) {
     tracing::info!("Last operation redone");
 }
 
-pub async fn load_tables(cli: &Cli, paths: &Vec<String>, force: bool, validate: bool) {
+pub async fn load_tables(cli: &Cli, paths: &Vec<String>, force: bool, validate: &ValidationLevel) {
     tracing::trace!("load_tables({cli:?}, {paths:?})");
     for path in paths {
         load_table(cli, &path, force, validate).await;
     }
 }
 
-pub async fn load_table(cli: &Cli, path: &str, force: bool, validate: bool) {
-    tracing::trace!("load_table({cli:?}, {path})");
+pub async fn load_table(cli: &Cli, path: &str, force: bool, validation_level: &ValidationLevel) {
+    tracing::trace!("load_table({cli:?}, {path}, {force}, {validation_level:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
@@ -969,7 +973,9 @@ pub async fn load_table(cli: &Cli, path: &str, force: bool, validate: bool) {
     let table = table.trim_end_matches("_");
     let table = table.trim_start_matches("_");
 
-    rltbl.load_table(&table, path, force, validate).await;
+    rltbl
+        .load_table(&table, path, force, validation_level)
+        .await;
     tracing::info!("Loaded table '{table}'");
 }
 
@@ -1100,8 +1106,8 @@ pub async fn process_command() {
             LoadSubcommand::Table {
                 paths,
                 force,
-                validate,
-            } => load_tables(&cli, paths, *force, *validate).await,
+                validation_level,
+            } => load_tables(&cli, paths, *force, validation_level).await,
         },
         Command::Save { save_dir } => save_all(&cli, save_dir.as_deref()).await,
         Command::Drop { subcommand } => match subcommand {

@@ -811,8 +811,16 @@ impl Relatable {
     /// Loads the given table from the given path. When `force` is set to true, deletes any
     /// existing table of the same name in the database first. When `validate` is set to true,
     /// Validates each row before loading it. Note that this function may panic.
-    pub async fn load_table(&self, table_name: &str, path: &str, force: bool, validate: bool) {
-        tracing::trace!("Relatable::load_table({table_name:?}, {path:?})");
+    pub async fn load_table(
+        &self,
+        table_name: &str,
+        path: &str,
+        force: bool,
+        validation_level: &ValidationLevel,
+    ) {
+        tracing::trace!(
+            "Relatable::load_table({table_name:?}, {path:?}, {force}, {validation_level:?})"
+        );
         // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
@@ -1001,7 +1009,7 @@ impl Relatable {
                             };
 
                             // Validate the cell and add any messages to the message table:
-                            if validate {
+                            if *validation_level != ValidationLevel::None {
                                 cell.validate_sql_type(&table.get_config_for_column(column))
                                     .expect("Error validating cell");
                                 for message in cell.messages.iter() {
@@ -3195,6 +3203,34 @@ impl Relatable {
             if key.tables.contains(&table) {
                 tracing::debug!("Removing {key:?} from cache");
                 cache.remove(key);
+            }
+        }
+    }
+}
+
+// Validation
+
+/// TODO: Add docstring
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ValidationLevel {
+    None,
+    SqlType,
+    Full,
+}
+
+impl FromStr for ValidationLevel {
+    type Err = anyhow::Error;
+
+    fn from_str(level: &str) -> Result<Self> {
+        tracing::trace!("ValidationLevel::from_str({level:?})");
+        match level.to_lowercase().as_str() {
+            "none" => Ok(ValidationLevel::None),
+            "sql_type" => Ok(ValidationLevel::SqlType),
+            "full" => Ok(ValidationLevel::Full),
+            _ => {
+                return Err(
+                    RelatableError::InputError(format!("Unrecognized level: {level}")).into(),
+                );
             }
         }
     }
