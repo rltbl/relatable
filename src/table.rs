@@ -1055,6 +1055,84 @@ impl Datatype {
             .cloned()
             .collect::<Vec<_>>())
     }
+
+    // TODO: Add docstring here
+    pub fn validate(
+        &self,
+        column: &Column,
+        row: Option<&u64>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        // TODO: Add a tracing statement here.
+        let table_name = column.table.as_str();
+        let column_name = column.name.as_str();
+        let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
+        match self.condition.as_str() {
+            "" => (),
+            condition if condition.starts_with("equals(") => {
+                let re = regex::Regex::new(r"equals\((.+?)\)").unwrap();
+                if let Some(captures) = re.captures(condition) {
+                    let condition = &captures[1];
+                    let condition = unquoted_re.replace(&condition, "$unquoted");
+                    let mut sql_param_gen = SqlParam::new(&tx.kind());
+                    let mut sql = format!(
+                        r#"INSERT INTO "message"
+                                 ("added_by", "table", "row", "column", "value", "level", "rule",
+                                  "message")
+                               SELECT
+                                 'Relatable' AS "added_by",
+                                 {sql_param_1} AS "table",
+                                 "_id" AS "row",
+                                 {sql_param_2} AS "column",
+                                 "{column_name}" AS "value",
+                                 'error' AS "level",
+                                 {sql_param_3} AS "rule",
+                                 {sql_param_4} AS "message"
+                               FROM "{table_name}"
+                               WHERE "{column_name}" != {sql_param_5}"#,
+                        sql_param_1 = sql_param_gen.next(),
+                        sql_param_2 = sql_param_gen.next(),
+                        sql_param_3 = sql_param_gen.next(),
+                        sql_param_4 = sql_param_gen.next(),
+                        sql_param_5 = sql_param_gen.next(),
+                    );
+                    let params;
+                    match row {
+                        Some(row) => {
+                            sql.push_str(&format!(
+                                r#" AND "_id" = {sql_param}"#,
+                                sql_param = sql_param_gen.next()
+                            ));
+                            params = json!([
+                                table_name,
+                                column_name,
+                                format!("datatype:{}", column.datatype.name),
+                                format!("{column_name} must be a {}", column.datatype.name),
+                                condition,
+                                row
+                            ]);
+                        }
+                        None => {
+                            params = json!([
+                                table_name,
+                                column_name,
+                                format!("datatype:{}", column.datatype.name),
+                                format!("{column_name} must be a {}", column.datatype.name),
+                                condition
+                            ]);
+                        }
+                    };
+                    tx.query(&sql, Some(&params))?;
+                }
+            }
+            condition if condition.starts_with("in(") => {
+                todo!()
+            }
+            invalid => tracing::warn!("Unrecognized datatype condition '{invalid}'"),
+        };
+
+        Ok(())
+    }
 }
 
 /// Represents a row from some table

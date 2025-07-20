@@ -2282,7 +2282,7 @@ impl Relatable {
                     // Optionally do full validation on the newly updated cell and add further
                     // messages to the message table:
                     if self.validation_level == ValidationLevel::Full {
-                        self._validate_column_with_optional_row(
+                        self._validate_column_optionally_for_row(
                             &column_config,
                             Some(row),
                             &mut tx,
@@ -3011,7 +3011,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         for (_, column) in table.columns.iter() {
-            self._validate_column_with_optional_row(column, None, &mut tx)?;
+            self._validate_column_optionally_for_row(column, None, &mut tx)?;
         }
 
         tx.commit()?;
@@ -3025,7 +3025,7 @@ impl Relatable {
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        self._validate_column_with_optional_row(column, None, &mut tx)?;
+        self._validate_column_optionally_for_row(column, None, &mut tx)?;
 
         tx.commit()?;
 
@@ -3038,7 +3038,7 @@ impl Relatable {
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        self._validate_column_with_optional_row(column, Some(row), &mut tx)?;
+        self._validate_column_optionally_for_row(column, Some(row), &mut tx)?;
 
         tx.commit()?;
 
@@ -3046,7 +3046,7 @@ impl Relatable {
     }
 
     /// TODO: Add docstring
-    pub fn _validate_column_with_optional_row(
+    pub fn _validate_column_optionally_for_row(
         &self,
         column: &Column,
         row: Option<&u64>,
@@ -3054,13 +3054,10 @@ impl Relatable {
     ) -> Result<()> {
         // TODO: Add tracing statement
 
-        let column_name = column.name.as_str();
         let table_name = column.table.as_str();
 
-        // Get the table config:
-        let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
-
-        // Delete pre-existing datatype validation messages for this column
+        // Delete pre-existing datatype validation messages for this column and then validate the
+        // datatype conditions for each datatype in the column's datatype hierarchy.
         self._delete_message(
             tx,
             table_name,
@@ -3069,79 +3066,13 @@ impl Relatable {
             Some("datatype:%"),
             None,
         )?;
-
-        // Validate datatype conditions:
-
         let mut datatypes_to_check = vec![column.datatype.clone()];
         datatypes_to_check.append(&mut column.datatype_hierarchy.clone());
-
         for datatype in datatypes_to_check {
-            match datatype.condition.as_str() {
-                "" => (),
-                condition if condition.starts_with("equals(") => {
-                    let re = regex::Regex::new(r"equals\((.+?)\)").unwrap();
-                    if let Some(captures) = re.captures(condition) {
-                        let condition = &captures[1];
-                        let condition = unquoted_re.replace(&condition, "$unquoted");
-                        let mut sql_param_gen = SqlParam::new(&self.connection.kind());
-                        let mut sql = format!(
-                            r#"INSERT INTO "message"
-                                 ("added_by", "table", "row", "column", "value", "level", "rule",
-                                  "message")
-                               SELECT
-                                 'Relatable' AS "added_by",
-                                 {sql_param_1} AS "table",
-                                 "_id" AS "row",
-                                 {sql_param_2} AS "column",
-                                 "{column_name}" AS "value",
-                                 'error' AS "level",
-                                 {sql_param_3} AS "rule",
-                                 {sql_param_4} AS "message"
-                               FROM "{table_name}"
-                               WHERE "{column_name}" != {sql_param_5}"#,
-                            sql_param_1 = sql_param_gen.next(),
-                            sql_param_2 = sql_param_gen.next(),
-                            sql_param_3 = sql_param_gen.next(),
-                            sql_param_4 = sql_param_gen.next(),
-                            sql_param_5 = sql_param_gen.next(),
-                        );
-                        let params;
-                        match row {
-                            Some(row) => {
-                                sql.push_str(&format!(
-                                    r#" AND "_id" = {sql_param}"#,
-                                    sql_param = sql_param_gen.next()
-                                ));
-                                params = json!([
-                                    table_name,
-                                    column_name,
-                                    format!("datatype:{}", column.datatype.name),
-                                    format!("{column_name} must be a {}", column.datatype.name),
-                                    condition,
-                                    row
-                                ]);
-                            }
-                            None => {
-                                params = json!([
-                                    table_name,
-                                    column_name,
-                                    format!("datatype:{}", column.datatype.name),
-                                    format!("{column_name} must be a {}", column.datatype.name),
-                                    condition
-                                ]);
-                            }
-                        };
-                        tx.query(&sql, Some(&params))?;
-                    }
-                }
-                condition if condition.starts_with("in(") => {
-                    todo!()
-                }
-                invalid => tracing::warn!("Unrecognized datatype condition '{invalid}'"),
-            };
+            datatype.validate(column, row, tx)?;
         }
 
-        // TODO: Validate structure conditions
+        // TODO: Validate other types of conditions
 
         Ok(())
     }
@@ -3171,7 +3102,7 @@ impl Relatable {
         // TODO: Add tracing statement
 
         for (_, column) in table.columns.iter() {
-            self._validate_column_with_optional_row(column, Some(row), tx)?;
+            self._validate_column_optionally_for_row(column, Some(row), tx)?;
         }
 
         Ok(())
