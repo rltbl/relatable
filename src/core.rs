@@ -106,6 +106,8 @@ pub struct Relatable {
     pub default_limit: usize,
     pub max_limit: usize,
     pub caching_strategy: CachingStrategy,
+    /// The validation level, which defaults to 'sql_type' (only SQL type validation)
+    pub validation_level: ValidationLevel,
     pub memory_cache_size: usize,
 }
 
@@ -148,6 +150,7 @@ impl Relatable {
             default_limit: DEFAULT_LIMIT,
             max_limit: MAX_LIMIT,
             caching_strategy: *caching_strategy,
+            validation_level: ValidationLevel::SqlType,
             memory_cache_size: match caching_strategy {
                 CachingStrategy::Memory(size) => {
                     let mut cache = CACHE.lock().expect("Could not lock cache");
@@ -811,16 +814,8 @@ impl Relatable {
     /// Loads the given table from the given path. When `force` is set to true, deletes any
     /// existing table of the same name in the database first. When `validate` is set to true,
     /// Validates each row before loading it. Note that this function may panic.
-    pub async fn load_table(
-        &self,
-        table_name: &str,
-        path: &str,
-        force: bool,
-        validation_level: &ValidationLevel,
-    ) {
-        tracing::trace!(
-            "Relatable::load_table({table_name:?}, {path:?}, {force}, {validation_level:?})"
-        );
+    pub async fn load_table(&self, table_name: &str, path: &str, force: bool) {
+        tracing::trace!("Relatable::load_table({table_name:?}, {path:?}, {force})");
         // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
@@ -1009,7 +1004,7 @@ impl Relatable {
                             };
 
                             // Validate the cell and add any messages to the message table:
-                            if *validation_level != ValidationLevel::None {
+                            if self.validation_level != ValidationLevel::None {
                                 cell.validate_sql_type(&table.get_config_for_column(column))
                                     .expect("Error validating cell");
                                 for message in cell.messages.iter() {
@@ -1063,7 +1058,7 @@ impl Relatable {
             );
         }
 
-        if *validation_level == ValidationLevel::Full {
+        if self.validation_level == ValidationLevel::Full {
             self.validate_table(&table)
                 .await
                 .expect("Error validating table");

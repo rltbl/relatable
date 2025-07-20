@@ -27,6 +27,7 @@ static COLUMN_HELP: &str = "A column name or label";
 static ROW_HELP: &str = "A row number";
 static TABLE_HELP: &str = "A table name";
 static VALUE_HELP: &str = "A value for a cell";
+static VALIDATION_LEVEL_HELP: &str = "One of 'none', 'sql_type', 'full'";
 
 #[derive(Parser, Debug)]
 #[command(version,
@@ -236,6 +237,13 @@ pub enum SetSubcommand {
 
         #[arg(value_name = "VALUE", action = ArgAction::Set, help = VALUE_HELP)]
         value: String,
+
+        #[arg(long,
+              default_value = "sql_type",
+              action = ArgAction::Set,
+              help = VALIDATION_LEVEL_HELP)
+        ]
+        validation_level: ValidationLevel,
     },
 }
 
@@ -247,6 +255,13 @@ pub enum AddSubcommand {
 
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
+
+        #[arg(long,
+              default_value = "sql_type",
+              action = ArgAction::Set,
+              help = VALIDATION_LEVEL_HELP)
+        ]
+        validation_level: ValidationLevel,
     },
 
     /// Read a JSON-formatted string representing a row (of the form: { "level": LEVEL,
@@ -361,7 +376,7 @@ pub enum LoadSubcommand {
         #[arg(long,
               default_value = "sql_type",
               action = ArgAction::Set,
-              help = "One of 'none', 'sql_type', 'full'")
+              help = VALIDATION_LEVEL_HELP)
         ]
         validation_level: ValidationLevel,
 
@@ -953,19 +968,26 @@ pub async fn redo(cli: &Cli) {
     tracing::info!("Last operation redone");
 }
 
-pub async fn load_tables(cli: &Cli, paths: &Vec<String>, force: bool, validate: &ValidationLevel) {
-    tracing::trace!("load_tables({cli:?}, {paths:?})");
+pub async fn load_tables(
+    cli: &Cli,
+    paths: &Vec<String>,
+    force: bool,
+    validation_level: &ValidationLevel,
+) {
+    tracing::trace!("load_tables({cli:?}, {paths:?}, {force}, {validation_level:?})");
+
+    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+    rltbl.validation_level = *validation_level;
+
     for path in paths {
-        load_table(cli, &path, force, validate).await;
+        load_table(cli, &path, force, &rltbl).await;
     }
 }
 
-pub async fn load_table(cli: &Cli, path: &str, force: bool, validation_level: &ValidationLevel) {
-    tracing::trace!("load_table({cli:?}, {path}, {force}, {validation_level:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
-        .await
-        .unwrap();
-
+pub async fn load_table(cli: &Cli, path: &str, force: bool, rltbl: &Relatable) {
+    tracing::trace!("load_table({cli:?}, {path}, {force}, {rltbl:?})");
     // We will use this pattern to normalize the table name:
     let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
     let table = Path::new(path)
@@ -977,9 +999,7 @@ pub async fn load_table(cli: &Cli, path: &str, force: bool, validation_level: &V
     let table = table.trim_end_matches("_");
     let table = table.trim_start_matches("_");
 
-    rltbl
-        .load_table(&table, path, force, validation_level)
-        .await;
+    rltbl.load_table(&table, path, force).await;
     tracing::info!("Loaded table '{table}'");
 }
 
@@ -1062,10 +1082,15 @@ pub async fn process_command() {
                 row,
                 column,
                 value,
+                validation_level,
             } => set_value(&cli, table, *row, column, value).await,
         },
         Command::Add { subcommand } => match subcommand {
-            AddSubcommand::Row { table, after_id } => add_row(&cli, table, *after_id).await,
+            AddSubcommand::Row {
+                table,
+                after_id,
+                validation_level,
+            } => add_row(&cli, table, *after_id).await,
             AddSubcommand::Message { table, row, column } => {
                 add_message(&cli, table, *row, column).await
             }
