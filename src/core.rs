@@ -1063,6 +1063,12 @@ impl Relatable {
             );
         }
 
+        if *validation_level == ValidationLevel::Full {
+            self.validate_table(&table)
+                .await
+                .expect("Error validating table");
+        }
+
         self.commit_to_git().await.expect("Error committing to git");
     }
 
@@ -2986,12 +2992,8 @@ impl Relatable {
     }
 
     /// TODO: Add docstring
-    pub async fn validate_table(&self, table_name: &str) -> Result<()> {
+    pub async fn validate_table(&self, table: &Table) -> Result<()> {
         // TODO: Add tracing statement
-
-        let table = Table::get_table(table_name, self)
-            .await
-            .expect("Error getting table");
 
         // Reconnect and begin a transaction:
         let mut conn = self.connection.reconnect()?;

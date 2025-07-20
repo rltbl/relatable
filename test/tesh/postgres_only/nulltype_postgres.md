@@ -35,7 +35,7 @@ drop cascades to view penguin_text_view
 DROP TABLE
 $ rltbl init --force
 Initialized a relatable database in 'postgresql:///rltbl_db'
-$ rltbl load table --validate penguin.tsv
+$ rltbl load table penguin.tsv
 $ echo "select * from penguin where species is null and island = '' order by _order" | psql rltbl_db
  _id | _order | study_name | sample_number | species | island | individual_id | culmen_length | culmen_depth | body_mass
 -----+--------+------------+---------------+---------+--------+---------------+---------------+--------------+-----------

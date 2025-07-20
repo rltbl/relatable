@@ -26,7 +26,7 @@ _id|_order|study_name|sample_number|species|island|individual_id|culmen_length|c
 $ rltbl save
 $ sqlite3 .relatable/relatable.db "drop table penguin"
 $ sqlite3 .relatable/relatable.db "delete from \"table\" where \"table\" like 'penguin'"
-$ rltbl load table --validate penguin.tsv
+$ rltbl load table penguin.tsv
 $ sqlite3 -header .relatable/relatable.db "select * from penguin where species is null and island = '' order by _order"
 _id|_order|study_name|sample_number|species|island|individual_id|culmen_length|culmen_depth|body_mass
 10|10000|FAKE123|10|||N10|31.5|30|4521

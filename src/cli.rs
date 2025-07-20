@@ -832,8 +832,12 @@ pub async fn validate_table(cli: &Cli, table_name: &str) {
         .await
         .unwrap();
 
+    let table = Table::get_table(table_name, &rltbl)
+        .await
+        .expect("Error getting table");
+
     rltbl
-        .validate_table(table_name)
+        .validate_table(&table)
         .await
         .expect("Error while validating table");
     tracing::info!("Validated table '{table_name}'");
