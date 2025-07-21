@@ -398,6 +398,15 @@ impl Table {
                         format: json_col.get_string("datatype_format").unwrap_or_default(),
                     },
                 };
+                let nulltype = match json_col.get_string("nulltype").ok() {
+                    Some(nulltype) if nulltype == "empty" => Some(nulltype),
+                    Some(nulltype) if nulltype == "" => None,
+                    Some(nulltype) => {
+                        tracing::warn!("Unrecognized nulltype: {nulltype}");
+                        None
+                    }
+                    None => None,
+                };
                 columns.insert(
                     json_col.get_string("column")?,
                     Column {
@@ -407,7 +416,7 @@ impl Table {
                         description: json_col.get_string("description").ok(),
                         datatype_hierarchy: datatype._get_all_ancestors(tx)?,
                         datatype: datatype,
-                        nulltype: json_col.get_string("nulltype").ok(),
+                        nulltype: nulltype,
                         ..Default::default()
                     },
                 );
