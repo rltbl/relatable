@@ -968,21 +968,19 @@ impl Datatype {
         .collect::<HashMap<_, _>>()
     }
 
-    // TODO: Add docstring here
+    /// Get all of this datatype's ancestors
     pub async fn get_all_ancestors(&self, rltbl: &Relatable) -> Result<Vec<Self>> {
+        tracing::trace!("Datatype::get_all_ancestors({self:?}, {rltbl:?})");
         let mut conn = rltbl.connection.reconnect()?;
-        // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
-
-        self._get_all_ancestors(&mut tx)
-
-        // Commit the transaction:
-        //tx.commit()?;
+        let ancestors = self._get_all_ancestors(&mut tx)?;
+        tx.commit()?;
+        Ok(ancestors)
     }
 
-    // TODO: Add docstring here
+    /// Get all of this datatype's ancestors using the given transaction.
     pub fn _get_all_ancestors(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
-        tracing::trace!("Datatype::get_all_ancestors({self:?}, tx)");
+        tracing::trace!("Datatype::_get_all_ancestors({self:?}, tx)");
         let datatypes = {
             let mut datatypes = Datatype::builtin_datatypes()
                 .iter()
@@ -1045,7 +1043,7 @@ impl Datatype {
         build_hierarchy(&datatypes, &self.name, &self.name)
     }
 
-    // TODO: Add docstring here
+    // Get all of this datatype's ancestors that have conditions
     pub fn get_conditioned_ancestors(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
         tracing::trace!("Datatype::get_conditioned_ancestors({self:?}, tx)");
         Ok(self
@@ -1056,14 +1054,15 @@ impl Datatype {
             .collect::<Vec<_>>())
     }
 
-    // TODO: Add docstring here
+    /// Validate a column of a database table, optionally only for the given row, using the
+    /// given transaction
     pub fn validate(
         &self,
         column: &Column,
         row: Option<&u64>,
         tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
-        // TODO: Add a tracing statement here.
+        tracing::trace!("Datatype::validate({self:?}, {column:?}, {row:?}, tx)");
 
         let table_name = column.table.as_str();
         let column_name = column.name.as_str();
@@ -1415,7 +1414,7 @@ impl Cell {
     /// Validate this cell, which belongs to the given [Column], adding any validation
     /// [messages](Message) to the cell's [messages](Cell::messages) field.
     pub fn validate_sql_type(&mut self, column: &Column) -> Result<&Self> {
-        // TODO: Add trace statement
+        tracing::trace!("Cell::validate_sql_type({self:?}, {column:?})");
 
         fn invalidate(cell: &mut Cell, column: &Column) {
             let datatype = &column.datatype.name;
@@ -1484,7 +1483,7 @@ impl Cell {
         level
     }
 
-    /// TODO: Add docstring
+    /// Determine whether this cell contains a SQL type error.
     pub fn has_sql_type_error(&self) -> bool {
         self.messages
             .iter()

@@ -389,7 +389,7 @@ impl Relatable {
                 "datatype": "fakename",
                 "description": "",
                 "parent": "text",
-                "condition": "in(FAKE123, MIKE123)",
+                "condition": "in(FAKE123, FAKE456)",
                 "sql_type": "",
                 "format": ""
             }),
@@ -3002,57 +3002,57 @@ impl Relatable {
         Ok(new_order)
     }
 
-    /// TODO: Add docstring
+    /// Validate all of the data in the given database table
     pub async fn validate_table(&self, table: &Table) -> Result<()> {
-        // TODO: Add tracing statement
+        tracing::trace!("Relatable::validate_table({self:?}, {table:?})");
 
         // Reconnect and begin a transaction:
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
+        // Validate each table column
         for (_, column) in table.columns.iter() {
             self._validate_column_optionally_for_row(column, None, &mut tx)?;
         }
 
+        // Commit the transaction
         tx.commit()?;
 
         Ok(())
     }
 
-    /// TODO: Add docstring
+    /// Validate the data in the given column associated with a table in the database
     pub async fn validate_column(&self, column: &Column) -> Result<()> {
-        // Reconnect and begin a transaction:
+        tracing::trace!("Relatable::validate_column({self:?}, {column:?})");
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
-
         self._validate_column_optionally_for_row(column, None, &mut tx)?;
-
         tx.commit()?;
-
         Ok(())
     }
 
-    /// TODO: Add docstring
+    /// Validate the value of the given column in the given row in the associated database
+    /// table
     pub async fn validate_value(&self, column: &Column, row: &u64) -> Result<()> {
-        // Reconnect and begin a transaction:
+        tracing::trace!("Relatable::validate_value({self:?}, {column:?}, {row})");
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
-
         self._validate_column_optionally_for_row(column, Some(row), &mut tx)?;
-
         tx.commit()?;
-
         Ok(())
     }
 
-    /// TODO: Add docstring
+    /// Validate the given column in its associated database table using the given transaction.
+    /// If `row` is given, only validate the column for that row.
     pub fn _validate_column_optionally_for_row(
         &self,
         column: &Column,
         row: Option<&u64>,
         tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
-        // TODO: Add tracing statement
+        tracing::trace!(
+            "Relatable::_validate_column_optionally_for_row({self:?}, {column:?}, {row:?}, tx)"
+        );
 
         let table_name = column.table.as_str();
 
@@ -3066,45 +3066,43 @@ impl Relatable {
             Some("datatype:%"),
             None,
         )?;
+
+        // Gather the datatypes to check: The column's datatype, plus any further datatypes in
+        // the datatype hierarchy:
         let mut datatypes_to_check = vec![column.datatype.clone()];
         datatypes_to_check.append(&mut column.datatype_hierarchy.clone());
+
+        // Validate the column against each datatype in the hierarchy:
         for datatype in datatypes_to_check {
             datatype.validate(column, row, tx)?;
         }
 
-        // TODO: Validate other types of conditions
+        // TODO: Validate other types of conditions (structure, etc.)
 
         Ok(())
     }
 
-    /// TODO: Add docstring
+    /// Validate the given row of the given table
     pub async fn validate_row(&self, table: &Table, row: &u64) -> Result<()> {
-        // TODO: Add tracing statement
-
-        // Reconnect and begin a transaction:
+        tracing::trace!("Relatable::validate_row({self:?}, {table:?}, {row})");
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
-
         self._validate_row(table, row, &mut tx)?;
-
         tx.commit()?;
-
         Ok(())
     }
 
-    /// TODO: Add docstring
+    /// Validate the given row of the given table using the given database transaction
     pub fn _validate_row(
         &self,
         table: &Table,
         row: &u64,
         tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
-        // TODO: Add tracing statement
-
+        tracing::trace!("Relatable::_validate_row({self:?}, {table:?}, {row}, tx)");
         for (_, column) in table.columns.iter() {
             self._validate_column_optionally_for_row(column, Some(row), tx)?;
         }
-
         Ok(())
     }
 
@@ -3164,11 +3162,15 @@ impl Relatable {
 
 // Validation
 
-/// TODO: Add docstring
+/// The level at which Relatable will perform validation when adding to or modifying data in the
+/// database
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ValidationLevel {
+    /// Perform no validateion
     None,
+    /// Perform only SQL type validation
     SqlType,
+    /// Perform full validation
     Full,
 }
 
