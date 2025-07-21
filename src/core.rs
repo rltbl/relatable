@@ -386,7 +386,7 @@ impl Relatable {
                 "format": "%.2f"
             }),
             json!({
-                "datatype": "fakename",
+                "datatype": "study_name",
                 "description": "",
                 "parent": "text",
                 "condition": "in(FAKE123, FAKE456)",
@@ -471,7 +471,7 @@ impl Relatable {
                 "label": "muddy_name",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": "fakename",
+                "datatype": "study_name",
             }),
             json!({
                 "table": "penguin",
@@ -3018,6 +3018,8 @@ impl Relatable {
         // Commit the transaction
         tx.commit()?;
 
+        tracing::info!("Validated table '{}'", table.name);
+
         Ok(())
     }
 
@@ -3028,6 +3030,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
         self._validate_column_optionally_for_row(column, None, &mut tx)?;
         tx.commit()?;
+        tracing::info!("Validated column '{}.{}'", column.table, column.name);
         Ok(())
     }
 
@@ -3039,12 +3042,18 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
         self._validate_column_optionally_for_row(column, Some(row), &mut tx)?;
         tx.commit()?;
+        tracing::info!(
+            "Validated value at row {}, column '{}.{}'",
+            row,
+            column.table,
+            column.name
+        );
         Ok(())
     }
 
     /// Validate the given column in its associated database table using the given transaction.
     /// If `row` is given, only validate the column for that row.
-    pub fn _validate_column_optionally_for_row(
+    fn _validate_column_optionally_for_row(
         &self,
         column: &Column,
         row: Option<&u64>,
@@ -3074,11 +3083,20 @@ impl Relatable {
 
         // Validate the column against each datatype in the hierarchy:
         for datatype in datatypes_to_check {
-            datatype.validate(column, row, tx)?;
+            let inserted = datatype.validate(column, row, tx)?;
+            if !inserted {
+                break;
+            }
         }
 
         // TODO: Validate other types of conditions (structure, etc.)
 
+        tracing::debug!(
+            "Validated column (row {:?}), column '{}.{}'",
+            row,
+            column.table,
+            column.name
+        );
         Ok(())
     }
 
@@ -3103,6 +3121,7 @@ impl Relatable {
         for (_, column) in table.columns.iter() {
             self._validate_column_optionally_for_row(column, Some(row), tx)?;
         }
+        tracing::info!("Validated row {} of table '{}'", row, table.name);
         Ok(())
     }
 

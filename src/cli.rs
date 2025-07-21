@@ -374,7 +374,7 @@ pub enum LoadSubcommand {
         force: bool,
 
         #[arg(long,
-              default_value = "sql_type",
+              default_value = "full",
               action = ArgAction::Set,
               help = VALIDATION_LEVEL_HELP)
         ]

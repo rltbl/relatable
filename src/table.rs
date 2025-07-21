@@ -1100,22 +1100,23 @@ impl Datatype {
     }
 
     /// Validate a column of a database table, optionally only for the given row, using the
-    /// given transaction
+    /// given transaction. Returns true whenever messages are inserted to the message table as a
+    /// result of validation, and false otherwise.
     pub fn validate(
         &self,
         column: &Column,
         row: Option<&u64>,
         tx: &mut DbTransaction<'_>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         tracing::trace!("Datatype::validate({self:?}, {column:?}, {row:?}, tx)");
-
         let table_name = column.table.as_str();
         let column_name = column.name.as_str();
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
+        let mut messages_were_added = false;
         match self.condition.as_str() {
             "" => (),
             condition if condition.starts_with("equals(") => {
-                let re = regex::Regex::new(r"equals\((.+?)\)").unwrap();
+                let re = regex::Regex::new(r"equals\((.+?)\)")?;
                 if let Some(captures) = re.captures(condition) {
                     let condition = &captures[1];
                     let condition = unquoted_re.replace(&condition, "$unquoted");
@@ -1167,7 +1168,10 @@ impl Datatype {
                             ]);
                         }
                     };
-                    tx.query(&sql, Some(&params))?;
+                    sql.push_str(r#" RETURNING 1 AS "inserted""#);
+                    if let Some(_) = tx.query_one(&sql, Some(&params))? {
+                        messages_were_added = true;
+                    }
                 }
             }
             condition if condition.starts_with("in(") => {
@@ -1221,13 +1225,27 @@ impl Datatype {
                             v.push(json!(row));
                         }
                     }
-                    tx.query(&sql, Some(&params))?;
+                    sql.push_str(r#" RETURNING 1 AS "inserted""#);
+                    if let Some(_) = tx.query_one(&sql, Some(&params))? {
+                        messages_were_added = true;
+                    }
                 }
             }
             invalid => tracing::warn!("Unrecognized datatype condition '{invalid}'"),
         };
 
-        Ok(())
+        tracing::info!(
+            "Validated datatype '{}' for column '{}.{}' (row: {:?}). {}",
+            self.name,
+            column.table,
+            column.name,
+            row,
+            match messages_were_added {
+                false => "No messages added.",
+                true => "Messages were added.",
+            }
+        );
+        Ok(messages_were_added)
     }
 }
 
