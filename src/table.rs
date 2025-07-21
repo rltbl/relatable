@@ -402,7 +402,7 @@ impl Table {
                     Some(nulltype) if nulltype == "empty" => Some(nulltype),
                     Some(nulltype) if nulltype == "" => None,
                     Some(nulltype) => {
-                        tracing::warn!("Unrecognized nulltype: {nulltype}");
+                        tracing::warn!("Unsupported nulltype: {nulltype}");
                         None
                     }
                     None => None,
@@ -894,11 +894,11 @@ impl Datatype {
     }
 
     // Returns a [HashMap] representing all of the built-in datatypes, indexed by datatype name
-    pub fn builtin_datatypes<'a>() -> HashMap<&'a str, Self> {
+    pub fn builtin_datatypes() -> HashMap<String, Self> {
         tracing::trace!("Datatype::builtin_datatypes()");
         [
             (
-                "text",
+                "text".into(),
                 Datatype {
                     name: "text".to_string(),
                     description: "any text".to_string(),
@@ -906,7 +906,7 @@ impl Datatype {
                 },
             ),
             (
-                "empty",
+                "empty".into(),
                 Datatype {
                     name: "empty".to_string(),
                     description: "the empty string".to_string(),
@@ -916,7 +916,7 @@ impl Datatype {
                 },
             ),
             (
-                "line",
+                "line".into(),
                 Datatype {
                     name: "line".to_string(),
                     description: "a line of text".to_string(),
@@ -927,7 +927,7 @@ impl Datatype {
                 },
             ),
             (
-                "trimmed_line",
+                "trimmed_line".into(),
                 Datatype {
                     name: "trimmed_line".to_string(),
                     description: "a line of text that deos not begin or end with whitespace"
@@ -939,7 +939,7 @@ impl Datatype {
                 },
             ),
             (
-                "nonspace",
+                "nonspace".into(),
                 Datatype {
                     name: "nonspace".to_string(),
                     description: "text without whitespace".to_string(),
@@ -950,7 +950,7 @@ impl Datatype {
                 },
             ),
             (
-                "word",
+                "word".into(),
                 Datatype {
                     name: "word".to_string(),
                     description: "a single word: letters, numbers, underscore".to_string(),
@@ -961,7 +961,7 @@ impl Datatype {
                 },
             ),
             (
-                "integer",
+                "integer".into(),
                 Datatype {
                     name: "integer".to_string(),
                     description: "an integer".to_string(),
@@ -975,6 +975,42 @@ impl Datatype {
         ]
         .into_iter()
         .collect::<HashMap<_, _>>()
+    }
+
+    /// Get all of the datatypes in the database
+    pub async fn get_all_datatypes(rltbl: &Relatable) -> Result<HashMap<String, Self>> {
+        tracing::trace!("Datatype::get_all_datatypes({rltbl:?})");
+        let mut datatypes = Datatype::builtin_datatypes();
+        if Table::table_exists("datatype", rltbl).await? {
+            let sql = r#"SELECT * FROM "datatype""#;
+            let datatype_rows = rltbl.connection.query(&sql, None).await?;
+            for dt_row in &datatype_rows {
+                let dt_name = dt_row.get_string("datatype")?;
+                datatypes.insert(
+                    dt_name.to_string(),
+                    Datatype {
+                        name: dt_name,
+                        description: dt_row.get_string("description")?,
+                        parent: dt_row.get_string("parent")?,
+                        condition: dt_row.get_string("condition")?,
+                        sql_type: dt_row.get_string("sql_type")?,
+                        format: dt_row.get_string("format")?,
+                    },
+                );
+            }
+        }
+        Ok(datatypes)
+    }
+
+    /// Get the given [Datatype] from the database
+    pub async fn get_datatype(datatype: &str, rltbl: &Relatable) -> Result<Self> {
+        let datatypes = Datatype::get_all_datatypes(rltbl).await?;
+        match datatypes.get(datatype) {
+            Some(datatype) => Ok(datatype.to_owned()),
+            None => {
+                Err(RelatableError::InputError(format!("No datatype '{datatype}' found")).into())
+            }
+        }
     }
 
     /// Get all of this datatype's ancestors
