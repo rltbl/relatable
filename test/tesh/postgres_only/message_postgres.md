@@ -24,8 +24,8 @@ FAKE123     SAMPLE #11     Pygoscelis adeliae  Biscoe     N6A1           35.4   
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |   value    | level |       rule       |                message
 ------------+----------+---------+-----+---------------+------------+-------+------------------+---------------------------------------
-          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11 | error | datatype:integer | sample_number must be of type integer
-          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09   | error | datatype:integer | sample_number must be of type integer
+          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11 | error | sql_type:integer | sample_number must be of type integer
+          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09   | error | sql_type:integer | sample_number must be of type integer
 (2 rows)
 
 $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
@@ -47,8 +47,8 @@ FAKE123     SAMPLE #11     Pygoscelis adeliae  Biscoe     N6A1           35.4   
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |       value        | level |       rule       |                message
 ------------+----------+---------+-----+---------------+--------------------+-------+------------------+---------------------------------------
-          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11         | error | datatype:integer | sample_number must be of type integer
-          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09           | error | datatype:integer | sample_number must be of type integer
+          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11         | error | sql_type:integer | sample_number must be of type integer
+          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09           | error | sql_type:integer | sample_number must be of type integer
           3 | mike     | penguin |   3 | species       | Pygoscelis adeliae | info  | custom-a         | this is not a good species
           4 | mike     | penguin |   4 | species       | Pygoscelis adeliae | info  | custom-b         | this is a terrible species
 (4 rows)
@@ -57,8 +57,8 @@ $ rltbl delete message penguin --rule custom%
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |   value    | level |       rule       |                message
 ------------+----------+---------+-----+---------------+------------+-------+------------------+---------------------------------------
-          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11 | error | datatype:integer | sample_number must be of type integer
-          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09   | error | datatype:integer | sample_number must be of type integer
+          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11 | error | sql_type:integer | sample_number must be of type integer
+          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09   | error | sql_type:integer | sample_number must be of type integer
 (2 rows)
 
 $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl --input JSON add message penguin 3 species
@@ -70,8 +70,8 @@ $ echo '{"value": "FAKE123", "level": "info", "rule": "custom-c", "message": "th
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |       value        | level |       rule       |                message
 ------------+----------+---------+-----+---------------+--------------------+-------+------------------+---------------------------------------
-          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11         | error | datatype:integer | sample_number must be of type integer
-          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09           | error | datatype:integer | sample_number must be of type integer
+          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11         | error | sql_type:integer | sample_number must be of type integer
+          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09           | error | sql_type:integer | sample_number must be of type integer
           5 | mike     | penguin |   3 | species       | Pygoscelis adeliae | info  | custom-a         | this is not a good species
           6 | mike     | penguin |   4 | species       | Pygoscelis adeliae | info  | custom-b         | this is a terrible species
           7 | afreen   | penguin |   5 | species       | Pygoscelis adeliae | info  | custom-b         | this is a terrible species
@@ -84,8 +84,8 @@ $ rltbl delete message penguin --user mike
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |       value        | level |       rule       |                message
 ------------+----------+---------+-----+---------------+--------------------+-------+------------------+---------------------------------------
-          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11         | error | datatype:integer | sample_number must be of type integer
-          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09           | error | datatype:integer | sample_number must be of type integer
+          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11         | error | sql_type:integer | sample_number must be of type integer
+          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09           | error | sql_type:integer | sample_number must be of type integer
           7 | afreen   | penguin |   5 | species       | Pygoscelis adeliae | info  | custom-b         | this is a terrible species
           8 | afreen   | penguin |   6 | species       | Pygoscelis adeliae | info  | custom-a         | this is not a good species
           9 | afreen   | penguin |   6 | study_name    | FAKE123            | info  | custom-c         | this is an inappropriate study_name
@@ -96,8 +96,8 @@ $ rltbl delete message penguin 6 species
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |       value        | level |       rule       |                message
 ------------+----------+---------+-----+---------------+--------------------+-------+------------------+---------------------------------------
-          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11         | error | datatype:integer | sample_number must be of type integer
-          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09           | error | datatype:integer | sample_number must be of type integer
+          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11         | error | sql_type:integer | sample_number must be of type integer
+          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09           | error | sql_type:integer | sample_number must be of type integer
           7 | afreen   | penguin |   5 | species       | Pygoscelis adeliae | info  | custom-b         | this is a terrible species
           9 | afreen   | penguin |   6 | study_name    | FAKE123            | info  | custom-c         | this is an inappropriate study_name
          10 | afreen   | penguin |   7 | study_name    | FAKE123            | info  | custom-c         | this is an inappropriate study_name
@@ -107,8 +107,8 @@ $ rltbl delete message penguin 6
 $ echo 'select * from message order by message_id' | psql rltbl_db
  message_id | added_by |  table  | row |    column     |       value        | level |       rule       |                message
 ------------+----------+---------+-----+---------------+--------------------+-------+------------------+---------------------------------------
-          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11         | error | datatype:integer | sample_number must be of type integer
-          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09           | error | datatype:integer | sample_number must be of type integer
+          1 | rltbl    | penguin |  11 | sample_number | SAMPLE #11         | error | sql_type:integer | sample_number must be of type integer
+          2 | rltbl    | penguin |   9 | sample_number | SAMPLE09           | error | sql_type:integer | sample_number must be of type integer
           7 | afreen   | penguin |   5 | species       | Pygoscelis adeliae | info  | custom-b         | this is a terrible species
          10 | afreen   | penguin |   7 | study_name    | FAKE123            | info  | custom-c         | this is an inappropriate study_name
 (4 rows)

@@ -106,7 +106,7 @@ pub struct Relatable {
     pub default_limit: usize,
     pub max_limit: usize,
     pub caching_strategy: CachingStrategy,
-    /// The validation level, which defaults to 'sql_type' (only SQL type validation)
+    /// The validation level, which defaults to 'full'
     pub validation_level: ValidationLevel,
     pub memory_cache_size: usize,
 }
@@ -240,7 +240,7 @@ impl Relatable {
     /// Create a demonstration table with the given name, add entries corresponding to it
     /// to the column table, and add `size` rows of data to it. Drop the table first if `force` is
     /// set.
-    /// Based on https://github.com/allisonhorst/palmerpenguins
+    /// Based on <https://github.com/allisonhorst/palmerpenguins>
     pub async fn create_demo_table(&self, table: &str, force: &bool, size: usize) -> Result<()> {
         tracing::trace!("create_demo_table({self:?}, {table}, {force}, {size})");
         if *force {
@@ -384,7 +384,7 @@ impl Relatable {
                 "parent": "",
                 "condition": "",
                 "sql_type": "NUMERIC",
-                "format": "%.2f"
+                "format": "%.1f"
             }),
             json!({
                 "datatype": "study_name",
@@ -512,7 +512,7 @@ impl Relatable {
                 "label": "bill length (mm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": "decimal:%.1f",
+                "datatype": "decimal",
             }),
             json!({
                 "table": "penguin",
@@ -520,7 +520,7 @@ impl Relatable {
                 "label": "bill depth (mm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": "decimal:%.1f",
+                "datatype": "decimal",
             }),
             json!({
                 "table": "penguin",
@@ -3133,12 +3133,7 @@ impl Relatable {
     }
 
     /// Validate the given row of the given table using the given database transaction
-    pub fn _validate_row(
-        &self,
-        table: &Table,
-        row: &u64,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<()> {
+    fn _validate_row(&self, table: &Table, row: &u64, tx: &mut DbTransaction<'_>) -> Result<()> {
         tracing::trace!("Relatable::_validate_row({self:?}, {table:?}, {row}, tx)");
         for (_, column) in table.columns.iter() {
             self._validate_column_optionally_for_row(column, Some(row), tx)?;

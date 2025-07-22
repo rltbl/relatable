@@ -384,7 +384,7 @@ impl Table {
                         ..Default::default()
                     },
                     datatype if BUILTIN_DATATYPES.contains(&datatype) => {
-                        tracing::info!(
+                        tracing::debug!(
                             "Ignoring datatype table entry for built-in datatype \
                              '{datatype}'"
                         );
@@ -1055,7 +1055,7 @@ impl Datatype {
     }
 
     /// Get all of this datatype's ancestors using the given transaction.
-    pub fn _get_all_ancestors(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
+    fn _get_all_ancestors(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
         tracing::trace!("Datatype::_get_all_ancestors({self:?}, tx)");
         let datatypes = {
             let mut datatypes = Datatype::builtin_datatypes()
@@ -1117,17 +1117,6 @@ impl Datatype {
         }
 
         build_hierarchy(&datatypes, &self.name, &self.name)
-    }
-
-    // Get all of this datatype's ancestors that have conditions
-    pub fn get_conditioned_ancestors(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
-        tracing::trace!("Datatype::get_conditioned_ancestors({self:?}, tx)");
-        Ok(self
-            ._get_all_ancestors(tx)?
-            .iter()
-            .filter(|datatype| datatype.condition != "")
-            .cloned()
-            .collect::<Vec<_>>())
     }
 
     /// Validate a column of a database table, optionally only for the given row, using the
@@ -1265,15 +1254,15 @@ impl Datatype {
             invalid => tracing::warn!("Unrecognized datatype condition '{invalid}'"),
         };
 
-        tracing::info!(
-            "Validated datatype '{}' for column '{}.{}' (row: {:?}). {}",
+        tracing::debug!(
+            "Validated datatype '{}' for column '{}.{}' (row: {:?}) {}",
             self.name,
             column.table,
             column.name,
             row,
             match messages_were_added {
-                false => "No messages added.",
-                true => "Messages were added.",
+                false => "with messages added.",
+                true => "with no messages added.",
             }
         );
         Ok(messages_were_added)
