@@ -4,10 +4,11 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Relatable},
+    core::{Change, ChangeAction, ChangeSet, Relatable, ValidationLevel},
     select::{Format, Select},
     sql,
     sql::{CachingStrategy, JsonRow, SqlParam, VecInto},
+    table::Table,
     web::{serve, serve_cgi},
 };
 
@@ -26,6 +27,7 @@ static COLUMN_HELP: &str = "A column name or label";
 static ROW_HELP: &str = "A row number";
 static TABLE_HELP: &str = "A table name";
 static VALUE_HELP: &str = "A value for a cell";
+static VALIDATION_LEVEL_HELP: &str = "One of 'none', 'sql_type', 'full'";
 
 #[derive(Parser, Debug)]
 #[command(version,
@@ -92,6 +94,12 @@ pub enum Command {
         subcommand: MoveSubcommand,
     },
 
+    /// Validate data
+    Validate {
+        #[command(subcommand)]
+        subcommand: ValidateSubcommand,
+    },
+
     /// Delete data from the database
     Delete {
         #[command(subcommand)]
@@ -124,6 +132,12 @@ pub enum Command {
         /// the table table entry for each table when not set)
         #[arg(value_name = "SAVE_DIR", action = ArgAction::Set)]
         save_dir: Option<String>,
+    },
+
+    /// Drop database tables
+    Drop {
+        #[command(subcommand)]
+        subcommand: DropSubcommand,
     },
 
     /// Run a Relatable server
@@ -223,6 +237,13 @@ pub enum SetSubcommand {
 
         #[arg(value_name = "VALUE", action = ArgAction::Set, help = VALUE_HELP)]
         value: String,
+
+        #[arg(long,
+              default_value = "full",
+              action = ArgAction::Set,
+              help = VALIDATION_LEVEL_HELP)
+        ]
+        validation_level: ValidationLevel,
     },
 }
 
@@ -234,6 +255,13 @@ pub enum AddSubcommand {
 
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
+
+        #[arg(long,
+              default_value = "full",
+              action = ArgAction::Set,
+              help = VALIDATION_LEVEL_HELP)
+        ]
+        validation_level: ValidationLevel,
     },
 
     /// Read a JSON-formatted string representing a row (of the form: { "level": LEVEL,
@@ -262,6 +290,45 @@ pub enum MoveSubcommand {
         #[arg(value_name = "AFTER", action = ArgAction::Set,
               help = "The ID of the row after which this one is to be moved")]
         after: u64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ValidateSubcommand {
+    /// Validate the data in the given table
+    Table {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+    },
+
+    /// Validate the given row from the given table.
+    Row {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: u64,
+    },
+
+    /// Validate the data in the given column of the given table
+    Column {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
+        column: String,
+    },
+
+    /// Validate the value of the given column of the given row from the given table.
+    Value {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: u64,
+
+        #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
+        column: String,
     },
 }
 
@@ -306,14 +373,23 @@ pub enum LoadSubcommand {
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
 
-        #[arg(long, action = ArgAction::SetTrue)]
-        validate: bool,
+        #[arg(long,
+              default_value = "full",
+              action = ArgAction::Set,
+              help = VALIDATION_LEVEL_HELP)
+        ]
+        validation_level: ValidationLevel,
 
         #[arg(value_name = "PATH", num_args=1..,
               action = ArgAction::Set,
               help = "The path(s) to load from")]
         paths: Vec<String>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DropSubcommand {
+    Database {},
 }
 
 pub async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
@@ -330,8 +406,7 @@ pub async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
     }
 }
 
-/// Given a vector of vectors of strings,
-/// print text with "elastic tabstops".
+/// Given a vector of vectors of strings, print text with "elastic tabstops".
 pub fn print_text(rows: &Vec<Vec<String>>) {
     tracing::trace!("print_text({rows:?})");
     let mut tw = TabWriter::new(vec![]);
@@ -344,6 +419,7 @@ pub fn print_text(rows: &Vec<Vec<String>>) {
     print!("{written}");
 }
 
+/// Given a vector of vectors of strings, print each in TSV format.
 pub fn print_tsv(rows: Vec<Vec<String>>) {
     tracing::trace!("print_tsv({rows:?})");
     for row in rows {
@@ -351,7 +427,7 @@ pub fn print_tsv(rows: Vec<Vec<String>>) {
     }
 }
 
-// Print a table with its column header.
+/// Print a table with its column header.
 pub async fn print_table(
     cli: &Cli,
     table_name: &str,
@@ -414,7 +490,7 @@ pub async fn print_table(
     });
 }
 
-// Print rows of a table, without column header.
+/// Print rows of a table, without column header.
 pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
     tracing::trace!("print_rows({cli:?}, {table_name}, {limit}, {offset})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
@@ -425,6 +501,7 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
     print_text(&rows);
 }
 
+/// Print the value of the given column of the given row of the given table
 pub async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
     tracing::trace!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
@@ -449,6 +526,7 @@ pub async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
     }
 }
 
+/// Print the change history for the user associated with the given context
 pub async fn print_history(cli: &Cli, context: usize) {
     tracing::trace!("print_history({cli:?}, {context})");
     fn get_content_as_string(change_json: &JsonRow) -> String {
@@ -539,11 +617,21 @@ pub fn get_username(cli: &Cli) -> String {
     }
 }
 
-pub async fn set_value(cli: &Cli, table: &str, row: u64, column: &str, value: &str) {
-    tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+/// Set the value of the given column of the given row of the given table. Use the given
+/// validation_level to determine how to validate the value while updating.
+pub async fn set_value(
+    cli: &Cli,
+    table: &str,
+    row: u64,
+    column: &str,
+    value: &str,
+    validation_level: &ValidationLevel,
+) {
+    tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value}, {validation_level:?})");
+    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
+    rltbl.validation_level = *validation_level;
 
     // Fetch the current value from the db:
     let sql = format!(
@@ -583,6 +671,7 @@ pub async fn set_value(cli: &Cli, table: &str, row: u64, column: &str, value: &s
     }
 }
 
+/// Read a JSON row from STDIN.
 pub fn input_json_row() -> JsonRow {
     tracing::trace!("input_json_row()");
     let mut json_row = String::new();
@@ -597,6 +686,7 @@ pub fn input_json_row() -> JsonRow {
     JsonRow { content: json_row }
 }
 
+/// Prompt the user for a value of the given column
 pub fn prompt_for_column_value(column: &str) -> JsonValue {
     tracing::trace!("prompt_for_column_value({column})");
     let value: Option<String> = prompt_opt(format!("Enter a {column}"))
@@ -607,6 +697,7 @@ pub fn prompt_for_column_value(column: &str) -> JsonValue {
     }
 }
 
+/// Prompt the user for a message associated with the given column, row, and table.
 pub async fn prompt_for_json_message(
     rltbl: &Relatable,
     table: &str,
@@ -709,11 +800,20 @@ pub async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
     tracing::info!("Added message (ID: {mid}) {message:?}");
 }
 
-pub async fn add_row(cli: &Cli, table: &str, after_id: Option<u64>) {
-    tracing::trace!("add_row({cli:?}, {table}, {after_id:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+/// Add a row to the given table after the row with _id `after_id`. Use the given validation_level
+/// to determine how to validate the row when adding it.
+pub async fn add_row(
+    cli: &Cli,
+    table: &str,
+    after_id: Option<u64>,
+    validation_level: &ValidationLevel,
+) {
+    tracing::trace!("add_row({cli:?}, {table}, {after_id:?}, {validation_level:?})");
+    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
+    rltbl.validation_level = *validation_level;
+
     let json_row = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
@@ -734,6 +834,7 @@ pub async fn add_row(cli: &Cli, table: &str, after_id: Option<u64>) {
     tracing::info!("Added row {}", row.order);
 }
 
+/// Move the given row after the row whose id is `after_id`.
 pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
     tracing::trace!("move_row({cli:?}, {table}, {row}, {after_id})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
@@ -751,6 +852,85 @@ pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
     }
 }
 
+/// Validate the given row in the given table
+pub async fn validate_row(cli: &Cli, table_name: &str, row: &u64) {
+    tracing::trace!("validate_row({cli:?}, {table_name}, {row})");
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+
+    let table = Table::get_table(table_name, &rltbl)
+        .await
+        .expect("Error getting table");
+
+    rltbl
+        .validate_row(&table, row)
+        .await
+        .expect("Error while validating row");
+    tracing::info!("Validated row {row} of table '{table_name}'");
+}
+
+/// Validate the given table
+pub async fn validate_table(cli: &Cli, table_name: &str) {
+    tracing::trace!("validate_table({cli:?}, {table_name}, {table_name})");
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+
+    let table = Table::get_table(table_name, &rltbl)
+        .await
+        .expect("Error getting table");
+
+    rltbl
+        .validate_table(&table)
+        .await
+        .expect("Error while validating table");
+    tracing::info!("Validated table '{table_name}'");
+}
+
+/// Validate the given column
+pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
+    tracing::trace!("validate_column({cli:?}, {table_name}, {column_name})");
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+
+    let table = Table::get_table(table_name, &rltbl)
+        .await
+        .expect("Error getting table");
+    let column = table.columns.get(column_name).expect(&format!(
+        "Column '{column_name}' not found in table '{table_name}'"
+    ));
+
+    rltbl
+        .validate_column(column)
+        .await
+        .expect("Error while validating column");
+    tracing::info!("Validated column '{column_name}' of table '{table_name}'");
+}
+
+/// Validate the value of the given column, row, and table
+pub async fn validate_value(cli: &Cli, table_name: &str, row: &u64, column_name: &str) {
+    tracing::trace!("validate_value({cli:?}, {table_name}, {row}, {column_name})");
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+
+    let table = Table::get_table(table_name, &rltbl)
+        .await
+        .expect("Error getting table");
+    let column = table.columns.get(column_name).expect(&format!(
+        "Column '{column_name}' not found in table '{table_name}'"
+    ));
+
+    rltbl
+        .validate_value(column, row)
+        .await
+        .expect("Error while validating value");
+    tracing::info!("Validated value of column '{column_name}' of table '{table_name}'");
+}
+
+/// Delete the given row in the given table
 pub async fn delete_row(cli: &Cli, table: &str, row: u64) {
     tracing::trace!("delete_row({cli:?}, {table}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
@@ -768,6 +948,8 @@ pub async fn delete_row(cli: &Cli, table: &str, row: u64) {
     }
 }
 
+/// Delete messages from the message table for the given table, optionally filtering by rule,
+/// user, row, and column
 pub async fn delete_message(
     cli: &Cli,
     target_rule: Option<&str>,
@@ -793,6 +975,7 @@ pub async fn delete_message(
     }
 }
 
+/// Undo the last change
 pub async fn undo(cli: &Cli) {
     tracing::trace!("undo({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
@@ -806,6 +989,7 @@ pub async fn undo(cli: &Cli) {
     tracing::info!("Last operation undone");
 }
 
+/// Redo the last change
 pub async fn redo(cli: &Cli) {
     tracing::trace!("redo({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
@@ -819,19 +1003,29 @@ pub async fn redo(cli: &Cli) {
     tracing::info!("Last operation redone");
 }
 
-pub async fn load_tables(cli: &Cli, paths: &Vec<String>, force: bool, validate: bool) {
-    tracing::trace!("load_tables({cli:?}, {paths:?})");
+/// Load the tables at the given paths. Use validation_level to determine how to validate rows
+/// as they are being loaded.
+pub async fn load_tables(
+    cli: &Cli,
+    paths: &Vec<String>,
+    force: bool,
+    validation_level: &ValidationLevel,
+) {
+    tracing::trace!("load_tables({cli:?}, {paths:?}, {force}, {validation_level:?})");
+
+    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+    rltbl.validation_level = *validation_level;
+
     for path in paths {
-        load_table(cli, &path, force, validate).await;
+        load_table(cli, &path, force, &rltbl).await;
     }
 }
 
-pub async fn load_table(cli: &Cli, path: &str, force: bool, validate: bool) {
-    tracing::trace!("load_table({cli:?}, {path})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
-        .await
-        .unwrap();
-
+/// Load the table at the given path
+pub async fn load_table(cli: &Cli, path: &str, force: bool, rltbl: &Relatable) {
+    tracing::trace!("load_table({cli:?}, {path}, {force}, {rltbl:?})");
     // We will use this pattern to normalize the table name:
     let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
     let table = Path::new(path)
@@ -843,10 +1037,11 @@ pub async fn load_table(cli: &Cli, path: &str, force: bool, validate: bool) {
     let table = table.trim_end_matches("_");
     let table = table.trim_start_matches("_");
 
-    rltbl.load_table(&table, path, force, validate).await;
+    rltbl.load_table(&table, path, force).await;
     tracing::info!("Loaded table '{table}'");
 }
 
+/// Save all of the tables to their configured locations, or to save_dir if it is given.
 pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
     tracing::trace!("save_all({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
@@ -855,6 +1050,19 @@ pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
     rltbl.save_all(save_dir).await.expect("Error saving all");
 }
 
+/// Drop all of the data tables and meta tables from the database
+pub async fn drop_database(cli: &Cli) {
+    tracing::trace!("drop_database({cli:?})");
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+    rltbl
+        .drop_database()
+        .await
+        .expect("Error dropping database");
+}
+
+/// Build a demonstration database
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     tracing::trace!("build_demo({cli:?}, {force}, {size})");
     Relatable::build_demo(cli.database.as_deref(), force, size, &cli.caching)
@@ -915,16 +1123,31 @@ pub async fn process_command() {
                 row,
                 column,
                 value,
-            } => set_value(&cli, table, *row, column, value).await,
+                validation_level,
+            } => set_value(&cli, table, *row, column, value, validation_level).await,
         },
         Command::Add { subcommand } => match subcommand {
-            AddSubcommand::Row { table, after_id } => add_row(&cli, table, *after_id).await,
+            AddSubcommand::Row {
+                table,
+                after_id,
+                validation_level,
+            } => add_row(&cli, table, *after_id, validation_level).await,
             AddSubcommand::Message { table, row, column } => {
                 add_message(&cli, table, *row, column).await
             }
         },
         Command::Move { subcommand } => match subcommand {
             MoveSubcommand::Row { table, row, after } => move_row(&cli, table, *row, *after).await,
+        },
+        Command::Validate { subcommand } => match subcommand {
+            ValidateSubcommand::Table { table } => validate_table(&cli, table).await,
+            ValidateSubcommand::Row { table, row } => validate_row(&cli, table, row).await,
+            ValidateSubcommand::Column { table, column } => {
+                validate_column(&cli, table, column).await
+            }
+            ValidateSubcommand::Value { table, row, column } => {
+                validate_value(&cli, table, row, column).await
+            }
         },
         Command::Delete { subcommand } => match subcommand {
             DeleteSubcommand::Row { table, row } => delete_row(&cli, table, *row).await,
@@ -953,10 +1176,13 @@ pub async fn process_command() {
             LoadSubcommand::Table {
                 paths,
                 force,
-                validate,
-            } => load_tables(&cli, paths, *force, *validate).await,
+                validation_level,
+            } => load_tables(&cli, paths, *force, validation_level).await,
         },
         Command::Save { save_dir } => save_all(&cli, save_dir.as_deref()).await,
+        Command::Drop { subcommand } => match subcommand {
+            DropSubcommand::Database {} => drop_database(&cli).await,
+        },
         Command::Serve {
             host,
             port,

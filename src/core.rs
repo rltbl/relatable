@@ -10,7 +10,7 @@ use rltbl::{
         self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
         MemoryCacheKey, SqlParam, VecInto as _,
     },
-    table::{Cell, Column, ColumnDatatype, Message, Row, Table},
+    table::{Cell, Column, Datatype, Message, Row, Table},
 };
 
 use anyhow::Result;
@@ -106,6 +106,8 @@ pub struct Relatable {
     pub default_limit: usize,
     pub max_limit: usize,
     pub caching_strategy: CachingStrategy,
+    /// The validation level, which defaults to 'full'
+    pub validation_level: ValidationLevel,
     pub memory_cache_size: usize,
 }
 
@@ -148,6 +150,7 @@ impl Relatable {
             default_limit: DEFAULT_LIMIT,
             max_limit: MAX_LIMIT,
             caching_strategy: *caching_strategy,
+            validation_level: ValidationLevel::Full,
             memory_cache_size: match caching_strategy {
                 CachingStrategy::Memory(size) => {
                     let mut cache = CACHE.lock().expect("Could not lock cache");
@@ -227,14 +230,9 @@ impl Relatable {
             "Relatable::build_demo({database:?}, {force}, {size}, {caching_strategy:?})"
         );
         let rltbl = Relatable::init(force, database.as_deref(), caching_strategy).await?;
-        if *force {
-            if let DbKind::Postgres = rltbl.connection.kind() {
-                rltbl
-                    .connection
-                    .query(r#"DROP TABLE IF EXISTS "column" CASCADE"#, None)
-                    .await?;
-            }
-        }
+
+        rltbl.create_demo_column_table(force).await?;
+        rltbl.create_demo_datatype_table(force).await?;
         rltbl.create_demo_table("penguin", force, size).await?;
         Ok(rltbl)
     }
@@ -242,8 +240,9 @@ impl Relatable {
     /// Create a demonstration table with the given name, add entries corresponding to it
     /// to the column table, and add `size` rows of data to it. Drop the table first if `force` is
     /// set.
-    /// Based on https://github.com/allisonhorst/palmerpenguins
+    /// Based on <https://github.com/allisonhorst/palmerpenguins>
     pub async fn create_demo_table(&self, table: &str, force: &bool, size: usize) -> Result<()> {
+        tracing::trace!("create_demo_table({self:?}, {table}, {force}, {size})");
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
                 self.connection
@@ -260,9 +259,6 @@ impl Relatable {
             DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
             DbKind::Postgres => "SERIAL PRIMARY KEY",
         };
-
-        // Create and populate a column table:
-        self.create_demo_column_table(force).await?;
 
         // Create the demo table:
         let sql = format!(
@@ -351,8 +347,97 @@ impl Relatable {
         Ok(())
     }
 
+    /// Create the datatype table for the demonstration database
+    pub async fn create_demo_datatype_table(&self, force: &bool) -> Result<()> {
+        tracing::trace!("create_demo_datatype_table({self:?}, {force})");
+        if *force {
+            if let DbKind::Postgres = self.connection.kind() {
+                self.connection
+                    .query(r#"DROP TABLE IF EXISTS "datatype" CASCADE"#, None)
+                    .await?;
+            }
+        }
+
+        let pkey_clause = match self.connection.kind() {
+            DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+            DbKind::Postgres => "SERIAL PRIMARY KEY",
+        };
+
+        let sql = format!(
+            r#"CREATE TABLE "datatype" (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             "datatype" TEXT,
+             "description" TEXT,
+             "parent" TEXT,
+             "condition" TEXT,
+             "sql_type" TEXT,
+             "format" TEXT
+           )"#,
+        );
+        self.connection.query(&sql, None).await?;
+
+        let datatype_contents = [
+            json!({
+                "datatype": "decimal",
+                "description": "A decimal number",
+                "parent": "",
+                "condition": "",
+                "sql_type": "NUMERIC",
+                "format": "%.1f"
+            }),
+            json!({
+                "datatype": "study_name",
+                "description": "",
+                "parent": "text",
+                "condition": "in(FAKE123, FAKE456)",
+                "sql_type": "",
+                "format": ""
+            }),
+        ]
+        .iter()
+        .map(|content| JsonRow {
+            content: content.as_object().expect("Not a map").clone(),
+        })
+        .collect::<Vec<_>>();
+
+        let mut sql_param_gen = SqlParam::new(&self.connection.kind());
+        let mut param_values = vec![];
+        let mut get_param = |row: &JsonRow, cname: &str| -> Result<String> {
+            match row.get_value(cname)? {
+                JsonValue::Null => Ok("NULL".to_string()),
+                JsonValue::String(value) => {
+                    param_values.push(value.to_string());
+                    Ok(sql_param_gen.next().to_string())
+                }
+                _ => panic!("Invalid value type for datatype table"),
+            }
+        };
+        let mut value_clauses = vec![];
+        for row in &datatype_contents {
+            let s1 = get_param(row, "datatype")?;
+            let s2 = get_param(row, "description")?;
+            let s3 = get_param(row, "parent")?;
+            let s4 = get_param(row, "condition")?;
+            let s5 = get_param(row, "sql_type")?;
+            let s6 = get_param(row, "format")?;
+            value_clauses.push(format!("({s1}, {s2}, {s3}, {s4}, {s5}, {s6})"));
+        }
+
+        let sql = format!(
+            r#"INSERT INTO "datatype"
+               ("datatype", "description", "parent", "condition", "sql_type", "format")
+               VALUES {values}"#,
+            values = value_clauses.join(", ")
+        );
+        let param_values = json!(param_values);
+        self.connection.query(&sql, Some(&param_values)).await?;
+        Ok(())
+    }
+
     /// Create the column table for the demonstration database
     pub async fn create_demo_column_table(&self, force: &bool) -> Result<()> {
+        tracing::trace!("create_demo_column_table({self:?}, {force})");
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
                 self.connection
@@ -367,7 +452,7 @@ impl Relatable {
         };
 
         let sql = format!(
-            r#"CREATE TABLE IF NOT EXISTS "column" (
+            r#"CREATE TABLE "column" (
              _id {pkey_clause},
              _order INTEGER UNIQUE,
              "table" TEXT,
@@ -387,7 +472,7 @@ impl Relatable {
                 "label": "study name",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": JsonValue::Null,
+                "datatype": "study_name",
             }),
             json!({
                 "table": "penguin",
@@ -403,7 +488,7 @@ impl Relatable {
                 "label": "species",
                 "description": JsonValue::Null,
                 "nulltype": "empty",
-                "datatype": "text",
+                "datatype": JsonValue::Null,
             }),
             json!({
                 "table": "penguin",
@@ -427,7 +512,7 @@ impl Relatable {
                 "label": "bill length (mm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": "decimal:%.1f",
+                "datatype": "decimal",
             }),
             json!({
                 "table": "penguin",
@@ -435,7 +520,7 @@ impl Relatable {
                 "label": "bill depth (mm)",
                 "description": JsonValue::Null,
                 "nulltype": JsonValue::Null,
-                "datatype": "decimal:%.1f",
+                "datatype": "decimal",
             }),
             json!({
                 "table": "penguin",
@@ -559,6 +644,43 @@ impl Relatable {
         (0, 0, 'E1', 'N1')"#;
         self.connection.query(sql, None).await.unwrap();
 
+        Ok(())
+    }
+
+    // Drop all of the tables in the table table
+    pub async fn drop_data_tables(&self) -> Result<()> {
+        tracing::trace!("Relatable::drop_data_tables({self:?})");
+        if !Table::table_exists("table", self).await? {
+            tracing::warn!("Can't get list of tables to drop: The table table does not exist");
+        } else {
+            let mut tables = self.get_tables().await?;
+            for (_, table) in tables.iter_mut() {
+                table.drop_table(self).await?;
+            }
+        }
+        Ok(())
+    }
+
+    // Drop all of the meta tables
+    pub async fn drop_meta_tables(&self) -> Result<()> {
+        tracing::trace!("Relatable::drop_meta_tables({self:?})");
+        for table_name in [
+            "cache", "user", "change", "message", "history", "datatype", "column", "table",
+        ] {
+            let mut table = Table {
+                name: table_name.to_string(),
+                ..Default::default()
+            };
+            table.drop_table(self).await?;
+        }
+        Ok(())
+    }
+
+    // Drop all of the data tables and metatables in the database
+    pub async fn drop_database(&self) -> Result<()> {
+        tracing::trace!("Relatable::drop_database({self:?})");
+        self.drop_data_tables().await?;
+        self.drop_meta_tables().await?;
         Ok(())
     }
 
@@ -700,8 +822,8 @@ impl Relatable {
     /// Loads the given table from the given path. When `force` is set to true, deletes any
     /// existing table of the same name in the database first. When `validate` is set to true,
     /// Validates each row before loading it. Note that this function may panic.
-    pub async fn load_table(&self, table_name: &str, path: &str, force: bool, validate: bool) {
-        tracing::trace!("Relatable::load_table({table_name:?}, {path:?})");
+    pub async fn load_table(&self, table_name: &str, path: &str, force: bool) {
+        tracing::trace!("Relatable::load_table({table_name:?}, {path:?}, {force})");
         // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
@@ -767,24 +889,27 @@ impl Relatable {
                 .await
                 .expect(&format!("Error getting columns for table '{table_name}'"));
             for column_name in headers.iter() {
-                table.columns.insert(
-                    column_name.to_string(),
-                    Column {
-                        name: column_name.to_string(),
-                        table: table_name.to_string(),
-                        datatype: match table_columns.get(column_name) {
-                            None => ColumnDatatype {
-                                name: "text".to_string(),
-                                format: None,
-                            },
-                            Some(col) => col.datatype.clone(),
-                        },
-                        nulltype: table_columns
-                            .get(column_name)
-                            .and_then(|col| col.nulltype.clone()),
+                let datatype = match table_columns.get(column_name) {
+                    None => Datatype {
+                        name: "text".to_string(),
                         ..Default::default()
                     },
-                );
+                    Some(col) => col.datatype.clone(),
+                };
+                let column = Column {
+                    name: column_name.to_string(),
+                    table: table_name.to_string(),
+                    datatype_hierarchy: datatype.get_all_ancestors(self).await.expect(&format!(
+                        "Error getting datatype hierarchy for '{}'",
+                        datatype.name
+                    )),
+                    datatype: datatype,
+                    nulltype: table_columns
+                        .get(column_name)
+                        .and_then(|col| col.nulltype.clone()),
+                    ..Default::default()
+                };
+                table.columns.insert(column_name.to_string(), column);
             }
             table
         };
@@ -857,21 +982,24 @@ impl Relatable {
                             Some(column) => column,
                             None => panic!("Unable to retrieve column {}", i + 2),
                         };
-                        let nulltype = {
-                            if value == "" {
-                                table.get_configured_column_attribute(column, "nulltype")
-                            } else {
-                                None
-                            }
-                        };
+                        let nulltype = table
+                            .columns
+                            .get(column)
+                            .expect(&format!("Column '{column}' not found"))
+                            .nulltype
+                            .to_owned();
                         (column, nulltype)
                     };
                     match nulltype {
-                        Some(nulltype) if nulltype == "empty" => {
+                        Some(nulltype) if nulltype.name == "empty" && value == "" => {
                             sql_params.push("NULL".to_string());
                         }
-                        Some(nulltype) => panic!("Nulltype '{nulltype}' not supported"),
-                        None => {
+                        _ => {
+                            if let Some(nulltype) = nulltype {
+                                if nulltype.name != "empty" {
+                                    tracing::warn!("Nulltype '{}' not supported", nulltype.name);
+                                }
+                            }
                             // Use the value to create a cell:
                             let mut cell = {
                                 let value = match serde_json::from_str::<JsonValue>(value) {
@@ -887,8 +1015,8 @@ impl Relatable {
                             };
 
                             // Validate the cell and add any messages to the message table:
-                            if validate {
-                                cell.validate(&table.get_config_for_column(column))
+                            if self.validation_level != ValidationLevel::None {
+                                cell.validate_sql_type(&table.get_config_for_column(column))
                                     .expect("Error validating cell");
                                 for message in cell.messages.iter() {
                                     let (msg_id, msg) = self
@@ -909,7 +1037,7 @@ impl Relatable {
                             }
 
                             // Add the parameter for the value to the SQL insert statement:
-                            if cell.message_level() >= 2 || cell.value == JsonValue::Null {
+                            if cell.has_sql_type_error() || cell.value == JsonValue::Null {
                                 sql_params.push("NULL".to_string());
                             } else {
                                 sql_params.push(sql_param_gen.next());
@@ -939,6 +1067,12 @@ impl Relatable {
                 "{num_rows} rows loaded to table {table_name}",
                 num_rows = id - 1
             );
+        }
+
+        if self.validation_level == ValidationLevel::Full {
+            self.validate_table(&table)
+                .await
+                .expect("Error validating table");
         }
 
         self.commit_to_git().await.expect("Error committing to git");
@@ -991,16 +1125,27 @@ impl Relatable {
                             JsonValue::String(s) => str_values.push(s.to_string()),
                             JsonValue::Number(n) => str_values.push(n.to_string()),
                             JsonValue::Null => {
-                                let nulltype = {
-                                    table
-                                        .get_configured_column_attribute(column, "nulltype")
-                                        .unwrap_or("".to_string())
-                                };
-                                match nulltype.as_str() {
+                                match &table
+                                    .columns
+                                    .get(column)
+                                    .ok_or(RelatableError::InputError(format!(
+                                        "Column '{column}' not found"
+                                    )))?
+                                    .nulltype
+                                {
                                     // Note that the behaviour for the 'empty' nulltype happens
                                     // to be the same as that for no nulltype, but in general
                                     // that won't be true for every nulltype.
-                                    "empty" | _ => str_values.push("".to_string()),
+                                    Some(nulltype) if nulltype.name == "empty" => {
+                                        str_values.push("".to_string());
+                                    }
+                                    Some(unsup) => {
+                                        tracing::warn!("Unsupported nulltype: '{}'", unsup.name);
+                                        str_values.push("".to_string());
+                                    }
+                                    None => {
+                                        str_values.push("".to_string());
+                                    }
                                 };
                             }
                             _ => {
@@ -2084,32 +2229,32 @@ impl Relatable {
                         },
                     };
 
-                    // Validate the cell and add any messages to the message table:
-                    cell.validate(&table.get_config_for_column(column))
-                        .expect("Error validating cell");
-                    for message in cell.messages.iter() {
-                        let (msg_id, msg) = self._add_message(
-                            "rltbl",
-                            &table.name,
-                            &row,
-                            column,
-                            &cell.value,
-                            &message.level,
-                            &message.rule,
-                            &message.message,
-                            &mut tx,
-                        )?;
-                        tracing::debug!("Added message (ID {msg_id}): {msg:?}");
-                    }
-
-                    // If the cell is invalid, insert a NULL instead of its actual value
-                    let sql_value = {
-                        if cell.message_level() >= 2 {
-                            JsonValue::Null
-                        } else {
-                            cell.value
+                    // Validate the cell's SQL type and add any messages to the message table:
+                    let column_config = table.get_config_for_column(column);
+                    let mut sql_value = cell.value.clone();
+                    if self.validation_level != ValidationLevel::None {
+                        cell.validate_sql_type(&column_config)
+                            .expect("Error validating cell");
+                        for message in cell.messages.iter() {
+                            let (msg_id, msg) = Relatable::_add_message(
+                                "rltbl",
+                                &table.name,
+                                &row,
+                                column,
+                                &cell.value,
+                                &message.level,
+                                &message.rule,
+                                &message.message,
+                                &mut tx,
+                            )?;
+                            tracing::debug!("Added message (ID {msg_id}): {msg:?}");
                         }
-                    };
+
+                        // If the cell is invalid, insert a NULL instead of its actual value
+                        if cell.has_sql_type_error() {
+                            sql_value = JsonValue::Null;
+                        }
+                    }
 
                     // Generate the UPDATE statement:
                     let (sql, params) = {
@@ -2155,6 +2300,16 @@ impl Relatable {
                             },
                         });
                     }
+
+                    // Optionally do full validation on the newly updated cell and add further
+                    // messages to the message table:
+                    if self.validation_level == ValidationLevel::Full {
+                        self._validate_column_optionally_for_row(
+                            &column_config,
+                            Some(row),
+                            &mut tx,
+                        )?;
+                    }
                 }
                 _ => {
                     return Err(RelatableError::InputError(format!(
@@ -2196,8 +2351,7 @@ impl Relatable {
     }
 
     /// Add a message to the message table using the given [DbTransaction]
-    fn _add_message(
-        &self,
+    pub fn _add_message(
         user: &str,
         table_name: &str,
         row: &u64,
@@ -2253,7 +2407,7 @@ impl Relatable {
         message: &str,
     ) -> Result<(u64, Message)> {
         tracing::trace!(
-            "Relatable::add_message({user:?}, {table_name:?}, {row}, \
+            "Relatable::add_message({self:?},  {user:?}, {table_name:?}, {row}, \
              {column:?}, {value:?}, {level:?}, {rule:?}, {message:?})"
         );
 
@@ -2261,7 +2415,7 @@ impl Relatable {
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        let (message_id, message) = self._add_message(
+        let (message_id, message) = Relatable::_add_message(
             user, table_name, &row, column, value, level, rule, message, &mut tx,
         )?;
 
@@ -2316,16 +2470,22 @@ impl Relatable {
         }
 
         // Validate the row and add it to the table:
-        new_row.validate(&table, &mut tx)?;
-        for (_column, cell) in new_row.cells.iter_mut() {
-            if cell.message_level() >= 2 {
-                cell.value = JsonValue::Null;
-                cell.text = "".to_string(); // Should it be "null" instead of blank?
+        if self.validation_level != ValidationLevel::None {
+            new_row.validate_sql_types(&table, &mut tx)?;
+            for (_column, cell) in new_row.cells.iter_mut() {
+                if cell.has_sql_type_error() {
+                    cell.value = JsonValue::Null;
+                    cell.text = "".to_string(); // Should it be "null" instead of blank?
+                }
             }
         }
         let (sql, params) = new_row.as_insert(&table.name, &tx.kind());
-        tracing::debug!("_add_row {sql} {params:?}");
         tx.query(&sql, Some(&params))?;
+
+        // Optionally do full validation on the row after it has been inserted:
+        if self.validation_level == ValidationLevel::Full {
+            self._validate_row(&table, &new_row.id, &mut tx)?;
+        }
 
         let after_id = match after_id {
             None => Table::_get_previous_row_id(&table.name, new_row.id, &mut tx)?,
@@ -2864,6 +3024,124 @@ impl Relatable {
         Ok(new_order)
     }
 
+    /// Validate all of the data in the given database table
+    pub async fn validate_table(&self, table: &Table) -> Result<()> {
+        tracing::trace!("Relatable::validate_table({self:?}, {table:?})");
+
+        // Reconnect and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        // Validate each table column
+        for (_, column) in table.columns.iter() {
+            self._validate_column_optionally_for_row(column, None, &mut tx)?;
+        }
+
+        // Commit the transaction
+        tx.commit()?;
+
+        tracing::info!("Validated table '{}'", table.name);
+
+        Ok(())
+    }
+
+    /// Validate the data in the given column associated with a table in the database
+    pub async fn validate_column(&self, column: &Column) -> Result<()> {
+        tracing::trace!("Relatable::validate_column({self:?}, {column:?})");
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+        self._validate_column_optionally_for_row(column, None, &mut tx)?;
+        tx.commit()?;
+        tracing::info!("Validated column '{}.{}'", column.table, column.name);
+        Ok(())
+    }
+
+    /// Validate the value of the given column in the given row in the associated database
+    /// table
+    pub async fn validate_value(&self, column: &Column, row: &u64) -> Result<()> {
+        tracing::trace!("Relatable::validate_value({self:?}, {column:?}, {row})");
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+        self._validate_column_optionally_for_row(column, Some(row), &mut tx)?;
+        tx.commit()?;
+        tracing::info!(
+            "Validated value at row {}, column '{}.{}'",
+            row,
+            column.table,
+            column.name
+        );
+        Ok(())
+    }
+
+    /// Validate the given column in its associated database table using the given transaction.
+    /// If `row` is given, only validate the column for that row.
+    fn _validate_column_optionally_for_row(
+        &self,
+        column: &Column,
+        row: Option<&u64>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        tracing::trace!(
+            "Relatable::_validate_column_optionally_for_row({self:?}, {column:?}, {row:?}, tx)"
+        );
+
+        let table_name = column.table.as_str();
+
+        // Delete pre-existing datatype validation messages for this column and then validate the
+        // datatype conditions for each datatype in the column's datatype hierarchy.
+        self._delete_message(
+            tx,
+            table_name,
+            row.copied(),
+            Some(&column.name),
+            Some("datatype:%"),
+            None,
+        )?;
+
+        // Gather the datatypes to check: The column's datatype, plus any further datatypes in
+        // the datatype hierarchy:
+        let mut datatypes_to_check = vec![column.datatype.clone()];
+        datatypes_to_check.append(&mut column.datatype_hierarchy.clone());
+
+        // Validate the column against each datatype in the hierarchy:
+        for datatype in datatypes_to_check {
+            let inserted = datatype.validate(column, row, tx)?;
+            if !inserted {
+                break;
+            }
+        }
+
+        // TODO: Validate other types of conditions (structure, etc.)
+
+        tracing::debug!(
+            "Validated column (row {:?}), column '{}.{}'",
+            row,
+            column.table,
+            column.name
+        );
+        Ok(())
+    }
+
+    /// Validate the given row of the given table
+    pub async fn validate_row(&self, table: &Table, row: &u64) -> Result<()> {
+        tracing::trace!("Relatable::validate_row({self:?}, {table:?}, {row})");
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+        self._validate_row(table, row, &mut tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Validate the given row of the given table using the given database transaction
+    fn _validate_row(&self, table: &Table, row: &u64, tx: &mut DbTransaction<'_>) -> Result<()> {
+        tracing::trace!("Relatable::_validate_row({self:?}, {table:?}, {row}, tx)");
+        for (_, column) in table.columns.iter() {
+            self._validate_column_optionally_for_row(column, Some(row), tx)?;
+        }
+        tracing::info!("Validated row {} of table '{}'", row, table.name);
+        Ok(())
+    }
+
     /// Delete all entries from the cache corresponding to the given table, or clear it completely
     /// if no table is given.
     pub(crate) fn clear_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
@@ -2913,6 +3191,38 @@ impl Relatable {
             if key.tables.contains(&table) {
                 tracing::debug!("Removing {key:?} from cache");
                 cache.remove(key);
+            }
+        }
+    }
+}
+
+// Validation
+
+/// The level at which Relatable will perform validation when adding to or modifying data in the
+/// database
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ValidationLevel {
+    /// Perform no validateion
+    None,
+    /// Perform only SQL type validation
+    SqlType,
+    /// Perform full validation
+    Full,
+}
+
+impl FromStr for ValidationLevel {
+    type Err = anyhow::Error;
+
+    fn from_str(level: &str) -> Result<Self> {
+        tracing::trace!("ValidationLevel::from_str({level:?})");
+        match level.to_lowercase().as_str() {
+            "none" => Ok(ValidationLevel::None),
+            "sql_type" => Ok(ValidationLevel::SqlType),
+            "full" => Ok(ValidationLevel::Full),
+            _ => {
+                return Err(
+                    RelatableError::InputError(format!("Unrecognized level: {level}")).into(),
+                );
             }
         }
     }

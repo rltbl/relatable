@@ -6,12 +6,14 @@ use crate::{self as rltbl};
 
 use anyhow::Result;
 use indexmap::IndexMap;
+use lazy_static::lazy_static;
 use rltbl::{
     core::{Relatable, RelatableError, NEW_ORDER_MULTIPLIER},
     sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Table {
@@ -94,6 +96,19 @@ impl Table {
                 .collect::<IndexMap<_, _>>(),
             ..Default::default()
         })
+    }
+
+    /// Drop the given table in the database
+    pub async fn drop_table(&mut self, rltbl: &Relatable) -> Result<()> {
+        tracing::trace!("Table::drop_data_tables({self:?}, {rltbl:?})");
+        let sql = match rltbl.connection.kind() {
+            DbKind::Postgres => {
+                format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.name)
+            }
+            DbKind::Sqlite => format!(r#"DROP TABLE IF EXISTS "{}""#, self.name),
+        };
+        rltbl.connection.query(&sql, None).await?;
+        Ok(())
     }
 
     /// Query the database through the given [Relatable] instance to determine whether the given
@@ -335,14 +350,70 @@ impl Table {
         if !Table::_table_exists("column", tx)? {
             Ok(IndexMap::new())
         } else {
-            let sql = format!(
-                r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
-                sql_param = SqlParam::new(&tx.kind()).next()
-            );
+            let sql = match Table::_table_exists("datatype", tx)? {
+                true => format!(
+                    r#"SELECT
+                         c."table",
+                         c."column",
+                         c."label",
+                         c."description",
+                         c."nulltype",
+                         c."datatype",
+                         d."description" AS "datatype_description",
+                         d."parent" AS "datatype_parent",
+                         d."condition" AS "datatype_condition",
+                         d."sql_type" AS "datatype_sql_type",
+                         d."format" AS "datatype_format"
+                       FROM "column" c
+                         LEFT JOIN "datatype" d ON c."datatype" = d."datatype"
+                       WHERE c."table" = {sql_param}"#,
+                    sql_param = SqlParam::new(&tx.kind()).next()
+                ),
+                false => format!(
+                    r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
+                    sql_param = SqlParam::new(&tx.kind()).next()
+                ),
+            };
             let params = json!([table_name]);
             let json_columns = tx.query(&sql, Some(&params))?;
             let mut columns = IndexMap::new();
             for json_col in json_columns {
+                let datatype = match json_col.get_string("datatype").unwrap_or_default().as_str() {
+                    "" => Datatype {
+                        name: "text".to_string(),
+                        ..Default::default()
+                    },
+                    datatype if BUILTIN_DATATYPES.contains(&datatype) => {
+                        tracing::debug!(
+                            "Ignoring datatype table entry for built-in datatype \
+                             '{datatype}'"
+                        );
+                        Datatype::builtin_datatype(datatype)?
+                    }
+                    datatype => Datatype {
+                        name: datatype.to_string(),
+                        description: json_col
+                            .get_string("datatype_description")
+                            .unwrap_or_default(),
+                        parent: json_col.get_string("datatype_parent").unwrap_or_default(),
+                        condition: json_col
+                            .get_string("datatype_condition")
+                            .unwrap_or_default(),
+                        sql_type: json_col.get_string("datatype_sql_type").unwrap_or_default(),
+                        format: json_col.get_string("datatype_format").unwrap_or_default(),
+                    },
+                };
+                let nulltype = match json_col.get_string("nulltype").ok() {
+                    None => None,
+                    Some(nulltype) if nulltype == "" => None,
+                    Some(nulltype) => match Datatype::_get_datatype(&nulltype, tx)? {
+                        Some(nulltype) => Some(nulltype),
+                        None => {
+                            tracing::warn!("Nulltype '{nulltype}' is not a recognized datatype");
+                            None
+                        }
+                    },
+                };
                 columns.insert(
                     json_col.get_string("column")?,
                     Column {
@@ -350,29 +421,9 @@ impl Table {
                         table: json_col.get_string("table")?,
                         label: json_col.get_string("label").ok(),
                         description: json_col.get_string("description").ok(),
-                        datatype: {
-                            let (datatype, format) = {
-                                let dt_fmt = json_col.get_string("datatype").ok();
-                                match dt_fmt {
-                                    None => ("text".to_string(), None),
-                                    Some(dt_fmt) => {
-                                        let dt_fmt = dt_fmt.split(":").collect::<Vec<_>>();
-                                        (
-                                            match dt_fmt[0] {
-                                                "" => "text".to_string(),
-                                                datatype => datatype.to_lowercase(),
-                                            },
-                                            dt_fmt.get(1).and_then(|s| Some(s.to_string())),
-                                        )
-                                    }
-                                }
-                            };
-                            ColumnDatatype {
-                                name: datatype,
-                                format,
-                            }
-                        },
-                        nulltype: json_col.get_string("nulltype").ok(),
+                        datatype_hierarchy: datatype._get_all_ancestors(tx)?,
+                        datatype: datatype,
+                        nulltype: nulltype,
                         ..Default::default()
                     },
                 );
@@ -514,7 +565,7 @@ impl Table {
         table: &str,
         rltbl: &Relatable,
     ) -> Result<(Vec<Column>, Vec<Column>)> {
-        tracing::trace!("Table::get_db_table_columns({table}, {rltbl:?})");
+        tracing::trace!("Table::collect_column_info({table}, {rltbl:?})");
         let mut conn = rltbl.connection.reconnect()?;
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
@@ -543,6 +594,8 @@ impl Table {
         // column table that we just collected:
         let mut columns = vec![];
         let mut meta_columns = vec![];
+        let meta_datatype = Datatype::builtin_datatype("integer")?;
+        let meta_datatype_hierarchy = meta_datatype._get_all_ancestors(tx)?;
         for db_column in Table::get_db_table_columns(table_name, tx)? {
             match db_column.get_string("name")? {
                 column_name if column_name.starts_with("_") => meta_columns.push(Column {
@@ -550,46 +603,49 @@ impl Table {
                     table: table_name.to_string(),
                     primary_key: db_column.get_unsigned("pk")? == 1,
                     unique: db_column.get_unsigned("unique")? == 1,
+                    datatype: meta_datatype.clone(),
+                    datatype_hierarchy: meta_datatype_hierarchy.clone(),
                     ..Default::default()
                 }),
-                column_name => columns.push(Column {
-                    label: column_columns
-                        .get(&column_name)
-                        .and_then(|col| col.label.clone()),
-                    description: column_columns
-                        .get(&column_name)
-                        .and_then(|col| col.description.clone()),
-                    nulltype: column_columns
-                        .get(&column_name)
-                        .and_then(|col| col.nulltype.clone()),
-                    datatype: {
-                        // Fall back to the SQL type (these are returned for each column from
-                        // get_db_table_columns()) if no datatype is defined in the column table
-                        // or the column table does not exist:
-                        match column_columns.get(&column_name) {
-                            None => ColumnDatatype {
-                                name: match db_column.get_string("datatype")? {
-                                    datatype if datatype == "" => "text".to_string(),
-                                    datatype => datatype.to_lowercase(),
-                                },
-                                format: None,
-                            },
-                            Some(col) => col.datatype.clone(),
+                column_name => {
+                    // Fall back to the SQL type (these are returned for each column from
+                    // get_db_table_columns()) if no datatype is defined in the column table
+                    // or the column table does not exist:
+                    let datatype = match column_columns.get(&column_name) {
+                        None => {
+                            let db_datatype = match db_column.get_string("datatype")? {
+                                datatype if datatype == "" => "text".to_string(),
+                                datatype => datatype,
+                            };
+                            Datatype {
+                                name: db_datatype.to_lowercase(),
+                                ..Default::default()
+                            }
                         }
-                    },
-                    name: column_name,
-                    table: table_name.to_string(),
-                    primary_key: db_column.get_unsigned("pk")? == 1,
-                    unique: db_column.get_unsigned("unique")? == 1,
-                }),
+                        Some(col) => col.datatype.clone(),
+                    };
+                    columns.push(Column {
+                        label: column_columns
+                            .get(&column_name)
+                            .and_then(|col| col.label.clone()),
+                        description: column_columns
+                            .get(&column_name)
+                            .and_then(|col| col.description.clone()),
+                        nulltype: column_columns
+                            .get(&column_name)
+                            .and_then(|col| col.nulltype.clone()),
+                        datatype_hierarchy: datatype._get_all_ancestors(tx)?,
+                        datatype: datatype,
+                        name: column_name,
+                        table: table_name.to_string(),
+                        primary_key: db_column.get_unsigned("pk")? == 1,
+                        unique: db_column.get_unsigned("unique")? == 1,
+                    })
+                }
             };
         }
         if columns.is_empty() && meta_columns.is_empty() {
-            return Err(RelatableError::DataError(format!(
-                "No db columns found for: {}",
-                table_name
-            ))
-            .into());
+            tracing::info!("No db columns found for: {}", table_name);
         }
         Ok((columns, meta_columns))
     }
@@ -652,8 +708,7 @@ impl Table {
             "datatype" => Some(col.datatype.name.to_string()),
             "nulltype" => match &col.nulltype {
                 None => None,
-                Some(nulltype) if nulltype == "" => None,
-                Some(_) => col.nulltype.clone(),
+                Some(nulltype) => Some(nulltype.name.clone()),
             },
             _ => None,
         })
@@ -756,17 +811,462 @@ pub struct Column {
     pub table: String,
     pub label: Option<String>,
     pub description: Option<String>,
-    pub datatype: ColumnDatatype,
-    pub nulltype: Option<String>,
+    pub datatype: Datatype,
+    pub datatype_hierarchy: Vec<Datatype>,
+    pub nulltype: Option<Datatype>,
     pub primary_key: bool,
     pub unique: bool,
 }
 
+lazy_static! {
+    /// Relatable's core built-in datatypes
+    pub static ref BUILTIN_DATATYPES: Vec<&'static str> =
+        vec!["text", "empty", "line", "trimmed_line", "nonspace", "word", "integer"];
+}
+
 /// Represents' a column's datatype
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct ColumnDatatype {
+pub struct Datatype {
     pub name: String,
-    pub format: Option<String>,
+    pub description: String,
+    pub parent: String,
+    pub condition: String,
+    pub sql_type: String,
+    pub format: String,
+}
+
+impl Datatype {
+    /// Return the SQL type corresponding to the given datatype, or to one of its parents if it
+    /// has no sql_type.
+    pub fn infer_sql_type(&self, dt_hierarchy: &Vec<Datatype>) -> String {
+        tracing::trace!("infer_sql_type({self:?}, {dt_hierarchy:?})");
+        if self.sql_type != "" {
+            self.sql_type.to_string()
+        } else if !dt_hierarchy.is_empty() {
+            let mut ancestors = dt_hierarchy.clone();
+            let parent = dt_hierarchy[0].clone();
+            ancestors.remove(0);
+            parent.infer_sql_type(&ancestors)
+        } else {
+            // Handle built-in types:
+            let sql_type = match self.name.to_lowercase().as_str() {
+                "text" => "TEXT",
+                "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" => "INTEGER",
+                "real" | "decimal" | "numeric" => "NUMERIC",
+                datatype
+                    if (datatype.starts_with("real")
+                        || datatype.starts_with("numeric")
+                        || datatype.starts_with("decimal")) =>
+                {
+                    "NUMERIC"
+                }
+                datatype
+                    if (datatype.starts_with("varchar") || datatype.starts_with("character")) =>
+                {
+                    "TEXT"
+                }
+                datatype if BUILTIN_DATATYPES.contains(&datatype) => "TEXT",
+                unknown => {
+                    tracing::warn!("Cannot infer SQL type for unknown datatype '{unknown}'");
+                    "TEXT"
+                }
+            };
+            sql_type.to_string()
+        }
+    }
+
+    /// Return a Datatype struct corresponding to the given built-in datatype
+    pub fn builtin_datatype(datatype: &str) -> Result<Self> {
+        tracing::trace!("Datatype::builtin_datatype({datatype})");
+        let builtins = Datatype::builtin_datatypes();
+        let builtin = match datatype {
+            "text" => builtins.get("text").expect("Builtin 'text' not found"),
+            "empty" => builtins.get("empty").expect("Builtin 'empty' not found"),
+            "line" => builtins.get("line").expect("Builtin 'line' not found"),
+            "trimmed_line" => builtins
+                .get("trimmed_line")
+                .expect("Builtin 'trimmed_line' not found"),
+            "nonspace" => builtins
+                .get("nonspace")
+                .expect("Builtin 'nonspace' not found"),
+            "word" => builtins.get("word").expect("Builtin 'word' not found"),
+            "integer" => builtins
+                .get("integer")
+                .expect("Builtin 'integer' not found"),
+            unrecognized => {
+                return Err(RelatableError::InputError(format!(
+                    "Unrecognized built-in datatype: '{unrecognized}'"
+                ))
+                .into())
+            }
+        };
+        Ok(builtin.to_owned())
+    }
+
+    // Returns a [HashMap] representing all of the built-in datatypes, indexed by datatype name
+    pub fn builtin_datatypes() -> HashMap<String, Self> {
+        tracing::trace!("Datatype::builtin_datatypes()");
+        [
+            (
+                "text".into(),
+                Datatype {
+                    name: "text".to_string(),
+                    description: "any text".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "empty".into(),
+                Datatype {
+                    name: "empty".to_string(),
+                    description: "the empty string".to_string(),
+                    parent: "text".to_string(),
+                    condition: "equals('')".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "line".into(),
+                Datatype {
+                    name: "line".to_string(),
+                    description: "a line of text".to_string(),
+                    parent: "text".to_string(),
+                    // TODO: Add the right condition here once implemented.
+                    condition: "".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "trimmed_line".into(),
+                Datatype {
+                    name: "trimmed_line".to_string(),
+                    description: "a line of text that deos not begin or end with whitespace"
+                        .to_string(),
+                    parent: "line".to_string(),
+                    // TODO: Add the right condition here once implemented.
+                    condition: "".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "nonspace".into(),
+                Datatype {
+                    name: "nonspace".to_string(),
+                    description: "text without whitespace".to_string(),
+                    parent: "trimmed_line".to_string(),
+                    // TODO: Add the right condition here once implemented.
+                    condition: "".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "word".into(),
+                Datatype {
+                    name: "word".to_string(),
+                    description: "a single word: letters, numbers, underscore".to_string(),
+                    parent: "nonspace".to_string(),
+                    // TODO: Add the right condition here once implemented.
+                    condition: "".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "integer".into(),
+                Datatype {
+                    name: "integer".to_string(),
+                    description: "an integer".to_string(),
+                    parent: "nonspace".to_string(),
+                    sql_type: "INTEGER".to_string(),
+                    // TODO: Add the right condition here once implemented.
+                    condition: "".to_string(),
+                    ..Default::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>()
+    }
+
+    /// Get all of the datatypes in the database
+    pub async fn get_all_datatypes(rltbl: &Relatable) -> Result<HashMap<String, Self>> {
+        tracing::trace!("Datatype::get_all_datatypes({rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+        let datatypes = Datatype::_get_all_datatypes(&mut tx)?;
+        tx.commit()?;
+        Ok(datatypes)
+    }
+
+    /// Get all of the datatypes in the database using the given transaction
+    fn _get_all_datatypes(tx: &mut DbTransaction<'_>) -> Result<HashMap<String, Self>> {
+        tracing::trace!("Datatype::_get_all_datatypes(tx)");
+        let mut datatypes = Datatype::builtin_datatypes();
+        if Table::_table_exists("datatype", tx)? {
+            let sql = r#"SELECT * FROM "datatype""#;
+            let datatype_rows = tx.query(&sql, None)?;
+            for dt_row in &datatype_rows {
+                let dt_name = dt_row.get_string("datatype")?;
+                datatypes.insert(
+                    dt_name.to_string(),
+                    Datatype {
+                        name: dt_name,
+                        description: dt_row.get_string("description")?,
+                        parent: dt_row.get_string("parent")?,
+                        condition: dt_row.get_string("condition")?,
+                        sql_type: dt_row.get_string("sql_type")?,
+                        format: dt_row.get_string("format")?,
+                    },
+                );
+            }
+        }
+        Ok(datatypes)
+    }
+
+    /// Get the given [Datatype] from the database
+    pub async fn get_datatype(datatype: &str, rltbl: &Relatable) -> Result<Option<Self>> {
+        tracing::trace!("Datatype::get_datatype({datatype}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+        let datatype = Datatype::_get_datatype(datatype, &mut tx)?;
+        tx.commit()?;
+        Ok(datatype)
+    }
+
+    fn _get_datatype(datatype: &str, tx: &mut DbTransaction<'_>) -> Result<Option<Self>> {
+        tracing::trace!("Datatype::_get_datatype({datatype}, tx)");
+        let datatypes = Datatype::_get_all_datatypes(tx)?;
+        match datatypes.get(datatype) {
+            Some(datatype) => Ok(Some(datatype.to_owned())),
+            None => {
+                tracing::warn!("No datatype '{datatype}' found");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Get all of this datatype's ancestors
+    pub async fn get_all_ancestors(&self, rltbl: &Relatable) -> Result<Vec<Self>> {
+        tracing::trace!("Datatype::get_all_ancestors({self:?}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+        let ancestors = self._get_all_ancestors(&mut tx)?;
+        tx.commit()?;
+        Ok(ancestors)
+    }
+
+    /// Get all of this datatype's ancestors using the given transaction.
+    fn _get_all_ancestors(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
+        tracing::trace!("Datatype::_get_all_ancestors({self:?}, tx)");
+        let datatypes = {
+            let mut datatypes = Datatype::builtin_datatypes()
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_owned()))
+                .collect::<HashMap<_, _>>();
+            if Table::_table_exists("datatype", tx)? {
+                let builtin_names = datatypes.keys().cloned().collect::<Vec<_>>();
+                let sql = r#"SELECT * from "datatype""#;
+                for row in tx.query(sql, None)? {
+                    let dt_name = row.get_string("datatype")?;
+                    if builtin_names.contains(&dt_name) {
+                        tracing::info!("Ignoring redefinition of built-in datatype '{dt_name}'");
+                    } else {
+                        datatypes.insert(
+                            dt_name.to_string(),
+                            Datatype {
+                                name: dt_name,
+                                description: row.get_string("description").unwrap_or_default(),
+                                parent: row.get_string("parent").unwrap_or_default(),
+                                condition: row.get_string("condition").unwrap_or_default(),
+                                sql_type: row.get_string("sql_type").unwrap_or_default(),
+                                format: row.get_string("format").unwrap_or_default(),
+                            },
+                        );
+                    }
+                }
+            }
+            datatypes
+        };
+
+        fn build_hierarchy(
+            dt_map: &HashMap<String, Datatype>,
+            start_dt_name: &str,
+            dt_name: &str,
+        ) -> Result<Vec<Datatype>> {
+            tracing::trace!(
+                "Datatype::get_all_ancestors()::build_hierarchy({dt_map:?}, {start_dt_name}, \
+                 {dt_name})"
+            );
+            let mut datatypes = vec![];
+            if dt_name != "" {
+                let datatype = match dt_map.get(dt_name) {
+                    Some(datatype) => datatype,
+                    None => {
+                        tracing::warn!("Undefined datatype '{dt_name}'");
+                        return Ok(datatypes);
+                    }
+                };
+                let dt_name = datatype.name.as_str();
+                let dt_parent = datatype.parent.as_str();
+                if dt_name != start_dt_name {
+                    datatypes.push(datatype.clone());
+                }
+                let mut more_datatypes = build_hierarchy(dt_map, start_dt_name, &dt_parent)?;
+                datatypes.append(&mut more_datatypes);
+            }
+            Ok(datatypes)
+        }
+
+        build_hierarchy(&datatypes, &self.name, &self.name)
+    }
+
+    /// Validate a column of a database table, optionally only for the given row, using the
+    /// given transaction. Returns true whenever messages are inserted to the message table as a
+    /// result of validation, and false otherwise.
+    pub fn validate(
+        &self,
+        column: &Column,
+        row: Option<&u64>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<bool> {
+        tracing::trace!("Datatype::validate({self:?}, {column:?}, {row:?}, tx)");
+        let table_name = column.table.as_str();
+        let column_name = column.name.as_str();
+        let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
+        let mut messages_were_added = false;
+        match self.condition.as_str() {
+            "" => (),
+            condition if condition.starts_with("equals(") => {
+                let re = regex::Regex::new(r"equals\((.+?)\)")?;
+                if let Some(captures) = re.captures(condition) {
+                    let condition = &captures[1];
+                    let condition = unquoted_re.replace(&condition, "$unquoted");
+                    let mut sql_param_gen = SqlParam::new(&tx.kind());
+                    let mut sql = format!(
+                        r#"INSERT INTO "message"
+                             ("added_by", "table", "row", "column", "value", "level", "rule",
+                              "message")
+                           SELECT
+                             'Relatable' AS "added_by",
+                             {sql_param_1} AS "table",
+                             "_id" AS "row",
+                             {sql_param_2} AS "column",
+                             "{column_name}" AS "value",
+                             'error' AS "level",
+                             {sql_param_3} AS "rule",
+                             {sql_param_4} AS "message"
+                           FROM "{table_name}"
+                           WHERE "{column_name}" != {sql_param_5}"#,
+                        sql_param_1 = sql_param_gen.next(),
+                        sql_param_2 = sql_param_gen.next(),
+                        sql_param_3 = sql_param_gen.next(),
+                        sql_param_4 = sql_param_gen.next(),
+                        sql_param_5 = sql_param_gen.next(),
+                    );
+                    let params;
+                    match row {
+                        Some(row) => {
+                            sql.push_str(&format!(
+                                r#" AND "_id" = {sql_param}"#,
+                                sql_param = sql_param_gen.next()
+                            ));
+                            params = json!([
+                                table_name,
+                                column_name,
+                                format!("datatype:{}", column.datatype.name),
+                                format!("{column_name} must be a {}", column.datatype.name),
+                                condition,
+                                row
+                            ]);
+                        }
+                        None => {
+                            params = json!([
+                                table_name,
+                                column_name,
+                                format!("datatype:{}", column.datatype.name),
+                                format!("{column_name} must be a {}", column.datatype.name),
+                                condition
+                            ]);
+                        }
+                    };
+                    sql.push_str(r#" RETURNING 1 AS "inserted""#);
+                    if let Some(_) = tx.query_one(&sql, Some(&params))? {
+                        messages_were_added = true;
+                    }
+                }
+            }
+            condition if condition.starts_with("in(") => {
+                let re = regex::Regex::new(r"in\((.+?)\)").unwrap();
+                if let Some(captures) = re.captures(condition) {
+                    let list_separator = regex::Regex::new(r"\s*,\s*").unwrap();
+                    let condition_list_str = &captures[1];
+                    let condition_list = list_separator
+                        .split(condition_list_str)
+                        .map(|item| unquoted_re.replace(item, "$unquoted"))
+                        .collect::<Vec<_>>();
+                    let mut sql_param_gen = SqlParam::new(&tx.kind());
+                    let mut sql = format!(
+                        r#"INSERT INTO "message"
+                             ("added_by", "table", "row", "column", "value", "level", "rule",
+                              "message")
+                           SELECT
+                             'Relatable' AS "added_by",
+                             {sql_param_1} AS "table",
+                             "_id" AS "row",
+                             {sql_param_2} AS "column",
+                             "{column_name}" AS "value",
+                             'error' AS "level",
+                             {sql_param_3} AS "rule",
+                             {sql_param_4} AS "message"
+                           FROM "{table_name}"
+                           WHERE "{column_name}" NOT IN ({sql_param_5})"#,
+                        sql_param_1 = sql_param_gen.next(),
+                        sql_param_2 = sql_param_gen.next(),
+                        sql_param_3 = sql_param_gen.next(),
+                        sql_param_4 = sql_param_gen.next(),
+                        sql_param_5 = sql_param_gen.get_as_list(condition_list.len()),
+                    );
+                    let mut params = json!([
+                        table_name,
+                        column_name,
+                        format!("datatype:{}", column.datatype.name),
+                        format!("{column_name} must be a {}", column.datatype.name),
+                    ]);
+                    for item in &condition_list {
+                        if let JsonValue::Array(ref mut v) = params {
+                            v.push(json!(item));
+                        }
+                    }
+                    if let Some(row) = row {
+                        sql.push_str(&format!(
+                            r#" AND "_id" = {sql_param}"#,
+                            sql_param = sql_param_gen.next()
+                        ));
+                        if let JsonValue::Array(ref mut v) = params {
+                            v.push(json!(row));
+                        }
+                    }
+                    sql.push_str(r#" RETURNING 1 AS "inserted""#);
+                    if let Some(_) = tx.query_one(&sql, Some(&params))? {
+                        messages_were_added = true;
+                    }
+                }
+            }
+            invalid => tracing::warn!("Unrecognized datatype condition '{invalid}'"),
+        };
+
+        tracing::debug!(
+            "Validated datatype '{}' for column '{}.{}' (row: {:?}) {}",
+            self.name,
+            column.table,
+            column.name,
+            row,
+            match messages_were_added {
+                false => "with messages added.",
+                true => "with no messages added.",
+            }
+        );
+        Ok(messages_were_added)
+    }
 }
 
 /// Represents a row from some table
@@ -872,37 +1372,27 @@ impl Row {
 
     /// Validate this row, which belongs to the given [Table], using the given [DbTransaction],
     /// and add any resulting validation [messages](Message) to the message table
-    pub fn validate(&mut self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<&Self> {
+    pub fn validate_sql_types(
+        &mut self,
+        table: &Table,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<&Self> {
         for (column, cell) in self.cells.iter_mut() {
             let column_details = table.get_config_for_column(column);
-            let datatype = column_details.datatype.name.to_string();
-            cell.validate(&column_details)?;
-            if cell.message_level() >= 2 {
-                let mut sql_param_gen = SqlParam::new(&tx.kind());
-                let sql = format!(
-                    r#"INSERT INTO "message"
-                       ("added_by", "table", "row", "column", "value", "level", "rule", "message")
-                       VALUES ({p1}, {p2}, {p3}, {p4}, {p5}, {p6}, {p7}, {p8})"#,
-                    p1 = sql_param_gen.next(),
-                    p2 = sql_param_gen.next(),
-                    p3 = sql_param_gen.next(),
-                    p4 = sql_param_gen.next(),
-                    p5 = sql_param_gen.next(),
-                    p6 = sql_param_gen.next(),
-                    p7 = sql_param_gen.next(),
-                    p8 = sql_param_gen.next(),
-                );
-                let params = json!([
+            cell.validate_sql_type(&column_details)?;
+            for message in cell.messages.iter() {
+                let (msg_id, msg) = Relatable::_add_message(
                     "rltbl",
-                    table.name,
-                    self.id,
+                    &table.name,
+                    &self.id,
                     column,
-                    cell.value,
-                    "error",
-                    format!("datatype:{datatype}"),
-                    format!("{column} must be of type {datatype}")
-                ]);
-                tx.query(&sql, Some(&params))?;
+                    &cell.value,
+                    &message.level,
+                    &message.rule,
+                    &message.message,
+                    tx,
+                )?;
+                tracing::debug!("Added message (ID {msg_id}): {msg:?}");
             }
         }
 
@@ -1006,17 +1496,23 @@ impl From<&JsonValue> for Cell {
 impl Cell {
     /// Validate this cell, which belongs to the given [Column], adding any validation
     /// [messages](Message) to the cell's [messages](Cell::messages) field.
-    pub fn validate(&mut self, column: &Column) -> Result<&Self> {
+    pub fn validate_sql_type(&mut self, column: &Column) -> Result<&Self> {
+        tracing::trace!("Cell::validate_sql_type({self:?}, {column:?})");
+
         fn invalidate(cell: &mut Cell, column: &Column) {
             let datatype = &column.datatype.name;
             cell.messages.push(Message {
                 level: "error".to_string(),
-                rule: format!("datatype:{datatype}"),
+                rule: format!("sql_type:{datatype}"),
                 message: format!("{column} must be of type {datatype}", column = column.name),
             });
         }
 
-        match sql::get_sql_type(&column.datatype)? {
+        match column
+            .datatype
+            .infer_sql_type(&column.datatype_hierarchy)
+            .as_str()
+        {
             "INTEGER" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<i64>() {
                     Ok(_) => (),
@@ -1036,7 +1532,7 @@ impl Cell {
             "TEXT" => (),
             unsupported => {
                 return Err(RelatableError::InputError(format!(
-                    "Unsupported datatype: '{unsupported}'"
+                    "Unsupported SQL type: '{unsupported}'"
                 ))
                 .into())
             }
@@ -1068,6 +1564,16 @@ impl Cell {
             };
         }
         level
+    }
+
+    /// Determine whether this cell contains a SQL type error.
+    pub fn has_sql_type_error(&self) -> bool {
+        self.messages
+            .iter()
+            .filter(|m| m.level == "error" && m.rule.starts_with("sql_type:"))
+            .collect::<Vec<_>>()
+            .len()
+            > 0
     }
 }
 

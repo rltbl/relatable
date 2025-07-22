@@ -129,7 +129,7 @@ test_round_trip: test_round_trip_sqlite test_round_trip_sqlx_sqlite test_round_t
 test_round_trip_sqlite: debug | test/round_trip/output
 	@echo "Testing round trip on sqlite (rusqlite) ..."
 	target/debug/rltbl -v --database $(SQLITE_DB) demo --size 0 --force
-	target/debug/rltbl -v --database $(SQLITE_DB) load table --force --validate test/round_trip/penguin.tsv
+	target/debug/rltbl -v --database $(SQLITE_DB) load table --force test/round_trip/penguin.tsv
 	target/debug/rltbl -v --database $(SQLITE_DB) save $|
 	diff --strip-trailing-cr -q test/round_trip/penguin.tsv $|
 	@echo "Success!"
@@ -137,7 +137,7 @@ test_round_trip_sqlite: debug | test/round_trip/output
 test_round_trip_sqlx_sqlite: sqlx_debug | test/round_trip/output
 	@echo "Testing round trip on sqlite (sqlx) ..."
 	target/debug/rltbl -v --database $(SQLITE_DB) demo --size 0 --force
-	target/debug/rltbl -v --database $(SQLITE_DB) load table --force --validate test/round_trip/penguin.tsv
+	target/debug/rltbl -v --database $(SQLITE_DB) load table --force test/round_trip/penguin.tsv
 	target/debug/rltbl -v --database $(SQLITE_DB) save $|
 	diff --strip-trailing-cr -q test/round_trip/penguin.tsv $|
 	@echo "Success!"
@@ -145,7 +145,7 @@ test_round_trip_sqlx_sqlite: sqlx_debug | test/round_trip/output
 test_round_trip_sqlx_postgres: sqlx_debug | test/round_trip/output
 	@echo "Testing round trip on postgres (sqlx) ..."
 	target/debug/rltbl -v --database $(PG_DB) demo --size 0 --force
-	target/debug/rltbl -v --database $(PG_DB) load table --force --validate test/round_trip/penguin.tsv
+	target/debug/rltbl -v --database $(PG_DB) load table --force test/round_trip/penguin.tsv
 	target/debug/rltbl -v --database $(PG_DB) save $|
 	diff --strip-trailing-cr -q test/round_trip/penguin.tsv $|
 	@echo "Success!"
@@ -232,22 +232,22 @@ test_caching: test_caching_sqlite test_caching_postgres test_caching_memory
 
 test_perf_sqlite: test/perf/tsv/penguin.tsv debug
 	target/debug/rltbl --database $(SQLITE_DB) init --force
-	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $< || \
+	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 test_perf_sqlx_sqlite: test/perf/tsv/penguin.tsv sqlx_debug
 	target/debug/rltbl --database $(SQLITE_DB) init --force
-	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --validate --force $< || \
+	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 ### Postgres performance (rusqlite and sqlx)
 
 test_perf_sqlx_postgres: test/perf/tsv/penguin.tsv sqlx_debug
 	target/debug/rltbl --database $(PG_DB) init --force
-	@echo "target/debug/rltbl --database $(PG_DB) -vv load table --validate --force $<"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(PG_DB) -vv load table --validate --force $< || \
+	@echo "target/debug/rltbl --database $(PG_DB) -vv load table --force $<"
+	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(PG_DB) -vv load table --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 ### Combined tests
@@ -257,7 +257,7 @@ test_rusqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittes
 
 test_sqlx_sqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittest test_tesh_doc_sqlx test_round_trip_sqlx_sqlite test_tesh_sqlx_common_as_sqlite test_tesh_sqlx_sqlite_only test_random_sqlx_sqlite test_perf_sqlx_sqlite test_caching_sqlite test_caching_memory
 
-test_sqlx_postgres: src/resources/main.js src/resources/main.css test_fmt_and_unittest_postgres test_tesh_doc_sqlx test_round_trip_sqlx_postgres test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres test_caching_postgres
+test_sqlx_postgres: src/resources/main.js src/resources/main.css test_fmt_and_unittest_postgres test_round_trip_sqlx_postgres test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres test_caching_postgres
 
 test: test_rusqlite
 

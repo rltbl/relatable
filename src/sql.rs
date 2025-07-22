@@ -11,7 +11,7 @@
 use crate as rltbl;
 use rltbl::{
     core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
-    table::{Column, ColumnDatatype, Table},
+    table::{Column, Table},
 };
 
 ////////////////////////////////////
@@ -89,10 +89,10 @@ impl FromStr for CachingStrategy {
     fn from_str(strategy: &str) -> Result<Self> {
         tracing::trace!("CachingStrategy::from_str({strategy:?})");
         match strategy.to_lowercase().as_str() {
-            "none" => Ok(Self::None),
-            "truncate_all" => Ok(Self::TruncateAll),
-            "truncate" => Ok(Self::Truncate),
-            "trigger" => Ok(Self::Trigger),
+            "none" => Ok(CachingStrategy::None),
+            "truncate_all" => Ok(CachingStrategy::TruncateAll),
+            "truncate" => Ok(CachingStrategy::Truncate),
+            "trigger" => Ok(CachingStrategy::Trigger),
             strategy if strategy.starts_with("memory") => {
                 let elems = strategy.split(":").collect::<Vec<_>>();
                 let cache_size = {
@@ -108,7 +108,7 @@ impl FromStr for CachingStrategy {
                     }
                 };
                 tracing::debug!("Using memory cache with size: {cache_size}");
-                Ok(Self::Memory(cache_size))
+                Ok(CachingStrategy::Memory(cache_size))
             }
             _ => {
                 return Err(RelatableError::InputError(format!(
@@ -705,10 +705,10 @@ impl DbTransaction<'_> {
 // Database-specific utilities and functions
 ///////////////////////////////////////////////////////////////////////////////
 
-/// Given a database pool, a SQL string possibly including placeholders representing bound
-/// parameters, and (optionally) a vector with the parameters corresponding to each placeholder,
-/// combine the information into an interpolated string that is then returned, using the given
-/// database kind to determine the placeholder syntax (SQLite or PostgreSQL)
+/// Given a SQL string (whose syntax is appropriate for the given database kind) that may
+/// include placeholders representing bound parameters, and (optionally) a vector with the
+/// parameter values corresponding to each placeholder, combine this information into an
+/// interpolated string that is then returned.
 pub fn interpolate_sql(sql: &str, params: Option<&JsonValue>, kind: &DbKind) -> Result<String> {
     tracing::trace!("interpolate_sql({sql}, {params:?}, {kind:?})");
     let params = match params {
@@ -797,22 +797,6 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
     match db_kind {
         DbKind::Sqlite => "IS NOT".into(),
         DbKind::Postgres => "IS DISTINCT FROM".into(),
-    }
-}
-
-/// Return the SQL type corresponding to the given datatype
-pub fn get_sql_type(datatype: &ColumnDatatype) -> Result<&str> {
-    tracing::trace!("get_sql_type({datatype:?})");
-    match datatype.name.as_str() {
-        "text" => Ok("TEXT"),
-        "integer" => Ok("INTEGER"),
-        "decimal" => Ok("NUMERIC"),
-        unsupported => {
-            return Err(RelatableError::InputError(format!(
-                "Unsupported datatype: '{unsupported}'",
-            ))
-            .into());
-        }
     }
 }
 
@@ -975,7 +959,7 @@ pub fn generate_table_ddl(
             ))
             .into());
         }
-        let sql_type = get_sql_type(&col.datatype)?;
+        let sql_type = col.datatype.infer_sql_type(&col.datatype_hierarchy);
         let clause = format!(
             r#""{cname}" {sql_type}{unique}"#,
             unique = match col.unique {
@@ -1159,7 +1143,7 @@ pub(crate) fn generate_default_view_ddl(
         DbKind::Sqlite => vec![
             format!(r#"DROP VIEW IF EXISTS "{}""#, view_name),
             format!(
-                r#"CREATE VIEW IF NOT EXISTS "{view}" AS
+                r#"CREATE VIEW "{view}" AS
                      SELECT
                        {id_col} AS _id,
                        {order_col} AS _order,
@@ -1336,20 +1320,20 @@ pub fn sprintf_to_pg_char(
 /// components, returning the optional flag, width, precision, and conversion specifications that
 /// make up the format string. If no format is given, "%s" is assumed, which yields the returned
 /// tuple: ("", "", "", "s").
-pub fn split_sprintf_format(sprintf_format: Option<&String>) -> (String, String, String, String) {
+pub fn split_sprintf_format(sprintf_format: &str) -> (String, String, String, String) {
     tracing::trace!("split_sprintf_format({sprintf_format:?})");
 
     let sprintf_regex = Regex::new(r#"^%([\-+ 0#,!])?([1-9]+)?((.)([0-9]+))?(\w)$"#).unwrap();
     let valid_format_types = ["d", "i", "c", "o", "u", "x", "e", "f", "g", "a", "s"];
 
     match sprintf_format {
-        None => (
+        "" => (
             "".to_string(),
             "".to_string(),
             "".to_string(),
             "s".to_string(),
         ),
-        Some(sprintf_format) => match sprintf_regex.captures(sprintf_format) {
+        sprintf_format => match sprintf_regex.captures(sprintf_format) {
             None => {
                 tracing::warn!("Illegal format: '{}'", sprintf_format);
                 (
@@ -1783,17 +1767,28 @@ impl JsonRow {
     pub fn nullify(row: &Self, table: &Table) -> Self {
         tracing::trace!("JsonRow::nullify({row:?}, {table:?})");
         let mut nullified_row = JsonRow::new();
+        let default_col = Column::default();
         for (column, value) in row.content.iter() {
-            let nulltype = table
-                .get_configured_column_attribute(&column, "nulltype")
-                .unwrap_or("".to_string());
-            match value {
-                JsonValue::String(s) if s == "" && nulltype == "empty" => {
+            match &table.columns.get(column).unwrap_or(&default_col).nulltype {
+                Some(supported) if supported.name == "empty" => match value {
+                    JsonValue::String(s) if s == "" => {
+                        nullified_row
+                            .content
+                            .insert(column.to_string(), JsonValue::Null);
+                    }
+                    value => {
+                        nullified_row
+                            .content
+                            .insert(column.to_string(), value.clone());
+                    }
+                },
+                Some(unsupported) => {
+                    tracing::warn!("Unsupported nulltype: '{}'", unsupported.name);
                     nullified_row
                         .content
-                        .insert(column.to_string(), JsonValue::Null);
+                        .insert(column.to_string(), value.clone());
                 }
-                value => {
+                None => {
                     nullified_row
                         .content
                         .insert(column.to_string(), value.clone());
@@ -1809,13 +1804,14 @@ impl JsonRow {
     /// column's nulltype, set it to [Null](JsonValue::Null)
     pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValue {
         tracing::trace!("JsonRow::nullify_value({table:?}, {column}, {value:?})");
-        match table.get_configured_column_attribute(column, "nulltype") {
-            Some(supported) if supported == "empty" => match value {
+        let default_col = Column::default();
+        match &table.columns.get(column).unwrap_or(&default_col).nulltype {
+            Some(supported) if supported.name == "empty" => match value {
                 JsonValue::String(s) if s == "" => JsonValue::Null,
                 _ => value.clone(),
             },
             Some(unsupported) => {
-                tracing::warn!("Unsupported nulltype: '{unsupported}'");
+                tracing::warn!("Unsupported nulltype: '{}'", unsupported.name);
                 value.clone()
             }
             None => value.clone(),

@@ -24,8 +24,8 @@ FAKE123     SAMPLE #11     Pygoscelis adeliae  Biscoe     N6A1           35.4   
 $ rltbl get table message
 Rows 1-2 of 2
 message_id  added_by  table    row  column         value       level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11  error  datatype:integer  sample_number must be of type integer
-2           rltbl     penguin  9    sample_number  SAMPLE09    error  datatype:integer  sample_number must be of type integer
+1           rltbl     penguin  11   sample_number  SAMPLE #11  error  sql_type:integer  sample_number must be of type integer
+2           rltbl     penguin  9    sample_number  SAMPLE09    error  sql_type:integer  sample_number must be of type integer
 $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
 $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
 ```
@@ -53,8 +53,8 @@ In any case the messages have been added to the message table in the database:
 
 ```
 message_id  added_by  table    row   column         value       level  rule              message
-1           rltbl     penguin  1001  sample_number  SAMPLE #11  error  datatype:integer  sample_number must be of type integer
-2           rltbl     penguin  9     sample_number  SAMPLE09    error  datatype:integer  sample_number must be of type integer
+1           rltbl     penguin  1001  sample_number  SAMPLE #11  error  sql_type:integer  sample_number must be of type integer
+2           rltbl     penguin  9     sample_number  SAMPLE09    error  sql_type:integer  sample_number must be of type integer
 ```
 
 We delete messages using `rltbl delete message TABLE [ROW] [COLUMN]`. If row is unspecified, all messages in the given table are deleted. If column is unspecified, all messages in the given row are deleted. You can also use the `--rule RULE` flag to further filter the messsages to be deleted so that only those whose rule matches the given string are actually deleted, as opposed to all of the messages in the given table, column, or row. Note that SQL wildcard characters are allowed. In the current example, the string `custom%` happens to match all of the rules input thus far:
@@ -64,8 +64,8 @@ $ rltbl -v delete message penguin --rule custom%
 $ rltbl get table message
 Rows 1-2 of 2
 message_id  added_by  table    row  column         value       level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11  error  datatype:integer  sample_number must be of type integer
-2           rltbl     penguin  9    sample_number  SAMPLE09    error  datatype:integer  sample_number must be of type integer
+1           rltbl     penguin  11   sample_number  SAMPLE #11  error  sql_type:integer  sample_number must be of type integer
+2           rltbl     penguin  9    sample_number  SAMPLE09    error  sql_type:integer  sample_number must be of type integer
 ```
 
 Let's add a few more messages to the message table. Two of them will be by the user **mike** and the rest by the user **afreen**.
@@ -80,8 +80,8 @@ $ echo '{"value": "FAKE123", "level": "info", "rule": "custom-c", "message": "th
 $ rltbl get table message
 Rows 1-8 of 8
 message_id  added_by  table    row  column         value               level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
-2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
+1           rltbl     penguin  11   sample_number  SAMPLE #11          error  sql_type:integer  sample_number must be of type integer
+2           rltbl     penguin  9    sample_number  SAMPLE09            error  sql_type:integer  sample_number must be of type integer
 5           mike      penguin  3    species        Pygoscelis adeliae  info   custom-a          this is not a good species
 6           mike      penguin  4    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
 7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
@@ -97,8 +97,8 @@ $ rltbl -v delete message penguin --user mike
 $ rltbl get table message
 Rows 1-6 of 6
 message_id  added_by  table    row  column         value               level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
-2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
+1           rltbl     penguin  11   sample_number  SAMPLE #11          error  sql_type:integer  sample_number must be of type integer
+2           rltbl     penguin  9    sample_number  SAMPLE09            error  sql_type:integer  sample_number must be of type integer
 7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
 8           afreen    penguin  6    species        Pygoscelis adeliae  info   custom-a          this is not a good species
 9           afreen    penguin  6    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
@@ -112,8 +112,8 @@ $ rltbl -v delete message penguin 6 species
 $ rltbl get table message
 Rows 1-5 of 5
 message_id  added_by  table    row  column         value               level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
-2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
+1           rltbl     penguin  11   sample_number  SAMPLE #11          error  sql_type:integer  sample_number must be of type integer
+2           rltbl     penguin  9    sample_number  SAMPLE09            error  sql_type:integer  sample_number must be of type integer
 7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
 9           afreen    penguin  6    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
 10          afreen    penguin  7    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
@@ -126,8 +126,8 @@ $ rltbl -v delete message penguin 6
 $ rltbl get table message
 Rows 1-4 of 4
 message_id  added_by  table    row  column         value               level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be of type integer
-2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be of type integer
+1           rltbl     penguin  11   sample_number  SAMPLE #11          error  sql_type:integer  sample_number must be of type integer
+2           rltbl     penguin  9    sample_number  SAMPLE09            error  sql_type:integer  sample_number must be of type integer
 7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
 10          afreen    penguin  7    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
 ```
