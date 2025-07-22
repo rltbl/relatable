@@ -1759,17 +1759,28 @@ impl JsonRow {
     pub fn nullify(row: &Self, table: &Table) -> Self {
         tracing::trace!("JsonRow::nullify({row:?}, {table:?})");
         let mut nullified_row = JsonRow::new();
+        let default_col = Column::default();
         for (column, value) in row.content.iter() {
-            let nulltype = table
-                .get_configured_column_attribute(&column, "nulltype")
-                .unwrap_or("".to_string());
-            match value {
-                JsonValue::String(s) if s == "" && nulltype == "empty" => {
+            match &table.columns.get(column).unwrap_or(&default_col).nulltype {
+                Some(supported) if supported.name == "empty" => match value {
+                    JsonValue::String(s) if s == "" => {
+                        nullified_row
+                            .content
+                            .insert(column.to_string(), JsonValue::Null);
+                    }
+                    value => {
+                        nullified_row
+                            .content
+                            .insert(column.to_string(), value.clone());
+                    }
+                },
+                Some(unsupported) => {
+                    tracing::warn!("Unsupported nulltype: '{}'", unsupported.name);
                     nullified_row
                         .content
-                        .insert(column.to_string(), JsonValue::Null);
+                        .insert(column.to_string(), value.clone());
                 }
-                value => {
+                None => {
                     nullified_row
                         .content
                         .insert(column.to_string(), value.clone());
@@ -1785,13 +1796,14 @@ impl JsonRow {
     /// column's nulltype, set it to [Null](JsonValue::Null)
     pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValue {
         tracing::trace!("JsonRow::nullify_value({table:?}, {column}, {value:?})");
-        match table.get_configured_column_attribute(column, "nulltype") {
-            Some(supported) if supported == "empty" => match value {
+        let default_col = Column::default();
+        match &table.columns.get(column).unwrap_or(&default_col).nulltype {
+            Some(supported) if supported.name == "empty" => match value {
                 JsonValue::String(s) if s == "" => JsonValue::Null,
                 _ => value.clone(),
             },
             Some(unsupported) => {
-                tracing::warn!("Unsupported nulltype: '{unsupported}'");
+                tracing::warn!("Unsupported nulltype: '{}'", unsupported.name);
                 value.clone()
             }
             None => value.clone(),

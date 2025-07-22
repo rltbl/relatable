@@ -150,7 +150,7 @@ impl Relatable {
             default_limit: DEFAULT_LIMIT,
             max_limit: MAX_LIMIT,
             caching_strategy: *caching_strategy,
-            validation_level: ValidationLevel::SqlType,
+            validation_level: ValidationLevel::Full,
             memory_cache_size: match caching_strategy {
                 CachingStrategy::Memory(size) => {
                     let mut cache = CACHE.lock().expect("Could not lock cache");
@@ -974,21 +974,24 @@ impl Relatable {
                             Some(column) => column,
                             None => panic!("Unable to retrieve column {}", i + 2),
                         };
-                        let nulltype = {
-                            if value == "" {
-                                table.get_configured_column_attribute(column, "nulltype")
-                            } else {
-                                None
-                            }
-                        };
+                        let nulltype = table
+                            .columns
+                            .get(column)
+                            .expect(&format!("Column '{column}' not found"))
+                            .nulltype
+                            .to_owned();
                         (column, nulltype)
                     };
                     match nulltype {
-                        Some(nulltype) if nulltype == "empty" => {
+                        Some(nulltype) if nulltype.name == "empty" && value == "" => {
                             sql_params.push("NULL".to_string());
                         }
-                        Some(nulltype) => panic!("Nulltype '{nulltype}' not supported"),
-                        None => {
+                        _ => {
+                            if let Some(nulltype) = nulltype {
+                                if nulltype.name != "empty" {
+                                    tracing::warn!("Nulltype '{}' not supported", nulltype.name);
+                                }
+                            }
                             // Use the value to create a cell:
                             let mut cell = {
                                 let value = match serde_json::from_str::<JsonValue>(value) {
@@ -1114,16 +1117,27 @@ impl Relatable {
                             JsonValue::String(s) => str_values.push(s.to_string()),
                             JsonValue::Number(n) => str_values.push(n.to_string()),
                             JsonValue::Null => {
-                                let nulltype = {
-                                    table
-                                        .get_configured_column_attribute(column, "nulltype")
-                                        .unwrap_or("".to_string())
-                                };
-                                match nulltype.as_str() {
+                                match &table
+                                    .columns
+                                    .get(column)
+                                    .ok_or(RelatableError::InputError(format!(
+                                        "Column '{column}' not found"
+                                    )))?
+                                    .nulltype
+                                {
                                     // Note that the behaviour for the 'empty' nulltype happens
                                     // to be the same as that for no nulltype, but in general
                                     // that won't be true for every nulltype.
-                                    "empty" | _ => str_values.push("".to_string()),
+                                    Some(nulltype) if nulltype.name == "empty" => {
+                                        str_values.push("".to_string());
+                                    }
+                                    Some(unsup) => {
+                                        tracing::warn!("Unsupported nulltype: '{}'", unsup.name);
+                                        str_values.push("".to_string());
+                                    }
+                                    None => {
+                                        str_values.push("".to_string());
+                                    }
                                 };
                             }
                             _ => {

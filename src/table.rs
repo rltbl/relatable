@@ -399,13 +399,15 @@ impl Table {
                     },
                 };
                 let nulltype = match json_col.get_string("nulltype").ok() {
-                    Some(nulltype) if nulltype == "empty" => Some(nulltype),
-                    Some(nulltype) if nulltype == "" => None,
-                    Some(nulltype) => {
-                        tracing::warn!("Unsupported nulltype: {nulltype}");
-                        None
-                    }
                     None => None,
+                    Some(nulltype) if nulltype == "" => None,
+                    Some(nulltype) => match Datatype::_get_datatype(&nulltype, tx)? {
+                        Some(nulltype) => Some(nulltype),
+                        None => {
+                            tracing::warn!("Nulltype '{nulltype}' is not a recognized datatype");
+                            None
+                        }
+                    },
                 };
                 columns.insert(
                     json_col.get_string("column")?,
@@ -697,8 +699,7 @@ impl Table {
             "datatype" => Some(col.datatype.name.to_string()),
             "nulltype" => match &col.nulltype {
                 None => None,
-                Some(nulltype) if nulltype == "" => None,
-                Some(_) => col.nulltype.clone(),
+                Some(nulltype) => Some(nulltype.name.clone()),
             },
             _ => None,
         })
@@ -803,7 +804,7 @@ pub struct Column {
     pub description: Option<String>,
     pub datatype: Datatype,
     pub datatype_hierarchy: Vec<Datatype>,
-    pub nulltype: Option<String>,
+    pub nulltype: Option<Datatype>,
     pub primary_key: bool,
     pub unique: bool,
 }
@@ -980,10 +981,20 @@ impl Datatype {
     /// Get all of the datatypes in the database
     pub async fn get_all_datatypes(rltbl: &Relatable) -> Result<HashMap<String, Self>> {
         tracing::trace!("Datatype::get_all_datatypes({rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+        let datatypes = Datatype::_get_all_datatypes(&mut tx)?;
+        tx.commit()?;
+        Ok(datatypes)
+    }
+
+    /// Get all of the datatypes in the database using the given transaction
+    fn _get_all_datatypes(tx: &mut DbTransaction<'_>) -> Result<HashMap<String, Self>> {
+        tracing::trace!("Datatype::_get_all_datatypes(tx)");
         let mut datatypes = Datatype::builtin_datatypes();
-        if Table::table_exists("datatype", rltbl).await? {
+        if Table::_table_exists("datatype", tx)? {
             let sql = r#"SELECT * FROM "datatype""#;
-            let datatype_rows = rltbl.connection.query(&sql, None).await?;
+            let datatype_rows = tx.query(&sql, None)?;
             for dt_row in &datatype_rows {
                 let dt_name = dt_row.get_string("datatype")?;
                 datatypes.insert(
@@ -1003,12 +1014,23 @@ impl Datatype {
     }
 
     /// Get the given [Datatype] from the database
-    pub async fn get_datatype(datatype: &str, rltbl: &Relatable) -> Result<Self> {
-        let datatypes = Datatype::get_all_datatypes(rltbl).await?;
+    pub async fn get_datatype(datatype: &str, rltbl: &Relatable) -> Result<Option<Self>> {
+        tracing::trace!("Datatype::get_datatype({datatype}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+        let datatype = Datatype::_get_datatype(datatype, &mut tx)?;
+        tx.commit()?;
+        Ok(datatype)
+    }
+
+    fn _get_datatype(datatype: &str, tx: &mut DbTransaction<'_>) -> Result<Option<Self>> {
+        tracing::trace!("Datatype::_get_datatype({datatype}, tx)");
+        let datatypes = Datatype::_get_all_datatypes(tx)?;
         match datatypes.get(datatype) {
-            Some(datatype) => Ok(datatype.to_owned()),
+            Some(datatype) => Ok(Some(datatype.to_owned())),
             None => {
-                Err(RelatableError::InputError(format!("No datatype '{datatype}' found")).into())
+                tracing::warn!("No datatype '{datatype}' found");
+                Ok(None)
             }
         }
     }
