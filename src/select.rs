@@ -135,6 +135,11 @@ impl Select {
         }
 
         let base_table_name = path.split(".").next().unwrap_or_default();
+        let base_view_name = match Table::get_table(base_table_name, &rltbl).await {
+            Ok(table_config) => table_config.view,
+            Err(_) => String::new(),
+        };
+
         for (lhs, pattern) in query_params {
             let (table, column) = match lhs.split_once(".") {
                 Some((table, column)) => (table.to_string(), column.to_string()),
@@ -289,6 +294,7 @@ impl Select {
 
         Self {
             table_name: base_table_name.to_string(),
+            view_name: base_view_name,
             select,
             limit,
             offset,
@@ -1848,6 +1854,7 @@ pub async fn joined_query(
     let mut inner = select.clone();
     inner.select = vec![];
     let table_name = inner.table_name.clone();
+    let view_name = inner.view_name.clone();
 
     let pkey = "_id".to_string();
     inner.select_table_column(&table_name, &pkey);
@@ -1869,6 +1876,7 @@ pub async fn joined_query(
     // }
     inner.order_by = vec![];
     inner.limit = 0;
+    inner.view_name = String::new();
     let json_row = json_rows.first().unwrap();
     inner.table_name = json_row.get_string("left_table").unwrap();
     let mut joined = HashSet::new();
@@ -1893,6 +1901,7 @@ pub async fn joined_query(
     tracing::warn!("SQL {sql} PARAMS {params:?}");
     Ok(Select {
         table_name,
+        view_name,
         filters: vec![Filter::InSubquery {
             table: String::new(),
             column: pkey.clone(),
@@ -2728,8 +2737,8 @@ FROM "penguin""#
     species TEXT,
     island TEXT,
     individual_id TEXT,
-    culmen_length REAL,
-    culmen_depth NUMERIC,
+    bill_length REAL,
+    bill_depth NUMERIC,
     body_mass BIGINT
 )"#;
         block_on(rltbl.connection.query(drop_sql, None)).unwrap();
@@ -2823,8 +2832,8 @@ FROM "penguin_test""#
   "species",
   "island",
   "individual_id",
-  "culmen_length",
-  "culmen_depth",
+  "bill_length",
+  "bill_depth",
   "body_mass"
 FROM "penguin_test"
 ORDER BY "penguin_test"._order ASC
@@ -3140,6 +3149,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         block_on(rltbl.connection.query(create_sql, None)).unwrap();
         block_on(rltbl.connection.query(insert_sql, None)).unwrap();
 
+        let mut table_a = block_on(Table::get_table("A", &rltbl)).unwrap();
+        block_on(table_a.ensure_default_view_created(&rltbl)).unwrap();
+
         let drop_sql = r#"DROP TABLE IF EXISTS "B""#;
         let create_sql = r#"CREATE TABLE "B" (
     _id INTEGER,
@@ -3287,7 +3299,7 @@ WHERE "B"."b" = ?"#
             sql,
             format!(
                 r#"SELECT *
-FROM "A"
+FROM "A_default_view"
 WHERE "_id" IN (
   SELECT
     "A"."_id"
@@ -3295,7 +3307,7 @@ WHERE "_id" IN (
   LEFT JOIN "B" ON "A"."a" = "B"."a"
   WHERE "B"."b" = {sql_param}
 )
-ORDER BY "A"._order ASC
+ORDER BY "A_default_view"._order ASC
 LIMIT 100"#
             )
         );
@@ -3306,7 +3318,7 @@ LIMIT 100"#
             sql,
             format!(
                 r#"SELECT COUNT(1) AS "count"
-FROM "A"
+FROM "A_default_view"
 WHERE "_id" IN (
   SELECT
     "A"."_id"
