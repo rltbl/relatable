@@ -1999,6 +1999,13 @@ impl TryFrom<PgRow> for JsonRow {
                         Err(_) => JsonValue::Null,
                     }
                 }
+                "FLOAT8" => {
+                    let value: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
+                    match value {
+                        Ok(value) => JsonValue::from(value),
+                        Err(_) => JsonValue::Null,
+                    }
+                }
                 "NUMERIC" => {
                     let value: Result<BigDecimal, sqlx::Error> = row.try_get(column.ordinal());
                     match value {
