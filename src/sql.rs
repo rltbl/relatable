@@ -1147,6 +1147,13 @@ pub(crate) fn generate_default_view_ddl(
                      SELECT
                        {id_col} AS _id,
                        {order_col} AS _order,
+                       (SELECT "change_id"
+                        FROM "history"
+                        WHERE "table" = '{table}'
+                        AND "row" = {id_col}
+                        ORDER BY "change_id" DESC
+                        LIMIT 1
+                       ) AS _change_id,
                        (SELECT '[' || GROUP_CONCAT("after") || ']'
                           FROM (
                             SELECT "after"
@@ -1190,6 +1197,14 @@ pub(crate) fn generate_default_view_ddl(
                  SELECT
                    "{id_col}" AS _id,
                    "{order_col}" AS _order,
+                   (
+                     SELECT "change_id"
+                     FROM "history"
+                     WHERE "table" = '{table}'
+                     AND "row" = {id_col}
+                     ORDER BY "change_id" DESC
+                     LIMIT 1
+                   ) AS _change_id,
                    (
                      SELECT ('['::TEXT || string_agg(h.after, ','::TEXT)) || ']'::TEXT
                      FROM ( SELECT "history"."after"
