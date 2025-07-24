@@ -911,6 +911,18 @@ impl Select {
             }
             let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
             lines.push(format!("{keyword} {filter_sql}"));
+
+            // If the select is using the text view, the query parameters must all be changed
+            // to text:
+            if self.view_name == format!("{}_text_view", self.table_name) {
+                filter_params = filter_params
+                    .iter()
+                    .map(|param| match param {
+                        JsonValue::String(s) => json!(s),
+                        _ => json!(param.to_string()),
+                    })
+                    .collect::<Vec<_>>();
+            }
             params.append(&mut filter_params);
         }
         if self.order_by.len() == 0 && self.joins.len() == 0 {
@@ -956,6 +968,19 @@ impl Select {
             lines.push(format!("{keyword} {s}"));
             params.append(&mut p.clone());
         }
+
+        // If the select is using the text view, the query parameters must all be changed
+        // to text:
+        if self.view_name == format!("{}_text_view", self.table_name) {
+            params = params
+                .iter()
+                .map(|param| match param {
+                    JsonValue::String(s) => json!(s),
+                    _ => json!(param.to_string()),
+                })
+                .collect::<Vec<_>>();
+        }
+
         Ok((lines.join("\n"), params))
     }
 
