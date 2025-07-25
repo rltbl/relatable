@@ -2387,6 +2387,7 @@ impl Relatable {
         Ok((
             message_id,
             Message {
+                value: value.clone(),
                 level: level.to_string(),
                 rule: rule.to_string(),
                 message: message.to_string(),
