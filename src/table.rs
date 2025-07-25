@@ -640,6 +640,7 @@ impl Table {
                         table: table_name.to_string(),
                         primary_key: db_column.get_unsigned("pk")? == 1,
                         unique: db_column.get_unsigned("unique")? == 1,
+                        ..Default::default()
                     })
                 }
             };

@@ -26,8 +26,8 @@
               Tables
             </a>
             <ul class="dropdown-menu">
-              {% for tablename, table in site.tables|items %}
-              <li><a class="dropdown-item" href="{{site.root}}/table/{{tablename}}">{{ tablename }}</a></li>
+              {% for table in site.tables %}
+              <li><a class="dropdown-item" href="{{site.root}}/table/{{table}}">{{table }}</a></li>
               {% endfor %}
             </ul>
           </li>

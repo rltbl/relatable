@@ -1529,6 +1529,14 @@ impl Relatable {
         Ok(columns)
     }
 
+    /// Returns a vector of the names of the tables that have entries in the table table
+    pub async fn list_tables(&self) -> Result<Vec<String>> {
+        tracing::trace!("Relatable::get_tables({self:?})");
+        let statement = format!(r#"SELECT "table" FROM "table" ORDER BY _order"#);
+        let rows = self.connection.query(&statement, None).await?;
+        rows.iter().map(|row| row.get_string("table")).collect()
+    }
+
     /// Returns all of the tables that have entries in the table table as a map from table names
     /// to Table structs.
     pub async fn get_tables(&self) -> Result<IndexMap<String, Table>> {
@@ -1579,7 +1587,7 @@ impl Relatable {
             editable: !self.readonly,
             user: self.get_user(username).await,
             users,
-            tables: self.get_tables().await.unwrap_or_default(),
+            tables: self.list_tables().await.unwrap_or_default(),
         }
     }
 
@@ -3613,7 +3621,7 @@ pub struct Site {
     pub editable: bool,
     pub user: Account,
     pub users: IndexMap<String, UserCursor>,
-    pub tables: IndexMap<String, Table>,
+    pub tables: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
