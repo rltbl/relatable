@@ -1449,10 +1449,19 @@ impl From<JsonRow> for Row {
                         .unwrap()
                         .as_str()
                         .unwrap();
-                    let message: Message =
-                        serde_json::from_value(message.clone()).unwrap_or_default();
+                    let message: Message = match serde_json::from_value(message.clone()) {
+                        Ok(message) => message,
+                        Err(err) => {
+                            tracing::warn!(
+                                "Unable to parse message '{message}' due to error '{err}'"
+                            );
+                            continue;
+                        }
+                    };
                     if let Some(cell) = cells.get(column) {
                         let mut new_cell = cell.clone();
+                        new_cell.value = message.value.clone();
+                        new_cell.text = sql::json_to_string(&new_cell.value);
                         new_cell.messages.push(message);
                         cells.insert(column.to_string(), new_cell);
                     }
@@ -1502,6 +1511,7 @@ impl Cell {
         fn invalidate(cell: &mut Cell, column: &Column) {
             let datatype = &column.datatype.name;
             cell.messages.push(Message {
+                value: cell.value.clone(),
                 level: "error".to_string(),
                 rule: format!("sql_type:{datatype}"),
                 message: format!("{column} must be of type {datatype}", column = column.name),
@@ -1578,8 +1588,10 @@ impl Cell {
 }
 
 /// Represents a validation message
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Message {
+    /// The value referred to by the message
+    pub value: JsonValue,
     /// The severity of the message.
     pub level: String,
     /// The rule violation that the message is about.
@@ -1654,6 +1666,7 @@ mod tests {
                 value: json!("FOO"),
                 text: "FOO".to_string(),
                 messages: vec![Message {
+                    value: json!("FOO"),
                     level: "error".to_string(),
                     rule: "test rule".to_string(),
                     message: "Test message 'FOO'".to_string(),
