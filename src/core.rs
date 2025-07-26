@@ -565,7 +565,7 @@ impl Relatable {
                 "column": "island",
                 "label": "island",
                 "datatype": "text",
-                "structure": "from(island)",
+                "structure": "from(island.island)",
             }),
             json!({
                 "table": "penguin",
@@ -971,6 +971,9 @@ impl Relatable {
                     nulltype: table_columns
                         .get(column_name)
                         .and_then(|col| col.nulltype.clone()),
+                    structure: table_columns
+                        .get(column_name)
+                        .and_then(|col| col.structure.clone()),
                     ..Default::default()
                 };
                 table.columns.insert(column_name.to_string(), column);
@@ -3176,7 +3179,12 @@ impl Relatable {
             }
         }
 
-        // TODO: Validate other types of conditions (structure, etc.)
+        // Validate the cell's structure condition:
+        if let Some(structure) = &column.structure {
+            structure.validate(column, row, tx)?;
+        }
+
+        // TODO: Validate other types of conditions:
 
         tracing::debug!(
             "Validated column (row {:?}), column '{}.{}'",
