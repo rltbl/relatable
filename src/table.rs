@@ -636,6 +636,7 @@ impl Table {
                             .and_then(|col| col.nulltype.clone()),
                         datatype_hierarchy: datatype._get_all_ancestors(tx)?,
                         datatype: datatype,
+                        structure: todo!(),
                         name: column_name,
                         table: table_name.to_string(),
                         primary_key: db_column.get_unsigned("pk")? == 1,
@@ -811,11 +812,12 @@ pub struct Column {
     pub table: String,
     pub label: Option<String>,
     pub description: Option<String>,
+    pub primary_key: bool,
+    pub unique: bool,
     pub datatype: Datatype,
     pub datatype_hierarchy: Vec<Datatype>,
     pub nulltype: Option<Datatype>,
-    pub primary_key: bool,
-    pub unique: bool,
+    pub structure: Option<Structure>,
 }
 
 lazy_static! {
@@ -824,7 +826,7 @@ lazy_static! {
         vec!["text", "empty", "line", "trimmed_line", "nonspace", "word", "integer"];
 }
 
-/// Represents' a column's datatype
+/// Represents a column's datatype
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Datatype {
     pub name: String,
@@ -1269,6 +1271,12 @@ impl Datatype {
     }
 }
 
+/// Represents a column's structure.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum Structure {
+    From(String, String),
+}
+
 /// Represents a row from some table
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Row {
@@ -1449,7 +1457,7 @@ impl From<JsonRow> for Row {
                         .unwrap()
                         .as_str()
                         .unwrap();
-                    let message: Message = match serde_json::from_value(message.clone()) {
+                    let message: Message = match serde_json::from_value(message.to_owned()) {
                         Ok(message) => message,
                         Err(err) => {
                             tracing::warn!(

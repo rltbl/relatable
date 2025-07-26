@@ -219,7 +219,7 @@ impl Relatable {
         Ok(rltbl)
     }
 
-    /// Build a demonstration database
+    /// Build a demonstration database. Based on <https://github.com/allisonhorst/palmerpenguins>.
     pub async fn build_demo(
         database: Option<&str>,
         force: &bool,
@@ -233,16 +233,24 @@ impl Relatable {
 
         rltbl.create_demo_column_table(force).await?;
         rltbl.create_demo_datatype_table(force).await?;
-        rltbl.create_demo_table("penguin", force, size).await?;
+        rltbl.create_penguin_table(None, force, size).await?;
+        rltbl.create_island_table(None, force).await?;
         Ok(rltbl)
     }
 
-    /// Create a demonstration table with the given name, add entries corresponding to it
-    /// to the column table, and add `size` rows of data to it. Drop the table first if `force` is
-    /// set.
-    /// Based on <https://github.com/allisonhorst/palmerpenguins>
-    pub async fn create_demo_table(&self, table: &str, force: &bool, size: usize) -> Result<()> {
-        tracing::trace!("create_demo_table({self:?}, {table}, {force}, {size})");
+    /// Create a demonstration table similar to the penguin table, but with the given name,
+    /// and add `size` rows of data to it. Drop the table first if `force` is set.
+    pub async fn create_penguin_table(
+        &self,
+        table: Option<&str>,
+        force: &bool,
+        size: usize,
+    ) -> Result<()> {
+        tracing::trace!("create_penguin_like_table({self:?}, {table:?}, {force}, {size})");
+        let table = match table {
+            Some(table) => table,
+            None => "penguin",
+        };
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
                 self.connection
@@ -347,6 +355,60 @@ impl Relatable {
         Ok(())
     }
 
+    /// Create a demonstration table similar to the island table, but with the given name,
+    /// and add `size` rows of data to it. Drop the table first if `force` is set.
+    pub async fn create_island_table(&self, table: Option<&str>, force: &bool) -> Result<()> {
+        tracing::trace!("create_island_like_table({self:?}, {table:?}, {force})");
+        let table = match table {
+            Some(table) => table,
+            None => "island",
+        };
+        if *force {
+            if let DbKind::Postgres = self.connection.kind() {
+                self.connection
+                    .query(&format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#), None)
+                    .await?;
+            }
+        }
+
+        let sql =
+            format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
+        self.connection.query(&sql, None).await?;
+
+        let pkey_clause = match self.connection.kind() {
+            DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+            DbKind::Postgres => "SERIAL PRIMARY KEY",
+        };
+
+        // Create the demo table:
+        let sql = format!(
+            r#"CREATE TABLE "{table}" (
+                 _id {pkey_clause},
+                 _order INTEGER UNIQUE,
+                 island_id INTEGER,
+                 island TEXT
+               )"#,
+        );
+        self.connection.query(&sql, None).await?;
+
+        let mut ddl = vec![];
+        sql::add_metacolumn_trigger_ddl(&mut ddl, table, &self.connection.kind());
+        if let CachingStrategy::Trigger = self.caching_strategy {
+            sql::add_caching_trigger_ddl(&mut ddl, table, &self.connection.kind());
+        }
+        for sql in ddl {
+            self.connection.query(&sql, None).await?;
+        }
+
+        let sql = format!(
+            r#"INSERT INTO "{table}" ("island_id", "island")
+               VALUES (1, 'Torgersen'), (2, 'Biscoe'), (3, 'Dream')"#
+        );
+
+        self.connection.query(&sql, None).await?;
+        Ok(())
+    }
+
     /// Create the datatype table for the demonstration database
     pub async fn create_demo_datatype_table(&self, force: &bool) -> Result<()> {
         tracing::trace!("create_demo_datatype_table({self:?}, {force})");
@@ -376,6 +438,12 @@ impl Relatable {
            )"#,
         );
         self.connection.query(&sql, None).await?;
+
+        let mut ddl = vec![];
+        sql::add_metacolumn_trigger_ddl(&mut ddl, "datatype", &self.connection.kind());
+        for sql in ddl {
+            self.connection.query(&sql, None).await?;
+        }
 
         let datatype_contents = [
             json!({
@@ -460,18 +528,23 @@ impl Relatable {
              "label" TEXT,
              "description" TEXT,
              "datatype" TEXT,
-             "nulltype" TEXT
+             "nulltype" TEXT,
+             "structure" TEXT
            )"#,
         );
         self.connection.query(&sql, None).await?;
+
+        let mut ddl = vec![];
+        sql::add_metacolumn_trigger_ddl(&mut ddl, "column", &self.connection.kind());
+        for sql in ddl {
+            self.connection.query(&sql, None).await?;
+        }
 
         let column_contents = [
             json!({
                 "table": "penguin",
                 "column": "study_name",
                 "label": "study name",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
                 "datatype": "study_name",
             }),
             json!({
@@ -479,30 +552,25 @@ impl Relatable {
                 "column": "sample_number",
                 "label": "sample number",
                 "description": "a sample number",
-                "nulltype": JsonValue::Null,
                 "datatype": "integer",
             }),
             json!({
                 "table": "penguin",
                 "column": "species",
                 "label": "species",
-                "description": JsonValue::Null,
                 "nulltype": "empty",
-                "datatype": JsonValue::Null,
             }),
             json!({
                 "table": "penguin",
                 "column": "island",
                 "label": "island",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
                 "datatype": "text",
+                "structure": "from(island)",
             }),
             json!({
                 "table": "penguin",
                 "column": "individual_id",
                 "label": "individual id",
-                "description": JsonValue::Null,
                 "nulltype": "empty",
                 "datatype": "text",
             }),
@@ -510,23 +578,18 @@ impl Relatable {
                 "table": "penguin",
                 "column": "bill_length",
                 "label": "bill length (mm)",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
                 "datatype": "decimal",
             }),
             json!({
                 "table": "penguin",
                 "column": "bill_depth",
                 "label": "bill depth (mm)",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
                 "datatype": "decimal",
             }),
             json!({
                 "table": "penguin",
                 "column": "body_mass",
                 "label": "body mass (g)",
-                "description": JsonValue::Null,
                 "nulltype": "empty",
                 "datatype": "integer",
             }),
@@ -540,7 +603,7 @@ impl Relatable {
         let mut sql_param_gen = SqlParam::new(&self.connection.kind());
         let mut param_values = vec![];
         let mut get_param = |row: &JsonRow, cname: &str| -> Result<String> {
-            match row.get_value(cname)? {
+            match row.get_value(cname).unwrap_or_default() {
                 JsonValue::Null => Ok("NULL".to_string()),
                 JsonValue::String(value) => {
                     param_values.push(value.to_string());
@@ -557,12 +620,13 @@ impl Relatable {
             let s4 = get_param(row, "description")?;
             let s5 = get_param(row, "nulltype")?;
             let s6 = get_param(row, "datatype")?;
-            value_clauses.push(format!("({s1}, {s2}, {s3}, {s4}, {s5}, {s6})"));
+            let s7 = get_param(row, "structure")?;
+            value_clauses.push(format!("({s1}, {s2}, {s3}, {s4}, {s5}, {s6}, {s7})"));
         }
 
         let sql = format!(
             r#"INSERT INTO "column"
-               ("table", "column", "label", "description", "nulltype", "datatype")
+               ("table", "column", "label", "description", "nulltype", "datatype", "structure")
                VALUES {values}"#,
             values = value_clauses.join(", ")
         );
@@ -626,7 +690,7 @@ impl Relatable {
             (0, 0, 'FAKE123', 'Fake Study 123')"#;
         self.connection.query(sql, None).await.unwrap();
 
-        self.create_demo_table("penguin", force, size).await?;
+        self.create_penguin_table(None, force, size).await?;
 
         let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('egg', 'egg.tsv')"#;
         self.connection.query(sql, None).await.unwrap();
