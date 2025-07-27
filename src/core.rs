@@ -1140,6 +1140,16 @@ impl Relatable {
             self.validate_table(&table)
                 .await
                 .expect("Error validating table");
+            let dependent_tables = table
+                .get_dependent_tables(None, &self)
+                .await
+                .expect("Error getting dependent tables");
+            for table in &dependent_tables {
+                tracing::info!("Validating dependent table '{}'", table.name);
+                self.validate_table(&table)
+                    .await
+                    .expect("Error validating table");
+            }
         }
 
         self.commit_to_git().await.expect("Error committing to git");
@@ -2376,6 +2386,10 @@ impl Relatable {
                             Some(row),
                             &mut tx,
                         )?;
+                        for table in &table._get_dependent_tables(Some(column), &mut tx)? {
+                            tracing::info!("Validating dependent table '{}'", table.name);
+                            self._validate_table(table, &mut tx)?;
+                        }
                     }
                 }
                 _ => {
@@ -2553,6 +2567,10 @@ impl Relatable {
         // Optionally do full validation on the row after it has been inserted:
         if self.validation_level == ValidationLevel::Full {
             self._validate_row(&table, &new_row.id, &mut tx)?;
+            for table in &table._get_dependent_tables(None, &mut tx)? {
+                tracing::info!("Validating dependent table '{}'", table.name);
+                self._validate_table(table, &mut tx)?;
+            }
         }
 
         let after_id = match after_id {
@@ -3100,15 +3118,24 @@ impl Relatable {
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        // Validate each table column
-        for (_, column) in table.columns.iter() {
-            self._validate_column_optionally_for_row(column, None, &mut tx)?;
-        }
+        self._validate_table(table, &mut tx)?;
 
         // Commit the transaction
         tx.commit()?;
 
         tracing::info!("Validated table '{}'", table.name);
+
+        Ok(())
+    }
+
+    /// TODO: add docstring
+    pub fn _validate_table(&self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<()> {
+        // TODO: Add tracing
+
+        // Validate each table column
+        for (_, column) in table.columns.iter() {
+            self._validate_column_optionally_for_row(column, None, tx)?;
+        }
 
         Ok(())
     }
@@ -3155,14 +3182,22 @@ impl Relatable {
 
         let table_name = column.table.as_str();
 
-        // Delete pre-existing datatype validation messages for this column and then validate the
-        // datatype conditions for each datatype in the column's datatype hierarchy.
+        // Delete pre-existing datatype and structure validation messages for this column and then
+        // validate the datatype conditions for each datatype in the column's datatype hierarchy.
         self._delete_message(
             tx,
             table_name,
             row.copied(),
             Some(&column.name),
             Some("datatype:%"),
+            None,
+        )?;
+        self._delete_message(
+            tx,
+            table_name,
+            row.copied(),
+            Some(&column.name),
+            Some("key:%"),
             None,
         )?;
 

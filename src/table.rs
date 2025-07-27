@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::{collections::HashMap, fmt::Display, str::FromStr};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Table {
     /// The name of the table
     pub name: String,
@@ -223,6 +223,71 @@ impl Table {
             None => Ok(false),
             _ => Ok(true),
         }
+    }
+
+    /// TODO: Add docstring
+    pub async fn get_dependent_tables(
+        &self,
+        column_name: Option<&str>,
+        rltbl: &Relatable,
+    ) -> Result<Vec<Self>> {
+        // TODO: Add tracing statement
+        let mut conn = rltbl.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+
+        let tables = self._get_dependent_tables(column_name, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(tables)
+    }
+
+    /// TODO: Add docstring
+    pub fn _get_dependent_tables(
+        &self,
+        column: Option<&str>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Vec<Self>> {
+        // TODO: Add tracing statement
+        let sql = format!(
+            r#"SELECT * FROM "column" WHERE "table" != {sql_param} AND "structure" {is_not} NULL"#,
+            sql_param = SqlParam::new(&tx.kind()).next(),
+            is_not = sql::is_not_clause(&tx.kind())
+        );
+        let params = json!([self.name]);
+        let mut dependent_tables: Vec<Table> = vec![];
+        for row in &tx.query(&sql, Some(&params))? {
+            let Structure::From(structure_table, structure_column) =
+                Structure::from_str(&row.get_string("structure")?)?;
+            if let Some(structure_table) = structure_table {
+                if structure_table == self.name {
+                    match column {
+                        Some(column) if column == structure_column => {
+                            let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
+                            let dependent_column = row.get_string("column")?;
+                            let mut indirect_deps = dependent_table
+                                ._get_dependent_tables(Some(&dependent_column), tx)?;
+                            dependent_tables.push(dependent_table);
+                            dependent_tables.append(&mut indirect_deps);
+                        }
+                        _ => {
+                            let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
+                            let mut indirect_deps =
+                                dependent_table._get_dependent_tables(None, tx)?;
+                            dependent_tables.push(dependent_table);
+                            dependent_tables.append(&mut indirect_deps);
+                        }
+                    };
+                }
+            }
+        }
+        tracing::debug!(
+            "Table '{}' has the following dependent tables: {dependent_tables:#?}",
+            self.name
+        );
+        Ok(dependent_tables)
     }
 
     /// Set the view for the table to the given view type (accepted types are "default" and "text"),
@@ -825,7 +890,7 @@ impl Table {
 }
 
 /// Represents a column from some table
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Column {
     pub name: String,
     pub table: String,
@@ -846,7 +911,7 @@ lazy_static! {
 }
 
 /// Represents a column's datatype
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Datatype {
     pub name: String,
     pub description: String,
@@ -1291,7 +1356,7 @@ impl Datatype {
 }
 
 /// Represents a column's structure.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Structure {
     From(Option<String>, String),
 }
