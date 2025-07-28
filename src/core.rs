@@ -246,7 +246,7 @@ impl Relatable {
         force: &bool,
         size: usize,
     ) -> Result<()> {
-        tracing::trace!("create_penguin_like_table({self:?}, {table:?}, {force}, {size})");
+        tracing::trace!("create_penguin_table({self:?}, {table:?}, {force}, {size})");
         let table = match table {
             Some(table) => table,
             None => "penguin",
@@ -358,7 +358,7 @@ impl Relatable {
     /// Create a demonstration table similar to the island table, but with the given name,
     /// and add `size` rows of data to it. Drop the table first if `force` is set.
     pub async fn create_island_table(&self, table: Option<&str>, force: &bool) -> Result<()> {
-        tracing::trace!("create_island_like_table({self:?}, {table:?}, {force})");
+        tracing::trace!("create_island_table({self:?}, {table:?}, {force})");
         let table = match table {
             Some(table) => table,
             None => "island",
@@ -1145,7 +1145,7 @@ impl Relatable {
                 .await
                 .expect("Error getting dependent tables");
             for table in &dependent_tables {
-                tracing::info!("Validating dependent table '{}'", table.name);
+                tracing::debug!("Validating dependent table '{}'", table.name);
                 self.validate_table(&table)
                     .await
                     .expect("Error validating table");
@@ -2386,9 +2386,9 @@ impl Relatable {
                             Some(row),
                             &mut tx,
                         )?;
-                        for table in &table._get_dependent_tables(Some(column), &mut tx)? {
-                            tracing::info!("Validating dependent table '{}'", table.name);
-                            self._validate_table(table, &mut tx)?;
+                        for column in &column_config._get_dependent_columns(&mut tx)? {
+                            tracing::debug!("Validating dependent column '{}'", column.name);
+                            self._validate_column_optionally_for_row(column, None, &mut tx)?;
                         }
                     }
                 }
@@ -2568,7 +2568,7 @@ impl Relatable {
         if self.validation_level == ValidationLevel::Full {
             self._validate_row(&table, &new_row.id, &mut tx)?;
             for table in &table._get_dependent_tables(None, &mut tx)? {
-                tracing::info!("Validating dependent table '{}'", table.name);
+                tracing::debug!("Validating dependent table '{}'", table.name);
                 self._validate_table(table, &mut tx)?;
             }
         }
