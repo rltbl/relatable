@@ -301,7 +301,7 @@ async fn main() {
             for table in tables_to_choose_from.iter() {
                 if *table != "penguin" {
                     rltbl
-                        .create_demo_table(table, force, *table_size)
+                        .create_penguin_table(Some(table), force, *table_size)
                         .await
                         .unwrap();
                 }

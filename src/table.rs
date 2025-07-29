@@ -13,9 +13,9 @@ use rltbl::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display, str::FromStr};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Table {
     /// The name of the table
     pub name: String,
@@ -107,6 +107,7 @@ impl Table {
             }
             DbKind::Sqlite => format!(r#"DROP TABLE IF EXISTS "{}""#, self.name),
         };
+        tracing::info!("Dropped table '{}'", self.name);
         rltbl.connection.query(&sql, None).await?;
         Ok(())
     }
@@ -223,6 +224,72 @@ impl Table {
             None => Ok(false),
             _ => Ok(true),
         }
+    }
+
+    /// Get the tables that depend on this table. If `column_name` is specified, only get the
+    /// tables that depend on this particular column.
+    pub async fn get_dependent_tables(
+        &self,
+        column: Option<&str>,
+        rltbl: &Relatable,
+    ) -> Result<Vec<Self>> {
+        tracing::trace!("Table::get_dependent_tables({self:?}, {column:?}, {rltbl:?})");
+        let mut conn = rltbl.connection.reconnect()?;
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+        let tables = self._get_dependent_tables(column, &mut tx)?;
+        tx.commit()?;
+        Ok(tables)
+    }
+
+    /// Get the tables that depend on this table, using the given transaction. If `column_name`
+    /// is specified, only get the tables that depend on this particular column.
+    pub fn _get_dependent_tables(
+        &self,
+        column: Option<&str>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Vec<Self>> {
+        tracing::trace!("Table::get_dependent_tables({self:?}, {column:?}, tx)");
+        if !Table::_table_exists("column", tx)? {
+            return Ok(vec![]);
+        }
+
+        let sql = format!(
+            r#"SELECT * FROM "column" WHERE "table" != {sql_param} AND "structure" {is_not} NULL"#,
+            sql_param = SqlParam::new(&tx.kind()).next(),
+            is_not = sql::is_not_clause(&tx.kind())
+        );
+        let params = json!([self.name]);
+        let mut dependent_tables: Vec<Table> = vec![];
+        for row in &tx.query(&sql, Some(&params))? {
+            let Structure::From(structure_table, structure_column) =
+                Structure::from_str(&row.get_string("structure")?)?;
+            if let Some(structure_table) = structure_table {
+                if structure_table == self.name {
+                    match column {
+                        Some(column) if column == structure_column => {
+                            let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
+                            let dependent_column = row.get_string("column")?;
+                            let mut indirect_deps = dependent_table
+                                ._get_dependent_tables(Some(&dependent_column), tx)?;
+                            dependent_tables.push(dependent_table);
+                            dependent_tables.append(&mut indirect_deps);
+                        }
+                        _ => {
+                            let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
+                            let mut indirect_deps =
+                                dependent_table._get_dependent_tables(None, tx)?;
+                            dependent_tables.push(dependent_table);
+                            dependent_tables.append(&mut indirect_deps);
+                        }
+                    };
+                }
+            }
+        }
+        tracing::debug!(
+            "Table '{}' has the following dependent tables: {dependent_tables:#?}",
+            self.name
+        );
+        Ok(dependent_tables)
     }
 
     /// Set the view for the table to the given view type (accepted types are "default" and "text"),
@@ -359,6 +426,7 @@ impl Table {
                          c."description",
                          c."nulltype",
                          c."datatype",
+                         c."structure",
                          d."description" AS "datatype_description",
                          d."parent" AS "datatype_parent",
                          d."condition" AS "datatype_condition",
@@ -414,20 +482,26 @@ impl Table {
                         }
                     },
                 };
-                columns.insert(
-                    json_col.get_string("column")?,
-                    Column {
-                        name: json_col.get_string("column")?,
-                        table: json_col.get_string("table")?,
-                        label: json_col.get_string("label").ok(),
-                        description: json_col.get_string("description").ok(),
-                        datatype_hierarchy: datatype._get_all_ancestors(tx)?,
-                        datatype: datatype,
-                        nulltype: nulltype,
-                        ..Default::default()
-                    },
-                );
+                let structure = match json_col.get_string("structure").ok() {
+                    None => None,
+                    Some(structure) if structure == "" => None,
+                    Some(structure) => Some(Structure::from_str(&structure)?),
+                };
+                let column_name = json_col.get_string("column")?;
+                let column = Column {
+                    name: column_name.clone(),
+                    table: json_col.get_string("table")?,
+                    label: json_col.get_string("label").ok(),
+                    description: json_col.get_string("description").ok(),
+                    datatype_hierarchy: datatype._get_all_ancestors(tx)?,
+                    datatype: datatype,
+                    nulltype: nulltype,
+                    structure: structure,
+                    ..Default::default()
+                };
+                columns.insert(column_name, column);
             }
+            tracing::debug!("Retrieved columns from column table: {columns:?}");
             Ok(columns)
         }
     }
@@ -472,7 +546,10 @@ impl Table {
                     }
                     columns_info.push(column_info);
                 }
-                tracing::debug!("Returning columns info from db: {columns_info:?}");
+                tracing::debug!(
+                    "Retrieved columns from db metadata ({:?}): {columns_info:?}",
+                    tx.kind()
+                );
                 Ok(columns_info)
             }
             DbKind::Postgres => {
@@ -553,7 +630,10 @@ impl Table {
                     };
                     columns_info.push(column_info);
                 }
-                tracing::debug!("Returning columns info from db: {columns_info:?}");
+                tracing::debug!(
+                    "Retrieved columns from db metadata ({:?}): {columns_info:?}",
+                    tx.kind()
+                );
                 Ok(columns_info)
             }
         }
@@ -636,6 +716,9 @@ impl Table {
                             .and_then(|col| col.nulltype.clone()),
                         datatype_hierarchy: datatype._get_all_ancestors(tx)?,
                         datatype: datatype,
+                        structure: column_columns
+                            .get(&column_name)
+                            .and_then(|col| col.structure.clone()),
                         name: column_name,
                         table: table_name.to_string(),
                         primary_key: db_column.get_unsigned("pk")? == 1,
@@ -645,8 +728,12 @@ impl Table {
             };
         }
         if columns.is_empty() && meta_columns.is_empty() {
-            tracing::info!("No db columns found for: {}", table_name);
+            tracing::info!("No column information found for: {}", table_name);
         }
+        tracing::debug!(
+            "Combined columns info from db metadata and column table: \
+             Normal columns: {columns:?}, Metacolumns: {meta_columns:?}"
+        );
         Ok((columns, meta_columns))
     }
 
@@ -805,17 +892,70 @@ impl Table {
 }
 
 /// Represents a column from some table
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Column {
     pub name: String,
     pub table: String,
     pub label: Option<String>,
     pub description: Option<String>,
+    pub primary_key: bool,
+    pub unique: bool,
     pub datatype: Datatype,
     pub datatype_hierarchy: Vec<Datatype>,
     pub nulltype: Option<Datatype>,
-    pub primary_key: bool,
-    pub unique: bool,
+    pub structure: Option<Structure>,
+}
+
+impl Column {
+    /// Get the columns, either from the same or from another table, that depend on this column,
+    /// using the given transaction
+    pub fn _get_dependent_columns(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
+        tracing::trace!("Column::_get_dependent_columns({self:?}, tx)");
+
+        if !Table::_table_exists("column", tx)? {
+            tracing::debug!("No column table found");
+            return Ok(vec![]);
+        }
+
+        tracing::debug!(
+            "Looking through column table for dependent columns of '{}.{}'",
+            self.table,
+            self.name
+        );
+
+        let sql = format!(
+            r#"SELECT * FROM "column" WHERE "structure" {is_not} NULL"#,
+            is_not = sql::is_not_clause(&tx.kind())
+        );
+        let mut dependent_columns: Vec<Column> = vec![];
+        for row in &tx.query(&sql, None)? {
+            let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
+            let Structure::From(structure_table, structure_column) =
+                Structure::from_str(&row.get_string("structure")?)?;
+            let structure_table = structure_table.unwrap_or(dependent_table.name.to_string());
+            if structure_table == self.table && structure_column == self.name {
+                let dependent_column = row.get_string("column")?;
+                let dependent_column = match dependent_table.columns.get(&dependent_column) {
+                    Some(col) => col.clone(),
+                    None => {
+                        return Err(RelatableError::DataError(format!(
+                            "No column found: '{dependent_column}'"
+                        ))
+                        .into());
+                    }
+                };
+                let mut indirect_deps = dependent_column._get_dependent_columns(tx)?;
+                dependent_columns.push(dependent_column);
+                dependent_columns.append(&mut indirect_deps);
+            }
+        }
+        tracing::debug!(
+            "Column '{}.{}' has the following dependent columns: {dependent_columns:#?}",
+            self.table,
+            self.name
+        );
+        Ok(dependent_columns)
+    }
 }
 
 lazy_static! {
@@ -824,8 +964,8 @@ lazy_static! {
         vec!["text", "empty", "line", "trimmed_line", "nonspace", "word", "integer"];
 }
 
-/// Represents' a column's datatype
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+/// Represents a column's datatype
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Datatype {
     pub name: String,
     pub description: String,
@@ -1146,7 +1286,7 @@ impl Datatype {
                              ("added_by", "table", "row", "column", "value", "level", "rule",
                               "message")
                            SELECT
-                             'Relatable' AS "added_by",
+                             'rltbl' AS "added_by",
                              {sql_param_1} AS "table",
                              "_id" AS "row",
                              {sql_param_2} AS "column",
@@ -1209,7 +1349,7 @@ impl Datatype {
                              ("added_by", "table", "row", "column", "value", "level", "rule",
                               "message")
                            SELECT
-                             'Relatable' AS "added_by",
+                             'rltbl' AS "added_by",
                              {sql_param_1} AS "table",
                              "_id" AS "row",
                              {sql_param_2} AS "column",
@@ -1266,6 +1406,148 @@ impl Datatype {
             }
         );
         Ok(messages_were_added)
+    }
+}
+
+/// Represents a column's structure.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Structure {
+    From(Option<String>, String),
+}
+
+impl Structure {
+    /// Use this structure condition to validate the given column using the given transaction.
+    /// If `row` is specified, then only validate that row.
+    pub fn validate(
+        &self,
+        column: &Column,
+        row: Option<&u64>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<bool> {
+        tracing::trace!("Structre::validate({self:?}, {column:?}, {row:?}, tx)");
+        let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
+        let mut messages_were_added = false;
+        match self {
+            Structure::From(s_table, s_column) => {
+                let c_table = &column.table;
+                let c_column = &column.name;
+                let s_table = match s_table {
+                    None => c_table,
+                    Some(s_table) => s_table,
+                };
+                let s_table = unquoted_re.replace(&s_table, "$unquoted").to_string();
+                let s_column = unquoted_re.replace(&s_column, "$unquoted").to_string();
+                let mut sql_param_gen = SqlParam::new(&tx.kind());
+                let mut sql = format!(
+                    r#"INSERT INTO "message"
+                             ("added_by", "table", "row", "column", "value", "level", "rule",
+                              "message")
+                           SELECT
+                             'rltbl' AS "added_by",
+                             {sql_param_1} AS "table",
+                             "_id" AS "row",
+                             {sql_param_2} AS "column",
+                             "{c_column}" AS "value",
+                             'error' AS "level",
+                             {sql_param_3} AS "rule",
+                             {sql_param_4} AS "message"
+                           FROM "{c_table}"
+                           WHERE "{c_column}" NOT IN (
+                               SELECT "{s_column}" FROM "{s_table}"
+                           )"#,
+                    sql_param_1 = sql_param_gen.next(),
+                    sql_param_2 = sql_param_gen.next(),
+                    sql_param_3 = sql_param_gen.next(),
+                    sql_param_4 = sql_param_gen.next(),
+                );
+                let params;
+                match row {
+                    Some(row) => {
+                        sql.push_str(&format!(
+                            r#" AND "_id" = {sql_param}"#,
+                            sql_param = sql_param_gen.next()
+                        ));
+                        params = json!([
+                            c_table,
+                            c_column,
+                            format!("key:foreign"),
+                            format!("{c_column} must be in {s_table}.{s_column}"),
+                            row
+                        ]);
+                    }
+                    None => {
+                        params = json!([
+                            c_table,
+                            c_column,
+                            format!("key:foreign"),
+                            format!("{c_column} must be in {s_table}.{s_column}"),
+                        ]);
+                    }
+                };
+                sql.push_str(r#" RETURNING 1 AS "inserted""#);
+                if let Some(_) = tx.query_one(&sql, Some(&params))? {
+                    messages_were_added = true;
+                }
+            }
+        };
+
+        tracing::debug!(
+            "Validated structure '{}' for column '{}.{}' (row: {:?}) {}",
+            self,
+            column.table,
+            column.name,
+            row,
+            match messages_were_added {
+                false => "with messages added.",
+                true => "with no messages added.",
+            }
+        );
+        Ok(messages_were_added)
+    }
+}
+
+impl FromStr for Structure {
+    type Err = anyhow::Error;
+
+    fn from_str(structure: &str) -> Result<Self> {
+        tracing::trace!("Structure::from_str({structure})");
+        if structure.starts_with("from(") {
+            let re = regex::Regex::new(r"from\(((.+?)\.)?(.+?)\)")?;
+            let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
+            match re.captures(structure) {
+                Some(captures) => {
+                    let table = &captures.get(2).and_then(|t| Some(t.as_str()));
+                    let table = match table {
+                        Some(table) => Some(unquoted_re.replace(table, "$unquoted").to_string()),
+                        None => None,
+                    };
+                    let column = &captures[3];
+                    let column = unquoted_re.replace(column, "$unquoted").to_string();
+                    Ok(Structure::From(table, column))
+                }
+                None => {
+                    return Err(RelatableError::InputError(format!(
+                        "Invalid from() structure: '{structure}'"
+                    ))
+                    .into());
+                }
+            }
+        } else {
+            return Err(
+                RelatableError::InputError(format!("Invalid structure: '{structure}'")).into(),
+            );
+        }
+    }
+}
+
+impl Display for Structure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Structure::From(s_table, s_column) => match s_table {
+                None => write!(f, "from({s_column})"),
+                Some(s_table) => write!(f, "from({s_table}.{s_column})"),
+            },
+        }
     }
 }
 
@@ -1449,7 +1731,7 @@ impl From<JsonRow> for Row {
                         .unwrap()
                         .as_str()
                         .unwrap();
-                    let message: Message = match serde_json::from_value(message.clone()) {
+                    let message: Message = match serde_json::from_value(message.to_owned()) {
                         Ok(message) => message,
                         Err(err) => {
                             tracing::warn!(
