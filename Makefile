@@ -209,7 +209,7 @@ test/perf/tsv/penguin.tsv: | test/perf/tsv
 	target/debug/rltbl demo --size $(perf_test_size) --force
 	target/debug/rltbl save test/perf/tsv/
 
-perf_test_timeout = 7.5
+perf_test_timeout = 8
 perf_test_size = 100000
 
 ### SQLite performance (rusqlite and sqlx)

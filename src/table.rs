@@ -107,6 +107,7 @@ impl Table {
             }
             DbKind::Sqlite => format!(r#"DROP TABLE IF EXISTS "{}""#, self.name),
         };
+        tracing::info!("Dropped table '{}'", self.name);
         rltbl.connection.query(&sql, None).await?;
         Ok(())
     }

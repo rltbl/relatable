@@ -719,6 +719,11 @@ impl Relatable {
         } else {
             let mut tables = self.get_tables().await?;
             for (_, table) in tables.iter_mut() {
+                let mut dependent_tables = table.get_dependent_tables(None, &self).await?;
+                dependent_tables.reverse();
+                for table in &mut dependent_tables {
+                    table.drop_table(self).await?;
+                }
                 table.drop_table(self).await?;
             }
         }
@@ -729,7 +734,7 @@ impl Relatable {
     pub async fn drop_meta_tables(&self) -> Result<()> {
         tracing::trace!("Relatable::drop_meta_tables({self:?})");
         for table_name in [
-            "cache", "user", "change", "message", "history", "datatype", "column", "table",
+            "cache", "history", "change", "user", "message", "datatype", "column", "table",
         ] {
             let mut table = Table {
                 name: table_name.to_string(),
