@@ -1146,7 +1146,7 @@ impl Relatable {
                 .expect("Error getting dependent tables");
             for table in &dependent_tables {
                 tracing::debug!("Validating dependent table '{}'", table.name);
-                self.validate_table(&table)
+                self.validate_structure_for_table(&table)
                     .await
                     .expect("Error validating table");
             }
@@ -2388,7 +2388,9 @@ impl Relatable {
                         )?;
                         for column in &column_config._get_dependent_columns(&mut tx)? {
                             tracing::debug!("Validating dependent column '{}'", column.name);
-                            self._validate_column_optionally_for_row(column, None, &mut tx)?;
+                            self._validate_structure_for_column_and_optionally_for_row(
+                                column, None, &mut tx,
+                            )?;
                         }
                     }
                 }
@@ -2569,7 +2571,7 @@ impl Relatable {
             self._validate_row(&table, &new_row.id, &mut tx)?;
             for table in &table._get_dependent_tables(None, &mut tx)? {
                 tracing::debug!("Validating dependent table '{}'", table.name);
-                self._validate_table(table, &mut tx)?;
+                self._validate_structure_for_table(table, &mut tx)?;
             }
         }
 
@@ -3129,12 +3131,80 @@ impl Relatable {
     }
 
     /// TODO: add docstring
-    pub fn _validate_table(&self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<()> {
+    fn _validate_table(&self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<()> {
         // TODO: Add tracing
 
         // Validate each table column
         for (_, column) in table.columns.iter() {
             self._validate_column_optionally_for_row(column, None, tx)?;
+        }
+
+        Ok(())
+    }
+
+    /// Do datatype validation on all of the data in the given database table
+    pub async fn validate_datatype_for_table(&self, table: &Table) -> Result<()> {
+        //tracing::trace!("Relatable::validate_table({self:?}, {table:?})");
+
+        // Reconnect and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        self._validate_datatype_for_table(table, &mut tx)?;
+
+        // Commit the transaction
+        tx.commit()?;
+
+        tracing::info!("Validated datatype for table '{}'", table.name);
+
+        Ok(())
+    }
+
+    /// TODO: add docstring
+    fn _validate_datatype_for_table(
+        &self,
+        table: &Table,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        // TODO: Add tracing
+
+        // Validate each table column
+        for (_, column) in table.columns.iter() {
+            self._validate_datatype_for_column_and_optionally_for_row(column, None, tx)?;
+        }
+
+        Ok(())
+    }
+
+    /// Do structure validation on all of the data in the given database table
+    pub async fn validate_structure_for_table(&self, table: &Table) -> Result<()> {
+        //tracing::trace!("Relatable::validate_table({self:?}, {table:?})");
+
+        // Reconnect and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        self._validate_structure_for_table(table, &mut tx)?;
+
+        // Commit the transaction
+        tx.commit()?;
+
+        tracing::info!("Validated structure for table '{}'", table.name);
+
+        Ok(())
+    }
+
+    /// TODO: add docstring
+    fn _validate_structure_for_table(
+        &self,
+        table: &Table,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        // TODO: Add tracing
+
+        // Validate each table column
+        for (_, column) in table.columns.iter() {
+            self._validate_structure_for_column_and_optionally_for_row(column, None, tx)?;
         }
 
         Ok(())
@@ -3168,68 +3238,6 @@ impl Relatable {
         Ok(())
     }
 
-    /// Validate the given column in its associated database table using the given transaction.
-    /// If `row` is given, only validate the column for that row.
-    fn _validate_column_optionally_for_row(
-        &self,
-        column: &Column,
-        row: Option<&u64>,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<()> {
-        tracing::trace!(
-            "Relatable::_validate_column_optionally_for_row({self:?}, {column:?}, {row:?}, tx)"
-        );
-
-        let table_name = column.table.as_str();
-
-        // Delete pre-existing datatype and structure validation messages for this column and then
-        // validate the datatype conditions for each datatype in the column's datatype hierarchy.
-        self._delete_message(
-            tx,
-            table_name,
-            row.copied(),
-            Some(&column.name),
-            Some("datatype:%"),
-            None,
-        )?;
-        self._delete_message(
-            tx,
-            table_name,
-            row.copied(),
-            Some(&column.name),
-            Some("key:%"),
-            None,
-        )?;
-
-        // Gather the datatypes to check: The column's datatype, plus any further datatypes in
-        // the datatype hierarchy:
-        let mut datatypes_to_check = vec![column.datatype.clone()];
-        datatypes_to_check.append(&mut column.datatype_hierarchy.clone());
-
-        // Validate the column against each datatype in the hierarchy:
-        for datatype in datatypes_to_check {
-            let inserted = datatype.validate(column, row, tx)?;
-            if !inserted {
-                break;
-            }
-        }
-
-        // Validate the cell's structure condition:
-        if let Some(structure) = &column.structure {
-            structure.validate(column, row, tx)?;
-        }
-
-        // TODO: Validate other types of conditions:
-
-        tracing::debug!(
-            "Validated column (row {:?}), column '{}.{}'",
-            row,
-            column.table,
-            column.name
-        );
-        Ok(())
-    }
-
     /// Validate the given row of the given table
     pub async fn validate_row(&self, table: &Table, row: &u64) -> Result<()> {
         tracing::trace!("Relatable::validate_row({self:?}, {table:?}, {row})");
@@ -3247,6 +3255,114 @@ impl Relatable {
             self._validate_column_optionally_for_row(column, Some(row), tx)?;
         }
         tracing::info!("Validated row {} of table '{}'", row, table.name);
+        Ok(())
+    }
+
+    /// TODO: Add docstring
+    fn _validate_datatype_for_column_and_optionally_for_row(
+        &self,
+        column: &Column,
+        row: Option<&u64>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        //tracing::trace!(
+        //    "Relatable::_validate_datatype_for_column_and_optionally_for_row(\
+        //     {self:?}, {column:?}, {row:?}, tx)"
+        //);
+
+        let table_name = column.table.as_str();
+
+        // Delete pre-existing datatype validation messages for this column and then
+        // validate the datatype conditions for each datatype in the column's datatype hierarchy.
+        self._delete_message(
+            tx,
+            table_name,
+            row.copied(),
+            Some(&column.name),
+            Some("datatype:%"),
+            Some("rltbl"),
+        )?;
+
+        // Gather the datatypes to check: The column's datatype, plus any further datatypes in
+        // the datatype hierarchy:
+        let mut datatypes_to_check = vec![column.datatype.clone()];
+        datatypes_to_check.append(&mut column.datatype_hierarchy.clone());
+
+        // Validate the column against each datatype in the hierarchy:
+        for datatype in datatypes_to_check {
+            let inserted = datatype.validate(column, row, tx)?;
+            if !inserted {
+                break;
+            }
+        }
+
+        tracing::debug!(
+            "Validated datatype for column: '{}.{}'{}",
+            column.table,
+            column.name,
+            match row {
+                None => "".to_string(),
+                Some(row) => format!(", row: {row}"),
+            }
+        );
+        Ok(())
+    }
+
+    /// TODO: Add docstring
+    fn _validate_structure_for_column_and_optionally_for_row(
+        &self,
+        column: &Column,
+        row: Option<&u64>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        //tracing::trace!(
+        //    "Relatable::_validate_structure_for_column_and_optionally_for_row(\
+        //     {self:?}, {column:?}, {row:?}, tx)"
+        //);
+
+        let table_name = column.table.as_str();
+
+        // Delete pre-existing structure validation messages for this column and then re-validate
+        // the structure condition for this column and (optionally) row:
+        self._delete_message(
+            tx,
+            table_name,
+            row.copied(),
+            Some(&column.name),
+            Some("key:%"),
+            Some("rltbl"),
+        )?;
+
+        // Validate the cell's structure condition:
+        if let Some(structure) = &column.structure {
+            structure.validate(column, row, tx)?;
+        }
+
+        tracing::debug!(
+            "Validated structure for column: '{}.{}'{}",
+            column.table,
+            column.name,
+            match row {
+                None => "".to_string(),
+                Some(row) => format!(", row: {row}"),
+            }
+        );
+        Ok(())
+    }
+
+    /// Validate the given column in its associated database table using the given transaction.
+    /// If `row` is given, only validate the column for that row.
+    fn _validate_column_optionally_for_row(
+        &self,
+        column: &Column,
+        row: Option<&u64>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        //tracing::trace!(
+        //    "Relatable::_validate_column_optionally_for_row({self:?}, {column:?}, {row:?}, tx)"
+        //);
+        self._validate_datatype_for_column_and_optionally_for_row(column, row, tx)?;
+        self._validate_structure_for_column_and_optionally_for_row(column, row, tx)?;
         Ok(())
     }
 
