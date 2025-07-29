@@ -219,7 +219,7 @@ impl Relatable {
         Ok(rltbl)
     }
 
-    /// Build a demonstration database
+    /// Build a demonstration database. Based on <https://github.com/allisonhorst/palmerpenguins>.
     pub async fn build_demo(
         database: Option<&str>,
         force: &bool,
@@ -233,16 +233,24 @@ impl Relatable {
 
         rltbl.create_demo_column_table(force).await?;
         rltbl.create_demo_datatype_table(force).await?;
-        rltbl.create_demo_table("penguin", force, size).await?;
+        rltbl.create_penguin_table(None, force, size).await?;
+        rltbl.create_island_table(None, force).await?;
         Ok(rltbl)
     }
 
-    /// Create a demonstration table with the given name, add entries corresponding to it
-    /// to the column table, and add `size` rows of data to it. Drop the table first if `force` is
-    /// set.
-    /// Based on <https://github.com/allisonhorst/palmerpenguins>
-    pub async fn create_demo_table(&self, table: &str, force: &bool, size: usize) -> Result<()> {
-        tracing::trace!("create_demo_table({self:?}, {table}, {force}, {size})");
+    /// Create a demonstration table similar to the penguin table, but with the given name,
+    /// and add `size` rows of data to it. Drop the table first if `force` is set.
+    pub async fn create_penguin_table(
+        &self,
+        table: Option<&str>,
+        force: &bool,
+        size: usize,
+    ) -> Result<()> {
+        tracing::trace!("create_penguin_table({self:?}, {table:?}, {force}, {size})");
+        let table = match table {
+            Some(table) => table,
+            None => "penguin",
+        };
         if *force {
             if let DbKind::Postgres = self.connection.kind() {
                 self.connection
@@ -347,6 +355,60 @@ impl Relatable {
         Ok(())
     }
 
+    /// Create a demonstration table similar to the island table, but with the given name,
+    /// and add `size` rows of data to it. Drop the table first if `force` is set.
+    pub async fn create_island_table(&self, table: Option<&str>, force: &bool) -> Result<()> {
+        tracing::trace!("create_island_table({self:?}, {table:?}, {force})");
+        let table = match table {
+            Some(table) => table,
+            None => "island",
+        };
+        if *force {
+            if let DbKind::Postgres = self.connection.kind() {
+                self.connection
+                    .query(&format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#), None)
+                    .await?;
+            }
+        }
+
+        let sql =
+            format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
+        self.connection.query(&sql, None).await?;
+
+        let pkey_clause = match self.connection.kind() {
+            DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+            DbKind::Postgres => "SERIAL PRIMARY KEY",
+        };
+
+        // Create the demo table:
+        let sql = format!(
+            r#"CREATE TABLE "{table}" (
+                 _id {pkey_clause},
+                 _order INTEGER UNIQUE,
+                 island_id INTEGER,
+                 island TEXT
+               )"#,
+        );
+        self.connection.query(&sql, None).await?;
+
+        let mut ddl = vec![];
+        sql::add_metacolumn_trigger_ddl(&mut ddl, table, &self.connection.kind());
+        if let CachingStrategy::Trigger = self.caching_strategy {
+            sql::add_caching_trigger_ddl(&mut ddl, table, &self.connection.kind());
+        }
+        for sql in ddl {
+            self.connection.query(&sql, None).await?;
+        }
+
+        let sql = format!(
+            r#"INSERT INTO "{table}" ("island_id", "island")
+               VALUES (1, 'Torgersen'), (2, 'Biscoe'), (3, 'Dream')"#
+        );
+
+        self.connection.query(&sql, None).await?;
+        Ok(())
+    }
+
     /// Create the datatype table for the demonstration database
     pub async fn create_demo_datatype_table(&self, force: &bool) -> Result<()> {
         tracing::trace!("create_demo_datatype_table({self:?}, {force})");
@@ -376,6 +438,12 @@ impl Relatable {
            )"#,
         );
         self.connection.query(&sql, None).await?;
+
+        let mut ddl = vec![];
+        sql::add_metacolumn_trigger_ddl(&mut ddl, "datatype", &self.connection.kind());
+        for sql in ddl {
+            self.connection.query(&sql, None).await?;
+        }
 
         let datatype_contents = [
             json!({
@@ -460,18 +528,23 @@ impl Relatable {
              "label" TEXT,
              "description" TEXT,
              "datatype" TEXT,
-             "nulltype" TEXT
+             "nulltype" TEXT,
+             "structure" TEXT
            )"#,
         );
         self.connection.query(&sql, None).await?;
+
+        let mut ddl = vec![];
+        sql::add_metacolumn_trigger_ddl(&mut ddl, "column", &self.connection.kind());
+        for sql in ddl {
+            self.connection.query(&sql, None).await?;
+        }
 
         let column_contents = [
             json!({
                 "table": "penguin",
                 "column": "study_name",
                 "label": "study name",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
                 "datatype": "study_name",
             }),
             json!({
@@ -479,30 +552,25 @@ impl Relatable {
                 "column": "sample_number",
                 "label": "sample number",
                 "description": "a sample number",
-                "nulltype": JsonValue::Null,
                 "datatype": "integer",
             }),
             json!({
                 "table": "penguin",
                 "column": "species",
                 "label": "species",
-                "description": JsonValue::Null,
                 "nulltype": "empty",
-                "datatype": JsonValue::Null,
             }),
             json!({
                 "table": "penguin",
                 "column": "island",
                 "label": "island",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
                 "datatype": "text",
+                "structure": "from(island.island)",
             }),
             json!({
                 "table": "penguin",
                 "column": "individual_id",
                 "label": "individual id",
-                "description": JsonValue::Null,
                 "nulltype": "empty",
                 "datatype": "text",
             }),
@@ -510,23 +578,18 @@ impl Relatable {
                 "table": "penguin",
                 "column": "bill_length",
                 "label": "bill length (mm)",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
                 "datatype": "decimal",
             }),
             json!({
                 "table": "penguin",
                 "column": "bill_depth",
                 "label": "bill depth (mm)",
-                "description": JsonValue::Null,
-                "nulltype": JsonValue::Null,
                 "datatype": "decimal",
             }),
             json!({
                 "table": "penguin",
                 "column": "body_mass",
                 "label": "body mass (g)",
-                "description": JsonValue::Null,
                 "nulltype": "empty",
                 "datatype": "integer",
             }),
@@ -540,7 +603,7 @@ impl Relatable {
         let mut sql_param_gen = SqlParam::new(&self.connection.kind());
         let mut param_values = vec![];
         let mut get_param = |row: &JsonRow, cname: &str| -> Result<String> {
-            match row.get_value(cname)? {
+            match row.get_value(cname).unwrap_or_default() {
                 JsonValue::Null => Ok("NULL".to_string()),
                 JsonValue::String(value) => {
                     param_values.push(value.to_string());
@@ -557,12 +620,13 @@ impl Relatable {
             let s4 = get_param(row, "description")?;
             let s5 = get_param(row, "nulltype")?;
             let s6 = get_param(row, "datatype")?;
-            value_clauses.push(format!("({s1}, {s2}, {s3}, {s4}, {s5}, {s6})"));
+            let s7 = get_param(row, "structure")?;
+            value_clauses.push(format!("({s1}, {s2}, {s3}, {s4}, {s5}, {s6}, {s7})"));
         }
 
         let sql = format!(
             r#"INSERT INTO "column"
-               ("table", "column", "label", "description", "nulltype", "datatype")
+               ("table", "column", "label", "description", "nulltype", "datatype", "structure")
                VALUES {values}"#,
             values = value_clauses.join(", ")
         );
@@ -626,7 +690,7 @@ impl Relatable {
             (0, 0, 'FAKE123', 'Fake Study 123')"#;
         self.connection.query(sql, None).await.unwrap();
 
-        self.create_demo_table("penguin", force, size).await?;
+        self.create_penguin_table(None, force, size).await?;
 
         let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('egg', 'egg.tsv')"#;
         self.connection.query(sql, None).await.unwrap();
@@ -655,6 +719,11 @@ impl Relatable {
         } else {
             let mut tables = self.get_tables().await?;
             for (_, table) in tables.iter_mut() {
+                let mut dependent_tables = table.get_dependent_tables(None, &self).await?;
+                dependent_tables.reverse();
+                for table in &mut dependent_tables {
+                    table.drop_table(self).await?;
+                }
                 table.drop_table(self).await?;
             }
         }
@@ -665,7 +734,7 @@ impl Relatable {
     pub async fn drop_meta_tables(&self) -> Result<()> {
         tracing::trace!("Relatable::drop_meta_tables({self:?})");
         for table_name in [
-            "cache", "user", "change", "message", "history", "datatype", "column", "table",
+            "cache", "history", "change", "user", "message", "datatype", "column", "table",
         ] {
             let mut table = Table {
                 name: table_name.to_string(),
@@ -907,6 +976,9 @@ impl Relatable {
                     nulltype: table_columns
                         .get(column_name)
                         .and_then(|col| col.nulltype.clone()),
+                    structure: table_columns
+                        .get(column_name)
+                        .and_then(|col| col.structure.clone()),
                     ..Default::default()
                 };
                 table.columns.insert(column_name.to_string(), column);
@@ -1073,6 +1145,16 @@ impl Relatable {
             self.validate_table(&table)
                 .await
                 .expect("Error validating table");
+            let dependent_tables = table
+                .get_dependent_tables(None, &self)
+                .await
+                .expect("Error getting dependent tables");
+            for table in &dependent_tables {
+                tracing::debug!("Validating dependent table '{}'", table.name);
+                self.validate_structure_for_table(&table)
+                    .await
+                    .expect("Error validating table");
+            }
         }
 
         self.commit_to_git().await.expect("Error committing to git");
@@ -2317,6 +2399,12 @@ impl Relatable {
                             Some(row),
                             &mut tx,
                         )?;
+                        for column in &column_config._get_dependent_columns(&mut tx)? {
+                            tracing::debug!("Validating dependent column '{}'", column.name);
+                            self._validate_structure_for_column_and_optionally_for_row(
+                                column, None, &mut tx,
+                            )?;
+                        }
                     }
                 }
                 _ => {
@@ -2494,6 +2582,10 @@ impl Relatable {
         // Optionally do full validation on the row after it has been inserted:
         if self.validation_level == ValidationLevel::Full {
             self._validate_row(&table, &new_row.id, &mut tx)?;
+            for table in &table._get_dependent_tables(None, &mut tx)? {
+                tracing::debug!("Validating dependent table '{}'", table.name);
+                self._validate_structure_for_table(table, &mut tx)?;
+            }
         }
 
         let after_id = match after_id {
@@ -3041,16 +3133,95 @@ impl Relatable {
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        // Validate each table column
-        for (_, column) in table.columns.iter() {
-            self._validate_column_optionally_for_row(column, None, &mut tx)?;
-        }
+        self._validate_table(table, &mut tx)?;
 
         // Commit the transaction
         tx.commit()?;
 
         tracing::info!("Validated table '{}'", table.name);
+        Ok(())
+    }
 
+    /// Validate all of the data in the given database table using the given transaction
+    fn _validate_table(&self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<()> {
+        tracing::trace!("Relatable::_validate_table({self:?}, {table:?}, tx)");
+
+        // Validate each table column
+        for (_, column) in table.columns.iter() {
+            self._validate_column_optionally_for_row(column, None, tx)?;
+        }
+
+        tracing::debug!("Validated table '{}'", table.name);
+        Ok(())
+    }
+
+    /// Do datatype validation on all of the data in the given database table
+    pub async fn validate_datatype_for_table(&self, table: &Table) -> Result<()> {
+        tracing::trace!("Relatable::validate_datatype_for_table({self:?}, {table:?})");
+
+        // Reconnect and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        self._validate_datatype_for_table(table, &mut tx)?;
+
+        // Commit the transaction
+        tx.commit()?;
+
+        tracing::info!("Validated datatype for table '{}'", table.name);
+        Ok(())
+    }
+
+    /// Do datatype validation on all of the data in the given table using the given database
+    /// transaction
+    fn _validate_datatype_for_table(
+        &self,
+        table: &Table,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        tracing::trace!("Relatable::_validate_datatype_for_table({self:?}, {table:?}, tx)");
+
+        // Validate each table column
+        for (_, column) in table.columns.iter() {
+            self._validate_datatype_for_column_and_optionally_for_row(column, None, tx)?;
+        }
+
+        tracing::debug!("Validated datatype for table '{}'", table.name);
+        Ok(())
+    }
+
+    /// Do structure validation on all of the data in the given database table
+    pub async fn validate_structure_for_table(&self, table: &Table) -> Result<()> {
+        tracing::trace!("Relatable::validate_structure_for_table({self:?}, {table:?})");
+
+        // Reconnect and begin a transaction:
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+
+        self._validate_structure_for_table(table, &mut tx)?;
+
+        // Commit the transaction
+        tx.commit()?;
+
+        tracing::info!("Validated structure for table '{}'", table.name);
+        Ok(())
+    }
+
+    /// Do structure validation on all of the data in the given database table using the given
+    /// database transation
+    fn _validate_structure_for_table(
+        &self,
+        table: &Table,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        tracing::trace!("Relatable::_validate_structure_for_table({self:?}, {table:?}, tx)");
+
+        // Validate each table column
+        for (_, column) in table.columns.iter() {
+            self._validate_structure_for_column_and_optionally_for_row(column, None, tx)?;
+        }
+
+        tracing::debug!("Validated structure for table '{}'", table.name);
         Ok(())
     }
 
@@ -3082,29 +3253,51 @@ impl Relatable {
         Ok(())
     }
 
-    /// Validate the given column in its associated database table using the given transaction.
-    /// If `row` is given, only validate the column for that row.
-    fn _validate_column_optionally_for_row(
+    /// Validate the given row of the given table
+    pub async fn validate_row(&self, table: &Table, row: &u64) -> Result<()> {
+        tracing::trace!("Relatable::validate_row({self:?}, {table:?}, {row})");
+        let mut conn = self.connection.reconnect()?;
+        let mut tx = self.connection.begin(&mut conn).await?;
+        self._validate_row(table, row, &mut tx)?;
+        tx.commit()?;
+        tracing::info!("Validated row {} of table '{}'", row, table.name);
+        Ok(())
+    }
+
+    /// Validate the given row of the given table using the given database transaction
+    fn _validate_row(&self, table: &Table, row: &u64, tx: &mut DbTransaction<'_>) -> Result<()> {
+        tracing::trace!("Relatable::_validate_row({self:?}, {table:?}, {row}, tx)");
+        for (_, column) in table.columns.iter() {
+            self._validate_column_optionally_for_row(column, Some(row), tx)?;
+        }
+        tracing::debug!("Validated row {} of table '{}'", row, table.name);
+        Ok(())
+    }
+
+    /// Validate the datatype of the given column in its associated database table using the
+    /// given transaction. If `row` is given, only validate the column for that row.
+    fn _validate_datatype_for_column_and_optionally_for_row(
         &self,
         column: &Column,
         row: Option<&u64>,
         tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
         tracing::trace!(
-            "Relatable::_validate_column_optionally_for_row({self:?}, {column:?}, {row:?}, tx)"
+            "Relatable::_validate_datatype_for_column_and_optionally_for_row(\
+             {self:?}, {column:?}, {row:?}, tx)"
         );
 
         let table_name = column.table.as_str();
 
-        // Delete pre-existing datatype validation messages for this column and then validate the
-        // datatype conditions for each datatype in the column's datatype hierarchy.
+        // Delete pre-existing datatype validation messages for this column and then
+        // validate the datatype conditions for each datatype in the column's datatype hierarchy.
         self._delete_message(
             tx,
             table_name,
             row.copied(),
             Some(&column.name),
             Some("datatype:%"),
-            None,
+            Some("rltbl"),
         )?;
 
         // Gather the datatypes to check: The column's datatype, plus any further datatypes in
@@ -3120,34 +3313,83 @@ impl Relatable {
             }
         }
 
-        // TODO: Validate other types of conditions (structure, etc.)
-
         tracing::debug!(
-            "Validated column (row {:?}), column '{}.{}'",
-            row,
+            "Validated datatype for column: '{}.{}'{}",
             column.table,
-            column.name
+            column.name,
+            match row {
+                None => "".to_string(),
+                Some(row) => format!(", row: {row}"),
+            }
         );
         Ok(())
     }
 
-    /// Validate the given row of the given table
-    pub async fn validate_row(&self, table: &Table, row: &u64) -> Result<()> {
-        tracing::trace!("Relatable::validate_row({self:?}, {table:?}, {row})");
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-        self._validate_row(table, row, &mut tx)?;
-        tx.commit()?;
+    /// Validate the structure of the given column in its associated database table using the
+    /// given transaction. If `row` is given, only validate the column for that row.
+    fn _validate_structure_for_column_and_optionally_for_row(
+        &self,
+        column: &Column,
+        row: Option<&u64>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        tracing::trace!(
+            "Relatable::_validate_structure_for_column_and_optionally_for_row(\
+             {self:?}, {column:?}, {row:?}, tx)"
+        );
+
+        let table_name = column.table.as_str();
+
+        // Delete pre-existing structure validation messages for this column and then re-validate
+        // the structure condition for this column and (optionally) row:
+        self._delete_message(
+            tx,
+            table_name,
+            row.copied(),
+            Some(&column.name),
+            Some("key:%"),
+            Some("rltbl"),
+        )?;
+
+        // Validate the cell's structure condition:
+        if let Some(structure) = &column.structure {
+            structure.validate(column, row, tx)?;
+        }
+
+        tracing::debug!(
+            "Validated structure for column: '{}.{}'{}",
+            column.table,
+            column.name,
+            match row {
+                None => "".to_string(),
+                Some(row) => format!(", row: {row}"),
+            }
+        );
         Ok(())
     }
 
-    /// Validate the given row of the given table using the given database transaction
-    fn _validate_row(&self, table: &Table, row: &u64, tx: &mut DbTransaction<'_>) -> Result<()> {
-        tracing::trace!("Relatable::_validate_row({self:?}, {table:?}, {row}, tx)");
-        for (_, column) in table.columns.iter() {
-            self._validate_column_optionally_for_row(column, Some(row), tx)?;
-        }
-        tracing::info!("Validated row {} of table '{}'", row, table.name);
+    /// Validate the given column in its associated database table using the given transaction.
+    /// If `row` is given, only validate the column for that row.
+    fn _validate_column_optionally_for_row(
+        &self,
+        column: &Column,
+        row: Option<&u64>,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
+        tracing::trace!(
+            "Relatable::_validate_column_optionally_for_row({self:?}, {column:?}, {row:?}, tx)"
+        );
+        self._validate_datatype_for_column_and_optionally_for_row(column, row, tx)?;
+        self._validate_structure_for_column_and_optionally_for_row(column, row, tx)?;
+        tracing::debug!(
+            "Validated column: '{}.{}'{}",
+            column.table,
+            column.name,
+            match row {
+                None => "".to_string(),
+                Some(row) => format!(", row: {row}"),
+            }
+        );
         Ok(())
     }
 

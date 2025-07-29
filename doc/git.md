@@ -27,11 +27,12 @@ $ rltbl -v demo --size 1 --force
 Created a demonstration database in '.relatable/relatable.db'
 $ rltbl -v save
 $ echo '.relatable/' > .gitignore
-$ git add .gitignore penguin.tsv
+$ git add .gitignore penguin.tsv island.tsv
 $ git commit --message 'Initial commit'
 [master (root-commit) ...] Initial commit
- 2 files changed, 3 insertions(+)
+ 3 files changed, 7 insertions(+)
  create mode 100644 .gitignore
+ create mode 100644 island.tsv
  create mode 100644 penguin.tsv
 $ git log
 commit ... (HEAD -> master)
