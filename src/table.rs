@@ -226,33 +226,29 @@ impl Table {
         }
     }
 
-    /// TODO: Add docstring
+    /// Get the tables that depend on this table. If `column_name` is specified, only get the
+    /// tables that depend on this particular column.
     pub async fn get_dependent_tables(
         &self,
-        column_name: Option<&str>,
+        column: Option<&str>,
         rltbl: &Relatable,
     ) -> Result<Vec<Self>> {
-        // TODO: Add tracing statement
+        tracing::trace!("Table::get_dependent_tables({self:?}, {column:?}, {rltbl:?})");
         let mut conn = rltbl.connection.reconnect()?;
-        // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
-
-        let tables = self._get_dependent_tables(column_name, &mut tx)?;
-
-        // Commit the transaction:
+        let tables = self._get_dependent_tables(column, &mut tx)?;
         tx.commit()?;
-
         Ok(tables)
     }
 
-    /// TODO: Add docstring
+    /// Get the tables that depend on this table, using the given transaction. If `column_name`
+    /// is specified, only get the tables that depend on this particular column.
     pub fn _get_dependent_tables(
         &self,
         column: Option<&str>,
         tx: &mut DbTransaction<'_>,
     ) -> Result<Vec<Self>> {
-        // TODO: Add tracing statement
-
+        tracing::trace!("Table::get_dependent_tables({self:?}, {column:?}, tx)");
         if !Table::_table_exists("column", tx)? {
             return Ok(vec![]);
         }
@@ -911,9 +907,10 @@ pub struct Column {
 }
 
 impl Column {
-    /// TODO: Add docstring
+    /// Get the columns, either from the same or from another table, that depend on this column,
+    /// using the given transaction
     pub fn _get_dependent_columns(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
-        // TODO: Add tracing statement
+        tracing::trace!("Column::_get_dependent_columns({self:?}, tx)");
 
         if !Table::_table_exists("column", tx)? {
             tracing::debug!("No column table found");
@@ -1419,15 +1416,15 @@ pub enum Structure {
 }
 
 impl Structure {
-    /// TODO: Add docstring here
+    /// Use this structure condition to validate the given column using the given transaction.
+    /// If `row` is specified, then only validate that row.
     pub fn validate(
         &self,
         column: &Column,
         row: Option<&u64>,
         tx: &mut DbTransaction<'_>,
     ) -> Result<bool> {
-        // TODO: Add tracing statement here
-
+        tracing::trace!("Structre::validate({self:?}, {column:?}, {row:?}, tx)");
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
         let mut messages_were_added = false;
         match self {
