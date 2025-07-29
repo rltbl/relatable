@@ -32,4 +32,28 @@
       Delete row
     </a>
   </li>
+  {% if cell.messages %}
+  <li>
+    <hr class="dropdown-divider">
+  </li>
+  {% endif %}
+  {% for message in cell.messages %}
+  <li>
+    <a class="dropdown-item">
+      {% if message.level|lower == 'error' %}
+      <i class="bi bi-exclamation-octagon text-danger"></i>
+      {% elif message.level|lower == 'warn' %}
+      <i class="bi bi-exclamation-triangle text-warning"></i>
+      {% elif message.level|lower == 'info' %}
+      <i class="bi bi-info-circle text-info"></i>
+      {% elif message.level|lower == 'debug' %}
+      <i class="bi bi-bug text-success"></i>
+      {% else %}
+      <i class="bi bi-question-square"></i>
+      {% endif %}
+      {{message.rule}}:
+      {{message.message}}
+    </a>
+  </li>
+  {% endfor %}
 </ul>
