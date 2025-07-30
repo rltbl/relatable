@@ -3886,10 +3886,7 @@ impl ResultSet {
                 .cells
                 .iter()
                 .map(|(column_name, cell)| {
-                    if cell.message_level() >= 2 {
-                        contains_errors = true;
-                        format!("{}", cell.text.red())
-                    } else {
+                    let value_to_print = {
                         let column_format = match self.table.columns.get(column_name) {
                             Some(column) if column.datatype.format == "" => "%s",
                             Some(column) => &column.datatype.format,
@@ -3901,6 +3898,12 @@ impl ResultSet {
                             }
                         };
                         ResultSet::format_cell_text_value(&column_format, &format_regex, &cell.text)
+                    };
+                    if cell.message_level() >= 2 {
+                        contains_errors = true;
+                        format!("{}", value_to_print.red())
+                    } else {
+                        value_to_print
                     }
                 })
                 .collect::<Vec<_>>();
