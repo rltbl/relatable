@@ -20,8 +20,10 @@ use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use minijinja::{path_loader, Environment};
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value, Value as JsonValue};
+use sprintf::sprintf;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
@@ -1613,7 +1615,7 @@ impl Relatable {
 
     /// Returns a vector of the names of the tables that have entries in the table table
     pub async fn list_tables(&self) -> Result<Vec<String>> {
-        tracing::trace!("Relatable::get_tables({self:?})");
+        tracing::trace!("Relatable::list_tables({self:?})");
         let statement = format!(r#"SELECT "table" FROM "table" ORDER BY _order"#);
         let rows = self.connection.query(&statement, None).await?;
         rows.iter().map(|row| row.get_string("table")).collect()
@@ -3766,16 +3768,19 @@ pub struct ResultSet {
     pub parameters: Vec<JsonValue>,
     pub range: Range,
     pub table: Table,
+    /// The columns (and only the columns) used in the Select statement
     pub columns: Vec<Column>,
     pub rows: Vec<Row>,
 }
 
 impl ResultSet {
+    /// Write the result set to CSV
     pub fn to_csv(&self) -> String {
         let writer = WriterBuilder::new().from_writer(vec![]);
         self.to_xsv(writer)
     }
 
+    /// Write the result set to TSV
     pub fn to_tsv(&self) -> String {
         let writer = WriterBuilder::new()
             .delimiter(b'\t')
@@ -3784,6 +3789,7 @@ impl ResultSet {
         self.to_xsv(writer)
     }
 
+    /// Write the result set to XSV
     pub fn to_xsv(&self, mut writer: Writer<Vec<u8>>) -> String {
         let header_row = &self
             .columns
@@ -3797,6 +3803,64 @@ impl ResultSet {
         String::from_utf8(writer.into_inner().unwrap()).unwrap()
     }
 
+    /// Uses the given (unverified) printf-style format string and the given compiled regular
+    /// expression (which is used to verify the given format) to format the given cell.
+    fn format_cell_text_value(column_format: &str, format_regex: &Regex, cell: &str) -> String {
+        let conversion_spec = match format_regex.captures(column_format) {
+            Some(c) => c[1].to_lowercase(),
+            None => {
+                tracing::warn!("Illegal format: '{}'", column_format);
+                "s".to_string()
+            }
+        };
+        let generic_error = format!("Error applying format '{}' to '{}':", column_format, cell);
+        match conversion_spec.as_str() {
+            "d" | "i" | "c" => match cell.parse::<isize>() {
+                Ok(cell) => match sprintf!(&column_format, cell) {
+                    Ok(cell) => {
+                        // For some reason sprintf converts signed ints to unsigned ints before
+                        // converting them to a string. So we have to workaround this here:
+                        let cell = cell.parse::<usize>().unwrap();
+                        let cell = cell as isize;
+                        cell.to_string()
+                    }
+                    Err(e) => {
+                        tracing::warn!("{}: {}", generic_error, e);
+                        cell.to_string()
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("{}: {}", generic_error, e);
+                    cell.to_string()
+                }
+            },
+            "o" | "u" | "x" => match cell.parse::<usize>() {
+                Ok(cell) => sprintf!(&column_format, cell).unwrap_or(cell.to_string()),
+                Err(e) => {
+                    tracing::warn!("{}: {}", generic_error, e);
+                    cell.to_string()
+                }
+            },
+            "e" | "f" | "g" | "a" => match cell.parse::<f64>() {
+                Ok(cell) => sprintf!(&column_format, cell).unwrap_or(cell.to_string()),
+                Err(e) => {
+                    tracing::warn!("{}: {}", generic_error, e);
+                    cell.to_string()
+                }
+            },
+            "s" => sprintf!(&column_format, cell).unwrap_or(cell.to_string()),
+            _ => {
+                tracing::warn!(
+                    "Unsupported conversion specifier '{}' in column format '{}'",
+                    conversion_spec,
+                    column_format
+                );
+                cell.to_string()
+            }
+        }
+    }
+
+    /// Write the result set to the console
     pub fn to_console(&self) -> String {
         let tw = TabWriter::new(vec![]);
         let mut tw = tw.ansi(true);
@@ -3809,17 +3873,29 @@ impl ResultSet {
             .collect::<Vec<String>>();
         tw.write(format!("{}\n", header.join("\t")).as_bytes())
             .unwrap_or_default();
+
+        let format_regex = Regex::new(r#"^%.*([\w%])$"#).expect("Invalid regular expression");
         let mut contains_errors = false;
         for row in &self.rows {
             let cells = row
                 .cells
-                .values()
-                .map(|cell| {
+                .iter()
+                .map(|(column_name, cell)| {
                     if cell.message_level() >= 2 {
                         contains_errors = true;
                         format!("{}", cell.text.red())
                     } else {
-                        format!("{}", cell.text)
+                        let column_format = match self.table.columns.get(column_name) {
+                            Some(column) if column.datatype.format == "" => "%s",
+                            Some(column) => &column.datatype.format,
+                            None => {
+                                tracing::warn!(
+                                    "Can't determine cell format. No column found: '{column_name}'"
+                                );
+                                "%s"
+                            }
+                        };
+                        ResultSet::format_cell_text_value(&column_format, &format_regex, &cell.text)
                     }
                 })
                 .collect::<Vec<_>>();
