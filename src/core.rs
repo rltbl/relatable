@@ -3806,6 +3806,11 @@ impl ResultSet {
     /// Uses the given (unverified) printf-style format string and the given compiled regular
     /// expression (which is used to verify the given format) to format the given cell.
     fn format_cell_text_value(column_format: &str, format_regex: &Regex, cell: &str) -> String {
+        // If the cell is an empty string, just return it as is:
+        if cell == "" {
+            return "".to_string();
+        }
+
         let conversion_spec = match format_regex.captures(column_format) {
             Some(c) => c[1].to_lowercase(),
             None => {
@@ -3813,7 +3818,7 @@ impl ResultSet {
                 "s".to_string()
             }
         };
-        let generic_error = format!("Error applying format '{}' to '{}':", column_format, cell);
+        let generic_error = format!("Error applying format '{}' to '{}'", column_format, cell);
         match conversion_spec.as_str() {
             "d" | "i" | "c" => match cell.parse::<isize>() {
                 Ok(cell) => match sprintf!(&column_format, cell) {
