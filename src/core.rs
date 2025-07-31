@@ -452,7 +452,7 @@ impl Relatable {
                 "datatype": "decimal",
                 "description": "A decimal number",
                 "parent": "",
-                "condition": "",
+                "condition": r"match(-?\d+(\.\d+)?)",
                 "sql_type": "NUMERIC",
                 "format": "%.1f"
             }),
@@ -574,7 +574,7 @@ impl Relatable {
                 "column": "individual_id",
                 "label": "individual id",
                 "nulltype": "empty",
-                "datatype": "text",
+                "datatype": "word",
             }),
             json!({
                 "table": "penguin",

@@ -1062,7 +1062,7 @@ impl Datatype {
                     name: "empty".to_string(),
                     description: "the empty string".to_string(),
                     parent: "text".to_string(),
-                    condition: "equals('')".to_string(),
+                    condition: r"equals('')".to_string(),
                     ..Default::default()
                 },
             ),
@@ -1072,8 +1072,7 @@ impl Datatype {
                     name: "line".to_string(),
                     description: "a line of text".to_string(),
                     parent: "text".to_string(),
-                    // TODO: Add the right condition here once implemented.
-                    condition: "".to_string(),
+                    condition: r"match([^\n]+)".to_string(),
                     ..Default::default()
                 },
             ),
@@ -1084,8 +1083,7 @@ impl Datatype {
                     description: "a line of text that deos not begin or end with whitespace"
                         .to_string(),
                     parent: "line".to_string(),
-                    // TODO: Add the right condition here once implemented.
-                    condition: "".to_string(),
+                    condition: r"match(\S([^\n]*\S)*)".to_string(),
                     ..Default::default()
                 },
             ),
@@ -1095,8 +1093,7 @@ impl Datatype {
                     name: "nonspace".to_string(),
                     description: "text without whitespace".to_string(),
                     parent: "trimmed_line".to_string(),
-                    // TODO: Add the right condition here once implemented.
-                    condition: "".to_string(),
+                    condition: r"match([^\s]+)".to_string(),
                     ..Default::default()
                 },
             ),
@@ -1106,8 +1103,7 @@ impl Datatype {
                     name: "word".to_string(),
                     description: "a single word: letters, numbers, underscore".to_string(),
                     parent: "nonspace".to_string(),
-                    // TODO: Add the right condition here once implemented.
-                    condition: "".to_string(),
+                    condition: r"match(\w+)".to_string(),
                     ..Default::default()
                 },
             ),
@@ -1118,8 +1114,7 @@ impl Datatype {
                     description: "an integer".to_string(),
                     parent: "nonspace".to_string(),
                     sql_type: "INTEGER".to_string(),
-                    // TODO: Add the right condition here once implemented.
-                    condition: "".to_string(),
+                    condition: r"match(-?\d+)".to_string(),
                     ..Default::default()
                 },
             ),
@@ -1270,14 +1265,12 @@ impl Datatype {
         tx: &mut DbTransaction<'_>,
     ) -> Result<bool> {
         tracing::trace!("Datatype::validate({self:?}, {column:?}, {row:?}, tx)");
-        let table_name = column.table.as_str();
-        let column_name = column.name.as_str();
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
         let mut messages_were_added = false;
         match self.condition.as_str() {
             "" => (),
             condition if condition.starts_with("equals(") => {
-                let re = regex::Regex::new(r"equals\((.+?)\)")?;
+                let re = regex::Regex::new(r"^equals\((.+?)\)$")?;
                 if let Some(captures) = re.captures(condition) {
                     let condition = &captures[1];
                     let condition = unquoted_re.replace(&condition, "$unquoted");
@@ -1297,6 +1290,8 @@ impl Datatype {
                              {sql_param_4} AS "message"
                            FROM "{table_name}"
                            WHERE "{column_name}" != {sql_param_5}"#,
+                        table_name = column.table,
+                        column_name = column.name,
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
@@ -1311,20 +1306,20 @@ impl Datatype {
                                 sql_param = sql_param_gen.next()
                             ));
                             params = json!([
-                                table_name,
-                                column_name,
-                                format!("datatype:{}", column.datatype.name),
-                                format!("{column_name} must be a {}", column.datatype.name),
+                                column.table,
+                                column.name,
+                                format!("datatype:{}", self.name),
+                                format!("{} must be a {}", column.name, self.name),
                                 condition,
                                 row
                             ]);
                         }
                         None => {
                             params = json!([
-                                table_name,
-                                column_name,
-                                format!("datatype:{}", column.datatype.name),
-                                format!("{column_name} must be a {}", column.datatype.name),
+                                column.table,
+                                column.name,
+                                format!("datatype:{}", self.name),
+                                format!("{} must be a {}", column.name, self.name),
                                 condition
                             ]);
                         }
@@ -1336,7 +1331,7 @@ impl Datatype {
                 }
             }
             condition if condition.starts_with("in(") => {
-                let re = regex::Regex::new(r"in\((.+?)\)").unwrap();
+                let re = regex::Regex::new(r"^in\((.+?)\)$").unwrap();
                 if let Some(captures) = re.captures(condition) {
                     let list_separator = regex::Regex::new(r"\s*,\s*").unwrap();
                     let condition_list_str = &captures[1];
@@ -1360,6 +1355,8 @@ impl Datatype {
                              {sql_param_4} AS "message"
                            FROM "{table_name}"
                            WHERE "{column_name}" NOT IN ({sql_param_5})"#,
+                        table_name = column.table,
+                        column_name = column.name,
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
@@ -1367,10 +1364,10 @@ impl Datatype {
                         sql_param_5 = sql_param_gen.get_as_list(condition_list.len()),
                     );
                     let mut params = json!([
-                        table_name,
-                        column_name,
-                        format!("datatype:{}", column.datatype.name),
-                        format!("{column_name} must be a {}", column.datatype.name),
+                        column.table,
+                        column.name,
+                        format!("datatype:{}", self.name),
+                        format!("{} must be a {}", column.name, self.name),
                     ]);
                     for item in &condition_list {
                         if let JsonValue::Array(ref mut v) = params {
@@ -1386,6 +1383,67 @@ impl Datatype {
                             v.push(json!(row));
                         }
                     }
+                    sql.push_str(r#" RETURNING 1 AS "inserted""#);
+                    if let Some(_) = tx.query_one(&sql, Some(&params))? {
+                        messages_were_added = true;
+                    }
+                }
+            }
+            condition if condition.starts_with("match(") => {
+                let re = regex::Regex::new(r"^match\((.+?)\)$")?;
+                if let Some(captures) = re.captures(condition) {
+                    let condition = &captures[1];
+                    let condition = unquoted_re.replace(&condition, "$unquoted");
+                    let mut sql_param_gen = SqlParam::new(&tx.kind());
+                    let mut sql = format!(
+                        r#"INSERT INTO "message"
+                             ("added_by", "table", "row", "column", "value", "level", "rule",
+                              "message")
+                           SELECT
+                             'rltbl' AS "added_by",
+                             {sql_param_1} AS "table",
+                             "_id" AS "row",
+                             {sql_param_2} AS "column",
+                             "{column_name}" AS "value",
+                             'error' AS "level",
+                             {sql_param_3} AS "rule",
+                             {sql_param_4} AS "message"
+                           FROM "{table_name}"
+                           WHERE {match_condition}"#,
+                        column_name = column.name,
+                        table_name = column.table,
+                        sql_param_1 = sql_param_gen.next(),
+                        sql_param_2 = sql_param_gen.next(),
+                        sql_param_3 = sql_param_gen.next(),
+                        sql_param_4 = sql_param_gen.next(),
+                        match_condition = sql::regexp_match(&column.name, &mut sql_param_gen),
+                    );
+                    let params;
+                    match row {
+                        Some(row) => {
+                            sql.push_str(&format!(
+                                r#" AND "_id" = {sql_param}"#,
+                                sql_param = sql_param_gen.next()
+                            ));
+                            params = json!([
+                                column.table,
+                                column.name,
+                                format!("datatype:{}", self.name),
+                                format!("{} must be a {}", column.name, self.name),
+                                format!("^{condition}$"),
+                                row
+                            ]);
+                        }
+                        None => {
+                            params = json!([
+                                column.table,
+                                column.name,
+                                format!("datatype:{}", self.name),
+                                format!("{} must be a {}", column.name, self.name),
+                                format!("^{condition}$")
+                            ]);
+                        }
+                    };
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     if let Some(_) = tx.query_one(&sql, Some(&params))? {
                         messages_were_added = true;

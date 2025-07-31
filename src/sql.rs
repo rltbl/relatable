@@ -800,6 +800,15 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
     }
 }
 
+/// Generates an SQL clause for a regular expression match on the given column
+pub fn regexp_match(column: &str, sql_param: &mut SqlParam) -> String {
+    tracing::trace!("regexp_match({column}, {sql_param:?})");
+    match sql_param.kind {
+        DbKind::Sqlite => todo!(),
+        DbKind::Postgres => format!(r#""{column}"::TEXT !~ {}"#, sql_param.next()),
+    }
+}
+
 // TODO (maybe): Possibly define a new enum called DbQuery and save some lines of code by
 // refactoring prepare_sqlx_sqlite_query() and prepare_sqlx_pg_query() into one function that
 // accepts a DbQuery, unless doing that makes things unnecessarily complicated in other ways.
