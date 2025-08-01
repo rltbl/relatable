@@ -1,7 +1,3 @@
-# # To list upgradeable dependencies (see https://lib.rs/crates/cargo-upgrades):
-# cargo install -f cargo-upgrades
-# cargo upgrades
-
 [package]
 name = "rltbl"
 version = "0.1.0"
