@@ -4,9 +4,14 @@
 
 [package]
 name = "rltbl"
-repository = "https://github.com/rltbl/relatable"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Relatable (rltbl) is a tool for cleaning and connecting your data."
+homepage = "https://rltbl.org"
+repository = "https://github.com/rltbl/relatable"
+categories = ["command-line-utilities"]
+readme = "README.md"
 
 [[bin]]
 name = "rltbl"
