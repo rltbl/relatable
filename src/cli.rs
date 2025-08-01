@@ -451,8 +451,8 @@ pub async fn print_table(
         .limit(limit)
         .offset(offset);
 
-    // We will use the text view to retrieve the data:
-    select.view_name = format!("{table_name}_text_view");
+    // We will use the default view to retrieve the data:
+    select.view_name = format!("{table_name}_default_view");
 
     match format.to_lowercase().as_str() {
         "json" => {
