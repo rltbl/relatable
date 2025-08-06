@@ -37,10 +37,9 @@ use bigdecimal::{BigDecimal, ToPrimitive};
 
 #[cfg(feature = "sqlx")]
 use sqlx::{
-    any::{install_default_drivers, Any, AnyArguments, AnyRow},
     postgres::{PgArguments, PgConnectOptions, PgPool, PgPoolOptions, PgRow, Postgres},
     query::Query,
-    Acquire as _, AnyPool, Column as _, Row as _, Transaction, TypeInfo as _,
+    Acquire as _, Column as _, Row as _, Transaction, TypeInfo as _,
 };
 
 /// A 'simple' database name
@@ -196,7 +195,6 @@ impl SqlParam {
 #[cfg(feature = "sqlx")]
 #[derive(Debug)]
 pub enum DbPool {
-    Sqlite(AnyPool),
     Postgres(PgPool),
 }
 
@@ -257,36 +255,28 @@ impl DbConnection {
                 }
             }
             false => {
-                // We suppress warnings for unused variables for this particular variable because
-                // of the way that we are assigning the connection. We start by assigning a
-                // rusqlite connection and then, if the sqlx drivers are enabled, we immediately
-                // shadow the connection we just created. This is intentional so we need to
-                // suppress the compiler warnings about the unused rusqlite connection.
-                #[allow(unused_variables)]
-                #[cfg(feature = "rusqlite")]
-                let tuple = (
-                    DbConnection::Rusqlite(database.to_string()),
-                    Some(DbActiveConnection::Rusqlite(rusqlite::Connection::open(
-                        database,
-                    )?)),
-                );
-
+                // The "if 1 == 1" conditional is used here to trick the compiler into not
+                // generating a warning about the unreachable code in the rusqlite block below.
+                // That code is not, in fact, unreachable, since the sqlx block will only be
+                // executed if the code is compiled with the sqlx feature enabled.
                 #[cfg(feature = "sqlx")]
-                let tuple = {
-                    let url = {
-                        if database.starts_with("sqlite://") {
-                            database.to_string()
-                        } else {
-                            format!("sqlite://{database}?mode=rwc")
-                        }
-                    };
-                    install_default_drivers();
-                    let pool = AnyPool::connect(&url).await?;
-                    let connection = DbConnection::Sqlx(DbPool::Sqlite(pool), DbKind::Sqlite);
-                    (connection, None)
-                };
+                if 1 == 1 {
+                    return Err(RelatableError::InputError(format!(
+                        "Invalid PostgreSQL database path: '{database}'"
+                    ))
+                    .into());
+                }
 
-                Ok(tuple)
+                #[cfg(feature = "rusqlite")]
+                {
+                    let tuple = (
+                        DbConnection::Rusqlite(database.to_string()),
+                        Some(DbActiveConnection::Rusqlite(rusqlite::Connection::open(
+                            database,
+                        )?)),
+                    );
+                    Ok(tuple)
+                }
             }
         }
     }
@@ -313,10 +303,6 @@ impl DbConnection {
         match self {
             #[cfg(feature = "sqlx")]
             DbConnection::Sqlx(db_pool, kind) => match db_pool {
-                DbPool::Sqlite(pool) => {
-                    let tx = pool.begin().await?;
-                    Ok(DbTransaction::Sqlx(SqlxDbTransaction::Sqlite(tx), *kind))
-                }
                 DbPool::Postgres(pool) => {
                     let tx = pool.begin().await?;
                     Ok(DbTransaction::Sqlx(SqlxDbTransaction::Postgres(tx), *kind))
@@ -350,14 +336,6 @@ impl DbConnection {
         match self {
             #[cfg(feature = "sqlx")]
             DbConnection::Sqlx(db_pool, _) => match db_pool {
-                DbPool::Sqlite(pool) => {
-                    let query = prepare_sqlx_sqlite_query(&statement, params)?;
-                    let mut rows = vec![];
-                    for row in query.fetch_all(pool).await? {
-                        rows.push(JsonRow::try_from(row)?);
-                    }
-                    Ok(rows)
-                }
                 DbPool::Postgres(pool) => {
                     let query = prepare_sqlx_pg_query(&statement, params)?;
                     let mut rows = vec![];
@@ -421,8 +399,8 @@ impl DbConnection {
 
         // Do not cache queries to these special tables,
         // because change to them are not recorded in the usual way.
-        for t in vec!["message", "history", "change", "user"] {
-            if tables.contains(&t.to_string()) {
+        for table in vec!["message", "history", "change", "user"] {
+            if tables.contains(&table.to_string()) {
                 return self.query(&sql, params).await;
             }
         }
@@ -582,7 +560,6 @@ impl DbConnection {
 #[cfg(feature = "sqlx")]
 #[derive(Debug)]
 pub enum SqlxDbTransaction<'a> {
-    Sqlite(Transaction<'a, Any>),
     Postgres(Transaction<'a, Postgres>),
 }
 
@@ -614,7 +591,6 @@ impl DbTransaction<'_> {
         match self {
             #[cfg(feature = "sqlx")]
             DbTransaction::Sqlx(tx, _) => match tx {
-                SqlxDbTransaction::Sqlite(tx) => block_on(tx.commit())?,
                 SqlxDbTransaction::Postgres(tx) => block_on(tx.commit())?,
             },
             #[cfg(feature = "rusqlite")]
@@ -629,7 +605,6 @@ impl DbTransaction<'_> {
         match self {
             #[cfg(feature = "sqlx")]
             DbTransaction::Sqlx(tx, _) => match tx {
-                SqlxDbTransaction::Sqlite(tx) => block_on(tx.rollback())?,
                 SqlxDbTransaction::Postgres(tx) => block_on(tx.rollback())?,
             },
             #[cfg(feature = "rusqlite")]
@@ -650,14 +625,6 @@ impl DbTransaction<'_> {
         match self {
             #[cfg(feature = "sqlx")]
             DbTransaction::Sqlx(tx, _) => match tx {
-                SqlxDbTransaction::Sqlite(tx) => {
-                    let query = prepare_sqlx_sqlite_query(&statement, params)?;
-                    let mut rows = vec![];
-                    for row in block_on(query.fetch_all(block_on(tx.acquire())?))? {
-                        rows.push(JsonRow::try_from(row)?);
-                    }
-                    Ok(rows)
-                }
                 SqlxDbTransaction::Postgres(tx) => {
                     let query = prepare_sqlx_pg_query(&statement, params)?;
                     let mut rows = vec![];
@@ -807,37 +774,6 @@ pub fn regexp_match(column: &str, sql_param: &mut SqlParam) -> String {
         DbKind::Sqlite => todo!(),
         DbKind::Postgres => format!(r#""{column}"::TEXT !~ {}"#, sql_param.next()),
     }
-}
-
-// TODO (maybe): Possibly define a new enum called DbQuery and save some lines of code by
-// refactoring prepare_sqlx_sqlite_query() and prepare_sqlx_pg_query() into one function that
-// accepts a DbQuery, unless doing that makes things unnecessarily complicated in other ways.
-
-/// Given an SQL string that has been bound to the given parameter vector, construct a database
-/// query and return it.
-#[cfg(feature = "sqlx")]
-pub fn prepare_sqlx_sqlite_query<'a>(
-    statement: &'a str,
-    params: Option<&'a JsonValue>,
-) -> Result<Query<'a, Any, AnyArguments<'a>>> {
-    tracing::trace!("prepare_sqlx_query({statement}, {params:?})");
-    let mut query = sqlx::query::<Any>(&statement);
-    if let Some(params) = params {
-        for param in params.as_array().unwrap() {
-            match param {
-                JsonValue::Number(n) => match n.as_i64() {
-                    Some(p) => query = query.bind(p),
-                    None => match n.as_f64() {
-                        Some(p) => query = query.bind(p),
-                        None => panic!(),
-                    },
-                },
-                JsonValue::String(s) => query = query.bind(s),
-                _ => query = query.bind(param.to_string()),
-            };
-        }
-    }
-    Ok(query)
 }
 
 /// Given an SQL string that has been bound to the given parameter vector, construct a database
@@ -1932,48 +1868,6 @@ impl JsonRow {
             content.insert(column_name.to_string(), value);
         }
         Self { content }
-    }
-}
-
-#[cfg(feature = "sqlx")]
-impl TryFrom<AnyRow> for JsonRow {
-    type Error = anyhow::Error;
-
-    fn try_from(row: AnyRow) -> Result<Self> {
-        tracing::trace!("JsonRow::try_from::<AnyRow>(row)");
-        let mut content = JsonMap::new();
-        for column in row.columns() {
-            // We had problems getting a type for columns that are not in the schema,
-            // e.g. "SELECT COUNT() AS count".
-            // So now we start with Null and try BIGINT/INTEGER, NUMERIC/REAL, STRING, BOOL.
-            let mut value: JsonValue = JsonValue::Null;
-            if value.is_null() {
-                let x: Result<i64, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            if value.is_null() {
-                let x: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            if value.is_null() {
-                let x: Result<String, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            if value.is_null() {
-                let x: Result<bool, sqlx::Error> = row.try_get(column.ordinal());
-                if let Ok(x) = x {
-                    value = JsonValue::from(x);
-                }
-            }
-            content.insert(column.name().into(), value);
-        }
-        Ok(Self { content })
     }
 }
 
