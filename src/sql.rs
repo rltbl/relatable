@@ -5,18 +5,18 @@
 //! This module contains functions for connecting to and querying the database, and implements
 //! elements of the API that are particularly database-specific.
 
-////////////////////////////////////
+//////////////////////////////////////////
 // Internal imports
-////////////////////////////////////
+//////////////////////////////////////////
 use crate as rltbl;
 use rltbl::{
     core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
     table::{Column, Table},
 };
 
-////////////////////////////////////
+//////////////////////////////////////////
 // External imports
-////////////////////////////////////
+//////////////////////////////////////////
 use anyhow::Result;
 use async_std::task::block_on;
 use indexmap::IndexMap;
@@ -26,12 +26,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::{fmt::Display, str::FromStr};
 
-////////////////////////////////////
-// Database-driver-specific imports
-////////////////////////////////////
+//////////////////////////////////////////
+// External imports required for rusqlite
+//////////////////////////////////////////
 #[cfg(feature = "rusqlite")]
-use rusqlite;
+use rusqlite::{
+    functions::FunctionFlags as RusqliteFunctionFlags, types::ValueRef as RusqliteValueRef,
+    Connection as RusqliteConnection, Error as RusqliteError, Result as RusqliteResult,
+    Row as RusqliteRow, Statement as RusqliteStatement, Transaction as RusqliteTransaction,
+};
 
+#[cfg(feature = "rusqlite")]
+use std::sync::Arc;
+
+#[cfg(feature = "rusqlite")]
+type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+//////////////////////////////////////////
+// External imports required for sqlx
+//////////////////////////////////////////
 #[cfg(feature = "sqlx")]
 use bigdecimal::{BigDecimal, ToPrimitive};
 
@@ -41,6 +54,10 @@ use sqlx::{
     query::Query,
     Acquire as _, Column as _, Row as _, Transaction, TypeInfo as _,
 };
+
+//////////////////////////////////////////
+// The rest of the code
+//////////////////////////////////////////
 
 /// A 'simple' database name
 pub static DB_OBJECT_MATCH_STR: &str = r"^[\w_]+$";
@@ -202,7 +219,7 @@ pub enum DbPool {
 #[derive(Debug)]
 pub enum DbActiveConnection {
     #[cfg(feature = "rusqlite")]
-    Rusqlite(rusqlite::Connection),
+    Rusqlite(RusqliteConnection),
 }
 
 /// Represents a database connection
@@ -255,28 +272,19 @@ impl DbConnection {
                 }
             }
             false => {
-                // The "if 1 == 1" conditional is used here to trick the compiler into not
-                // generating a warning about the unreachable code in the rusqlite block below.
-                // That code is not, in fact, unreachable, since the sqlx block will only be
-                // executed if the code is compiled with the sqlx feature enabled.
-                #[cfg(feature = "sqlx")]
-                if 1 == 1 {
-                    return Err(RelatableError::InputError(format!(
-                        "Invalid PostgreSQL database path: '{database}'"
-                    ))
-                    .into());
+                #[cfg(not(feature = "sqlx"))]
+                {
+                    let conn = DbConnection::Rusqlite(database.to_string());
+                    let active_conn = RusqliteConnection::open(database)?;
+                    add_rusqlite_regexp_function(&active_conn)?;
+                    return Ok((conn, Some(DbActiveConnection::Rusqlite(active_conn))));
                 }
 
-                #[cfg(feature = "rusqlite")]
-                {
-                    let tuple = (
-                        DbConnection::Rusqlite(database.to_string()),
-                        Some(DbActiveConnection::Rusqlite(rusqlite::Connection::open(
-                            database,
-                        )?)),
-                    );
-                    Ok(tuple)
-                }
+                #[cfg(feature = "sqlx")]
+                return Err(RelatableError::InputError(format!(
+                    "Invalid PostgreSQL database path: '{database}'"
+                ))
+                .into());
             }
         }
     }
@@ -288,9 +296,11 @@ impl DbConnection {
             #[cfg(feature = "sqlx")]
             DbConnection::Sqlx(_, _) => Ok(None),
             #[cfg(feature = "rusqlite")]
-            DbConnection::Rusqlite(path) => Ok(Some(DbActiveConnection::Rusqlite(
-                rusqlite::Connection::open(path)?,
-            ))),
+            DbConnection::Rusqlite(path) => {
+                let active_conn = RusqliteConnection::open(path)?;
+                add_rusqlite_regexp_function(&active_conn)?;
+                Ok(Some(DbActiveConnection::Rusqlite(active_conn)))
+            }
         }
     }
 
@@ -570,7 +580,7 @@ pub enum DbTransaction<'a> {
     Sqlx(SqlxDbTransaction<'a>, DbKind),
 
     #[cfg(feature = "rusqlite")]
-    Rusqlite(rusqlite::Transaction<'a>),
+    Rusqlite(RusqliteTransaction<'a>),
 }
 
 impl DbTransaction<'_> {
@@ -767,12 +777,23 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
     }
 }
 
+/// Generates a SQL clause to cast the column as text using the syntax appropriate for the given
+/// database kind.
+pub fn cast_column_as_text(column: &str, db_kind: &DbKind) -> String {
+    tracing::trace!("cast_column_as_text({column}, {db_kind:?})");
+    match db_kind {
+        DbKind::Sqlite => format!(r#"CAST("{column}" AS TEXT)"#),
+        DbKind::Postgres => format!(r#""{column}"::TEXT"#),
+    }
+}
+
 /// Generates an SQL clause for a regular expression match on the given column
 pub fn regexp_match(column: &str, sql_param: &mut SqlParam) -> String {
     tracing::trace!("regexp_match({column}, {sql_param:?})");
-    match sql_param.kind {
-        DbKind::Sqlite => todo!(),
-        DbKind::Postgres => format!(r#""{column}"::TEXT !~ {}"#, sql_param.next()),
+    let casted_column = cast_column_as_text(column, &sql_param.kind);
+    match &sql_param.kind {
+        DbKind::Sqlite => format!(r#"regexp({}, {}) = 0"#, sql_param.next(), casted_column),
+        DbKind::Postgres => format!(r#"{} !~ {}"#, casted_column, sql_param.next()),
     }
 }
 
@@ -806,7 +827,7 @@ pub fn prepare_sqlx_pg_query<'a>(
 /// Execute the given rusqlite statement
 #[cfg(feature = "rusqlite")]
 fn submit_rusqlite_statement(
-    stmt: &mut rusqlite::Statement<'_>,
+    stmt: &mut RusqliteStatement<'_>,
     params: Option<&JsonValue>,
 ) -> Result<Vec<JsonRow>> {
     tracing::trace!("submit_rusqlite_statement({stmt:?}, {params:?})");
@@ -834,6 +855,42 @@ fn submit_rusqlite_statement(
         result.push(JsonRow::from_rusqlite(&column_names, row));
     }
     Ok(result)
+}
+
+/// Create an application-defined function (<https://sqlite.org/appfunc.html>) called 'regexp' and
+/// add it to the sqlite session using the given rusqlite connection.
+#[cfg(feature = "rusqlite")]
+fn add_rusqlite_regexp_function(db: &RusqliteConnection) -> RusqliteResult<()> {
+    tracing::trace!("add_rusqlite_regexp_function({db:?})");
+    // This function has been adapted from:
+    // https://docs.rs/rusqlite/0.32.1/rusqlite/functions/index.html
+    db.create_scalar_function(
+        "regexp",
+        2,
+        RusqliteFunctionFlags::SQLITE_UTF8 | RusqliteFunctionFlags::SQLITE_DETERMINISTIC,
+        move |ctx| {
+            let num_args = ctx.len();
+            if num_args != 2 {
+                return Err(RusqliteError::UserFunctionError(
+                    format!("Expected 2 arguments but got {num_args}").into(),
+                ));
+            }
+            let regexp: Arc<Regex> = ctx.get_or_create_aux(0, |vr| -> Result<_, BoxError> {
+                Ok(Regex::new(vr.as_str()?)?)
+            })?;
+            let text = ctx.get_raw(1);
+            match text {
+                // If the text to match is NULL then the condition is vacuously true:
+                RusqliteValueRef::Null => Ok(true),
+                _ => {
+                    let text = text
+                        .as_str()
+                        .map_err(|e| RusqliteError::UserFunctionError(e.into()))?;
+                    Ok(regexp.is_match(text))
+                }
+            }
+        },
+    )
 }
 
 /// Validate that the given parameters are in the form of a JSON Array.
@@ -1846,19 +1903,18 @@ impl JsonRow {
         result
     }
 
-    /// Initialize a [JsonRow] from the given [rusqlite::Row]
+    /// Initialize a [JsonRow] from the given [RusqliteRow]
     #[cfg(feature = "rusqlite")]
-    pub fn from_rusqlite(column_names: &Vec<&str>, row: &rusqlite::Row) -> Self {
+    pub fn from_rusqlite(column_names: &Vec<&str>, row: &RusqliteRow) -> Self {
         tracing::trace!("JsonRow::from_rusqlite({column_names:?}, {row:?})");
         let mut content = JsonMap::new();
         for column_name in column_names {
             let value = match row.get_ref(*column_name) {
                 Ok(value) => match value {
-                    rusqlite::types::ValueRef::Null => JsonValue::Null,
-                    rusqlite::types::ValueRef::Integer(value) => JsonValue::from(value),
-                    rusqlite::types::ValueRef::Real(value) => JsonValue::from(value),
-                    rusqlite::types::ValueRef::Text(value)
-                    | rusqlite::types::ValueRef::Blob(value) => {
+                    RusqliteValueRef::Null => JsonValue::Null,
+                    RusqliteValueRef::Integer(value) => JsonValue::from(value),
+                    RusqliteValueRef::Real(value) => JsonValue::from(value),
+                    RusqliteValueRef::Text(value) | RusqliteValueRef::Blob(value) => {
                         let value = std::str::from_utf8(value).unwrap_or_default();
                         JsonValue::from(value)
                     }

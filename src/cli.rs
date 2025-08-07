@@ -394,14 +394,12 @@ pub enum DropSubcommand {
 
 pub async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
     tracing::trace!("init({cli:?}, {force}, {path:?})");
-    match Relatable::init(force, path, &cli.caching).await {
-        Ok(_) => println!(
-            "Initialized a relatable database in '{}'",
-            match path {
-                None => rltbl::core::RLTBL_DEFAULT_DB,
-                Some(db) => db,
-            }
-        ),
+    let path = match path {
+        Some(path) => path,
+        None => rltbl::core::RLTBL_DEFAULT_DB,
+    };
+    match Relatable::init(force, Some(path), &cli.caching).await {
+        Ok(_) => println!("Initialized a relatable database in '{path}'"),
         Err(err) => panic!("{err:?}"),
     }
 }

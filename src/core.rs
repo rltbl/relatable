@@ -189,9 +189,9 @@ impl Relatable {
             let dir: &std::path::Path =
                 FilePath::new(&path)
                     .parent()
-                    .ok_or(RelatableError::InputError(
-                        "Parent path must be defined".to_string(),
-                    ))?;
+                    .ok_or(RelatableError::InputError(format!(
+                        "Path '{path}' has no parent",
+                    )))?;
             if !dir.exists() {
                 std::fs::create_dir_all(&dir)?;
                 tracing::info!("Created '{dir:?}' directory");
