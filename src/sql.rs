@@ -792,6 +792,16 @@ pub fn regexp_match(column: &str, sql_param: &mut SqlParam) -> String {
     tracing::trace!("regexp_match({column}, {sql_param:?})");
     let casted_column = cast_column_as_text(column, &sql_param.kind);
     match &sql_param.kind {
+        DbKind::Sqlite => format!(r#"regexp({}, {}) = 1"#, sql_param.next(), casted_column),
+        DbKind::Postgres => format!(r#"{} ~ {}"#, casted_column, sql_param.next()),
+    }
+}
+
+/// Generates an SQL clause for a regular expression mismatch on the given column
+pub fn regexp_mismatch(column: &str, sql_param: &mut SqlParam) -> String {
+    tracing::trace!("regexp_mismatch({column}, {sql_param:?})");
+    let casted_column = cast_column_as_text(column, &sql_param.kind);
+    match &sql_param.kind {
         DbKind::Sqlite => format!(r#"regexp({}, {}) = 0"#, sql_param.next(), casted_column),
         DbKind::Postgres => format!(r#"{} !~ {}"#, casted_column, sql_param.next()),
     }

@@ -1416,7 +1416,7 @@ impl Datatype {
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
                         sql_param_4 = sql_param_gen.next(),
-                        match_condition = sql::regexp_match(&column.name, &mut sql_param_gen),
+                        match_condition = sql::regexp_mismatch(&column.name, &mut sql_param_gen),
                     );
                     let params;
                     match row {
