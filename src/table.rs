@@ -514,10 +514,12 @@ impl Table {
             DbKind::Sqlite => {
                 let sql = format!(
                     r#"SELECT "name", "type" AS "datatype", "pk"
-                       FROM pragma_table_info("{table}") ORDER BY "cid""#
+                       FROM pragma_table_info({sql_param}) ORDER BY "cid""#,
+                    sql_param = SqlParam::new(&tx.kind()).next()
                 );
                 let mut columns_info = vec![];
-                for column_info in tx.query(&sql, None)? {
+                let params = json!([table]);
+                for column_info in tx.query(&sql, Some(&params))? {
                     let mut column_info = column_info.clone();
                     if column_info.get_unsigned("pk")? == 1 {
                         // If the column is a primary key then it is also unique:
@@ -528,15 +530,19 @@ impl Table {
                         column_info.content.insert("unique".to_string(), json!(0));
                         let sql = format!(
                             r#"SELECT "name", "unique"
-                               FROM PRAGMA_INDEX_LIST("{table}")"#
+                               FROM PRAGMA_INDEX_LIST({sql_param})"#,
+                            sql_param = SqlParam::new(&tx.kind()).next()
                         );
-                        for index_info in tx.query(&sql, None)? {
+                        let params = json!([table]);
+                        for index_info in tx.query(&sql, Some(&params))? {
                             if index_info.get_unsigned("unique")? == 1 {
                                 let idx_name = index_info.get_string("name")?;
                                 let sql = format!(
-                                    r#"SELECT "name" FROM PRAGMA_INDEX_INFO("{idx_name}")"#
+                                    r#"SELECT "name" FROM PRAGMA_INDEX_INFO({sql_param})"#,
+                                    sql_param = SqlParam::new(&tx.kind()).next()
                                 );
-                                if let Some(idx_cname) = tx.query_value(&sql, None)? {
+                                let params = json!([idx_name]);
+                                if let Some(idx_cname) = tx.query_value(&sql, Some(&params))? {
                                     if idx_cname == column_info.get_string("name")? {
                                         column_info.content.insert("unique".to_string(), json!(1));
                                     }
