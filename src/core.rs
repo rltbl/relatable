@@ -114,6 +114,19 @@ pub struct Relatable {
 }
 
 impl Relatable {
+    /// Determines the path to the database. When `opt_path` is None or an empty string, looks
+    /// for the environment variable named `RLTBL_CONNECTION`. If this is also unset or empty,
+    /// the default database path [RLTBL_DEFAULT_DB] is returned.
+    pub fn determine_db_path(opt_path: Option<&str>) -> String {
+        match opt_path {
+            Some(path) if !path.is_empty() => path.to_string(),
+            _ => match std::env::var_os("RLTBL_CONNECTION").and_then(|p| Some(p.into_string())) {
+                Some(Ok(path)) if !path.is_empty() => path,
+                _ => RLTBL_DEFAULT_DB.to_string(),
+            },
+        }
+    }
+
     /// Connect to a relatable database at the given path, or, if not given, at the location
     /// indicated by the environment variable RLTBL_CONNECTION, or, if that is not given,
     /// at [RLTBL_DEFAULT_DB]
@@ -125,15 +138,7 @@ impl Relatable {
             Ok(value) if value.to_lowercase() != "false" => true,
             _ => false,
         };
-        let path = match path {
-            Some(path) => path.to_string(),
-            None => {
-                match std::env::var_os("RLTBL_CONNECTION").and_then(|p| Some(p.into_string())) {
-                    Some(Ok(path)) => path,
-                    _ => RLTBL_DEFAULT_DB.to_string(),
-                }
-            }
-        };
+        let path = Relatable::determine_db_path(path);
         if !path.starts_with("postgresql://") {
             let file = FilePath::new(&path);
             if !file.exists() {
@@ -176,22 +181,14 @@ impl Relatable {
         caching_strategy: &CachingStrategy,
     ) -> Result<Self> {
         tracing::trace!("Relatable::init({force:?}, {path:?}, {caching_strategy:?})");
-        let path = match path {
-            Some(path) => path.to_string(),
-            None => {
-                match std::env::var_os("RLTBL_CONNECTION").and_then(|p| Some(p.into_string())) {
-                    Some(Ok(path)) => path,
-                    _ => RLTBL_DEFAULT_DB.to_string(),
-                }
-            }
-        };
+        let path = Relatable::determine_db_path(path);
         if !path.starts_with("postgresql://") {
             let dir: &std::path::Path =
                 FilePath::new(&path)
                     .parent()
-                    .ok_or(RelatableError::InputError(
-                        "Parent path must be defined".to_string(),
-                    ))?;
+                    .ok_or(RelatableError::InputError(format!(
+                        "Path '{path}' has no parent",
+                    )))?;
             if !dir.exists() {
                 std::fs::create_dir_all(&dir)?;
                 tracing::info!("Created '{dir:?}' directory");
@@ -452,7 +449,7 @@ impl Relatable {
                 "datatype": "decimal",
                 "description": "A decimal number",
                 "parent": "",
-                "condition": "",
+                "condition": r"match(-?\d+(\.\d+)?)",
                 "sql_type": "NUMERIC",
                 "format": "%.1f"
             }),
@@ -574,7 +571,7 @@ impl Relatable {
                 "column": "individual_id",
                 "label": "individual id",
                 "nulltype": "empty",
-                "datatype": "text",
+                "datatype": "word",
             }),
             json!({
                 "table": "penguin",
