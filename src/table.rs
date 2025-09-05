@@ -802,14 +802,30 @@ impl Table {
         })
     }
 
+    /// Return a [JsonRow] representing the given row of the given table, using the
+    /// given transaction.
+    pub fn _get_row_as_json(
+        table: &str,
+        row: u64,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Option<JsonRow>> {
+        tracing::trace!("Table::_get_row_as_json({table}, {row}, tx)");
+        let sql = format!(
+            r#"SELECT * FROM "{table}" WHERE "_id" = {sql_param}"#,
+            sql_param = SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([row]);
+        tx.query_one(&sql, Some(&params))
+    }
+
     /// Determine what the next created row id for the given table will be
-    pub async fn get_next_id(&self, rltbl: &Relatable) -> Result<u64> {
-        tracing::trace!("Table::get_next_id({self:?}, {rltbl:?})");
+    pub async fn get_next_new_row(&self, rltbl: &Relatable) -> Result<u64> {
+        tracing::trace!("Table::get_next_new_row({self:?}, {rltbl:?})");
         let mut conn = rltbl.connection.reconnect()?;
         // Begin a transaction:
         let mut tx = rltbl.connection.begin(&mut conn).await?;
 
-        let rowid = self._get_next_id(&mut tx)?;
+        let rowid = self._get_next_new_row(&mut tx)?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -818,8 +834,8 @@ impl Table {
     }
 
     /// Query the database for what the id of the next created row of the given table will be
-    pub fn _get_next_id(&self, tx: &mut DbTransaction<'_>) -> Result<u64> {
-        tracing::trace!("Table::_get_next_id({self:?}, tx)");
+    pub fn _get_next_new_row(&self, tx: &mut DbTransaction<'_>) -> Result<u64> {
+        tracing::trace!("Table::_get_next_new_row({self:?}, tx)");
         let current_row_id = match tx.kind() {
             DbKind::Sqlite => {
                 let sql = r#"SELECT seq FROM sqlite_sequence WHERE name = ?"#;
@@ -841,6 +857,73 @@ impl Table {
         };
         Ok(current_row_id + 1)
     }
+
+    /// Returns the row id that comes before the given row in the given table, using the given
+    /// transaction, or 0 if nothing comes before it.
+    pub fn _get_previous_row_by_order(
+        table: &str,
+        row: u64,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<u64> {
+        tracing::trace!("Table::_get_previous_row_by_order_id({table}, {row}, tx)");
+        let curr_row_order = Table::_get_row_order(table, row, tx)?;
+        let sql = format!(
+            r#"SELECT "_id" FROM "{table}" WHERE "_order" < {sql_param}
+               ORDER BY "_order" DESC LIMIT 1"#,
+            sql_param = SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([curr_row_order]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            Ok(0)
+        } else {
+            rows[0].get_unsigned("_id")
+        }
+    }
+
+    /// Returns the value of the _order column of the given row from the given table using the
+    /// given transaction.
+    pub fn _get_row_order(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
+        tracing::trace!("Table::_get_row_order({table}, {row}, tx)");
+        let sql = format!(
+            r#"SELECT "_order" FROM "{table}" WHERE "_id" = {sql_param}"#,
+            sql_param = SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([row]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            return Err(
+                RelatableError::InputError(format!("No row {row} in table '{table}'")).into(),
+            );
+        }
+        Ok(rows[0].get_unsigned("_order")?)
+    }
+
+    /// Returns the row id that comes after the given row in the given table, using the given
+    /// transaction, or 0 if nothing comes after it.
+    fn _get_next_row_by_order(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
+        tracing::trace!("Table::_get_next_row_by_order_id({table}, {row}, tx)");
+        let curr_row_order = Table::_get_row_order(table, row, tx)?;
+        let sql = format!(
+            r#"SELECT "_id" FROM "{table}" WHERE "_order" > {sql_param}
+               ORDER BY "_order" LIMIT 1"#,
+            sql_param = SqlParam::new(&tx.kind()).next()
+        );
+        let params = json!([curr_row_order]);
+        let rows = tx.query(&sql, Some(&params))?;
+        if rows.len() == 0 {
+            Ok(0)
+        } else {
+            rows[0].get_unsigned("_id")
+        }
+    }
+}
+
+/// Represents the relative positions of all of the rows in the table
+#[derive(Clone, Debug)]
+pub struct RowPosition {
+    pub after: Option<u64>,
+    pub previously_after: Vec<u64>,
 }
 
 /// Represents a column from some table
@@ -1544,7 +1627,7 @@ impl Row {
             Some(json_row) => json_row.clone(),
         };
         let mut row = Row::from(json_row);
-        row.id = table._get_next_id(tx)?;
+        row.id = table._get_next_new_row(tx)?;
         row.order = NEW_ORDER_MULTIPLIER as u64 * row.id;
         row.change_id = table.change_id;
         tracing::debug!("Prepared a new row: {row:?}");

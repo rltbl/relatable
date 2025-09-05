@@ -223,6 +223,12 @@ pub enum GetSubcommand {
         before: bool,
     },
 
+    /// Get information about all of the row positions within a given table
+    RowPositions {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+    },
+
     /// Get the value of a given column of a given row from a given table.
     Value {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
@@ -538,20 +544,54 @@ async fn print_row_position(cli: &Cli, table: &str, row: &u64, before: bool) {
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
-    if before {
+    if !before {
+        // The row position is the row that this row comes after:
+        let after_row = rltbl
+            .get_row_position(table, row)
+            .await
+            .expect("Error getting previous row");
+        match after_row {
+            Some(after_row) => println!("{after_row}"),
+            None => println!("{row} has been deleted"),
+        };
+    } else {
         // Get the row that this row comes before:
         let before_row = rltbl
             .positioned_after(table, row)
             .await
             .expect("Error getting next row");
         println!("{before_row}");
-    } else {
-        // Get the row that this row comes after:
-        let after_row = rltbl
-            .positioned_before(table, row)
-            .await
-            .expect("Error getting previous row");
-        println!("{after_row}");
+    }
+}
+
+/// TODO: Add docstring here
+async fn print_row_positions(cli: &Cli, table: &str) {
+    // TODO: Add tracing
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+    let position_map = rltbl
+        .get_current_row_position_map(table)
+        .await
+        .expect(&format!("Error getting position map for table '{table}'"));
+    let mut rows = position_map.keys().collect::<Vec<_>>();
+    rows.sort();
+    for row in rows {
+        let row_pos = position_map.get(row).expect("Not found");
+        println!(
+            "Row: {}, after: {}, previously after: [{}]",
+            row,
+            match row_pos.after {
+                None => "nothing",
+                Some(id) => &id.to_string(),
+            },
+            row_pos
+                .previously_after
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 }
 
@@ -874,7 +914,8 @@ async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
     let row_prev = rltbl
         .positioned_before(table, &row)
         .await
-        .expect("Error getting previous row");
+        .expect("Error getting previous row")
+        .expect("Row has been deleted");
     if after_id == row_prev {
         tracing::error!("Ignoring request to move row {row} to its own position");
         std::process::exit(1);
@@ -1155,6 +1196,7 @@ pub async fn process_command() {
             GetSubcommand::RowPosition { table, row, before } => {
                 print_row_position(&cli, table, row, *before).await
             }
+            GetSubcommand::RowPositions { table } => print_row_positions(&cli, table).await,
             GetSubcommand::Value { table, row, column } => {
                 print_value(&cli, table, *row, column).await
             }

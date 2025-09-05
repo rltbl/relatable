@@ -328,27 +328,6 @@ $ rltbl history
 $ rltbl demo --size 10 --force
 Created a demonstration database in ...
 $ rltbl get table penguin > penguin.tsv
-$ echo '{"species": "FOO"}' | rltbl --input JSON add row penguin
-$ rltbl undo
-$ rltbl move row penguin 4 9
-$ rltbl undo
-$ rltbl redo
-$ rltbl move row penguin 3 1
-$ rltbl move row penguin 4 2
-$ rltbl undo
-$ rltbl undo
-$ rltbl undo
-
-$ rltbl get table penguin | diff - penguin.tsv
-$ rltbl history
-  Move row 3 from after row 1 to after row 2 (action #9, undo)
-▲ Move row 4 from after row 9 to after row 3 (action #10, undo)
-```
-
-```console tesh-session="test"
-$ rltbl demo --size 10 --force
-Created a demonstration database in ...
-$ rltbl get table penguin > penguin.tsv
 $ rltbl delete row penguin 6
 $ rltbl undo
 $ rltbl redo
@@ -365,3 +344,19 @@ $ rltbl history
   Add row 9 after row 8 (action #7, undo)
 ▲ Add row 6 after row 5 (action #8, undo)
 ```
+
+# TODO: Add a test case corresponding to:
+
+rltbl demo --size 10 --force
+rltbl move row penguin 9 7
+rltbl move row penguin 9 6
+rltbl undo
+rltbl undo
+
+# TODO: Add a test case corresponding to:
+
+rltbl demo --size 40 --force
+RLTBL_USER=user1 rltbl move row penguin 15 30
+RLTBL_USER=user2 rltbl move row penguin 16 35
+RLTBL_USER=user1 rltbl undo
+RLTBL_USER=user2 rltbl undo

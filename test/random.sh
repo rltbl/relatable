@@ -1,3 +1,5 @@
+# TODO: Change names to reza, etc.
+
 PATH="target/debug:$PATH"
 RLTBL='rltbl -v'
 
