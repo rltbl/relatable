@@ -917,13 +917,26 @@ impl Table {
             rows[0].get_unsigned("_id")
         }
     }
+
+    /// TODO: Add docstring
+    pub fn _comes_before(
+        table: &str,
+        before_row: &u64,
+        after_row: &u64,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<bool> {
+        let before_order = Table::_get_row_order(table, *before_row, tx)?;
+        let after_order = Table::_get_row_order(table, *after_row, tx)?;
+        Ok(before_order < after_order)
+    }
 }
 
 /// Represents the relative positions of all of the rows in the table
 #[derive(Clone, Debug)]
 pub struct RowPosition {
     pub after: Option<u64>,
-    pub previously_after: Vec<u64>,
+    pub after_history: Vec<u64>,
+    pub undo_history: Vec<u64>,
 }
 
 /// Represents a column from some table

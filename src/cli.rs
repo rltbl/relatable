@@ -579,14 +579,20 @@ async fn print_row_positions(cli: &Cli, table: &str) {
     for row in rows {
         let row_pos = position_map.get(row).expect("Not found");
         println!(
-            "Row: {}, after: {}, previously after: [{}]",
+            "Row: {}, after: {}, previously afters: [{}], undone afters: [{}]",
             row,
             match row_pos.after {
                 None => "nothing",
                 Some(id) => &id.to_string(),
             },
             row_pos
-                .previously_after
+                .after_history
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            row_pos
+                .undo_history
                 .iter()
                 .map(|p| p.to_string())
                 .collect::<Vec<_>>()

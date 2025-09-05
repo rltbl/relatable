@@ -65,12 +65,12 @@ act_randomly () {
     min_row=$2
     max_row=$3
 
-    for action in $(rltbl_test generate-seq --min-length 2 --max-length 3 penguin)
+    for action in $(rltbl_test generate-seq --min-length 5 --max-length 10 penguin)
     do
         skip=$((0 + $RANDOM % 4))
         if [[ $skip -eq 0 ]]
         then
-            echo "${user} is taking a break"
+            # echo "${user} is taking a break"
             custom_sleep
         fi
 
@@ -148,28 +148,28 @@ fi
 
 (
     act_randomly mike 1 5
-    echo "mike is done"
+    # echo "mike is done"
 ) &
 
 sleep 0.25
 
 (
     act_randomly barbara 6 10
-    echo "barbara is done"
+    # echo "barbara is done"
 ) &
 
 sleep 0.25
 
 (
     act_randomly ahmed 11 15
-    echo "ahmed is done"
+    # echo "ahmed is done"
 ) &
 
 sleep 0.25
 
 (
     act_randomly afreen 16 20
-    echo "afreen is done"
+    # echo "afreen is done"
 ) &
 
 wait || exit 1
