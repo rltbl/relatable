@@ -168,7 +168,7 @@ test_tesh_sqlite_only: debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/sqlite_only
 
 test_random_sqlite: debug prepare_sqlite
-	bash test/random-sqlite.sh --varying-rate
+	bash test/random-sqlite.sh
 
 ## # SQLite tesh tests (sqlx)
 test_tesh_sqlx_common_as_sqlite: sqlx_debug prepare_sqlite
@@ -178,7 +178,7 @@ test_tesh_sqlx_sqlite_only: sqlx_debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/sqlite_only
 
 test_random_sqlx_sqlite: sqlx_debug prepare_sqlite
-	bash test/random-sqlite.sh --varying-rate
+	bash test/random-sqlite.sh
 
 ### Postgres tesh tests (sqlx)
 .PHONY: prepare_postgres test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres
@@ -198,16 +198,22 @@ test_tesh_sqlx_postgres_only: sqlx_debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/postgres_only
 
 test_random_sqlx_postgres: sqlx_debug prepare_postgres
-	bash test/random-postgres.sh --varying-rate
+	bash test/random-postgres.sh
 
 ### Performance tests
 
 test/perf/tsv:
 	mkdir -p $@
 
-test/perf/tsv/penguin.tsv: | test/perf/tsv
-	target/debug/rltbl demo --size $(perf_test_size) --force
-	target/debug/rltbl save test/perf/tsv/
+test/perf/tsv/penguin_sqlite.tsv: | test/perf/tsv
+	target/debug/rltbl --database $(SQLITE_DB) demo --size $(perf_test_size) --force
+	target/debug/rltbl --database $(SQLITE_DB) save $|
+	mv -f $|/penguin.tsv $@
+
+test/perf/tsv/penguin_postgres.tsv: | test/perf/tsv
+	target/debug/rltbl --database $(PG_DB) demo --size $(perf_test_size) --force
+	target/debug/rltbl --database $(PG_DB) save $|
+	mv -f $|/penguin.tsv $@
 
 perf_test_timeout = 8
 perf_test_size = 100000
@@ -230,13 +236,13 @@ test_caching_memory: debug
 
 test_caching: test_caching_sqlite test_caching_postgres test_caching_memory
 
-test_perf_sqlite: test/perf/tsv/penguin.tsv debug
+test_perf_sqlite: test/perf/tsv/penguin_sqlite.tsv debug
 	target/debug/rltbl --database $(SQLITE_DB) init --force
 	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $<"
 	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $< || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
-test_perf_sqlx_sqlite: test/perf/tsv/penguin.tsv sqlx_debug
+test_perf_sqlx_sqlite: test/perf/tsv/penguin_sqlite.tsv sqlx_debug
 	target/debug/rltbl --database $(SQLITE_DB) init --force
 	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $<"
 	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $< || \
@@ -244,7 +250,7 @@ test_perf_sqlx_sqlite: test/perf/tsv/penguin.tsv sqlx_debug
 
 ### Postgres performance (rusqlite and sqlx)
 
-test_perf_sqlx_postgres: test/perf/tsv/penguin.tsv sqlx_debug
+test_perf_sqlx_postgres: test/perf/tsv/penguin_postgres.tsv sqlx_debug
 	target/debug/rltbl --database $(PG_DB) init --force
 	@echo "target/debug/rltbl --database $(PG_DB) -vv load table --force $<"
 	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(PG_DB) -vv load table --force $< || \

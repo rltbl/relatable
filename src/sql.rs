@@ -1154,12 +1154,12 @@ pub(crate) fn generate_default_view_ddl(
                         ORDER BY "change_id" DESC
                         LIMIT 1
                        ) AS _change_id,
-                       (SELECT '[' || GROUP_CONCAT("after") || ']'
+                       (SELECT '[' || GROUP_CONCAT("value_after") || ']'
                           FROM (
-                            SELECT "after"
+                            SELECT "value_after"
                             FROM "history"
                             WHERE "table" = '{table}'
-                            AND "after" IS NOT NULL
+                            AND "value_after" IS NOT NULL
                             AND "row" = {id_col}
                             ORDER BY "history_id"
                          )
@@ -1206,11 +1206,11 @@ pub(crate) fn generate_default_view_ddl(
                      LIMIT 1
                    ) AS _change_id,
                    (
-                     SELECT ('['::TEXT || string_agg(h.after, ','::TEXT)) || ']'::TEXT
-                     FROM ( SELECT "history"."after"
+                     SELECT ('['::TEXT || string_agg(h.value_after, ','::TEXT)) || ']'::TEXT
+                     FROM ( SELECT "history"."value_after"
                             FROM "history"
                             WHERE "history"."table" = '{table}'
-                            AND "after" IS DISTINCT FROM NULL
+                            AND "value_after" IS DISTINCT FROM NULL
                             AND "row" = "{id_col}"
                             ORDER BY "history_id" ) h
                    ) AS "_history",
@@ -1615,8 +1615,9 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
                       change_id INTEGER NOT NULL,
                       "table" TEXT NOT NULL,
                       "row" BIGINT NOT NULL,
-                      "before" TEXT,
-                      "after" TEXT,
+                      "after" BIGINT NOT NULL,
+                      "value_before" TEXT,
+                      "value_after" TEXT,
                       FOREIGN KEY ("change_id") REFERENCES "change"("change_id"),
                       FOREIGN KEY ("table") REFERENCES "table"("table")
                     )"#
@@ -1635,8 +1636,9 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
                      change_id INTEGER NOT NULL,
                      "table" TEXT NOT NULL,
                      "row" BIGINT NOT NULL,
-                     "before" TEXT,
-                     "after" TEXT,
+                     "after" BIGINT NOT NULL,
+                     "value_before" TEXT,
+                     "value_after" TEXT,
                      FOREIGN KEY ("change_id") REFERENCES "change"("change_id"),
                      FOREIGN KEY ("table") REFERENCES "table"("table")
                    )"#
@@ -1691,6 +1693,41 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     }
 }
 
+/// Generate the DDL used to create the row_position table. If `force` is set, drop the table first
+pub fn generate_row_position_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
+    tracing::trace!("generate_row_position_table_ddl({force}, {db_kind:?})");
+    match db_kind {
+        DbKind::Sqlite => {
+            vec![r#"CREATE TABLE "row_position" (
+                      "table" TEXT,
+                      "row" BIGINT NOT NULL,
+                      "after" BIGINT,
+                      "previously_after" BIGINT,
+                      PRIMARY KEY ("table", "row")
+                    )"#
+            .to_string()]
+        }
+        DbKind::Postgres => {
+            let mut ddl = vec![];
+            if force {
+                if let DbKind::Postgres = db_kind {
+                    ddl.push(format!(r#"DROP TABLE IF EXISTS "row_position" CASCADE"#));
+                }
+            }
+            ddl.push(format!(
+                r#"CREATE TABLE "row_position" (
+                     "table" TEXT,
+                     "row" BIGINT NOT NULL,
+                     "after" BIGINT,
+                     "previously_after" BIGINT,
+                     PRIMARY KEY ("table", "row")
+                   )"#
+            ));
+            ddl
+        }
+    }
+}
+
 /// Generate the DDL used to create all of the required meta tables. If `force` is set, drop the
 /// tables first
 pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
@@ -1700,6 +1737,7 @@ pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     ddl.append(&mut generate_user_table_ddl(force, db_kind));
     ddl.append(&mut generate_change_table_ddl(force, db_kind));
     ddl.append(&mut generate_history_table_ddl(force, db_kind));
+    ddl.append(&mut generate_row_position_table_ddl(force, db_kind));
     ddl.append(&mut generate_message_table_ddl(force, db_kind));
     ddl
 }

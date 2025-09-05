@@ -802,18 +802,6 @@ impl Table {
         })
     }
 
-    /// Return a [JsonRow] representing the given row of the given table, using the
-    /// given transaction.
-    pub fn _get_row(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<Option<JsonRow>> {
-        tracing::trace!("Table::_get_row({table:}?, {row}, tx)");
-        let sql = format!(
-            r#"SELECT * FROM "{table}" WHERE "_id" = {sql_param}"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([row]);
-        tx.query_one(&sql, Some(&params))
-    }
-
     /// Determine what the next created row id for the given table will be
     pub async fn get_next_id(&self, rltbl: &Relatable) -> Result<u64> {
         tracing::trace!("Table::get_next_id({self:?}, {rltbl:?})");
@@ -852,43 +840,6 @@ impl Table {
             None => 0,
         };
         Ok(current_row_id + 1)
-    }
-
-    /// Returns the row id that comes before the given row in the given table, using the given
-    /// transaction.
-    pub fn _get_previous_row_id(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
-        tracing::trace!("Table::_get_previous_row_id({table}, {row}, tx)");
-        let curr_row_order = Table::_get_row_order(table, row, tx)?;
-        let sql = format!(
-            r#"SELECT "_id" FROM "{table}" WHERE "_order" < {sql_param}
-               ORDER BY "_order" DESC LIMIT 1"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([curr_row_order]);
-        let rows = tx.query(&sql, Some(&params))?;
-        if rows.len() == 0 {
-            Ok(0)
-        } else {
-            rows[0].get_unsigned("_id")
-        }
-    }
-
-    /// Returns the value of the _order column of the given row from the given table using the
-    /// given transaction.
-    fn _get_row_order(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
-        tracing::trace!("Table::_get_row_order({table:?}, {row}, tx)");
-        let sql = format!(
-            r#"SELECT "_order" FROM "{table}" WHERE "_id" = {sql_param}"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([row]);
-        let rows = tx.query(&sql, Some(&params))?;
-        if rows.len() == 0 {
-            return Err(
-                RelatableError::InputError(format!("No row {row} in table '{table}'")).into(),
-            );
-        }
-        Ok(rows[0].get_unsigned("_order")?)
     }
 }
 

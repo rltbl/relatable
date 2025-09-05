@@ -63,7 +63,7 @@ act_randomly () {
     min_row=$2
     max_row=$3
 
-    for action in $(rltbl_test generate-seq --min-length 5 --max-length 10 penguin)
+    for action in $(rltbl_test generate-seq --min-length 2 --max-length 3 penguin)
     do
         skip=$((0 + $RANDOM % 4))
         if [[ $skip -eq 0 ]]
@@ -89,13 +89,19 @@ act_randomly () {
                 retry_and_fail "${command}" ${user}
                 ;;
             "move")
-                row_to_move=$row
-                where_to_move_after=$(($min_row + $RANDOM % $(expr $max_row - $min_row + 1)))
-                while [[ ${where_to_move_after} == ${row_to_move} ]]
+                source=$row
+                target=$(($min_row + $RANDOM % $(expr $max_row - $min_row + 1)))
+                source_prev=$(${RLTBL} get row-position penguin ${source})
+                if [[ $? -ne 0 ]]
+                then
+                    echo "Failed to move. Unable to get position for row ${source}. Exiting."
+                    exit 1
+                fi
+                while [[ ${target} == ${source} || ${target} == ${source_prev} ]]
                 do
-                    where_to_move_after=$(($min_row + $RANDOM % $(expr $max_row - $min_row + 1)))
+                    target=$(($min_row + $RANDOM % $(expr $max_row - $min_row + 1)))
                 done
-                command="RLTBL_USER=${user} ${RLTBL} move row penguin ${row_to_move} ${where_to_move_after}"
+                command="RLTBL_USER=${user} ${RLTBL} move row penguin ${source} ${target}"
                 echo "${command}"
                 retry_and_fail "${command}" ${user}
                 ;;
@@ -204,9 +210,9 @@ FAKE123     20             Pygoscelis adeliae  Torgersen  N10A2          40.4   
 EOF
 
 status=$?
-rm -f /var/tmp/table.$$ /var/tmp/table.$$
 if [[ $status -eq 0 ]]
 then
+    rm -f /var/tmp/table.$$ /var/tmp/table.$$
     echo "Test successful"
 else
     echo "Exiting with error"

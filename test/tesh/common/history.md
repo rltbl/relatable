@@ -1,3 +1,5 @@
+# TODO: Add the "reproduce_bug.sh" and "test_history" test cases.
+
 ```console tesh-session="test"
 $ echo "Created a demonstration database in '$RLTBL_CONNECTION'" > expected_output.txt
 $ alias rltbl='rltbl -v'

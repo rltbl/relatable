@@ -209,6 +209,20 @@ pub enum GetSubcommand {
         offset: usize,
     },
 
+    /// Get information about the position of a row within a given table
+    RowPosition {
+        #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
+        table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: u64,
+
+        #[arg(long, action = ArgAction::SetTrue,
+              help = "Report the row that ROW comes before, instead of the row that it comes \
+                      after (the default), in TABLE")]
+        before: bool,
+    },
+
     /// Get the value of a given column of a given row from a given table.
     Value {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
@@ -392,7 +406,7 @@ pub enum DropSubcommand {
     Database {},
 }
 
-pub async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
+async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
     tracing::trace!("init({cli:?}, {force}, {path:?})");
     match Relatable::init(force, path, &cli.caching).await {
         Ok(_) => println!(
@@ -407,7 +421,7 @@ pub async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
 }
 
 /// Given a vector of vectors of strings, print text with "elastic tabstops".
-pub fn print_text(rows: &Vec<Vec<String>>) {
+fn print_text(rows: &Vec<Vec<String>>) {
     tracing::trace!("print_text({rows:?})");
     let mut tw = TabWriter::new(vec![]);
     for row in rows {
@@ -419,16 +433,8 @@ pub fn print_text(rows: &Vec<Vec<String>>) {
     print!("{written}");
 }
 
-/// Given a vector of vectors of strings, print each in TSV format.
-pub fn print_tsv(rows: Vec<Vec<String>>) {
-    tracing::trace!("print_tsv({rows:?})");
-    for row in rows {
-        println!("{}", row.join("\t"));
-    }
-}
-
 /// Print a table with its column header.
-pub async fn print_table(
+async fn print_table(
     cli: &Cli,
     table_name: &str,
     filters: &Vec<String>,
@@ -491,7 +497,7 @@ pub async fn print_table(
 }
 
 /// Print rows of a table, without column header.
-pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
+async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
     tracing::trace!("print_rows({cli:?}, {table_name}, {limit}, {offset})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -502,7 +508,7 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
 }
 
 /// Print the value of the given column of the given row of the given table
-pub async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
+async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
     tracing::trace!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -526,8 +532,31 @@ pub async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
     }
 }
 
+/// TODO: Add docstring here
+async fn print_row_position(cli: &Cli, table: &str, row: &u64, before: bool) {
+    // TODO: Add tracing
+    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+        .await
+        .unwrap();
+    if before {
+        // Get the row that this row comes before:
+        let before_row = rltbl
+            .positioned_after(table, row)
+            .await
+            .expect("Error getting next row");
+        println!("{before_row}");
+    } else {
+        // Get the row that this row comes after:
+        let after_row = rltbl
+            .positioned_before(table, row)
+            .await
+            .expect("Error getting previous row");
+        println!("{after_row}");
+    }
+}
+
 /// Print the change history for the user associated with the given context
-pub async fn print_history(cli: &Cli, context: usize) {
+async fn print_history(cli: &Cli, context: usize) {
     tracing::trace!("print_history({cli:?}, {context})");
     fn get_content_as_string(change_json: &JsonRow) -> String {
         let content = change_json.get_string("content").expect("No content found");
@@ -609,7 +638,7 @@ pub async fn print_history(cli: &Cli, context: usize) {
 
 // Get the user from the CLI, RLTBL_USER environment variable,
 // or the general environment.
-pub fn get_username(cli: &Cli) -> String {
+fn get_username(cli: &Cli) -> String {
     tracing::trace!("get_username({cli:?})");
     match &cli.user {
         Some(user) => user.clone(),
@@ -619,7 +648,7 @@ pub fn get_username(cli: &Cli) -> String {
 
 /// Set the value of the given column of the given row of the given table. Use the given
 /// validation_level to determine how to validate the value while updating.
-pub async fn set_value(
+async fn set_value(
     cli: &Cli,
     table: &str,
     row: u64,
@@ -657,8 +686,8 @@ pub async fn set_value(
             changes: vec![Change::Update {
                 row,
                 column: column.to_string(),
-                before: before,
-                after: after,
+                before,
+                after,
             }],
         })
         .await
@@ -672,7 +701,7 @@ pub async fn set_value(
 }
 
 /// Read a JSON row from STDIN.
-pub fn input_json_row() -> JsonRow {
+fn input_json_row() -> JsonRow {
     tracing::trace!("input_json_row()");
     let mut json_row = String::new();
     io::stdin()
@@ -687,7 +716,7 @@ pub fn input_json_row() -> JsonRow {
 }
 
 /// Prompt the user for a value of the given column
-pub fn prompt_for_column_value(column: &str) -> JsonValue {
+fn prompt_for_column_value(column: &str) -> JsonValue {
     tracing::trace!("prompt_for_column_value({column})");
     let value: Option<String> = prompt_opt(format!("Enter a {column}"))
         .expect("Error getting column value from user input");
@@ -698,7 +727,7 @@ pub fn prompt_for_column_value(column: &str) -> JsonValue {
 }
 
 /// Prompt the user for a message associated with the given column, row, and table.
-pub async fn prompt_for_json_message(
+async fn prompt_for_json_message(
     rltbl: &Relatable,
     table: &str,
     row: u64,
@@ -731,7 +760,7 @@ pub async fn prompt_for_json_message(
     Ok(json_row)
 }
 
-pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<JsonRow> {
+async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<JsonRow> {
     tracing::trace!("prompt_for_json_row({rltbl:?}, {table_name})");
     let columns = rltbl
         .fetch_columns(table_name)
@@ -754,7 +783,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
 /// Use Relatable, in conformity with the given command-line parameters, to add a row representing
 /// a [Message](rltbl::table::Message) to the message table. The details of the message are read
 /// from STDIN, either interactively or in JSON format.
-pub async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
+async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
     tracing::trace!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -802,7 +831,7 @@ pub async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
 
 /// Add a row to the given table after the row with _id `after_id`. Use the given validation_level
 /// to determine how to validate the row when adding it.
-pub async fn add_row(
+async fn add_row(
     cli: &Cli,
     table: &str,
     after_id: Option<u64>,
@@ -835,12 +864,22 @@ pub async fn add_row(
 }
 
 /// Move the given row after the row whose id is `after_id`.
-pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
+async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
     tracing::trace!("move_row({cli:?}, {table}, {row}, {after_id})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
     let user = get_username(&cli);
+
+    let row_prev = rltbl
+        .positioned_before(table, &row)
+        .await
+        .expect("Error getting previous row");
+    if after_id == row_prev {
+        tracing::error!("Ignoring request to move row {row} to its own position");
+        std::process::exit(1);
+    }
+
     let new_order = rltbl
         .move_row(table, &user, row, after_id)
         .await
@@ -853,7 +892,7 @@ pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
 }
 
 /// Validate the given row in the given table
-pub async fn validate_row(cli: &Cli, table_name: &str, row: &u64) {
+async fn validate_row(cli: &Cli, table_name: &str, row: &u64) {
     tracing::trace!("validate_row({cli:?}, {table_name}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -871,7 +910,7 @@ pub async fn validate_row(cli: &Cli, table_name: &str, row: &u64) {
 }
 
 /// Validate the given table
-pub async fn validate_table(cli: &Cli, table_name: &str) {
+async fn validate_table(cli: &Cli, table_name: &str) {
     tracing::trace!("validate_table({cli:?}, {table_name}, {table_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -889,7 +928,7 @@ pub async fn validate_table(cli: &Cli, table_name: &str) {
 }
 
 /// Validate the given column
-pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
+async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
     tracing::trace!("validate_column({cli:?}, {table_name}, {column_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -910,7 +949,7 @@ pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
 }
 
 /// Validate the value of the given column, row, and table
-pub async fn validate_value(cli: &Cli, table_name: &str, row: &u64, column_name: &str) {
+async fn validate_value(cli: &Cli, table_name: &str, row: &u64, column_name: &str) {
     tracing::trace!("validate_value({cli:?}, {table_name}, {row}, {column_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -931,7 +970,7 @@ pub async fn validate_value(cli: &Cli, table_name: &str, row: &u64, column_name:
 }
 
 /// Delete the given row in the given table
-pub async fn delete_row(cli: &Cli, table: &str, row: u64) {
+async fn delete_row(cli: &Cli, table: &str, row: u64) {
     tracing::trace!("delete_row({cli:?}, {table}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -950,7 +989,7 @@ pub async fn delete_row(cli: &Cli, table: &str, row: u64) {
 
 /// Delete messages from the message table for the given table, optionally filtering by rule,
 /// user, row, and column
-pub async fn delete_message(
+async fn delete_message(
     cli: &Cli,
     target_rule: Option<&str>,
     target_user: Option<&str>,
@@ -976,7 +1015,7 @@ pub async fn delete_message(
 }
 
 /// Undo the last change
-pub async fn undo(cli: &Cli) {
+async fn undo(cli: &Cli) {
     tracing::trace!("undo({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -990,7 +1029,7 @@ pub async fn undo(cli: &Cli) {
 }
 
 /// Redo the last change
-pub async fn redo(cli: &Cli) {
+async fn redo(cli: &Cli) {
     tracing::trace!("redo({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -1005,7 +1044,7 @@ pub async fn redo(cli: &Cli) {
 
 /// Load the tables at the given paths. Use validation_level to determine how to validate rows
 /// as they are being loaded.
-pub async fn load_tables(
+async fn load_tables(
     cli: &Cli,
     paths: &Vec<String>,
     force: bool,
@@ -1024,7 +1063,7 @@ pub async fn load_tables(
 }
 
 /// Load the table at the given path
-pub async fn load_table(cli: &Cli, path: &str, force: bool, rltbl: &Relatable) {
+async fn load_table(cli: &Cli, path: &str, force: bool, rltbl: &Relatable) {
     tracing::trace!("load_table({cli:?}, {path}, {force}, {rltbl:?})");
     // We will use this pattern to normalize the table name:
     let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
@@ -1042,7 +1081,7 @@ pub async fn load_table(cli: &Cli, path: &str, force: bool, rltbl: &Relatable) {
 }
 
 /// Save all of the tables to their configured locations, or to save_dir if it is given.
-pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
+async fn save_all(cli: &Cli, save_dir: Option<&str>) {
     tracing::trace!("save_all({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -1051,7 +1090,7 @@ pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
 }
 
 /// Drop all of the data tables and meta tables from the database
-pub async fn drop_database(cli: &Cli) {
+async fn drop_database(cli: &Cli) {
     tracing::trace!("drop_database({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -1063,7 +1102,7 @@ pub async fn drop_database(cli: &Cli) {
 }
 
 /// Build a demonstration database
-pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
+async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     tracing::trace!("build_demo({cli:?}, {force}, {size})");
     Relatable::build_demo(cli.database.as_deref(), force, size, &cli.caching)
         .await
@@ -1113,6 +1152,9 @@ pub async fn process_command() {
                 limit,
                 offset,
             } => print_rows(&cli, table, limit, offset).await,
+            GetSubcommand::RowPosition { table, row, before } => {
+                print_row_position(&cli, table, row, *before).await
+            }
             GetSubcommand::Value { table, row, column } => {
                 print_value(&cli, table, *row, column).await
             }
