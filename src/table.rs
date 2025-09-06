@@ -8,7 +8,7 @@ use anyhow::Result;
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use rltbl::{
-    core::{Relatable, RelatableError, NEW_ORDER_MULTIPLIER},
+    core::{Change, ChangeAction, Relatable, RelatableError, NEW_ORDER_MULTIPLIER},
     sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
 };
 use serde::{Deserialize, Serialize};
@@ -937,6 +937,502 @@ pub struct RowPosition {
     pub after: Option<u64>,
     pub after_history: Vec<u64>,
     pub undo_history: Vec<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RowPositionMap {
+    pub table: String,
+    pub position_map: HashMap<u64, RowPosition>,
+}
+
+impl RowPositionMap {
+    /// TODO: Add docstring
+    pub async fn get_row_position(&self, row: &u64) -> Result<Option<u64>> {
+        // TODO: tracing
+        Ok(self.positioned_before(row))
+    }
+
+    /// TODO: Add docstring
+    pub fn positioned_after(
+        //position_map: &HashMap<u64, RowPosition>,
+        &self,
+        this_row: &u64,
+        last_added_row: &u64,
+    ) -> u64 {
+        // TODO: Add tracing
+        if *last_added_row == 0 {
+            tracing::debug!("No rows in table (last_added_row == {last_added_row}). Returning 0");
+            return 0;
+        }
+
+        // TODO: try to do this more efficiently. Do we really need two loops?
+
+        // Look for the row that whose after field corresponds to this row.
+        for (row, row_pos) in self.position_map.iter() {
+            if row_pos.after == Some(*this_row) {
+                // Logically, there can only ever be one row after a given row so we return
+                // immediately:
+                return *row;
+            }
+        }
+
+        // If nothing is found, look for a deleted row that was previously after this row:
+        let mut rows = vec![];
+        for (row, row_pos) in self.position_map.iter() {
+            if row_pos.after == None {
+                if row_pos.after_history.last() == Some(this_row) {
+                    rows.push(*row);
+                }
+            }
+        }
+        if rows.len() == 1 {
+            *rows.first().unwrap()
+        } else if rows.len() > 1 {
+            tracing::warn!(
+                "More than one row was previously after {this_row}. Do we need to worry about this?"
+            );
+            *rows.first().unwrap()
+        } else {
+            let rows_after_last = self
+                .position_map
+                .iter()
+                .filter(|(_row, row_pos)| {
+                    row_pos.after == Some(*last_added_row) && row_pos.after != None
+                })
+                .collect::<Vec<_>>();
+            if rows_after_last.is_empty() {
+                if this_row >= last_added_row {
+                    tracing::info!("This row: {this_row} is the last row, presumably");
+                    0
+                } else {
+                    tracing::info!(
+                        "This row: {this_row} is not the last row. Sending back \
+                                    {}",
+                        this_row + 1
+                    );
+                    this_row + 1
+                }
+            } else {
+                let rows_seen = self.position_map.keys().collect::<Vec<_>>();
+                let last_actual_row = {
+                    let mut last_actual_row = 0;
+                    for row in rows_seen {
+                        if self.position_map.iter().all(|(row, row_pos)| {
+                            row_pos.after != Some(*row) && row_pos.after != None
+                        }) {
+                            last_actual_row = *row;
+                            break;
+                        }
+                    }
+                    last_actual_row
+                };
+                if *this_row >= last_actual_row {
+                    tracing::info!("This row: {this_row} is the last row");
+                    0
+                } else {
+                    tracing::info!(
+                        "This row: {this_row} is not the last row, presumably. \
+                                    Sending back {}",
+                        this_row + 1
+                    );
+                    this_row + 1
+                }
+            }
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn positioned_before(&self, this_row: &u64) -> Option<u64> {
+        // TODO: Add tracing
+        if *this_row == 0 {
+            tracing::debug!("No possible row before row {this_row}. Returning None");
+            return None;
+        }
+
+        match self.position_map.get(this_row) {
+            None => Some(this_row - 1),
+            Some(row_pos) => row_pos.after,
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn previously_positioned_before(
+        &self,
+        action: &ChangeAction,
+        this_row: &u64,
+    ) -> Result<u64> {
+        // TODO: Add tracing
+        if *this_row == 0 {
+            return Err(RelatableError::InputError(format!(
+                "Nothing can have beeen previously positioned before {this_row}"
+            ))
+            .into());
+        }
+
+        match self.position_map.get(this_row) {
+            Some(row_pos) => match action {
+                ChangeAction::Do | ChangeAction::Undo => match row_pos.after_history.last() {
+                    Some(row_id) => Ok(*row_id),
+                    None => Ok(this_row - 1),
+                    //Err(RelatableError::DataError(format!(
+                    //"Row {this_row} was never previously after anything"
+                    //))
+                    //.into()),
+                },
+                ChangeAction::Redo => match row_pos.undo_history.last() {
+                    Some(row_id) => Ok(*row_id),
+                    None => Ok(this_row - 1),
+                    //Err(RelatableError::DataError(format!(
+                    //"Row {this_row} was never an undone previously after anything"
+                    //))
+                    //.into()),
+                },
+            },
+            None => {
+                tracing::info!("That's interesting. Row {this_row} is not in the position map");
+                Ok(this_row - 1)
+            }
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn update_row_position(
+        &mut self,
+        change: &Change,
+        action: &ChangeAction,
+        this_row: &u64,
+        new_after: Option<&u64>,
+    ) -> Result<()> {
+        // TODO: Add tracing statement
+        match self.position_map.get_mut(this_row) {
+            Some(row_pos) => {
+                tracing::info!("Updating row position for row {this_row}: {row_pos:?}");
+                match action {
+                    ChangeAction::Do => {
+                        if let Some(after) = row_pos.after {
+                            match row_pos.after_history.last() {
+                                Some(last_after) if *last_after == after => (),
+                                _ => row_pos.after_history.push(after),
+                            };
+                        }
+                    }
+                    ChangeAction::Undo => {
+                        if let Some(after) = row_pos.after {
+                            match row_pos.undo_history.last() {
+                                Some(last_after) if *last_after == after => (),
+                                _ => row_pos.undo_history.push(after),
+                            };
+                        }
+                        row_pos.after_history.pop();
+                        //if let None = row_pos.after_history.pop() {
+                        //    return Err(RelatableError::InputError(format!(
+                        //        "There was an error concerning row {this_row}"
+                        //    ))
+                        //    .into());
+                        //}
+                    }
+                    ChangeAction::Redo => {
+                        if let Some(after) = row_pos.after {
+                            match row_pos.after_history.last() {
+                                Some(last_after) if *last_after == after => (),
+                                _ => row_pos.after_history.push(after),
+                            };
+                        }
+                        row_pos.undo_history.pop();
+                        //if let None = row_pos.undo_history.pop() {
+                        //    return Err(RelatableError::InputError(format!(
+                        //        "No move to undo for row {this_row}"
+                        //    ))
+                        //    .into());
+                        //}
+                    }
+                };
+                row_pos.after = new_after.cloned();
+                tracing::info!("Updated row_positions: row {this_row} is now {row_pos:?}.");
+            }
+            None => {
+                self.position_map.insert(
+                    *this_row,
+                    RowPosition {
+                        after: new_after.cloned(),
+                        after_history: match change {
+                            Change::Add { .. } => vec![*new_after.expect("Why add a deleted row?")],
+                            _ => vec![*this_row - 1],
+                        },
+                        undo_history: vec![],
+                    },
+                );
+                tracing::info!(
+                    "Added entry: [row: {this_row}, after: {new_after:?}, after_history: [{}] \
+                     undo_history: []] to row_position table.",
+                    this_row - 1
+                );
+            }
+        };
+        Ok(())
+    }
+
+    pub fn add_event(
+        &mut self,
+        changed_row: &u64,
+        after: &u64,
+        last_added_row: &u64,
+        changes: &Vec<Change>,
+        action: &ChangeAction,
+    ) -> Result<u64> {
+        // TODO: We are only considering the first change, and since multi-change operations
+        // haven't been implemented yet, this isn't a problem, but we need to be able to handle
+        // more than one change record here eventually.
+        let change = match changes.first() {
+            Some(change) => change,
+            None => {
+                tracing::warn!("Empty change for row {changed_row}.");
+                return Ok(*last_added_row);
+            }
+        };
+        match change {
+            Change::Update { .. } => return Ok(*last_added_row),
+            Change::Add { .. } | Change::Move { .. } => {
+                let source = changed_row;
+                let target = after;
+                let source_prev = self.positioned_before(&source);
+                let source_prev = match source_prev {
+                    Some(source_prev) => source_prev,
+                    // source_prev will be None whenever we re-add a deleted row. In the case
+                    // of a newly added row it should come back as one less than the row id.
+                    None => self.previously_positioned_before(&action, &source)?,
+                };
+                let source_next = self.positioned_after(&source, &last_added_row);
+                let target_next = self.positioned_after(&target, &last_added_row);
+
+                tracing::info!(
+                    "* Received change action: {action} with Source: {source}, Target: \
+                     {target}, Source_prev: {source_prev}, Source_next: {source_next}, \
+                     Target_next: {target_next}, and last added row:{last_added_row}"
+                );
+
+                // The main update
+                self.update_row_position(&change, &action, &source, Some(&target))?;
+
+                // Unless the source row is the last row in the table (source_next == 0), and
+                // unless we are being asked to move the row to the very same position
+                // (source_next == source_prev), update the position map so that the row
+                // right after the position vacated by source (source_next) is now connected
+                // to source_prev:
+                if source_next > 0 && source_next != source_prev {
+                    match self.position_map.get(&source_next) {
+                        Some(row_pos) if row_pos.after != None => {
+                            self.update_row_position(
+                                &change,
+                                //&ChangeAction::Do,
+                                &action,
+                                &source_next,
+                                Some(&source_prev),
+                            )?;
+                        }
+                        None => {
+                            self.update_row_position(
+                                &change,
+                                //&ChangeAction::Do,
+                                &action,
+                                &source_next,
+                                Some(&source_prev),
+                            )?;
+                        }
+                        _ => (),
+                    };
+                }
+
+                // Unless the target is the last row in the table (target_next == 0), and
+                // unless we are being asked to move it to the very same position
+                // (target_next == source), update the position map so that the row in the
+                // position right after where the source row is moving to is nor connected
+                // to the source row:
+                if target_next > 0 && target_next != *source {
+                    match self.position_map.get(&target_next) {
+                        Some(row_pos) if row_pos.after != None => {
+                            self.update_row_position(
+                                &change,
+                                //&ChangeAction::Do,
+                                &action,
+                                &target_next,
+                                Some(&source),
+                            )?;
+                        }
+                        None => {
+                            self.update_row_position(
+                                &change,
+                                //&ChangeAction::Do,
+                                &action,
+                                &target_next,
+                                Some(&source),
+                            )?;
+                        }
+                        _ => (),
+                    };
+                }
+
+                // Any rows that previously came after the target or the source row may need
+                // their previous positions updated as well. Rows that were previously after the
+                // target row now in principle need to be updated so that they come after the
+                // source (depending on their respective row numbers, see below), and any rows
+                // that previously came after the source need to be, depending on their row
+                // numbers, previously after the row before the current position of the source
+                // row:
+
+                for (row, row_pos) in self.position_map.iter_mut() {
+                    let new_after_history = {
+                        // Move this for loop into its own function:
+                        let mut new_after_history = vec![];
+                        for after_id in row_pos.after_history.iter() {
+                            if *after_id == *target && *row > *source {
+                                new_after_history.push(*source);
+                            } else if *after_id == *source
+                                && *row > source_prev
+                                && (*row != *target || (*after_id < source_prev))
+                            {
+                                new_after_history.push(source_prev);
+                            } else {
+                                new_after_history.push(*after_id);
+                            }
+                        }
+                        new_after_history
+                    };
+                    let new_undo_history = {
+                        // Move this for loop into its own function:
+                        let mut new_undo_history = vec![];
+                        for after_id in row_pos.undo_history.iter_mut() {
+                            if *after_id == *target && *row > *source {
+                                new_undo_history.push(*source);
+                            } else if *after_id == *source
+                                && *row > source_prev
+                                && (*row != *target || (*after_id < source_prev))
+                            {
+                                new_undo_history.push(source_prev);
+                            } else {
+                                new_undo_history.push(*after_id);
+                            }
+                        }
+                        new_undo_history
+                    };
+                    row_pos.after_history = new_after_history;
+                    row_pos.undo_history = new_undo_history;
+                }
+
+                if changed_row > last_added_row {
+                    Ok(*changed_row)
+                } else {
+                    Ok(*last_added_row)
+                }
+            }
+            Change::Delete { .. } => {
+                // Connect the row after the row being deleted to the row before it:
+                let row_next = self.positioned_after(&changed_row, &last_added_row);
+                let row_prev = self.positioned_before(&changed_row);
+                let row_prev = match row_prev {
+                    Some(row_prev) => row_prev,
+                    // source_prev will be None whenever we re-add a deleted row. In the case
+                    // of a newly added row it should come back as one less than the row id.
+                    None => {
+                        return Err(RelatableError::DataError(format!(
+                            "Row {changed_row} was already deleted"
+                        ))
+                        .into());
+                    }
+                };
+                let deleted_row = changed_row;
+
+                tracing::info!(
+                    "* Received change action: {action}, with Row ID: {deleted_row}, Next row: \
+                     {row_next}, Prev. row: {row_prev},"
+                );
+
+                if row_next > 0 {
+                    match self.position_map.get(&row_next) {
+                        Some(row_pos) if row_pos.after != None => {
+                            self.update_row_position(
+                                &change,
+                                //&ChangeAction::Do,
+                                &action,
+                                &row_next,
+                                Some(&row_prev),
+                            )?;
+                        }
+                        None => {
+                            self.update_row_position(
+                                &change,
+                                //&ChangeAction::Do,
+                                &action,
+                                &row_next,
+                                Some(&row_prev),
+                            )?;
+                        }
+                        _ => (),
+                    };
+                }
+
+                for (row, row_pos) in self.position_map.iter_mut() {
+                    let new_after_history = {
+                        // Move this for loop into its own function:
+                        let mut new_after_history = vec![];
+                        for after_id in row_pos.after_history.iter() {
+                            if *after_id == *deleted_row && *row > row_prev {
+                                new_after_history.push(row_prev);
+                            } else {
+                                new_after_history.push(*after_id);
+                            }
+                        }
+                        new_after_history
+                    };
+                    let new_undo_history = {
+                        // Move this for loop into its own function:
+                        let mut new_undo_history = vec![];
+                        for after_id in row_pos.undo_history.iter_mut() {
+                            if *after_id == *deleted_row && *row > row_prev {
+                                new_undo_history.push(row_prev);
+                            } else {
+                                new_undo_history.push(*after_id);
+                            }
+                        }
+                        new_undo_history
+                    };
+                    row_pos.after_history = new_after_history;
+                    row_pos.undo_history = new_undo_history;
+                }
+
+                // Update the position map for this row so that the after is None and the
+                // current value of after is saved to the top of the previous_afters stack.
+                self.update_row_position(&change, &action, &deleted_row, None)?;
+
+                if deleted_row == last_added_row && *last_added_row > 0 {
+                    let mut last_added_row = *last_added_row;
+                    let mut prev_row = last_added_row - 1;
+                    while prev_row > 0 {
+                        match self.position_map.get(&prev_row) {
+                            None => {
+                                last_added_row = prev_row;
+                                break;
+                            }
+                            Some(row_pos) if row_pos.after != None => {
+                                last_added_row = prev_row;
+                                break;
+                            }
+                            Some(_) if prev_row == 0 => {
+                                last_added_row = prev_row;
+                                break;
+                            }
+                            Some(_) => {
+                                prev_row -= 1;
+                            }
+                        };
+                    }
+                    Ok(last_added_row)
+                } else {
+                    Ok(*last_added_row)
+                }
+            }
+        }
+    }
 }
 
 /// Represents a column from some table

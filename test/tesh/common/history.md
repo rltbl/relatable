@@ -8,55 +8,6 @@ $ rm -f expected_output.txt
 ```
 
 ```console tesh-session="test"
-$ rltbl demo --size 20 --force
-Created a demonstration database in ...
-$ rltbl get table penguin > penguin.tsv
-$ echo '{"species": "FOO"}' | RLTBL_USER=mike rltbl --input JSON add row penguin
-$ RLTBL_USER=mike rltbl undo
-$ RLTBL_USER=afreen rltbl move row penguin 17 20
-$ RLTBL_USER=afreen rltbl undo
-$ echo '{"species": "FOO"}' | RLTBL_USER=mike rltbl --input JSON add row penguin
-$ RLTBL_USER=mike rltbl undo
-$ RLTBL_USER=afreen rltbl move row penguin 20 18
-$ RLTBL_USER=mike rltbl redo
-$ RLTBL_USER=afreen rltbl undo
-$ RLTBL_USER=mike rltbl undo
-$ rltbl get table penguin | diff - penguin.tsv
-```
-
-```console tesh-session="test"
-$ rltbl demo --size 20 --force
-Created a demonstration database in ...
-$ rltbl get table penguin > penguin.tsv
-$ echo '{"species": "FOO"}' | RLTBL_USER=mike rltbl --input JSON add row penguin
-$ echo '{"species": "FOO"}' | RLTBL_USER=mike rltbl --input JSON add row penguin
-$ RLTBL_USER=afreen rltbl move row penguin 16 20
-$ RLTBL_USER=mike rltbl undo
-$ RLTBL_USER=mike rltbl undo
-$ RLTBL_USER=mike rltbl redo
-$ RLTBL_USER=mike rltbl undo
-$ RLTBL_USER=afreen rltbl move row penguin 17 20
-$ RLTBL_USER=afreen rltbl undo
-$ RLTBL_USER=afreen rltbl undo
-$ rltbl get table penguin | diff - penguin.tsv
-```
-
-```console tesh-session="test"
-$ rltbl demo --size 10 --force
-Created a demonstration database in ...
-$ rltbl get table penguin > penguin.tsv
-$ echo '{"species": "FOO"}' | rltbl --input JSON add row penguin
-$ rltbl move row penguin 10 8
-$ rltbl move row penguin 9 6
-$ rltbl undo
-$ rltbl move row penguin 7 10
-$ rltbl undo
-$ rltbl undo
-$ rltbl undo
-$ rltbl get table penguin | diff - penguin.tsv
-```
-
-```console tesh-session="test"
 $ rltbl demo --size 10 --force
 Created a demonstration database in ...
 $ rltbl get table penguin > penguin.tsv
@@ -88,6 +39,55 @@ $ RLTBL_USER=user2 rltbl move row penguin 16 35
 $ RLTBL_USER=user1 rltbl undo
 $ RLTBL_USER=user2 rltbl undo
 
+$ rltbl get table penguin | diff - penguin.tsv
+```
+
+```console tesh-session="test"
+$ rltbl demo --size 20 --force
+Created a demonstration database in ...
+$ rltbl get table penguin > penguin.tsv
+$ echo '{"species": "FOO"}' | RLTBL_USER=user1 rltbl --input JSON add row penguin
+$ RLTBL_USER=user1 rltbl undo
+$ RLTBL_USER=user2 rltbl move row penguin 17 20
+$ RLTBL_USER=user2 rltbl undo
+$ echo '{"species": "FOO"}' | RLTBL_USER=user1 rltbl --input JSON add row penguin
+$ RLTBL_USER=user1 rltbl undo
+$ RLTBL_USER=user2 rltbl move row penguin 20 18
+$ RLTBL_USER=user1 rltbl redo
+$ RLTBL_USER=user2 rltbl undo
+$ RLTBL_USER=user1 rltbl undo
+$ rltbl get table penguin | diff - penguin.tsv
+```
+
+```console tesh-session="test"
+$ rltbl demo --size 20 --force
+Created a demonstration database in ...
+$ rltbl get table penguin > penguin.tsv
+$ echo '{"species": "FOO"}' | RLTBL_USER=user1 rltbl --input JSON add row penguin
+$ echo '{"species": "FOO"}' | RLTBL_USER=user1 rltbl --input JSON add row penguin
+$ RLTBL_USER=user2 rltbl move row penguin 16 20
+$ RLTBL_USER=user1 rltbl undo
+$ RLTBL_USER=user1 rltbl undo
+$ RLTBL_USER=user1 rltbl redo
+$ RLTBL_USER=user1 rltbl undo
+$ RLTBL_USER=user2 rltbl move row penguin 17 20
+$ RLTBL_USER=user2 rltbl undo
+$ RLTBL_USER=user2 rltbl undo
+$ rltbl get table penguin | diff - penguin.tsv
+```
+
+```console tesh-session="test"
+$ rltbl demo --size 10 --force
+Created a demonstration database in ...
+$ rltbl get table penguin > penguin.tsv
+$ echo '{"species": "FOO"}' | rltbl --input JSON add row penguin
+$ rltbl move row penguin 10 8
+$ rltbl move row penguin 9 6
+$ rltbl undo
+$ rltbl move row penguin 7 10
+$ rltbl undo
+$ rltbl undo
+$ rltbl undo
 $ rltbl get table penguin | diff - penguin.tsv
 ```
 

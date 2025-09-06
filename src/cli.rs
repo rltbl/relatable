@@ -557,7 +557,7 @@ async fn print_row_position(cli: &Cli, table: &str, row: &u64, before: bool) {
     } else {
         // Get the row that this row comes before:
         let before_row = rltbl
-            .positioned_after(table, row)
+            .get_current_next_row(table, row)
             .await
             .expect("Error getting next row");
         println!("{before_row}");
@@ -574,10 +574,10 @@ async fn print_row_positions(cli: &Cli, table: &str) {
         .get_current_row_position_map(table)
         .await
         .expect(&format!("Error getting position map for table '{table}'"));
-    let mut rows = position_map.keys().collect::<Vec<_>>();
+    let mut rows = position_map.position_map.keys().collect::<Vec<_>>();
     rows.sort();
     for row in rows {
-        let row_pos = position_map.get(row).expect("Not found");
+        let row_pos = position_map.position_map.get(row).expect("Not found");
         println!(
             "Row: {}, after: {}, previously afters: [{}], undone afters: [{}]",
             row,
@@ -918,7 +918,7 @@ async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
     let user = get_username(&cli);
 
     let row_prev = rltbl
-        .positioned_before(table, &row)
+        .get_row_position(table, &row)
         .await
         .expect("Error getting previous row")
         .expect("Row has been deleted");

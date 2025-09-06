@@ -20,49 +20,104 @@ echo && echo "Proceeding to step 1"
 test $batch -ne 1 && echo -n "Press enter " && read enter
 ${RLTBL} demo --size 20 --force || exit 1
 
-echo && echo "Proceeding to step 2"
-test $batch -ne 1 && echo -n "Press enter " && read enter
-echo '{"species": "FOO"}' | RLTBL_USER=mike ${RLTBL} --input JSON add row penguin || exit 1
+rltbl -v get table penguin > penguin.tsv
 
-echo && echo "Proceeding to step 3"
-test $batch -ne 1 && echo -n "Press enter " && read enter
-RLTBL_USER=mike ${RLTBL} undo || exit 1
+echo '{"species": "FOO"}' | RLTBL_USER=mike rltbl -v --input JSON add row penguin
+RLTBL_USER=ahmed rltbl -v move row penguin 13 11
+RLTBL_USER=barbara rltbl -v move row penguin 7 10
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=afreen rltbl -v move row penguin 20 18
+RLTBL_USER=barbara rltbl -v undo
+RLTBL_USER=mike rltbl -v redo
+RLTBL_USER=barbara rltbl -v redo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=afreen rltbl -v set value penguin 16 species Sq8mktUFBW9Yz
+RLTBL_USER=ahmed rltbl -v move row penguin 11 15
+RLTBL_USER=barbara rltbl -v undo
+RLTBL_USER=mike rltbl -v move row penguin 4 5
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=barbara rltbl -v set value penguin 6 species 004pu2m57Ba1C
+echo '{"species": "FOO"}' | RLTBL_USER=afreen rltbl -v --input JSON add row penguin
+RLTBL_USER=mike rltbl -v move row penguin 1 4
+RLTBL_USER=ahmed rltbl -v redo
+RLTBL_USER=barbara rltbl -v undo
+RLTBL_USER=mike rltbl -v set value penguin 1 species 46el5RVPoOaBX
+echo '{"species": "FOO"}' | RLTBL_USER=afreen rltbl -v --input JSON add row penguin
+RLTBL_USER=ahmed rltbl -v set value penguin 11 species VN4h7fFZ7AP2o
+RLTBL_USER=afreen rltbl -v undo
+RLTBL_USER=mike rltbl -v set value penguin 2 species Bd0a5KiBNnfs7
+RLTBL_USER=barbara rltbl -v redo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=mike rltbl -v move row penguin 2 4
+RLTBL_USER=afreen rltbl -v redo
+RLTBL_USER=barbara rltbl -v undo
+echo '{"species": "FOO"}' | RLTBL_USER=ahmed rltbl -v --input JSON add row penguin
+RLTBL_USER=mike rltbl -v move row penguin 5 3
+RLTBL_USER=afreen rltbl -v undo
+RLTBL_USER=barbara rltbl -v set value penguin 10 species Ei6461STNFfxe
+RLTBL_USER=mike rltbl -v set value penguin 1 species 1ItuZLpTlHMdU
+echo '{"species": "FOO"}' | RLTBL_USER=ahmed rltbl -v --input JSON add row penguin
+RLTBL_USER=barbara rltbl -v undo
+RLTBL_USER=afreen rltbl -v set value penguin 16 species bkNsTBIswDNfg
+RLTBL_USER=mike rltbl -v move row penguin 1 4
+RLTBL_USER=barbara rltbl -v redo
+RLTBL_USER=ahmed rltbl -v set value penguin 11 species 8GXfiSWUdlIE4
+RLTBL_USER=afreen rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=ahmed rltbl -v move row penguin 13 14
+RLTBL_USER=barbara rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+echo '{"species": "FOO"}' | RLTBL_USER=ahmed rltbl -v --input JSON add row penguin
+RLTBL_USER=afreen rltbl -v redo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=barbara rltbl -v set value penguin 9 species GwUq8K9NGtuSy
+RLTBL_USER=afreen rltbl -v undo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=barbara rltbl -v set value penguin 7 species GyVszn6OolHjk
+RLTBL_USER=afreen rltbl -v undo
+RLTBL_USER=mike rltbl -v redo
+RLTBL_USER=ahmed rltbl -v redo
+RLTBL_USER=afreen rltbl -v undo
+RLTBL_USER=barbara rltbl -v set value penguin 6 species rf306KuGwqv5Y
+RLTBL_USER=afreen rltbl -v undo
+RLTBL_USER=mike rltbl -v redo
+RLTBL_USER=barbara rltbl -v set value penguin 9 species zLN8JVEZkTqkh
+RLTBL_USER=ahmed rltbl -v redo
+RLTBL_USER=barbara rltbl -v undo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=barbara rltbl -v undo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=barbara rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=ahmed rltbl -v redo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=barbara rltbl -v redo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=mike rltbl -v redo
+RLTBL_USER=barbara rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=barbara rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=mike rltbl -v redo
+RLTBL_USER=ahmed rltbl -v redo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=mike rltbl -v redo
+RLTBL_USER=ahmed rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=mike rltbl -v undo
+RLTBL_USER=mike rltbl -v redo
+RLTBL_USER=mike rltbl -v undo
 
-echo && echo "Proceeding to step 4"
-test $batch -ne 1 && echo -n "Press enter " && read enter
-RLTBL_USER=afreen ${RLTBL} move row penguin 17 20 || exit 1
-
-echo && echo "Proceeding to step 5"
-test $batch -ne 1 && echo -n "Press enter " && read enter
-RLTBL_USER=afreen ${RLTBL} undo || exit 1
-
-# When 22 gets added, it seems like we need to update undone_afters for rows 17 and 21
-# from [20] from [22], right?
-echo && echo "Proceeding to step 6"
-test $batch -ne 1 && echo -n "Press enter " && read enter
-echo '{"species": "FOO"}' | RLTBL_USER=mike ${RLTBL} --input JSON add row penguin || exit 1
-
-echo && echo "Proceeding to step 7"
-test $batch -ne 1 && echo -n "Press enter " && read enter
-RLTBL_USER=mike ${RLTBL} undo || exit 1
-
-echo && echo "Proceeding to step 8"
-test $batch -ne 1 && echo -n "Press enter " && read enter
-RLTBL_USER=afreen ${RLTBL} move row penguin 20 18 || exit 1
-
-echo && echo "Proceeding to step 9"
-test $batch -ne 1 && echo -n "Press enter " && read enter
-RLTBL_USER=mike ${RLTBL} redo || exit 1
-
-echo && echo "Proceeding to step 10"
-test $batch -ne 1 && echo -n "Press enter " && read enter
-RLTBL_USER=afreen ${RLTBL} undo || exit 1
-
-echo && echo "Proceeding to step 12"
-test $batch -ne 1 && echo -n "Press enter " && read enter
-RLTBL_USER=mike ${RLTBL} undo || exit 1
-
-
+rltbl -v get table penguin | diff - penguin.tsv
 
 if [ $? -eq 0 ]
 then
