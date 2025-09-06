@@ -967,7 +967,7 @@ impl RowPositionMap {
 
         // TODO: try to do this more efficiently. Do we really need two loops?
 
-        // Look for the row that whose after field corresponds to this row.
+        // Look for the first row whose after field corresponds to this row.
         for (row, row_pos) in self.position_map.iter() {
             if row_pos.after == Some(*this_row) {
                 // Logically, there can only ever be one row after a given row so we return
@@ -976,11 +976,14 @@ impl RowPositionMap {
             }
         }
 
-        // If nothing is found, look for a deleted row that was previously after this row:
+        // If nothing is found, look for a deleted row that was previously after this row. Note
+        // that there could in principle be more than one of these.
         let mut rows = vec![];
         for (row, row_pos) in self.position_map.iter() {
             if row_pos.after == None {
-                if row_pos.after_history.last() == Some(this_row) {
+                if row_pos.after_history.last() == Some(this_row)
+                    || row_pos.undo_history.last() == Some(this_row)
+                {
                     rows.push(*row);
                 }
             }
@@ -988,21 +991,30 @@ impl RowPositionMap {
         if rows.len() == 1 {
             *rows.first().unwrap()
         } else if rows.len() > 1 {
-            tracing::warn!(
-                "More than one row was previously after {this_row}. Do we need to worry about this?"
+            tracing::info!(
+                "More than one row was previously after {this_row}. \
+                 Do we need to worry about this? The rows were {rows:?}"
             );
+            let mut rows = rows.clone();
+            rows.sort();
             *rows.first().unwrap()
         } else {
             let rows_after_last = self
                 .position_map
                 .iter()
-                .filter(|(_row, row_pos)| {
-                    row_pos.after == Some(*last_added_row) && row_pos.after != None
-                })
+                .filter(|(_row, row_pos)| row_pos.after == Some(*last_added_row))
                 .collect::<Vec<_>>();
             if rows_after_last.is_empty() {
+                // Recall that we already know that there is nothing after this row as far as
+                // the position map is concerned. Now we also know that there is nothing after
+                // the last row. It follows that if this row's id is greater than the last added
+                // row's id, then this row is the last actual row, otherwise the last added row
+                // is still the last actual row. In the former case, the row that comes after the
+                // last row is 0. In the latter case, since there is nothing in the position map
+                // indicating a row that is after this row, this means that the original row that
+                // was after this row is still there, i.e., this_row + 1.
                 if this_row >= last_added_row {
-                    tracing::info!("This row: {this_row} is the last row, presumably");
+                    tracing::info!("This row: {this_row} is the last row");
                     0
                 } else {
                     tracing::info!(
@@ -1013,6 +1025,17 @@ impl RowPositionMap {
                     this_row + 1
                 }
             } else {
+                // We know that there is nothing after this row as far as the position map is
+                // concerned. Now we also know that the last added row has a row that comes after
+                // it in the position map.
+
+                // First let's determine the actual row by determining which row, from among all
+                // rows that we have seen in the history, does not have a row that comes after it.
+                // The last actual row must have been seen, because if the actual last row in the
+                // table has not been encountered in the history this can only mean that nothing
+                // was added and it was never moved. If that were the case, however, there would
+                // be nothing after it in the position map and we would not be in this branch
+                // of the if/else statement.
                 let rows_seen = self.position_map.keys().collect::<Vec<_>>();
                 let last_actual_row = {
                     let mut last_actual_row = 0;
@@ -1026,12 +1049,15 @@ impl RowPositionMap {
                     }
                     last_actual_row
                 };
-                if *this_row >= last_actual_row {
+                if *this_row == last_actual_row {
                     tracing::info!("This row: {this_row} is the last row");
                     0
                 } else {
+                    // If this row is not actually the last row, then since there is no information
+                    // about the row that comes after it in the position map, the next row is
+                    // just this_row + 1
                     tracing::info!(
-                        "This row: {this_row} is not the last row, presumably. \
+                        "This row: {this_row} is not the last row. \
                                     Sending back {}",
                         this_row + 1
                     );
@@ -1074,29 +1100,21 @@ impl RowPositionMap {
                 ChangeAction::Do | ChangeAction::Undo => match row_pos.after_history.last() {
                     Some(row_id) => Ok(*row_id),
                     None => Ok(this_row - 1),
-                    //Err(RelatableError::DataError(format!(
-                    //"Row {this_row} was never previously after anything"
-                    //))
-                    //.into()),
                 },
                 ChangeAction::Redo => match row_pos.undo_history.last() {
                     Some(row_id) => Ok(*row_id),
                     None => Ok(this_row - 1),
-                    //Err(RelatableError::DataError(format!(
-                    //"Row {this_row} was never an undone previously after anything"
-                    //))
-                    //.into()),
                 },
             },
             None => {
-                tracing::info!("That's interesting. Row {this_row} is not in the position map");
+                tracing::warn!("Row {this_row} not found in position map");
                 Ok(this_row - 1)
             }
         }
     }
 
     /// TODO: Add docstring
-    pub fn update_row_position(
+    fn update_row_position(
         &mut self,
         change: &Change,
         action: &ChangeAction,
