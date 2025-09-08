@@ -194,7 +194,7 @@ impl SqlParam {
 
 /// Represents a database connection pool
 #[cfg(feature = "sqlx")]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum DbPool {
     Sqlite(AnyPool),
     Postgres(PgPool),
@@ -208,7 +208,7 @@ pub enum DbActiveConnection {
 }
 
 /// Represents a database connection
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum DbConnection {
     #[cfg(feature = "sqlx")]
     Sqlx(DbPool, DbKind),

@@ -108,6 +108,59 @@ $ RLTBL_USER=user2 rltbl undo
 $ rltbl get table penguin | diff - penguin.tsv
 ```
 
+# ```console tesh-session="test"
+# $ rltbl demo --size 20 --force
+# Created a demonstration database in ...
+# $ rltbl get table penguin > penguin.tsv
+# $ rltbl move row penguin 7 10
+# $ rltbl move row penguin 6 10
+# $ rltbl move row penguin 8 7
+# $ rltbl move row penguin 7 10
+# $ rltbl move row penguin 8 7
+# $ rltbl undo
+# $ rltbl undo
+# $ rltbl undo
+# $ rltbl undo
+# $ rltbl undo
+# $ rltbl get table penguin | diff - penguin.tsv
+# ```
+
+# ```console tesh-session="test"
+# $ rltbl demo --size 20 --force
+# Created a demonstration database in ...
+# $ rltbl get table penguin > penguin.tsv
+# $ rltbl move row penguin 2 5
+# $ rltbl move row penguin 5 3
+# $ rltbl move row penguin 2 1
+# $ rltbl undo
+# $ rltbl undo
+# $ rltbl undo
+# $ rltbl get table penguin | diff - penguin.tsv
+# ```
+
+# ```console tesh-session="test"
+# $ rltbl demo --size 20 --force
+# Created a demonstration database in ...
+# $ rltbl get table penguin > penguin.tsv
+# $ RLTBL_USER=user1 rltbl move row penguin 7 10
+# $ RLTBL_USER=user2 rltbl move row penguin 2 5
+# $ RLTBL_USER=user2 rltbl move row penguin 5 3
+# $ RLTBL_USER=user1 rltbl move row penguin 6 10
+# $ RLTBL_USER=user2 rltbl move row penguin 2 1
+# $ RLTBL_USER=user1 rltbl move row penguin 8 7
+# $ RLTBL_USER=user1 rltbl move row penguin 7 10
+# $ RLTBL_USER=user1 rltbl move row penguin 8 7
+# $ RLTBL_USER=user1 rltbl undo
+# $ RLTBL_USER=user2 rltbl undo
+# $ RLTBL_USER=user1 rltbl undo
+# $ RLTBL_USER=user2 rltbl undo
+# $ RLTBL_USER=user1 rltbl undo
+# $ RLTBL_USER=user1 rltbl undo
+# $ RLTBL_USER=user1 rltbl undo
+# $ RLTBL_USER=user2 rltbl undo
+# $ rltbl get table penguin | diff - penguin.tsv
+# ```
+
 ```console tesh-session="test"
 $ rltbl demo --size 20 --force
 Created a demonstration database in ...

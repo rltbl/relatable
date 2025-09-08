@@ -548,7 +548,6 @@ async fn print_row_position(cli: &Cli, table: &str, row: &u64, before: bool) {
         // The row position is the row that this row comes after:
         let after_row = rltbl
             .get_row_position(table, row)
-            .await
             .expect("Error getting previous row");
         match after_row {
             Some(after_row) => println!("{after_row}"),
@@ -571,8 +570,8 @@ async fn print_row_positions(cli: &Cli, table: &str) {
         .await
         .unwrap();
     let position_map = rltbl
-        .get_current_row_position_map(table)
-        .await
+        .row_position_map
+        .get(table)
         .expect(&format!("Error getting position map for table '{table}'"));
     let mut rows = position_map.position_map.keys().collect::<Vec<_>>();
     rows.sort();
@@ -919,7 +918,6 @@ async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
 
     let row_prev = rltbl
         .get_row_position(table, &row)
-        .await
         .expect("Error getting previous row")
         .expect("Row has been deleted");
     if after_id == row_prev {
@@ -1064,7 +1062,7 @@ async fn delete_message(
 /// Undo the last change
 async fn undo(cli: &Cli) {
     tracing::trace!("undo({cli:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
     let user = get_username(&cli);
@@ -1078,7 +1076,7 @@ async fn undo(cli: &Cli) {
 /// Redo the last change
 async fn redo(cli: &Cli) {
     tracing::trace!("redo({cli:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
     let user = get_username(&cli);
@@ -1105,12 +1103,12 @@ async fn load_tables(
     rltbl.validation_level = *validation_level;
 
     for path in paths {
-        load_table(cli, &path, force, &rltbl).await;
+        load_table(cli, &path, force, &mut rltbl).await;
     }
 }
 
 /// Load the table at the given path
-async fn load_table(cli: &Cli, path: &str, force: bool, rltbl: &Relatable) {
+async fn load_table(cli: &Cli, path: &str, force: bool, rltbl: &mut Relatable) {
     tracing::trace!("load_table({cli:?}, {path}, {force}, {rltbl:?})");
     // We will use this pattern to normalize the table name:
     let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");

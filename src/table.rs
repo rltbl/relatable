@@ -946,6 +946,84 @@ pub struct RowPositionMap {
 }
 
 impl RowPositionMap {
+    /// TODO: ADD Docstring
+    pub fn generate_row_position_map(
+        table: &str,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<RowPositionMap> {
+        // TODO: Add tracing.
+
+        // Get the history row by row
+        let sql = format!(
+            r#"SELECT "row", "after", "action", "content"
+               FROM "change" c, "history" h
+               WHERE c."change_id" = h."change_id"
+               AND c."table" = {sql_param}
+               ORDER BY "history_id""#,
+            sql_param = SqlParam::new(&tx.kind()).next(),
+        );
+        let params = json!([table]);
+
+        // Get the last row that was added to the table:
+        let last_added_row = RowPositionMap::_get_last_added_row(table, tx)?;
+
+        // The position map to be returned:
+        let mut position_map = RowPositionMap {
+            table: table.to_string(),
+            position_map: HashMap::new(),
+        };
+        for row in tx.query(&sql, Some(&params))? {
+            let changed_row = row.get_unsigned("row")?;
+            let after = row.get_unsigned("after")?;
+            let changes = row.get_string("content")?;
+            let changes = Change::many_from_str(&changes)?;
+            let action = ChangeAction::from_str(&row.get_string("action")?)?;
+            position_map.add_event(&changed_row, &after, &last_added_row, &changes, &action)?;
+        }
+        Ok(position_map)
+    }
+
+    /// TODO: Add docstring
+    pub async fn get_last_added_row(table: &str, rltbl: &Relatable) -> Result<u64> {
+        let mut conn = rltbl.connection.reconnect()?;
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+        let last_added_row = RowPositionMap::_get_last_added_row(table, &mut tx)?;
+        tx.commit()?;
+        Ok(last_added_row)
+    }
+
+    /// TODO: Add docstring
+    pub fn _get_last_added_row(table: &str, tx: &mut DbTransaction<'_>) -> Result<u64> {
+        let last_added_row = match tx.query_one(
+            &format!(
+                // TODO: Use an SqlParam for `table`:
+                r#"SELECT row AS "first_new_row"
+                        FROM "change" c, "history" h
+                        WHERE c.change_id = h.change_id
+                        AND c."table" = '{table}'
+                        AND action = 'do'
+                        AND value_before {is} NULL
+                        AND value_after {is_not} NULL
+                        ORDER BY history_id LIMIT 1"#,
+                is = sql::is_clause(&tx.kind()),
+                is_not = sql::is_not_clause(&tx.kind())
+            ),
+            None,
+        )? {
+            Some(row) => row.get_unsigned("first_new_row")? - 1,
+            // If there is no history yet, then we need to look at the _ids that were initially
+            // loaded:
+            None => match tx.query_one(
+                &format!(r#"SELECT MAX(_id) AS "last_added_row" FROM "{table}""#),
+                None,
+            )? {
+                Some(row) => row.get_unsigned("last_added_row").unwrap_or(0),
+                None => 0,
+            },
+        };
+        Ok(last_added_row)
+    }
+
     /// TODO: Add docstring
     pub async fn get_row_position(&self, row: &u64) -> Result<Option<u64>> {
         // TODO: tracing
@@ -1298,43 +1376,29 @@ impl RowPositionMap {
                 // numbers, previously after the row before the current position of the source
                 // row:
 
+                let maybe_change_history = |history: &Vec<u64>, row: &u64| -> Vec<u64> {
+                    let mut new_history = vec![];
+                    for after_id in history.iter() {
+                        if *after_id == *target && *row > *source
+                        //&& *source > *target
+                        {
+                            new_history.push(*source);
+                        } else if *after_id == *source
+                            && *row > source_prev
+                            //&& source_prev > *source
+                            && (*row != *target || (*after_id < source_prev))
+                        {
+                            new_history.push(source_prev);
+                        } else {
+                            new_history.push(*after_id);
+                        }
+                    }
+                    new_history
+                };
+
                 for (row, row_pos) in self.position_map.iter_mut() {
-                    let new_after_history = {
-                        // Move this for loop into its own function:
-                        let mut new_after_history = vec![];
-                        for after_id in row_pos.after_history.iter() {
-                            if *after_id == *target && *row > *source {
-                                new_after_history.push(*source);
-                            } else if *after_id == *source
-                                && *row > source_prev
-                                && (*row != *target || (*after_id < source_prev))
-                            {
-                                new_after_history.push(source_prev);
-                            } else {
-                                new_after_history.push(*after_id);
-                            }
-                        }
-                        new_after_history
-                    };
-                    let new_undo_history = {
-                        // Move this for loop into its own function:
-                        let mut new_undo_history = vec![];
-                        for after_id in row_pos.undo_history.iter_mut() {
-                            if *after_id == *target && *row > *source {
-                                new_undo_history.push(*source);
-                            } else if *after_id == *source
-                                && *row > source_prev
-                                && (*row != *target || (*after_id < source_prev))
-                            {
-                                new_undo_history.push(source_prev);
-                            } else {
-                                new_undo_history.push(*after_id);
-                            }
-                        }
-                        new_undo_history
-                    };
-                    row_pos.after_history = new_after_history;
-                    row_pos.undo_history = new_undo_history;
+                    row_pos.after_history = maybe_change_history(&row_pos.after_history, row);
+                    row_pos.undo_history = maybe_change_history(&row_pos.undo_history, row);
                 }
 
                 if changed_row > last_added_row {
@@ -1352,10 +1416,11 @@ impl RowPositionMap {
                     // source_prev will be None whenever we re-add a deleted row. In the case
                     // of a newly added row it should come back as one less than the row id.
                     None => {
-                        return Err(RelatableError::DataError(format!(
-                            "Row {changed_row} was already deleted"
-                        ))
-                        .into());
+                        self.previously_positioned_before(&action, &changed_row)?
+                        //return Err(RelatableError::DataError(format!(
+                        //    "Row {changed_row} was already deleted"
+                        //))
+                        //.into());
                     }
                 };
                 let deleted_row = changed_row;

@@ -111,6 +111,7 @@ pub struct Relatable {
     /// The validation level, which defaults to 'full'
     pub validation_level: ValidationLevel,
     pub memory_cache_size: usize,
+    pub row_position_map: HashMap<String, RowPositionMap>,
 }
 
 impl Relatable {
@@ -144,6 +145,26 @@ impl Relatable {
             }
         }
         let (connection, _) = DbConnection::connect(&path).await?;
+        let row_position_map = {
+            let mut conn = connection.reconnect()?;
+            let mut tx = connection.begin(&mut conn).await?;
+            if Table::_table_exists("column", &mut tx)? {
+                let sql = format!(r#"SELECT "table" FROM "table""#,);
+                let table_rows = tx.query(&sql, None)?;
+                let mut row_position_map = HashMap::new();
+                for table_row in table_rows {
+                    let table = table_row.get_string("table")?;
+                    row_position_map.insert(
+                        table.to_string(),
+                        RowPositionMap::generate_row_position_map(&table, &mut tx)?,
+                    );
+                }
+                tx.commit()?;
+                row_position_map
+            } else {
+                HashMap::new()
+            }
+        };
         Ok(Self {
             root,
             readonly,
@@ -164,6 +185,7 @@ impl Relatable {
                 }
                 _ => 0,
             },
+            row_position_map,
         })
     }
 
@@ -231,12 +253,24 @@ impl Relatable {
         tracing::trace!(
             "Relatable::build_demo({database:?}, {force}, {size}, {caching_strategy:?})"
         );
-        let rltbl = Relatable::init(force, database.as_deref(), caching_strategy).await?;
+        let mut rltbl = Relatable::init(force, database.as_deref(), caching_strategy).await?;
 
         rltbl.create_demo_column_table(force).await?;
         rltbl.create_demo_datatype_table(force).await?;
         rltbl.create_penguin_table(None, force, size).await?;
         rltbl.create_island_table(None, force).await?;
+
+        let mut conn = rltbl.connection.reconnect()?;
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+        rltbl.row_position_map.insert(
+            "penguin".to_string(),
+            RowPositionMap::generate_row_position_map("penguin", &mut tx)?,
+        );
+        rltbl.row_position_map.insert(
+            "island".to_string(),
+            RowPositionMap::generate_row_position_map("island", &mut tx)?,
+        );
+        tx.commit()?;
         Ok(rltbl)
     }
 
@@ -893,7 +927,7 @@ impl Relatable {
     /// Loads the given table from the given path. When `force` is set to true, deletes any
     /// existing table of the same name in the database first. When `validate` is set to true,
     /// Validates each row before loading it. Note that this function may panic.
-    pub async fn load_table(&self, table_name: &str, path: &str, force: bool) {
+    pub async fn load_table(&mut self, table_name: &str, path: &str, force: bool) {
         tracing::trace!("Relatable::load_table({table_name:?}, {path:?}, {force})");
         // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
@@ -1159,6 +1193,21 @@ impl Relatable {
             }
         }
 
+        let mut conn = self
+            .connection
+            .reconnect()
+            .expect("Could not reconnect to database");
+        let mut tx = self
+            .connection
+            .begin(&mut conn)
+            .await
+            .expect("Could not begin transaction");
+        self.row_position_map.insert(
+            table.name.to_string(),
+            RowPositionMap::generate_row_position_map(&table.name, &mut tx)
+                .expect("Could not generate row position map"),
+        );
+        tx.commit().expect("Error committing transaction");
         self.commit_to_git().await.expect("Error committing to git");
     }
 
@@ -1665,19 +1714,16 @@ impl Relatable {
     }
 
     /// TODO: Add docstring
-    pub async fn get_row_position(&self, table: &str, row: &u64) -> Result<Option<u64>> {
-        // TODO: tracing
-        let mut conn = self.connection.reconnect()?;
-        // Begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
+    pub fn get_row_position(&self, table: &str, row: &u64) -> Result<Option<u64>> {
+        let position_map_for_table =
+            self.row_position_map
+                .get(table)
+                .ok_or(RelatableError::DataError(format!(
+                    "Table '{table}' not found in row position map"
+                )))?;
+        let row_position = position_map_for_table.positioned_before(row);
 
-        let position_map = self._get_current_row_position_map(table, &mut tx)?;
-        let row_that_positioned_before = position_map.positioned_before(row);
-
-        // Commit the transaction:
-        tx.commit()?;
-
-        Ok(row_that_positioned_before)
+        Ok(row_position)
     }
 
     /// TODO: Add docstring
@@ -1686,12 +1732,19 @@ impl Relatable {
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        let position_map = self._get_current_row_position_map(table, &mut tx)?;
-        let last_row =
-            match tx.query_one(r#"SELECT MAX(_id) AS "last_row" FROM "{table}""#, None)? {
-                Some(row) => row.get_unsigned("last_row")?,
-                None => 0,
-            };
+        let position_map = self
+            .row_position_map
+            .get(table)
+            .ok_or(RelatableError::DataError(format!(
+                "Table '{table}' not found in row position map"
+            )))?;
+        let last_row = match tx.query_one(
+            &format!(r#"SELECT MAX(_id) AS "last_row" FROM "{table}""#),
+            None,
+        )? {
+            Some(row) => row.get_unsigned("last_row")?,
+            None => 0,
+        };
         let row_that_positioned_after = position_map.positioned_after(row, &last_row);
 
         // Commit the transaction:
@@ -1700,76 +1753,27 @@ impl Relatable {
         Ok(row_that_positioned_after)
     }
 
-    // TODO: This should be an attribute of rltbl that is read when it is initialized.
-    pub async fn get_current_row_position_map(&self, table: &str) -> Result<RowPositionMap> {
-        // TODO: Add tracing
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-        let position_map = self._get_current_row_position_map(table, &mut tx)?;
-        tx.commit()?;
-        Ok(position_map)
-    }
-
-    /// TODO: ADD Docstring
-    fn _get_current_row_position_map(
+    fn _get_current_next_row(
         &self,
         table: &str,
+        row: &u64,
         tx: &mut DbTransaction<'_>,
-    ) -> Result<RowPositionMap> {
-        // TODO: Add tracing.
-
-        // Get the history row by row
-        let sql = format!(
-            r#"SELECT "row", "after", "action", "content"
-               FROM "change" c, "history" h
-               WHERE c."change_id" = h."change_id"
-               AND c."table" = {sql_param}
-               ORDER BY "history_id""#,
-            sql_param = SqlParam::new(&tx.kind()).next(),
-        );
-        let params = json!([table]);
-
-        // Get the last row that was added to the table:
-        let last_added_row = match tx.query_one(
-            &format!(
-                r#"SELECT row AS "first_new_row"
-                        FROM "change" c, "history" h
-                        WHERE c.change_id = h.change_id
-                        AND action = 'do'
-                        AND value_before {is} NULL
-                        AND value_after {is_not} NULL
-                        ORDER BY history_id LIMIT 1"#,
-                is = sql::is_clause(&tx.kind()),
-                is_not = sql::is_not_clause(&tx.kind())
-            ),
+    ) -> Result<u64> {
+        let position_map = self
+            .row_position_map
+            .get(table)
+            .ok_or(RelatableError::DataError(format!(
+                "Table '{table}' not found in row position map"
+            )))?;
+        let last_row = match tx.query_one(
+            &format!(r#"SELECT MAX(_id) AS "last_row" FROM "{table}""#),
             None,
         )? {
-            Some(row) => row.get_unsigned("first_new_row")? - 1,
-            // If there is no history yet, then we need to look at the _ids that were initially
-            // loaded:
-            None => match tx.query_one(
-                &format!(r#"SELECT MAX(_id) AS "last_added_row" FROM "{table}""#),
-                None,
-            )? {
-                Some(row) => row.get_unsigned("last_added_row")?,
-                None => 0,
-            },
+            Some(row) => row.get_unsigned("last_row")?,
+            None => 0,
         };
-
-        // The position map to be returned:
-        let mut position_map = RowPositionMap {
-            table: table.to_string(),
-            position_map: HashMap::new(),
-        };
-        for row in tx.query(&sql, Some(&params))? {
-            let changed_row = row.get_unsigned("row")?;
-            let after = row.get_unsigned("after")?;
-            let changes = row.get_string("content")?;
-            let changes = Change::many_from_str(&changes)?;
-            let action = ChangeAction::from_str(&row.get_string("action")?)?;
-            position_map.add_event(&changed_row, &after, &last_added_row, &changes, &action)?;
-        }
-        Ok(position_map)
+        let row_that_positioned_after = position_map.positioned_after(row, &last_row);
+        Ok(row_that_positioned_after)
     }
 
     /// Returns a [Site] corresponding to the given username.
@@ -2235,14 +2239,33 @@ impl Relatable {
     }
 
     /// Reverse the given changeset in the database
-    async fn _revert(&self, change_id: u64, changeset: &ChangeSet) -> Result<Option<ChangeSet>> {
+    async fn _revert(
+        &mut self,
+        change_id: u64,
+        changeset: &ChangeSet,
+    ) -> Result<Option<ChangeSet>> {
         tracing::trace!("Relatable::_revert({change_id}, {changeset:?})");
+        let last_added_row = RowPositionMap::get_last_added_row(&changeset.table, self).await?;
         match changeset.changes.first() {
             None => Ok(None),
             Some(change) => {
-                if let Change::Update { .. } = change {
+                if let Change::Update { row, .. } = change {
                     let conn = self.connection.reconnect()?;
+                    let after = self.get_current_next_row(&changeset.table, row).await?;
                     let actual_changes = self._set_values(conn, &changeset).await?;
+                    let position_map = self.row_position_map.get_mut(&changeset.table).ok_or(
+                        RelatableError::DataError(format!(
+                            "No table '{}' in position map",
+                            changeset.table
+                        )),
+                    )?;
+                    position_map.add_event(
+                        row,
+                        &after,
+                        &last_added_row,
+                        &changeset.changes,
+                        &changeset.action,
+                    )?;
                     Ok(Some(actual_changes))
                 } else {
                     let mut actual_changes = vec![];
@@ -2250,7 +2273,7 @@ impl Relatable {
                         let conn = self.connection.reconnect()?;
                         match change {
                             Change::Update { .. } => (), // Change::Update already handled above.
-                            Change::Add { row, after: _ } => {
+                            Change::Add { row, after } => {
                                 let num_deleted = self
                                     ._delete_row(
                                         conn,
@@ -2260,6 +2283,20 @@ impl Relatable {
                                         *row,
                                     )
                                     .await?;
+                                let position_map = self
+                                    .row_position_map
+                                    .get_mut(&changeset.table)
+                                    .ok_or(RelatableError::DataError(format!(
+                                        "No table '{}' in position map",
+                                        changeset.table
+                                    )))?;
+                                position_map.add_event(
+                                    row,
+                                    &after,
+                                    &last_added_row,
+                                    &changeset.changes,
+                                    &changeset.action,
+                                )?;
                                 if num_deleted > 0 {
                                     actual_changes.push(change.clone());
                                 }
@@ -2269,8 +2306,13 @@ impl Relatable {
                                 from_after,
                                 to_after: _,
                             } => {
-                                let position_map =
-                                    self.get_current_row_position_map(&changeset.table).await?;
+                                let position_map = self
+                                    .row_position_map
+                                    .get_mut(&changeset.table)
+                                    .ok_or(RelatableError::DataError(format!(
+                                        "No table '{}' in position map",
+                                        changeset.table
+                                    )))?;
                                 let after = match &changeset.action {
                                     ChangeAction::Do => {
                                         tracing::warn!(
@@ -2281,6 +2323,13 @@ impl Relatable {
                                     ChangeAction::Undo | ChangeAction::Redo => &position_map
                                         .previously_positioned_before(&changeset.action, row)?,
                                 };
+                                position_map.add_event(
+                                    row,
+                                    &after,
+                                    &last_added_row,
+                                    &changeset.changes,
+                                    &changeset.action,
+                                )?;
                                 let new_order = self
                                     ._move_and_record_row(
                                         conn,
@@ -2326,9 +2375,13 @@ impl Relatable {
                                 let before = JsonRow { content: before };
 
                                 // Get the position where we will add the row back to:
-                                let position_map =
-                                    self.get_current_row_position_map(&changeset.table).await?;
-
+                                let position_map = self
+                                    .row_position_map
+                                    .get_mut(&changeset.table)
+                                    .ok_or(RelatableError::DataError(format!(
+                                        "No table '{}' in position map",
+                                        changeset.table
+                                    )))?;
                                 let after = match &changeset.action {
                                     ChangeAction::Do => {
                                         tracing::warn!(
@@ -2339,6 +2392,14 @@ impl Relatable {
                                     ChangeAction::Undo | ChangeAction::Redo => &position_map
                                         .previously_positioned_before(&changeset.action, row)?,
                                 };
+
+                                position_map.add_event(
+                                    row,
+                                    &after,
+                                    &last_added_row,
+                                    &changeset.changes,
+                                    &changeset.action,
+                                )?;
 
                                 tracing::info!(
                                     "Re-adding row '{}' to table '{}' after row {}",
@@ -2373,7 +2434,7 @@ impl Relatable {
     }
 
     /// Undo the last change made by the given user
-    pub async fn undo(&self, user: &str) -> Result<Option<ChangeSet>> {
+    pub async fn undo(&mut self, user: &str) -> Result<Option<ChangeSet>> {
         tracing::trace!("Relatable::undo({user:?})");
         let (change_id, mut changeset) =
             match self.get_last_undoable_changeset_for_user(user).await? {
@@ -2392,7 +2453,7 @@ impl Relatable {
     }
 
     /// Redo the last change undone by the given user
-    pub async fn redo(&self, user: &str) -> Result<Option<ChangeSet>> {
+    pub async fn redo(&mut self, user: &str) -> Result<Option<ChangeSet>> {
         tracing::trace!("Relatable::redo({user:?})");
         let (change_id, mut changeset) =
             match self.get_last_redoable_changeset_for_user(user).await? {
