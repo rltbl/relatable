@@ -1379,13 +1379,11 @@ impl RowPositionMap {
                 let maybe_change_history = |history: &Vec<u64>, row: &u64| -> Vec<u64> {
                     let mut new_history = vec![];
                     for after_id in history.iter() {
-                        if *after_id == *target && *row > *source
-                        //&& *source > *target
-                        {
+                        if *after_id == *target && *row > *source && *source > *target {
                             new_history.push(*source);
                         } else if *after_id == *source
                             && *row > source_prev
-                            //&& source_prev > *source
+                            && source_prev > *source
                             && (*row != *target || (*after_id < source_prev))
                         {
                             new_history.push(source_prev);

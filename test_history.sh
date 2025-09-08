@@ -20,6 +20,51 @@ echo && echo "Proceeding to step 1"
 test $batch -ne 1 && echo -n "Press enter " && read enter
 ${RLTBL} demo --size 20 --force || exit 1
 
+# rltbl -v get table penguin > penguin.tsv
+# rltbl -v move row penguin 7 10
+# rltbl -v move row penguin 6 10
+# rltbl -v move row penguin 8 7
+# rltbl -v move row penguin 7 10
+# rltbl -v move row penguin 8 7
+# rltbl -v undo
+# rltbl -v undo
+# rltbl -v undo
+# rltbl -v undo
+# rltbl -v undo
+
+
+# rltbl -v demo --size 20 --force
+# rltbl -v get table penguin > penguin.tsv
+# rltbl -v move row penguin 2 5
+# rltbl -v move row penguin 5 3
+# rltbl -v move row penguin 2 1
+# rltbl -v undo
+# rltbl -v undo
+# rltbl -v undo
+# rltbl -v get table penguin | diff - penguin.tsv
+
+rltbl -v demo --size 20 --force
+RLTBL_USER=user1 rltbl -v move row penguin 7 10
+RLTBL_USER=user2 rltbl -v move row penguin 2 5
+RLTBL_USER=user2 rltbl -v move row penguin 5 3
+RLTBL_USER=user1 rltbl -v move row penguin 6 10
+RLTBL_USER=user2 rltbl -v move row penguin 2 1
+RLTBL_USER=user1 rltbl -v move row penguin 8 7
+RLTBL_USER=user1 rltbl -v move row penguin 7 10
+RLTBL_USER=user1 rltbl -v move row penguin 8 7
+RLTBL_USER=user1 rltbl -v undo
+RLTBL_USER=user2 rltbl -v undo
+RLTBL_USER=user1 rltbl -v undo
+RLTBL_USER=user2 rltbl -v undo
+RLTBL_USER=user1 rltbl -v undo
+RLTBL_USER=user1 rltbl -v undo
+RLTBL_USER=user1 rltbl -v undo
+RLTBL_USER=user2 rltbl -v undo
+
+
+
+exit 0
+
 rltbl -v get table penguin > penguin.tsv
 
 echo '{"species": "FOO"}' | RLTBL_USER=barbara rltbl -v --input JSON add row penguin
