@@ -424,10 +424,7 @@ async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
     match Relatable::init(force, path, &cli.caching).await {
         Ok(_) => println!(
             "Initialized a relatable database in '{}'",
-            match path {
-                None => rltbl::core::RLTBL_DEFAULT_DB,
-                Some(db) => db,
-            }
+            Relatable::determine_db_path(path)
         ),
         Err(err) => panic!("{err:?}"),
     }
@@ -439,10 +436,11 @@ fn print_text(rows: &Vec<Vec<String>>) {
     let mut tw = TabWriter::new(vec![]);
     for row in rows {
         tw.write(format!("{}\n", row.join("\t")).as_bytes())
-            .unwrap();
+            .expect("Error printing row");
     }
-    tw.flush().unwrap();
-    let written = String::from_utf8(tw.into_inner().unwrap()).unwrap();
+    tw.flush().expect("Error while flushing");
+    let written = String::from_utf8(tw.into_inner().expect("into_inner error"))
+        .expect("Error getting string");
     print!("{written}");
 }
 
@@ -466,7 +464,7 @@ async fn print_table(
     // Initialize a Select struct using the table struct:
     let mut select = Select::from(table_name)
         .filters(filters)
-        .unwrap()
+        .expect("Error constructing Select from filters")
         .limit(limit)
         .offset(offset);
 
@@ -475,12 +473,15 @@ async fn print_table(
 
     match format.to_lowercase().as_str() {
         "json" => {
-            let json = json!(rltbl.fetch(&select).await.unwrap());
-            print!("{}", to_string_pretty(&json).unwrap());
+            let json = json!(rltbl.fetch(&select).await.expect("Fetch error"));
+            print!(
+                "{}",
+                to_string_pretty(&json).expect("Error prettifying string")
+            );
         }
         "vertical" => {
             println!("{table_name}\n-----");
-            for row in rltbl.fetch(&select).await.unwrap().rows {
+            for row in rltbl.fetch(&select).await.expect("Fetch error").rows {
                 for (column, cell) in row.cells.iter() {
                     let messages = cell
                         .messages
@@ -497,14 +498,23 @@ async fn print_table(
             }
         }
         "text" | "" => {
-            println!("{}", rltbl.fetch(&select).await.unwrap().to_console());
+            println!(
+                "{}",
+                rltbl
+                    .fetch(&select)
+                    .await
+                    .expect("Fetch error")
+                    .to_console()
+            );
         }
         _ => unimplemented!("output format {format}"),
     };
 
     tracing::debug!("Processed: {}", {
-        let format = Format::try_from(&format.to_string()).unwrap();
-        let url = select.to_url("/table", &format).unwrap();
+        let format = Format::try_from(&format.to_string()).expect("Format error");
+        let url = select
+            .to_url("/table", &format)
+            .expect("Error converting to URL");
         url
     });
 }
@@ -514,9 +524,13 @@ async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) 
     tracing::trace!("print_rows({cli:?}, {table_name}, {limit}, {offset})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     let select = Select::from(table_name).limit(limit).offset(offset);
-    let rows = rltbl.fetch_rows(&select).await.unwrap().vec_into();
+    let rows = rltbl
+        .fetch_rows(&select)
+        .await
+        .expect("Fetch error")
+        .vec_into();
     print_text(&rows);
 }
 
@@ -525,7 +539,7 @@ async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
     tracing::trace!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     let statement = format!(
         r#"SELECT "{column}" FROM "{table}" WHERE _id = {sql_param}"#,
         sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next(),
@@ -535,7 +549,7 @@ async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
         .connection
         .query_value(&statement, Some(&params))
         .await
-        .unwrap()
+        .expect("Error querying value")
     {
         let text = match value {
             JsonValue::String(value) => value.to_string(),
@@ -635,7 +649,7 @@ async fn print_history(cli: &Cli, context: usize) {
     let user = get_username(&cli);
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     let history = rltbl
         .get_user_history(
             &user,
@@ -723,7 +737,7 @@ async fn set_value(
     tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value}, {validation_level:?})");
     let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     rltbl.validation_level = *validation_level;
 
     // Fetch the current value from the db:
@@ -755,7 +769,7 @@ async fn set_value(
             }],
         })
         .await
-        .unwrap()
+        .expect("Error setting values")
         .changes
         .len();
 
@@ -851,7 +865,7 @@ async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
     tracing::trace!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     let json_message = match &cli.input {
         Some(s) if s == "JSON" => input_json_row(),
         Some(s) => panic!("Unsupported input type '{s}'"),
@@ -904,7 +918,7 @@ async fn add_row(
     tracing::trace!("add_row({cli:?}, {table}, {after_id:?}, {validation_level:?})");
     let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     rltbl.validation_level = *validation_level;
 
     let json_row = match &cli.input {
@@ -932,7 +946,7 @@ async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
     tracing::trace!("move_row({cli:?}, {table}, {row}, {after_id})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     let user = get_username(&cli);
 
     let row_prev = rltbl
@@ -961,7 +975,7 @@ async fn validate_row(cli: &Cli, table_name: &str, row: &u64) {
     tracing::trace!("validate_row({cli:?}, {table_name}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
 
     let table = Table::get_table(table_name, &rltbl)
         .await
@@ -979,7 +993,7 @@ async fn validate_table(cli: &Cli, table_name: &str) {
     tracing::trace!("validate_table({cli:?}, {table_name}, {table_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
 
     let table = Table::get_table(table_name, &rltbl)
         .await
@@ -997,7 +1011,7 @@ async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
     tracing::trace!("validate_column({cli:?}, {table_name}, {column_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
 
     let table = Table::get_table(table_name, &rltbl)
         .await
@@ -1018,7 +1032,7 @@ async fn validate_value(cli: &Cli, table_name: &str, row: &u64, column_name: &st
     tracing::trace!("validate_value({cli:?}, {table_name}, {row}, {column_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
 
     let table = Table::get_table(table_name, &rltbl)
         .await
@@ -1039,7 +1053,7 @@ async fn delete_row(cli: &Cli, table: &str, row: u64) {
     tracing::trace!("delete_row({cli:?}, {table}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     let user = get_username(&cli);
     let num_deleted = rltbl
         .delete_row(table, &user, &row)
@@ -1067,7 +1081,7 @@ async fn delete_message(
     );
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connectg error");
     let num_deleted = rltbl
         .delete_message(table, row, column, target_rule, target_user)
         .await
@@ -1084,7 +1098,7 @@ async fn undo(cli: &Cli) {
     tracing::trace!("undo({cli:?})");
     let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     let user = get_username(&cli);
     let changeset = rltbl.undo(&user).await.expect("Failed to undo");
     if let None = changeset {
@@ -1098,7 +1112,7 @@ async fn redo(cli: &Cli) {
     tracing::trace!("redo({cli:?})");
     let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     let user = get_username(&cli);
     let changeset = rltbl.redo(&user).await.expect("Failed to redo");
     if let None = changeset {
@@ -1119,7 +1133,7 @@ async fn load_tables(
 
     let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     rltbl.validation_level = *validation_level;
 
     for path in paths {
@@ -1150,7 +1164,7 @@ async fn save_all(cli: &Cli, save_dir: Option<&str>) {
     tracing::trace!("save_all({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     rltbl.save_all(save_dir).await.expect("Error saving all");
 }
 
@@ -1159,7 +1173,7 @@ async fn drop_database(cli: &Cli) {
     tracing::trace!("drop_database({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
-        .unwrap();
+        .expect("Connect error");
     rltbl
         .drop_database()
         .await
@@ -1174,10 +1188,7 @@ async fn build_demo(cli: &Cli, force: &bool, size: usize) {
         .expect("Error building demonstration database");
     println!(
         "Created a demonstration database in '{}'",
-        match &cli.database {
-            None => rltbl::core::RLTBL_DEFAULT_DB,
-            Some(db) => db,
-        }
+        Relatable::determine_db_path(cli.database.as_deref())
     );
 }
 
