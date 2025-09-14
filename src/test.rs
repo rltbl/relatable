@@ -393,7 +393,7 @@ async fn main() {
                             let after_id = random_between(1, *table_size, &mut -1) as u64;
                             let row = random_between(1, *table_size, &mut -1) as u64;
                             let new_order = rltbl
-                                .move_row(table, &user, row, after_id)
+                                .move_row(table, &user, &row, &after_id)
                                 .await
                                 .expect("Failed to move row within {table}");
                             if new_order > 0 {

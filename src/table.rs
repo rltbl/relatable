@@ -806,7 +806,7 @@ impl Table {
     /// given transaction.
     pub fn _get_row_as_json(
         table: &str,
-        row: u64,
+        row: &u64,
         tx: &mut DbTransaction<'_>,
     ) -> Result<Option<JsonRow>> {
         tracing::trace!("Table::_get_row_as_json({table}, {row}, tx)");
@@ -858,15 +858,33 @@ impl Table {
         Ok(current_row_id + 1)
     }
 
+    /// TODO: Add docstring
+    pub async fn get_previous_row_by_order(
+        table: &str,
+        row: &u64,
+        rltbl: &Relatable,
+    ) -> Result<Option<u64>> {
+        let mut conn = rltbl.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = rltbl.connection.begin(&mut conn).await?;
+
+        let rowid = Table::get_previous_row_by_order_tx(table, row, &mut tx)?;
+
+        // Commit the transaction:
+        tx.commit()?;
+
+        Ok(rowid)
+    }
+
     /// Returns the row id that comes before the given row in the given table, using the given
     /// transaction, or 0 if nothing comes before it.
-    pub fn _get_previous_row_by_order(
+    pub fn get_previous_row_by_order_tx(
         table: &str,
-        row: u64,
+        row: &u64,
         tx: &mut DbTransaction<'_>,
-    ) -> Result<u64> {
-        tracing::trace!("Table::_get_previous_row_by_order_id({table}, {row}, tx)");
-        let curr_row_order = Table::_get_row_order(table, row, tx)?;
+    ) -> Result<Option<u64>> {
+        tracing::trace!("Table::get_previous_row_by_order_id({table}, {row}, tx)");
+        let curr_row_order = Table::get_row_order(table, row, tx)?;
         let sql = format!(
             r#"SELECT "_id" FROM "{table}" WHERE "_order" < {sql_param}
                ORDER BY "_order" DESC LIMIT 1"#,
@@ -875,16 +893,24 @@ impl Table {
         let params = json!([curr_row_order]);
         let rows = tx.query(&sql, Some(&params))?;
         if rows.len() == 0 {
-            Ok(0)
+            let sql = format!(
+                r#"SELECT 1 FROM "{table}" WHERE "_id" = {sql_param}"#,
+                sql_param = SqlParam::new(&tx.kind()).next()
+            );
+            let params = json!([row]);
+            match tx.query_one(&sql, Some(&params))? {
+                Some(_) => Ok(Some(0)),
+                None => Ok(None),
+            }
         } else {
-            rows[0].get_unsigned("_id")
+            Ok(Some(rows[0].get_unsigned("_id")?))
         }
     }
 
     /// Returns the value of the _order column of the given row from the given table using the
     /// given transaction.
-    pub fn _get_row_order(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
-        tracing::trace!("Table::_get_row_order({table}, {row}, tx)");
+    pub fn get_row_order(table: &str, row: &u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
+        tracing::trace!("Table::get_row_order({table}, {row}, tx)");
         let sql = format!(
             r#"SELECT "_order" FROM "{table}" WHERE "_id" = {sql_param}"#,
             sql_param = SqlParam::new(&tx.kind()).next()
@@ -901,9 +927,13 @@ impl Table {
 
     /// Returns the row id that comes after the given row in the given table, using the given
     /// transaction, or 0 if nothing comes after it.
-    fn _get_next_row_by_order(table: &str, row: u64, tx: &mut DbTransaction<'_>) -> Result<u64> {
-        tracing::trace!("Table::_get_next_row_by_order_id({table}, {row}, tx)");
-        let curr_row_order = Table::_get_row_order(table, row, tx)?;
+    pub fn get_next_row_by_order(
+        table: &str,
+        row: &u64,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Option<u64>> {
+        tracing::trace!("Table::get_next_row_by_order_id({table}, {row}, tx)");
+        let curr_row_order = Table::get_row_order(table, row, tx)?;
         let sql = format!(
             r#"SELECT "_id" FROM "{table}" WHERE "_order" > {sql_param}
                ORDER BY "_order" LIMIT 1"#,
@@ -912,45 +942,62 @@ impl Table {
         let params = json!([curr_row_order]);
         let rows = tx.query(&sql, Some(&params))?;
         if rows.len() == 0 {
-            Ok(0)
+            let sql = format!(
+                r#"SELECT 1 FROM "{table}" WHERE "_id" = {sql_param}"#,
+                sql_param = SqlParam::new(&tx.kind()).next()
+            );
+            let params = json!([row]);
+            match tx.query_one(&sql, Some(&params))? {
+                Some(_) => Ok(Some(0)),
+                None => Ok(None),
+            }
         } else {
-            rows[0].get_unsigned("_id")
+            Ok(Some(rows[0].get_unsigned("_id")?))
         }
     }
 
     /// TODO: Add docstring
-    pub fn _comes_before(
+    pub fn comes_before(
         table: &str,
         before_row: &u64,
         after_row: &u64,
         tx: &mut DbTransaction<'_>,
     ) -> Result<bool> {
-        let before_order = Table::_get_row_order(table, *before_row, tx)?;
-        let after_order = Table::_get_row_order(table, *after_row, tx)?;
+        let before_order = Table::get_row_order(table, before_row, tx)?;
+        let after_order = Table::get_row_order(table, after_row, tx)?;
         Ok(before_order < after_order)
     }
 }
 
+/// TODO: Add docstring
+#[derive(Clone, Debug)]
+pub struct RowState {
+    pub history_id: u64,
+    pub after: u64,
+}
+
+// TODO: Delete the code related to RowPositionOld and RowPositionOldMap, which are not needed,
+// before merging this file to main.
 /// Represents the relative positions of all of the rows in the table
 #[derive(Clone, Debug)]
-pub struct RowPosition {
+pub struct RowPositionOld {
     pub after: Option<u64>,
     pub after_history: Vec<u64>,
     pub undo_history: Vec<u64>,
 }
 
 #[derive(Clone, Debug)]
-pub struct RowPositionMap {
+pub struct RowPositionOldMap {
     pub table: String,
-    pub position_map: HashMap<u64, RowPosition>,
+    pub position_map: HashMap<u64, RowPositionOld>,
 }
 
-impl RowPositionMap {
+impl RowPositionOldMap {
     /// TODO: ADD Docstring
     pub fn generate_row_position_map(
         table: &str,
         tx: &mut DbTransaction<'_>,
-    ) -> Result<RowPositionMap> {
+    ) -> Result<RowPositionOldMap> {
         // TODO: Add tracing.
 
         // Get the history row by row
@@ -965,10 +1012,10 @@ impl RowPositionMap {
         let params = json!([table]);
 
         // Get the last row that was added to the table:
-        let last_added_row = RowPositionMap::_get_last_added_row(table, tx)?;
+        let last_added_row = RowPositionOldMap::_get_last_added_row(table, tx)?;
 
         // The position map to be returned:
-        let mut position_map = RowPositionMap {
+        let mut position_map = RowPositionOldMap {
             table: table.to_string(),
             position_map: HashMap::new(),
         };
@@ -987,7 +1034,7 @@ impl RowPositionMap {
     pub async fn get_last_added_row(table: &str, rltbl: &Relatable) -> Result<u64> {
         let mut conn = rltbl.connection.reconnect()?;
         let mut tx = rltbl.connection.begin(&mut conn).await?;
-        let last_added_row = RowPositionMap::_get_last_added_row(table, &mut tx)?;
+        let last_added_row = RowPositionOldMap::_get_last_added_row(table, &mut tx)?;
         tx.commit()?;
         Ok(last_added_row)
     }
@@ -1032,7 +1079,7 @@ impl RowPositionMap {
 
     /// TODO: Add docstring
     pub fn positioned_after(
-        //position_map: &HashMap<u64, RowPosition>,
+        //position_map: &HashMap<u64, RowPositionOld>,
         &self,
         this_row: &u64,
         last_added_row: &u64,
@@ -1249,7 +1296,7 @@ impl RowPositionMap {
             None => {
                 self.position_map.insert(
                     *this_row,
-                    RowPosition {
+                    RowPositionOld {
                         after: new_after.cloned(),
                         after_history: match change {
                             Change::Add { .. } => vec![*new_after.expect("Why add a deleted row?")],

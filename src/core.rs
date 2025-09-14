@@ -10,7 +10,7 @@ use rltbl::{
         self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
         MemoryCacheKey, SqlParam, VecInto as _,
     },
-    table::{Cell, Column, Datatype, Message, Row, RowPositionMap, Table},
+    table::{Cell, Column, Datatype, Message, Row, RowState, Table},
 };
 
 use anyhow::Result;
@@ -111,7 +111,6 @@ pub struct Relatable {
     /// The validation level, which defaults to 'full'
     pub validation_level: ValidationLevel,
     pub memory_cache_size: usize,
-    pub row_position_map: HashMap<String, RowPositionMap>,
 }
 
 impl Relatable {
@@ -145,26 +144,6 @@ impl Relatable {
             }
         }
         let (connection, _) = DbConnection::connect(&path).await?;
-        let row_position_map = {
-            let mut conn = connection.reconnect()?;
-            let mut tx = connection.begin(&mut conn).await?;
-            if Table::_table_exists("column", &mut tx)? {
-                let sql = format!(r#"SELECT "table" FROM "table""#,);
-                let table_rows = tx.query(&sql, None)?;
-                let mut row_position_map = HashMap::new();
-                for table_row in table_rows {
-                    let table = table_row.get_string("table")?;
-                    row_position_map.insert(
-                        table.to_string(),
-                        RowPositionMap::generate_row_position_map(&table, &mut tx)?,
-                    );
-                }
-                tx.commit()?;
-                row_position_map
-            } else {
-                HashMap::new()
-            }
-        };
         Ok(Self {
             root,
             readonly,
@@ -185,7 +164,6 @@ impl Relatable {
                 }
                 _ => 0,
             },
-            row_position_map,
         })
     }
 
@@ -253,7 +231,7 @@ impl Relatable {
         tracing::trace!(
             "Relatable::build_demo({database:?}, {force}, {size}, {caching_strategy:?})"
         );
-        let mut rltbl = Relatable::init(force, database.as_deref(), caching_strategy).await?;
+        let rltbl = Relatable::init(force, database.as_deref(), caching_strategy).await?;
 
         rltbl.create_demo_column_table(force).await?;
         rltbl.create_demo_datatype_table(force).await?;
@@ -261,15 +239,7 @@ impl Relatable {
         rltbl.create_island_table(None, force).await?;
 
         let mut conn = rltbl.connection.reconnect()?;
-        let mut tx = rltbl.connection.begin(&mut conn).await?;
-        rltbl.row_position_map.insert(
-            "penguin".to_string(),
-            RowPositionMap::generate_row_position_map("penguin", &mut tx)?,
-        );
-        rltbl.row_position_map.insert(
-            "island".to_string(),
-            RowPositionMap::generate_row_position_map("island", &mut tx)?,
-        );
+        let tx = rltbl.connection.begin(&mut conn).await?;
         tx.commit()?;
         Ok(rltbl)
     }
@@ -1131,7 +1101,7 @@ impl Relatable {
                                         .add_message(
                                             "rltbl",
                                             &table.name,
-                                            id,
+                                            &id,
                                             column,
                                             &cell.value,
                                             &message.level,
@@ -1193,21 +1163,6 @@ impl Relatable {
             }
         }
 
-        let mut conn = self
-            .connection
-            .reconnect()
-            .expect("Could not reconnect to database");
-        let mut tx = self
-            .connection
-            .begin(&mut conn)
-            .await
-            .expect("Could not begin transaction");
-        self.row_position_map.insert(
-            table.name.to_string(),
-            RowPositionMap::generate_row_position_map(&table.name, &mut tx)
-                .expect("Could not generate row position map"),
-        );
-        tx.commit().expect("Error committing transaction");
         self.commit_to_git().await.expect("Error committing to git");
     }
 
@@ -1464,7 +1419,7 @@ impl Relatable {
                         sql_params = sql_param.get_as_list(6)
                     );
                     sql_param.reset();
-                    let after_id = Table::_get_previous_row_by_order(&table, *row, tx)?;
+                    let after_id = Table::get_previous_row_by_order_tx(&table, row, tx)?;
                     let before = json!({column: before}).to_string();
                     let after = json!({column: after}).to_string();
                     let params = json!([change_id, table, row, after_id, before, after]);
@@ -1474,7 +1429,7 @@ impl Relatable {
                     // If the row has just been newly added, it will be found in the table,
                     // otherwise we will use the old_change_id to look for it in the history
                     // table:
-                    let json_row = match Table::_get_row_as_json(&table, *row, tx)? {
+                    let json_row = match Table::_get_row_as_json(&table, row, tx)? {
                         Some(json_row) => json_row,
                         None => match old_change_id {
                             Some(change_id) => {
@@ -1538,15 +1493,14 @@ impl Relatable {
                     tx.query_value(&sql, Some(&params))?;
                 }
                 Change::Delete { row, after } => {
-                    let json_row = match Table::_get_row_as_json(&table, *row, tx)? {
+                    let json_row = match Table::_get_row_as_json(&table, row, tx)? {
                         Some(json_row) => json_row,
                         None => {
                             // It must be there since we supposedly just added it, so if it is
                             // not found return an error.
-                            return Err(RelatableError::DataError(format!(
-                                "Row {row} not founded"
-                            ))
-                            .into());
+                            return Err(
+                                RelatableError::DataError(format!("Row {row} not found")).into()
+                            );
                         }
                     };
                     let sql = format!(
@@ -1714,66 +1668,585 @@ impl Relatable {
     }
 
     /// TODO: Add docstring
-    pub fn get_row_position(&self, table: &str, row: &u64) -> Result<Option<u64>> {
-        let position_map_for_table =
-            self.row_position_map
-                .get(table)
-                .ok_or(RelatableError::DataError(format!(
-                    "Table '{table}' not found in row position map"
-                )))?;
-        let row_position = position_map_for_table.positioned_before(row);
-
+    pub async fn get_row_position(&self, table: &str, row: &u64) -> Result<Option<u64>> {
+        let row_position = Table::get_previous_row_by_order(table, row, self).await?;
         Ok(row_position)
     }
 
     /// TODO: Add docstring
-    pub async fn get_current_next_row(&self, table: &str, row: &u64) -> Result<u64> {
+    pub async fn get_next_row(&self, table: &str, row: &u64) -> Result<Option<u64>> {
         let mut conn = self.connection.reconnect()?;
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
-
-        let position_map = self
-            .row_position_map
-            .get(table)
-            .ok_or(RelatableError::DataError(format!(
-                "Table '{table}' not found in row position map"
-            )))?;
-        let last_row = match tx.query_one(
-            &format!(r#"SELECT MAX(_id) AS "last_row" FROM "{table}""#),
-            None,
-        )? {
-            Some(row) => row.get_unsigned("last_row")?,
-            None => 0,
-        };
-        let row_that_positioned_after = position_map.positioned_after(row, &last_row);
-
-        // Commit the transaction:
+        let row_position = Table::get_next_row_by_order(table, row, &mut tx)?;
         tx.commit()?;
-
-        Ok(row_that_positioned_after)
+        Ok(row_position)
     }
 
-    fn _get_current_next_row(
+    /// TODO: Add docstring
+    pub fn row_exists_tx(table: &str, row: &u64, tx: &mut DbTransaction<'_>) -> Result<bool> {
+        let mut sql_param = SqlParam::new(&tx.kind());
+        let sql = format!(
+            r#"SELECT 1 FROM "{table}" WHERE _id = {}"#,
+            sql_param.next()
+        );
+        let params = json!([row]);
+        match tx.query_one(&sql, Some(&params))? {
+            Some(_) => Ok(true),
+            None => Ok(false),
+        }
+    }
+
+    /// TODO: Add docstring
+    pub fn get_previous_state_for_row(
+        table: &str,
+        row_id: &u64,
+        history_id: &u64,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Option<RowState>> {
+        let mut sql_param = SqlParam::new(&tx.kind());
+        let sql = format!(
+            r#"SELECT "history_id", "after"
+               FROM "history"
+               WHERE "history_id" < {}
+               AND "table" = {}
+               AND "row" = {}
+               ORDER BY history_id DESC
+               LIMIT 1"#,
+            sql_param.next(),
+            sql_param.next(),
+            sql_param.next(),
+        );
+        let params = json!([history_id, table, row_id]);
+        let previous_state = tx.query_one(&sql, Some(&params))?.and_then(|row| {
+            Some(RowState {
+                history_id: row
+                    .get_unsigned("history_id")
+                    .expect("TODO: Properly return an error here"),
+                after: row
+                    .get_unsigned("after")
+                    .expect("TODO: Properly return an error here"),
+            })
+        });
+        Ok(previous_state)
+    }
+
+    /// TODO: Add a docstring
+    pub async fn get_initial_logical_state_for_action(
+        &self,
+        table: &str,
+        row_id: &u64,
+        history_id: &u64,
+        action: &ChangeAction,
+    ) -> Result<Option<RowState>> {
+        let mut conn = self.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = self.connection.begin(&mut conn).await?;
+        let last_logical_row_op_id = Relatable::get_initial_logical_state_for_action_tx(
+            table, row_id, history_id, action, &mut tx,
+        )?;
+        tx.commit()?;
+        Ok(last_logical_row_op_id)
+    }
+
+    /// TODO: Add docstring
+    fn get_initial_logical_state_for_action_tx(
+        table: &str,
+        row_id: &u64,
+        history_id: &u64,
+        action: &ChangeAction,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Option<RowState>> {
+        match action {
+            ChangeAction::Do => Ok(Some(RowState {
+                history_id: *history_id,
+                after: {
+                    let sql = format!(
+                        r#"SELECT "after" FROM "history" WHERE "history_id" = {}"#,
+                        SqlParam::new(&tx.kind()).next()
+                    );
+                    let params = json!([history_id]);
+                    tx.query_one(&sql, Some(&params))?
+                        .expect(&format!("History id {history_id} not found"))
+                        .get_unsigned("after")?
+                },
+            })),
+            ChangeAction::Undo | ChangeAction::Redo => {
+                let mut sql_param = SqlParam::new(&tx.kind());
+                let sql = format!(
+                    r#"SELECT h."history_id", h."after", c."action", c."content"
+                       FROM "history" h, "change" c
+                       WHERE c."change_id" = h."change_id"
+                       AND h."history_id" < {}
+                       AND h."table" = {}
+                       AND h."row" = {}
+                       ORDER BY h."history_id""#,
+                    sql_param.next(),
+                    sql_param.next(),
+                    sql_param.next(),
+                );
+                let params = json!([history_id, table, row_id]);
+
+                let mut changes_done_stack = vec![];
+                let mut changes_undone_stack = vec![];
+                // TODO: Replace panics with proper errors.
+                for rec in &tx.query(&sql, Some(&params))? {
+                    let history_id = rec.get_unsigned("history_id")?;
+                    let after = rec.get_unsigned("after")?;
+                    match rec.get_string("action")?.as_str() {
+                        "do" => {
+                            let change = rec.get_string("content")?;
+                            let change = Change::many_from_str(&change)?;
+                            let change = change.first().ok_or(RelatableError::DataError(
+                                format!("No change in history record for row {row_id}"),
+                            ))?;
+                            changes_done_stack.push(RowState {
+                                history_id: history_id,
+                                after: match change {
+                                    Change::Move {
+                                        from_after,
+                                        to_after,
+                                        ..
+                                    } => {
+                                        if action == &ChangeAction::Undo {
+                                            *from_after
+                                        } else {
+                                            *to_after
+                                        }
+                                    }
+                                    _ => after,
+                                },
+                            });
+                            changes_undone_stack.clear();
+                        }
+                        "undo" => match changes_done_stack.pop() {
+                            Some(row_state) => {
+                                changes_undone_stack.push(row_state.clone());
+                            }
+                            None => panic!("Nothing to undo"),
+                        },
+                        "redo" => match changes_undone_stack.pop() {
+                            Some(row_state) => {
+                                changes_done_stack.push(row_state.clone());
+                            }
+                            None => panic!("Nothing to redo"),
+                        },
+                        invalid => panic!("Invalid action: {invalid}"),
+                    };
+                }
+                match action {
+                    ChangeAction::Do => unreachable!(),
+                    ChangeAction::Undo => Ok(changes_done_stack.last().cloned()),
+                    ChangeAction::Redo => Ok(changes_undone_stack.last().cloned()),
+                }
+            }
+        }
+    }
+
+    // TODO: If this can be (easily) gotten to work, consider repurposing this function as a unit
+    // test method, i.e., as a sanity check to verify that our actual algorithm, using the _order
+    // field of the history table, is consistent with the row order as determined according to this
+    // more "manual" method.
+    /// TODO: Add docstring
+    fn get_row_previous_position_tx(
+        table: &str,
+        row_id: &u64,
+        prospective_action: &str,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<Option<u64>> {
+        if *row_id == 0 {
+            return Err(
+                RelatableError::InputError("No rows can come before row 0".to_string()).into(),
+            );
+        }
+
+        let mut sql_param = SqlParam::new(&tx.kind());
+        let (sql, params) = {
+            let sql = format!(
+                r#"SELECT h."history_id", h."row", h."after", c."action", c."content"
+                   FROM "history" h, "change" c
+                   WHERE h."change_id" = c."change_id"
+                   AND h."table" = {sql_param_1}
+                   AND h."row" = {sql_param_2}
+                   ORDER BY h."history_id" DESC LIMIT 1"#,
+                sql_param_1 = sql_param.next(),
+                sql_param_2 = sql_param.next(),
+            );
+            let params = json!([table, row_id]);
+            (sql, params)
+        };
+
+        let (last_recorded_hist_id, last_recorded_position, change) = {
+            match tx.query_one(&sql, Some(&params))? {
+                Some(row) => (
+                    row.get_unsigned("history_id")?,
+                    row.get_unsigned("after")?,
+                    {
+                        let change = row.get_string("content")?;
+                        let change = Change::many_from_str(&change)?;
+                        let change = change.first().ok_or(RelatableError::DataError(format!(
+                            "No change in history record for row {row_id}"
+                        )))?;
+                        change.clone()
+                    },
+                ),
+                None => {
+                    // Check to make sure that the row is in the table at all and return None
+                    // if it is not (this will be the case when we are adding a row, for instance).
+                    // If it is in the table then its last recorded position will be the position in
+                    // which it was loaded, which is always n - 1.
+                    tracing::info!(
+                        "No entry found for table '{table}', row {row_id} in history table"
+                    );
+                    match Relatable::row_exists_tx(table, row_id, tx)? {
+                        false => {
+                            tracing::info!(
+                                "Row {row_id} does not currently exist in table '{table}'"
+                            );
+                            return Ok(None);
+                        }
+                        true => {
+                            tracing::info!(
+                                "Row {row_id} exists in table '{table}'. Presumably it is \
+                                 positioned after {}, mate",
+                                row_id - 1
+                            );
+                            return Ok(Some(row_id - 1));
+                        }
+                    }
+                }
+            }
+        };
+
+        tracing::info!(
+            "Last recorded position of {row_id}, with history ID {last_recorded_hist_id} as the \
+             result of a {change}, was {last_recorded_position}"
+        );
+
+        let prospective_action = ChangeAction::from_str(prospective_action)?;
+        match &prospective_action {
+            ChangeAction::Do => match &change {
+                Change::Update { .. } => {
+                    tracing::info!(
+                        "No position change for DO-UPDATE action. Returning \
+                                    {last_recorded_position}"
+                    );
+                    return Ok(Some(last_recorded_position));
+                }
+                Change::Add { .. } => {
+                    tracing::info!("No previous position for DO-ADD action. Returning None");
+                    return Ok(None);
+                }
+                Change::Delete { after, .. } => {
+                    tracing::info!("Returning previous position: {after} for DO-DELETE action");
+                    return Ok(Some(*after));
+                }
+                Change::Move { from_after, .. } => {
+                    tracing::info!(
+                        "Returning previous position: {from_after} for DO-MOVE \
+                                    action"
+                    );
+                    return Ok(Some(*from_after));
+                }
+            },
+            _ => (),
+        };
+
+        tracing::info!("Received a {prospective_action} action");
+
+        let t2 = {
+            let row = tx.query_one(
+                r#"SELECT "history_id" FROM "history" ORDER BY "history_id" DESC LIMIT 1"#,
+                None,
+            )?;
+            row.expect("No history data").get_unsigned("history_id")? + 1
+        };
+        let t1 = Relatable::get_initial_logical_state_for_action_tx(
+            table,
+            row_id,
+            &t2,
+            &prospective_action,
+            tx,
+        )?
+        .expect("No initial logical state for row");
+        tracing::info!("The initial logical state for this action is {t1:?}");
+
+        let mut found = false;
+        let mut provisional_target = t1.after;
+        let mut first_after = match provisional_target {
+            0 => None,
+            _ => {
+                let provisional_target_initial_position = {
+                    let mut sql_param = SqlParam::new(&tx.kind());
+                    let sql = format!(
+                        r#"SELECT "after"
+                           FROM "history"
+                           WHERE "table" = {}
+                           AND "row" = {}
+                           AND "history_id" < {}
+                           ORDER BY "history_id" DESC"#,
+                        sql_param.next(),
+                        sql_param.next(),
+                        sql_param.next()
+                    );
+                    let params = json!([table, provisional_target, t1.history_id]);
+                    match tx.query_one(&sql, Some(&params))? {
+                        Some(row) => row.get_unsigned("after")?,
+                        None => {
+                            tracing::info!(
+                                "No entry found for table '{table}', row {provisional_target} in \
+                                 history table"
+                            );
+                            // Check to make sure that the row is in the table at all and return
+                            // None if it is not (this will be the case when we are adding a row,
+                            // for instance). If it is in the table then its last recorded position
+                            // will be the position in which it was loaded, which is always n - 1.
+                            match Relatable::row_exists_tx(table, &provisional_target, tx)? {
+                                false => {
+                                    panic!(
+                                        "Row {provisional_target} does not currently exist \
+                                         in table '{table}'"
+                                    );
+                                }
+                                true => {
+                                    tracing::info!(
+                                        "Row {provisional_target} exists in table '{table}'. \
+                                         Presumably it is positioned after {}, friend",
+                                        provisional_target - 1
+                                    );
+                                    provisional_target - 1
+                                }
+                            }
+                        }
+                    }
+                };
+                Some(provisional_target_initial_position)
+            }
+        };
+        tracing::info!(
+            "Checking to see if provisional target row {}, initially at position {:?} \
+             has moved between {} and {}",
+            provisional_target,
+            first_after,
+            t1.history_id,
+            t2
+        );
+
+        // If the provisional target is 0 then it will not have moved in the meantime, or ever,
+        // since the 0th row is just a logical placeholder and does not actually exist. Some other
+        // row, however, might have moved after row 0 in the meantime, and we need to handle that
+        // case in the same way that we handle it for other rows after the while loop.
+        let saved_provisional_target = provisional_target;
+        while provisional_target != 0 && !found {
+            sql_param.reset();
+            let sql = format!(
+                r#"SELECT "row", "content"
+                   FROM "change" c, "history" h
+                   WHERE c."change_id" = h."change_id"
+                   AND c."table" = {}
+                   AND h."row" = {}
+                   AND h."history_id" < {}
+                   AND h."history_id" > {}
+                   ORDER BY h."history_id" DESC LIMIT 1"#,
+                sql_param.next(),
+                sql_param.next(),
+                sql_param.next(),
+                sql_param.next(),
+            );
+            let params = json!([table, provisional_target, t2, t1.history_id]);
+
+            let last_after = match tx.query_one(&sql, Some(&params))? {
+                None => {
+                    tracing::info!(
+                        "No entry found for row {provisional_target} in table '{table}'"
+                    );
+                    break;
+                }
+                Some(row) => {
+                    // TODO: Filter out rows that moved after the provisional target, but then
+                    // moved away during the period.
+                    let change = row.get_string("content")?;
+                    let change = Change::many_from_str(&change)?;
+                    let change = change.first().ok_or(RelatableError::DataError(format!(
+                        "No change in history record for row {provisional_target}"
+                    )))?;
+                    match change {
+                        Change::Update { .. } => first_after.clone(),
+                        Change::Delete { .. } => None,
+                        Change::Add { after, .. } => Some(*after),
+                        Change::Move { to_after, .. } => Some(*to_after),
+                    }
+                }
+            };
+
+            if first_after == last_after {
+                found = true;
+            } else {
+                provisional_target = first_after.expect("No first after");
+                first_after = {
+                    let mut sql_param = SqlParam::new(&tx.kind());
+                    let sql = format!(
+                        r#"SELECT "after"
+                               FROM "history"
+                               WHERE "table" = {}
+                               AND "row" = {}
+                               AND "history_id" < {}
+                               ORDER BY "history_id" DESC"#,
+                        sql_param.next(),
+                        sql_param.next(),
+                        sql_param.next()
+                    );
+                    let params = json!([table, provisional_target, t1.history_id]);
+                    match tx.query_one(&sql, Some(&params))? {
+                        Some(row) => Some(row.get_unsigned("after")?),
+                        None => {
+                            tracing::info!(
+                                "No entry found for table '{table}', row {provisional_target} \
+                                 in history table"
+                            );
+                            match Relatable::row_exists_tx(table, &provisional_target, tx)? {
+                                false => {
+                                    panic!(
+                                        "Row {provisional_target} does not currently exist \
+                                         in table '{table}'"
+                                    );
+                                }
+                                true => {
+                                    tracing::info!(
+                                        "Row {provisional_target} exists in table '{table}'. \
+                                         Presumably it is positioned after {}, friend",
+                                        provisional_target - 1
+                                    );
+                                    Some(provisional_target - 1)
+                                }
+                            }
+                        }
+                    }
+                };
+            }
+        }
+        if saved_provisional_target != provisional_target {
+            tracing::info!("The new provisional target row is: {provisional_target}");
+        } else {
+            tracing::info!("The provisional target row is still {provisional_target}");
+        }
+
+        // TODO: Convert this to a for or while loop:
+        loop {
+            sql_param.reset();
+            let sql = format!(
+                r#"SELECT h."history_id", h."row", c."content"
+                   FROM "history" h, "change" c
+                   WHERE c."change_id" = h."change_id"
+                   AND h."history_id" < {}
+                   AND h."history_id" > {}
+                   AND h."table" = {}
+                   AND h."row" <> {}
+                   AND h."after" = {}
+                   ORDER BY h."history_id""#,
+                sql_param.next(),
+                sql_param.next(),
+                sql_param.next(),
+                sql_param.next(),
+                sql_param.next(),
+            );
+            let params = json!([t2, t1.history_id, table, row_id, provisional_target,]);
+            let records = tx.query(&sql, Some(&params))?;
+            if records.is_empty() {
+                tracing::info!(
+                    "Nothing moved after target in the time window between {} and {}",
+                    t1.history_id,
+                    t2
+                );
+                return Ok(Some(provisional_target));
+            } else {
+                for record in records {
+                    let row_after_target = record.get_unsigned("row")?;
+                    let history_id = record.get_unsigned("history_id")?;
+                    sql_param.reset();
+                    let sql = format!(
+                        r#"SELECT "after"
+                           FROM "history" h, "change" c
+                           WHERE c.change_id = h.change_id
+                           AND h.history_id > {}
+                           AND h.history_id < {}
+                           AND h."table" = {}
+                           AND h.row = {}
+                           ORDER BY "history_id" DESC
+                           LIMIT 1"#,
+                        sql_param.next(),
+                        sql_param.next(),
+                        sql_param.next(),
+                        sql_param.next()
+                    );
+                    let params = json!([history_id, t2, table, row_after_target]);
+
+                    match tx.query_one(&sql, Some(&params))? {
+                        None => {
+                            tracing::info!(
+                                "Row {} with content: {} moved after the target row {} during the \
+                                 time window between {} and {}",
+                                row_after_target,
+                                record.get_string("content")?,
+                                provisional_target,
+                                t1.history_id,
+                                t2
+                            );
+                            if *row_id < row_after_target {
+                                tracing::info!("The final target row is {provisional_target}");
+                                tracing::info!("*** Updating after ***");
+                                let history_id = record.get_unsigned("history_id")?;
+                                sql_param.reset();
+                                let sql = format!(
+                                    r#"UPDATE "history"
+                                       SET "after" = {}
+                                       WHERE "history_id" = {}"#,
+                                    sql_param.next(),
+                                    sql_param.next(),
+                                );
+                                let params = json!([row_id, history_id]);
+                                tx.query(&sql, Some(&params))?;
+                                return Ok(Some(provisional_target));
+                            } else {
+                                provisional_target = row_after_target;
+                                tracing::info!(
+                                    "The provisional target row is now {provisional_target}"
+                                );
+                            }
+                        }
+                        Some(record) => {
+                            let after = record.get_unsigned("after")?;
+                            if after != provisional_target {
+                                tracing::info!(
+                                    "Nothing moved after target: {} in the time window between \
+                                     {} and {}, though {row_after_target} briefly moved after the \
+                                     target before moving away",
+                                    provisional_target,
+                                    t1.history_id,
+                                    t2
+                                );
+                                return Ok(Some(provisional_target));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// TODO: Add docstring
+    pub async fn get_row_previous_position(
         &self,
         table: &str,
         row: &u64,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<u64> {
-        let position_map = self
-            .row_position_map
-            .get(table)
-            .ok_or(RelatableError::DataError(format!(
-                "Table '{table}' not found in row position map"
-            )))?;
-        let last_row = match tx.query_one(
-            &format!(r#"SELECT MAX(_id) AS "last_row" FROM "{table}""#),
-            None,
-        )? {
-            Some(row) => row.get_unsigned("last_row")?,
-            None => 0,
-        };
-        let row_that_positioned_after = position_map.positioned_after(row, &last_row);
-        Ok(row_that_positioned_after)
+        action: &str,
+    ) -> Result<Option<u64>> {
+        let mut conn = self.connection.reconnect()?;
+        // Begin a transaction:
+        let mut tx = self.connection.begin(&mut conn).await?;
+        let row_position = Relatable::get_row_previous_position_tx(table, row, action, &mut tx)?;
+        tx.commit()?;
+        Ok(row_position)
     }
 
     /// Returns a [Site] corresponding to the given username.
@@ -1821,7 +2294,8 @@ impl Relatable {
         match changeset.action {
             ChangeAction::Undo | ChangeAction::Redo => match changeset.changes.first() {
                 Some(Change::Delete { row, after: _ }) => {
-                    cursor.row = Table::_get_previous_row_by_order(&changeset.table, *row, tx)?;
+                    cursor.row = Table::get_previous_row_by_order_tx(&changeset.table, row, tx)?
+                        .unwrap_or(0);
                 }
                 _ => (),
             },
@@ -2241,31 +2715,16 @@ impl Relatable {
     /// Reverse the given changeset in the database
     async fn _revert(
         &mut self,
-        change_id: u64,
+        change_id: &u64,
         changeset: &ChangeSet,
     ) -> Result<Option<ChangeSet>> {
         tracing::trace!("Relatable::_revert({change_id}, {changeset:?})");
-        let last_added_row = RowPositionMap::get_last_added_row(&changeset.table, self).await?;
         match changeset.changes.first() {
             None => Ok(None),
             Some(change) => {
-                if let Change::Update { row, .. } = change {
+                if let Change::Update { .. } = change {
                     let conn = self.connection.reconnect()?;
-                    let after = self.get_current_next_row(&changeset.table, row).await?;
                     let actual_changes = self._set_values(conn, &changeset).await?;
-                    let position_map = self.row_position_map.get_mut(&changeset.table).ok_or(
-                        RelatableError::DataError(format!(
-                            "No table '{}' in position map",
-                            changeset.table
-                        )),
-                    )?;
-                    position_map.add_event(
-                        row,
-                        &after,
-                        &last_added_row,
-                        &changeset.changes,
-                        &changeset.action,
-                    )?;
                     Ok(Some(actual_changes))
                 } else {
                     let mut actual_changes = vec![];
@@ -2273,78 +2732,51 @@ impl Relatable {
                         let conn = self.connection.reconnect()?;
                         match change {
                             Change::Update { .. } => (), // Change::Update already handled above.
-                            Change::Add { row, after } => {
+                            Change::Add { row, after: _ } => {
                                 let num_deleted = self
                                     ._delete_row(
                                         conn,
                                         &changeset.action,
                                         &changeset.table,
                                         &changeset.user,
-                                        *row,
+                                        row,
                                     )
                                     .await?;
-                                let position_map = self
-                                    .row_position_map
-                                    .get_mut(&changeset.table)
-                                    .ok_or(RelatableError::DataError(format!(
-                                        "No table '{}' in position map",
-                                        changeset.table
-                                    )))?;
-                                position_map.add_event(
-                                    row,
-                                    &after,
-                                    &last_added_row,
-                                    &changeset.changes,
-                                    &changeset.action,
-                                )?;
                                 if num_deleted > 0 {
                                     actual_changes.push(change.clone());
                                 }
                             }
                             Change::Move {
                                 row,
-                                from_after,
-                                to_after: _,
+                                from_after: _,
+                                to_after,
                             } => {
-                                let position_map = self
-                                    .row_position_map
-                                    .get_mut(&changeset.table)
+                                let after = self
+                                    .get_row_previous_position(
+                                        &changeset.table,
+                                        row,
+                                        &changeset.action.to_string(),
+                                    )
+                                    .await?
                                     .ok_or(RelatableError::DataError(format!(
-                                        "No table '{}' in position map",
-                                        changeset.table
+                                        "Not found: row {row}"
                                     )))?;
-                                let after = match &changeset.action {
-                                    ChangeAction::Do => {
-                                        tracing::warn!(
-                                            "Relatable::_revert() should not be called on a Do"
-                                        );
-                                        from_after
-                                    }
-                                    ChangeAction::Undo | ChangeAction::Redo => &position_map
-                                        .previously_positioned_before(&changeset.action, row)?,
-                                };
-                                position_map.add_event(
-                                    row,
-                                    &after,
-                                    &last_added_row,
-                                    &changeset.changes,
-                                    &changeset.action,
-                                )?;
                                 let new_order = self
                                     ._move_and_record_row(
                                         conn,
                                         &changeset.action,
                                         &changeset.table,
                                         &changeset.user,
-                                        *row,
-                                        *after,
+                                        row,
+                                        to_after,
+                                        &after,
                                     )
                                     .await?;
                                 if new_order > 0 {
                                     actual_changes.push(change.clone());
                                 }
                             }
-                            Change::Delete { row, after } => {
+                            Change::Delete { row, after: _ } => {
                                 // Get the row, as it was before it was deleted, from the history
                                 // table:
                                 let mut sql_param = SqlParam::new(&self.connection.kind());
@@ -2375,32 +2807,16 @@ impl Relatable {
                                 let before = JsonRow { content: before };
 
                                 // Get the position where we will add the row back to:
-                                let position_map = self
-                                    .row_position_map
-                                    .get_mut(&changeset.table)
+                                let after = self
+                                    .get_row_previous_position(
+                                        &changeset.table,
+                                        row,
+                                        &changeset.action.to_string(),
+                                    )
+                                    .await?
                                     .ok_or(RelatableError::DataError(format!(
-                                        "No table '{}' in position map",
-                                        changeset.table
+                                        "Not found: row {row}"
                                     )))?;
-                                let after = match &changeset.action {
-                                    ChangeAction::Do => {
-                                        tracing::warn!(
-                                            "Relatable::_revert() should not be called on a Do"
-                                        );
-                                        after
-                                    }
-                                    ChangeAction::Undo | ChangeAction::Redo => &position_map
-                                        .previously_positioned_before(&changeset.action, row)?,
-                                };
-
-                                position_map.add_event(
-                                    row,
-                                    &after,
-                                    &last_added_row,
-                                    &changeset.changes,
-                                    &changeset.action,
-                                )?;
-
                                 tracing::info!(
                                     "Re-adding row '{}' to table '{}' after row {}",
                                     before,
@@ -2413,7 +2829,7 @@ impl Relatable {
                                     &changeset.table,
                                     &changeset.user,
                                     Some(*row),
-                                    Some(*after),
+                                    Some(after),
                                     &before,
                                 )
                                 .await?;
@@ -2445,7 +2861,7 @@ impl Relatable {
                 Some(changeset) => changeset,
             };
         changeset.action = ChangeAction::Undo;
-        let changeset = self._revert(change_id, &changeset).await?;
+        let changeset = self._revert(&change_id, &changeset).await?;
         if let Some(_) = changeset {
             self.commit_to_git().await?;
         }
@@ -2465,7 +2881,7 @@ impl Relatable {
             };
         tracing::debug!("Last redoable action (ID {change_id}) for user {user} was {changeset:?}");
         changeset.action = ChangeAction::Redo;
-        let changeset = self._revert(change_id, &changeset).await?;
+        let changeset = self._revert(&change_id, &changeset).await?;
         if let Some(_) = changeset {
             self.commit_to_git().await?;
         }
@@ -2705,7 +3121,7 @@ impl Relatable {
         &self,
         user: &str,
         table_name: &str,
-        row: u64,
+        row: &u64,
         column: &str,
         value: &JsonValue,
         level: &str,
@@ -2798,7 +3214,9 @@ impl Relatable {
         }
 
         let after_id = match after_id {
-            None => Table::_get_previous_row_by_order(&table.name, new_row.id, &mut tx)?,
+            None => {
+                Table::get_previous_row_by_order_tx(&table.name, &new_row.id, &mut tx)?.unwrap_or(0)
+            }
             Some(after_id) => {
                 // Move the row to its assigned spot within the table:
                 tracing::info!(
@@ -2806,7 +3224,7 @@ impl Relatable {
                     id = new_row.id,
                     table = table.name
                 );
-                let new_order = self._move_row(&mut tx, &table, new_row.id, after_id)?;
+                let new_order = self._move_row(&mut tx, &table, &new_row.id, &after_id)?;
                 new_row.order = new_order;
                 after_id
             }
@@ -2875,7 +3293,7 @@ impl Relatable {
         action: &ChangeAction,
         table_name: &str,
         user: &str,
-        row: u64,
+        row: &u64,
     ) -> Result<usize> {
         tracing::trace!(
             "Relatable::_delete_row(conn, {action:?}, {table_name:?}, {user:?} \
@@ -2900,8 +3318,9 @@ impl Relatable {
             user: user.to_string(),
             description: "Delete one row".to_string(),
             changes: vec![Change::Delete {
-                row: row,
-                after: Table::_get_previous_row_by_order(table_name, row, &mut tx)?,
+                row: *row,
+                after: Table::get_previous_row_by_order_tx(table_name, &row, &mut tx)?
+                    .ok_or(RelatableError::DataError(format!("Not found: row {row}")))?,
             }],
         };
 
@@ -2909,7 +3328,7 @@ impl Relatable {
         self.prepare_user_cursor(&changeset, &mut tx)?;
 
         // Delete any messages associated with the row
-        self._delete_message(&mut tx, table_name, Some(row), None, None, None)?;
+        self._delete_message(&mut tx, table_name, Some(*row), None, None, None)?;
         tracing::debug!("Deleted messages for deleted row {row} of table {table_name}");
 
         // Record the change to the history table:
@@ -2941,7 +3360,7 @@ impl Relatable {
     }
 
     /// Delete a row from a given table
-    pub async fn delete_row(&self, table_name: &str, user: &str, row: u64) -> Result<usize> {
+    pub async fn delete_row(&self, table_name: &str, user: &str, row: &u64) -> Result<usize> {
         tracing::trace!("Relatable::delete_row({table_name:?}, {user:?}, {row})");
         let conn = self.connection.reconnect()?;
         let num_deleted = self
@@ -3045,12 +3464,13 @@ impl Relatable {
         action: &ChangeAction,
         table_name: &str,
         user: &str,
-        id: u64,
-        after_id: u64,
+        id: &u64,
+        from_after: &u64,
+        after_id: &u64,
     ) -> Result<u64> {
         tracing::trace!(
             "Relatable::_move_and_record_row(conn, {action:?}, {table_name:?}, \
-                         {user:?}, {id}, {after_id})"
+             {user:?}, {id}, {from_after}, {after_id})"
         );
 
         // Begin a transaction:
@@ -3072,9 +3492,9 @@ impl Relatable {
             user: user.to_string(),
             description: "Move one row".to_string(),
             changes: vec![Change::Move {
-                row: id,
-                from_after: Table::_get_previous_row_by_order(table_name, id, &mut tx)?,
-                to_after: after_id,
+                row: *id,
+                from_after: *from_after,
+                to_after: *after_id,
             }],
         };
 
@@ -3100,20 +3520,20 @@ impl Relatable {
         &self,
         tx: &mut DbTransaction<'_>,
         table: &Table,
-        id: u64,
-        after_id: u64,
+        id: &u64,
+        after_id: &u64,
     ) -> Result<u64> {
         tracing::trace!("Relatable::_move_row(tx, {table:?}, {id}, {after_id})");
         if id == after_id {
             tracing::warn!("Ignoring request to move row {id} after itself");
-            return Table::_get_row_order(&table.name, id, tx);
+            return Table::get_row_order(&table.name, id, tx);
         }
 
         // Get the order, (A), of `after_id`:
         let order_prev = {
-            if after_id > 0 {
-                let mut id_to_try = after_id;
-                let mut result = Table::_get_row_order(&table.name, id_to_try, tx);
+            if *after_id > 0 {
+                let mut id_to_try = *after_id;
+                let mut result = Table::get_row_order(&table.name, &id_to_try, tx);
                 // This handles the case in which the after row has been deleted for some reason
                 // (this might happen if we are redoing).
                 while let Err(_) = result {
@@ -3123,7 +3543,7 @@ impl Relatable {
                     tracing::debug!("Could not obtain _order for row {id_to_try}");
                     id_to_try -= 1;
                     tracing::debug!("Trying to find the _order of row {id_to_try}");
-                    result = Table::_get_row_order(&table.name, id_to_try, tx);
+                    result = Table::get_row_order(&table.name, &id_to_try, tx);
                 }
                 result?
             } else {
@@ -3278,13 +3698,26 @@ impl Relatable {
         &self,
         table_name: &str,
         user: &str,
-        id: u64,
-        after_id: u64,
+        id: &u64,
+        after_id: &u64,
     ) -> Result<u64> {
         tracing::trace!("Relatable::move_row({table_name:?}, {user:?}, {after_id:?})");
         let conn = self.connection.reconnect()?;
+
+        let from_after = Table::get_previous_row_by_order(table_name, &id, self)
+            .await?
+            .ok_or(RelatableError::DataError(format!("Not found: row {id}")))?;
+
         let new_order = self
-            ._move_and_record_row(conn, &ChangeAction::Do, table_name, user, id, after_id)
+            ._move_and_record_row(
+                conn,
+                &ChangeAction::Do,
+                table_name,
+                user,
+                id,
+                &from_after,
+                after_id,
+            )
             .await?;
         if new_order != 0 {
             self.commit_to_git().await?;

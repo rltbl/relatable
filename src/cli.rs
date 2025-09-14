@@ -20,7 +20,7 @@ use colored::Colorize;
 use promptly::prompt_opt;
 use regex::Regex;
 use serde_json::{json, to_string_pretty, Value as JsonValue};
-use std::{io, io::Write, path::Path};
+use std::{io, io::Write, path::Path, str::FromStr};
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";
@@ -223,10 +223,17 @@ pub enum GetSubcommand {
         before: bool,
     },
 
-    /// Get information about all of the row positions within a given table
-    RowPositions {
+    // TODO: This command-line option was added as a development aid. It is generally not needed
+    // and should be removed before merging to main.
+    HistoryStart {
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
+
+        #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
+        row: u64,
+
+        #[arg(value_name = "ACTION", action = ArgAction::Set, help = "")]
+        action: String,
     },
 
     /// Get the value of a given column of a given row from a given table.
@@ -548,56 +555,68 @@ async fn print_row_position(cli: &Cli, table: &str, row: &u64, before: bool) {
         // The row position is the row that this row comes after:
         let after_row = rltbl
             .get_row_position(table, row)
-            .expect("Error getting previous row");
-        match after_row {
-            Some(after_row) => println!("{after_row}"),
-            None => println!("{row} has been deleted"),
-        };
+            .await
+            .expect("Error getting previous row")
+            .expect("Row not found");
+        println!("{after_row}");
     } else {
         // Get the row that this row comes before:
         let before_row = rltbl
-            .get_current_next_row(table, row)
+            .get_next_row(table, row)
             .await
-            .expect("Error getting next row");
+            .expect("Error getting next row")
+            .expect("Row not found");
         println!("{before_row}");
     }
 }
 
+// TODO: Remove this function (see TODO above).
 /// TODO: Add docstring here
-async fn print_row_positions(cli: &Cli, table: &str) {
+async fn print_start_of_row_history(cli: &Cli, table: &str, row: &u64, action: &str) {
     // TODO: Add tracing
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .unwrap();
-    let position_map = rltbl
-        .row_position_map
-        .get(table)
-        .expect(&format!("Error getting position map for table '{table}'"));
-    let mut rows = position_map.position_map.keys().collect::<Vec<_>>();
-    rows.sort();
-    for row in rows {
-        let row_pos = position_map.position_map.get(row).expect("Not found");
-        println!(
-            "Row: {}, after: {}, previously afters: [{}], undone afters: [{}]",
-            row,
-            match row_pos.after {
-                None => "nothing",
-                Some(id) => &id.to_string(),
-            },
-            row_pos
-                .after_history
-                .iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-            row_pos
-                .undo_history
-                .iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
+    let action = ChangeAction::from_str(action).expect(&format!("Invalid action: {action}"));
+
+    let new_id = match rltbl
+        .connection
+        .query_one(
+            r#"SELECT "history_id" FROM "history" ORDER BY "history_id" DESC LIMIT 1"#,
+            None,
+        )
+        .await
+        .expect("Error getting MAX(history_id)")
+    {
+        Some(row) => {
+            row.get_unsigned("history_id")
+                .expect("Error getting history id")
+                + 1
+        }
+        None => 1,
+    };
+
+    let start_state = rltbl
+        .get_initial_logical_state_for_action(table, row, &new_id, &action)
+        .await
+        .expect("Error getting initial logical state");
+    match start_state {
+        Some(start_state) => {
+            println!("Start state for new {action} action with ID {new_id}: {start_state:?}")
+        }
+        None => println!("No start state for new  {action} action with ID {new_id}"),
+    };
+
+    let prev_pos = rltbl
+        .get_row_previous_position(table, row, &action.to_string())
+        .await
+        .expect("arghh!");
+    match prev_pos {
+        Some(prev_pos) => {
+            println!("Prev pos for new {action} action with ID {new_id}: {prev_pos:?}")
+        }
+        None => println!("No prev pos for new  {action} action with ID {new_id}"),
+    };
 }
 
 /// Print the change history for the user associated with the given context
@@ -868,7 +887,7 @@ async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
 
     let user = get_username(&cli);
     let (mid, message) = rltbl
-        .add_message(&user, table, row, column, &value, &level, &rule, &message)
+        .add_message(&user, table, &row, column, &value, &level, &rule, &message)
         .await
         .expect("Error adding row");
     tracing::info!("Added message (ID: {mid}) {message:?}");
@@ -918,15 +937,16 @@ async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
 
     let row_prev = rltbl
         .get_row_position(table, &row)
+        .await
         .expect("Error getting previous row")
-        .expect("Row has been deleted");
+        .expect("Row not found");
     if after_id == row_prev {
         tracing::error!("Ignoring request to move row {row} to its own position");
         std::process::exit(1);
     }
 
     let new_order = rltbl
-        .move_row(table, &user, row, after_id)
+        .move_row(table, &user, &row, &after_id)
         .await
         .expect("Failed to move row");
     if new_order > 0 {
@@ -1022,7 +1042,7 @@ async fn delete_row(cli: &Cli, table: &str, row: u64) {
         .unwrap();
     let user = get_username(&cli);
     let num_deleted = rltbl
-        .delete_row(table, &user, row)
+        .delete_row(table, &user, &row)
         .await
         .expect("Failed to delete row");
     if num_deleted > 0 {
@@ -1200,7 +1220,9 @@ pub async fn process_command() {
             GetSubcommand::RowPosition { table, row, before } => {
                 print_row_position(&cli, table, row, *before).await
             }
-            GetSubcommand::RowPositions { table } => print_row_positions(&cli, table).await,
+            GetSubcommand::HistoryStart { table, row, action } => {
+                print_start_of_row_history(&cli, table, row, action).await
+            }
             GetSubcommand::Value { table, row, column } => {
                 print_value(&cli, table, *row, column).await
             }

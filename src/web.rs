@@ -665,7 +665,7 @@ async fn delete_row(
 
     let username = get_username(session);
     let prev = previous_row_id(&rltbl, &table, &row_id).await;
-    match rltbl.delete_row(&table, &username, row_id).await {
+    match rltbl.delete_row(&table, &username, &row_id).await {
         Ok(_) => {
             let offset = rltbl
                 .connection
