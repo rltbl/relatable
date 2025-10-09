@@ -20,7 +20,6 @@ path = "src/test.rs"
 [dependencies]
 ansi_term = "0.12"
 anyhow = "1.0.94"
-async-std = { version = "1.13.0", features = ["attributes"] }
 axum = "0.8.1"
 axum_session = "0.16.0"
 bigdecimal = { version = "0.4", features = ["serde"] }

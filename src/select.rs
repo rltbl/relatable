@@ -1942,20 +1942,20 @@ pub async fn joined_query(
 #[cfg(test)]
 mod tests {
     use crate::sql::{is_clause, is_not_clause, CachingStrategy};
-    use async_std::task::block_on;
     use pretty_assertions::assert_eq;
     use serde_json::from_value;
 
     use super::*;
 
-    #[test]
-    fn test_select_from_path_and_query() {
-        let rltbl = block_on(Relatable::build_demo(
+    #[tokio::test]
+    async fn test_select_from_path_and_query() {
+        let rltbl = Relatable::build_demo(
             Some("build/test_select_from_path_and_query.db"),
             &true,
             0,
             &CachingStrategy::Trigger,
-        ))
+        )
+        .await
         .unwrap();
         let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
         let base = "http://example.com";
@@ -1964,11 +1964,7 @@ mod tests {
         // A basic URL
         let url = "http://example.com/penguin";
         let query_params = from_value(json!({})).unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -1995,11 +1991,7 @@ FROM "penguin""#
            "offset": "2",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Json).unwrap());
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -2032,11 +2024,7 @@ WHERE "sample_number" = {sql_param}"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -2069,11 +2057,7 @@ WHERE "penguin"."study_name" = {sql_param}"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2108,11 +2092,7 @@ WHERE "penguin"."study_name" {is_clause} {sql_param}"#,
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2150,11 +2130,7 @@ WHERE "penguin"."study_name" {is_not_clause} {sql_param}"#,
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2190,11 +2166,7 @@ WHERE "penguin"."sample_number" IN ({sql_param_1}, {sql_param_2})"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2227,11 +2199,7 @@ WHERE "penguin"."sample_number" NOT IN ({sql_param_1}, {sql_param_2})"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2264,11 +2232,7 @@ WHERE "penguin"."study_name" = {sql_param}"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2301,11 +2265,7 @@ WHERE "penguin"."study_name" = {sql_param}"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2338,11 +2298,7 @@ WHERE "penguin"."study_name" <> {sql_param}"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2375,11 +2331,7 @@ WHERE "penguin"."study_name" LIKE {sql_param}"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2412,11 +2364,7 @@ WHERE "penguin"."study_name" > {sql_param}"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2449,11 +2397,7 @@ WHERE "penguin"."study_name" >= {sql_param}"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2486,11 +2430,7 @@ WHERE "penguin"."study_name" < {sql_param}"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2523,11 +2463,7 @@ WHERE "penguin"."study_name" <= {sql_param}"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2562,11 +2498,7 @@ WHERE "penguin"."study_name" {is_clause} {sql_param}"#,
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2604,11 +2536,7 @@ WHERE "penguin"."study_name" {is_not_clause} {sql_param}"#,
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2644,11 +2572,7 @@ WHERE "penguin"."study_name" IN ({sql_param_1}, {sql_param_2})"#
            "limit": "1",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
@@ -2680,11 +2604,7 @@ WHERE "penguin"."study_name" NOT IN ({sql_param_1}, {sql_param_2})"#
            "_change_id": "gt.5",
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -2719,11 +2639,7 @@ WHERE "_change_id" > {sql_param}"#
             "select": "sample_number,count()"
         }))
         .unwrap();
-        let select = block_on(Select::from_path_and_query(
-            "penguin",
-            &query_params,
-            &rltbl,
-        ));
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -2745,13 +2661,14 @@ FROM "penguin""#
         assert_eq!(params, empty);
     }
 
-    #[test]
-    fn test_select_methods() {
-        let rltbl = block_on(Relatable::init(
+    #[tokio::test]
+    async fn test_select_methods() {
+        let rltbl = Relatable::init(
             &true,
             Some("build/test_select_methods.db"),
             &CachingStrategy::Trigger,
-        ))
+        )
+        .await
         .unwrap();
         let drop_sql = r#"DROP TABLE IF EXISTS "penguin_test""#;
         let create_sql = r#"CREATE TABLE "penguin_test" (
@@ -2766,8 +2683,8 @@ FROM "penguin""#
     bill_depth NUMERIC,
     body_mass BIGINT
 )"#;
-        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
-        block_on(rltbl.connection.query(create_sql, None)).unwrap();
+        rltbl.connection.query(drop_sql, None).await.unwrap();
+        rltbl.connection.query(create_sql, None).await.unwrap();
         let empty: Vec<JsonValue> = vec![];
 
         // select_columns
@@ -2844,7 +2761,7 @@ FROM "penguin_test""#
 
         // select_all
         let mut select = Select::from("penguin_test");
-        block_on(select.select_all(&rltbl, "penguin_test")).unwrap();
+        select.select_all(&rltbl, "penguin_test").await.unwrap();
 
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -2874,16 +2791,17 @@ FROM "penguin_test""#
         );
         assert_eq!(params, empty);
 
-        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
+        rltbl.connection.query(drop_sql, None).await.unwrap();
     }
 
-    #[test]
-    fn test_subquery() {
-        let rltbl = block_on(Relatable::init(
+    #[tokio::test]
+    async fn test_subquery() {
+        let rltbl = Relatable::init(
             &true,
             Some("build/test_subquery.db"),
             &CachingStrategy::Trigger,
-        ))
+        )
+        .await
         .unwrap();
         let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
 
@@ -2984,13 +2902,14 @@ WHERE "penguin"."sample_number" IN (
         assert_eq!(params, vec![json!(27)]);
     }
 
-    #[test]
-    fn test_filters() {
-        let rltbl = block_on(Relatable::init(
+    #[tokio::test]
+    async fn test_filters() {
+        let rltbl = Relatable::init(
             &true,
             Some("build/test_filters.db"),
             &CachingStrategy::Trigger,
-        ))
+        )
+        .await
         .unwrap();
         let mut sql_param_generator = SqlParam::new(&rltbl.connection.kind());
         let sql_param_1 = sql_param_generator.next();
@@ -3140,13 +3059,14 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         }
     }
 
-    #[test]
-    fn test_tablesets() {
-        let rltbl = block_on(Relatable::init(
+    #[tokio::test]
+    async fn test_tablesets() {
+        let rltbl = Relatable::init(
             &true,
             Some("build/test_tablesets.db"),
             &CachingStrategy::None,
-        ))
+        )
+        .await
         .unwrap();
         let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
         let base = "http://example.com/combined";
@@ -3158,7 +3078,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         //   \ C /
         let insert_sql = r#"INSERT INTO "table"("table") VALUES
 ('A'), ('B'), ('C'), ('B2C'), ('D')"#;
-        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+        rltbl.connection.query(insert_sql, None).await.unwrap();
 
         let drop_sql = r#"DROP TABLE IF EXISTS "A""#;
         let create_sql = r#"CREATE TABLE "A" (
@@ -3170,12 +3090,12 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 (1, 1000, '1'),
 (2, 2000, '2'),
 (3, 3000, '3')"#;
-        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
-        block_on(rltbl.connection.query(create_sql, None)).unwrap();
-        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+        rltbl.connection.query(drop_sql, None).await.unwrap();
+        rltbl.connection.query(create_sql, None).await.unwrap();
+        rltbl.connection.query(insert_sql, None).await.unwrap();
 
-        let mut table_a = block_on(Table::get_table("A", &rltbl)).unwrap();
-        block_on(table_a.ensure_default_view_created(&rltbl)).unwrap();
+        let mut table_a = Table::get_table("A", &rltbl).await.unwrap();
+        table_a.ensure_default_view_created(&rltbl).await.unwrap();
 
         let drop_sql = r#"DROP TABLE IF EXISTS "B""#;
         let create_sql = r#"CREATE TABLE "B" (
@@ -3188,9 +3108,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 (1, 1000, '1', 'i'),
 (2, 2000, '2', 'ii'),
 (3, 3000, '3', 'iii')"#;
-        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
-        block_on(rltbl.connection.query(create_sql, None)).unwrap();
-        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+        rltbl.connection.query(drop_sql, None).await.unwrap();
+        rltbl.connection.query(create_sql, None).await.unwrap();
+        rltbl.connection.query(insert_sql, None).await.unwrap();
 
         let drop_sql = r#"DROP TABLE IF EXISTS "C""#;
         let create_sql = r#"CREATE TABLE "C" (
@@ -3203,9 +3123,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 (1, 1000, '1', 'x'),
 (2, 2000, '2', 'y'),
 (3, 3000, '3', 'z')"#;
-        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
-        block_on(rltbl.connection.query(create_sql, None)).unwrap();
-        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+        rltbl.connection.query(drop_sql, None).await.unwrap();
+        rltbl.connection.query(create_sql, None).await.unwrap();
+        rltbl.connection.query(insert_sql, None).await.unwrap();
 
         let drop_sql = r#"DROP TABLE IF EXISTS "B2C""#;
         let create_sql = r#"CREATE TABLE "B2C" (
@@ -3218,9 +3138,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 (1, 1000, 'i', 'x'),
 (2, 2000, 'ii', 'y'),
 (3, 3000, 'iii', 'z')"#;
-        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
-        block_on(rltbl.connection.query(create_sql, None)).unwrap();
-        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+        rltbl.connection.query(drop_sql, None).await.unwrap();
+        rltbl.connection.query(create_sql, None).await.unwrap();
+        rltbl.connection.query(insert_sql, None).await.unwrap();
 
         let drop_sql = r#"DROP TABLE IF EXISTS "D""#;
         let create_sql = r#"CREATE TABLE "D" (
@@ -3233,9 +3153,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 (1, 1000, 'i', 'a'),
 (2, 2000, 'ii', 'b'),
 (3, 3000, 'iii', 'c')"#;
-        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
-        block_on(rltbl.connection.query(create_sql, None)).unwrap();
-        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+        rltbl.connection.query(drop_sql, None).await.unwrap();
+        rltbl.connection.query(create_sql, None).await.unwrap();
+        rltbl.connection.query(insert_sql, None).await.unwrap();
 
         // Create the tablset table.
         let drop_sql = r#"DROP TABLE IF EXISTS "tableset""#;
@@ -3256,15 +3176,15 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
               (5, 5000, 'combined', 'C', 'c', 'B2C', 'c'),
               (7, 7000, 'combined', 'B', 'b', 'D', 'b')
             "#;
-        block_on(rltbl.connection.query(drop_sql, None)).unwrap();
-        block_on(rltbl.connection.query(create_sql, None)).unwrap();
-        block_on(rltbl.connection.query(insert_sql, None)).unwrap();
+        rltbl.connection.query(drop_sql, None).await.unwrap();
+        rltbl.connection.query(create_sql, None).await.unwrap();
+        rltbl.connection.query(insert_sql, None).await.unwrap();
 
         // Just query for the B table.
         let url = "http://example.com/combined/B";
         let query_params = from_value(json!({})).unwrap();
-        let inner = block_on(Select::from_path_and_query("B", &query_params, &rltbl));
-        let select = block_on(joined_query(&rltbl, "combined", &inner)).unwrap();
+        let inner = Select::from_path_and_query("B", &query_params, &rltbl).await;
+        let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -3276,21 +3196,29 @@ LIMIT 100"#
         );
         assert_eq!(params, empty);
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
-        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        rltbl
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await
+            .unwrap();
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
 FROM "B""#
         );
         assert_eq!(params, empty);
-        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        rltbl
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await
+            .unwrap();
 
         // Filter the B table by one of its own columns.
         let url = "http://example.com/combined/B?B.b=eq.i";
         let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
-        let inner = block_on(Select::from_path_and_query("B", &query_params, &rltbl));
+        let inner = Select::from_path_and_query("B", &query_params, &rltbl).await;
 
-        let select = block_on(joined_query(&rltbl, "combined", &inner)).unwrap();
+        let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -3302,7 +3230,11 @@ ORDER BY "B"._order ASC
 LIMIT 100"#
         );
         assert_eq!(params, vec![json!("i")]);
-        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        rltbl
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await
+            .unwrap();
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
@@ -3311,13 +3243,17 @@ FROM "B"
 WHERE "B"."b" = ?"#
         );
         assert_eq!(params, vec![json!("i")]);
-        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        rltbl
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await
+            .unwrap();
 
         // Filter the A table by one of the columns from B.
         let url = "http://example.com/combined/A?B.b=eq.i";
         let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
-        let inner = block_on(Select::from_path_and_query("A", &query_params, &rltbl));
-        let select = block_on(joined_query(&rltbl, "combined", &inner)).unwrap();
+        let inner = Select::from_path_and_query("A", &query_params, &rltbl).await;
+        let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
         assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -3337,7 +3273,11 @@ LIMIT 100"#
             )
         );
         assert_eq!(params, vec![json!("i")]);
-        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        rltbl
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await
+            .unwrap();
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
@@ -3354,13 +3294,17 @@ WHERE "_id" IN (
             )
         );
         assert_eq!(params, vec![json!("i")]);
-        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        rltbl
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await
+            .unwrap();
 
         // Filter the B2C table by one of the columns from B.
         let url = "http://example.com/combined/B2C?B.b=eq.i";
         let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
-        let inner = block_on(Select::from_path_and_query("B2C", &query_params, &rltbl));
-        let select = block_on(joined_query(&rltbl, "combined", &inner)).unwrap();
+        let inner = Select::from_path_and_query("B2C", &query_params, &rltbl).await;
+        let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
         assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -3380,7 +3324,11 @@ LIMIT 100"#
             )
         );
         assert_eq!(params, vec![json!("i")]);
-        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        rltbl
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await
+            .unwrap();
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
@@ -3397,13 +3345,17 @@ WHERE "_id" IN (
             )
         );
         assert_eq!(params, vec![json!("i")]);
-        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        rltbl
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await
+            .unwrap();
 
         // Filter the D table by one of the columns from B.
         let url = "http://example.com/combined/D?B.b=eq.i";
         let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
-        let inner = block_on(Select::from_path_and_query("D", &query_params, &rltbl));
-        let select = block_on(joined_query(&rltbl, "combined", &inner)).unwrap();
+        let inner = Select::from_path_and_query("D", &query_params, &rltbl).await;
+        let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
         assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
         let (sql, params) = select.to_sql(&rltbl.connection.kind()).unwrap();
         assert_eq!(
@@ -3423,7 +3375,11 @@ LIMIT 100"#
             )
         );
         assert_eq!(params, vec![json!("i")]);
-        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        rltbl
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await
+            .unwrap();
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
@@ -3440,14 +3396,18 @@ WHERE "_id" IN (
             )
         );
         assert_eq!(params, vec![json!("i")]);
-        block_on(rltbl.connection.query(&sql, Some(&json!(params)))).unwrap();
+        rltbl
+            .connection
+            .query(&sql, Some(&json!(params)))
+            .await
+            .unwrap();
 
         // Filter the C table by one of the columns from B,
         // This should cause joined_query() to return an error.
         // let url = "http://example.com/combined/C?B.b=eq.i";
         let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
-        let inner = block_on(Select::from_path_and_query("C", &query_params, &rltbl));
-        let select = block_on(joined_query(&rltbl, "combined", &inner));
+        let inner = Select::from_path_and_query("C", &query_params, &rltbl).await;
+        let select = joined_query(&rltbl, "combined", &inner).await;
         assert_eq!(select.is_err(), true);
     }
 }

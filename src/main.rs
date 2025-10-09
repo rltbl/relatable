@@ -5,7 +5,7 @@
 use anyhow::Result;
 use rltbl::cli;
 
-#[async_std::main]
+#[tokio::main]
 async fn main() -> Result<()> {
     cli::process_command().await;
     Ok(())
