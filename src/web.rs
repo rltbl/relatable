@@ -13,7 +13,6 @@ use rltbl::{
 use std::io::Write;
 
 use anyhow::Result;
-use async_std::sync::Arc;
 use axum::{
     body::Body,
     extract::{Json as ExtractJson, Path, Query, State},
@@ -27,6 +26,7 @@ use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, Sessio
 use indexmap::IndexMap;
 use minijinja::context;
 use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_service::Service;
 
@@ -722,7 +722,6 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
         .with_state(shared_state)
 }
 
-#[tokio::main]
 pub async fn app(rltbl: Relatable, host: &str, port: &u16, timeout: &usize) -> Result<String> {
     let shared_state = Arc::new(rltbl);
 
@@ -757,7 +756,7 @@ pub async fn app(rltbl: Relatable, host: &str, port: &u16, timeout: &usize) -> R
 pub async fn serve(cli: &Cli, host: &str, port: &u16, timeout: &usize) -> Result<()> {
     tracing::debug!("serve({host}, {port})");
     let rltbl = Relatable::connect(None, &cli.caching).await?;
-    app(rltbl, host, port, timeout)?;
+    app(rltbl, host, port, timeout).await?;
     Ok(())
 }
 

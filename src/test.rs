@@ -261,7 +261,7 @@ async fn generate_operation_sequence(
     );
 }
 
-#[async_std::main]
+#[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 

@@ -18,7 +18,7 @@ use rltbl::{
 // External imports
 //////////////////////////////////////////
 use anyhow::Result;
-use async_std::task::block_on;
+use futures::executor::block_on;
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -2041,31 +2041,29 @@ impl From<JsonRow> for Vec<String> {
 #[cfg(test)]
 mod tests {
     use crate::{core::Relatable, select::Select, sql::CachingStrategy};
-    use async_std::task::block_on;
     use pretty_assertions::assert_eq;
 
-    // use super::*;
-
-    #[test]
-    fn test_cache() {
-        let rltbl = block_on(Relatable::build_demo(
+    #[tokio::test]
+    async fn test_cache() {
+        let rltbl = Relatable::build_demo(
             Some("build/test_cache.db"),
             &true,
             10,
             &CachingStrategy::Trigger,
-        ))
+        )
+        .await
         .unwrap();
 
         let select = Select::from("penguin")
             .filters(&vec![format!("island = Dream")])
             .unwrap();
-        let count = block_on(rltbl.count(&select)).unwrap();
+        let count = rltbl.count(&select).await.unwrap();
         assert_eq!(count, 2);
 
         let select = Select::from("penguin")
             .filters(&vec![format!("island = Torgersen")])
             .unwrap();
-        let count = block_on(rltbl.count(&select)).unwrap();
+        let count = rltbl.count(&select).await.unwrap();
         assert_eq!(count, 5);
     }
 }
