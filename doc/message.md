@@ -2,7 +2,7 @@
 
 **rltbl** can be used to directly add and delete messages to and from the message table. The purpose of a message is to provide information about some problem, or something else of note, about a particular value of a particular column of a particular row in some table. Each message, in addition, must specify a **level**, a **rule**, and the **message** text and is associated with a particular user, which may be specified via the environment variable, `RLTBL_USER`.  Let's begin by adding two messages to the penguin table.
 
-```console tesh-session="message"
+```console tesh-session="message" tesh-setup="setup.sh"
 $ rltbl -v demo --size 10 --force
 Created a demonstration database in ...
 $ echo '{"study_name": "FAKE123", "sample_number": "SAMPLE #11", "species": "Pygoscelis adeliae", "island": "Biscoe", "individual_id": "N6A1", "bill_length": 35.4, "body_mass": 2001}' | rltbl --input JSON add row penguin

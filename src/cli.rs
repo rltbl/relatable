@@ -6,11 +6,11 @@ use crate as rltbl;
 use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Relatable, ValidationLevel},
     select::{Format, Select},
-    sql,
-    sql::{CachingStrategy, JsonRow, SqlParam, VecInto},
+    sql::{CachingStrategy, JsonRow, VecInto},
     table::Table,
     web::{serve, serve_cgi},
 };
+use sql_json::core::DbQuery;
 
 use ansi_term::Style;
 use anyhow::Result;
@@ -521,23 +521,13 @@ pub async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .expect("Connect error");
-    let statement = format!(
-        r#"SELECT "{column}" FROM "{table}" WHERE _id = {sql_param}"#,
-        sql_param = sql::SqlParam::new(&rltbl.connection.kind()).next(),
-    );
-    let params = json!([row]);
-    if let Some(value) = rltbl
-        .connection
-        .query_value(&statement, Some(&params))
+    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = $1"#,);
+    let text = rltbl
+        .pool
+        .query_string(&statement, &[json!(row)])
         .await
-        .expect("Error querying value")
-    {
-        let text = match value {
-            JsonValue::String(value) => value.to_string(),
-            value => format!("{value}"),
-        };
-        println!("{text}");
-    }
+        .expect("Error querying value");
+    println!("{text}");
 }
 
 /// Print the change history for the user associated with the given context
@@ -648,17 +638,12 @@ pub async fn set_value(
     rltbl.validation_level = *validation_level;
 
     // Fetch the current value from the db:
-    let sql = format!(
-        r#"SELECT "{column}" FROM "{table}" WHERE "_id" = {sql_param}"#,
-        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
-    );
-    let params = json!([row]);
+    let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#,);
     let before = rltbl
-        .connection
-        .query_value(&sql, Some(&params))
+        .pool
+        .query_value(&sql, &[json!(row)])
         .await
-        .expect("Error getting value")
-        .expect("No value found");
+        .expect("Error getting value");
     let after = serde_json::from_str::<JsonValue>(value).unwrap_or(json!(value));
 
     // Apply the change to the new value:

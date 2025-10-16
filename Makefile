@@ -101,18 +101,22 @@ test_fmt_and_unittest:
 	cargo test
 
 ### Documentation tests
-.PHONY: crate_docs crate_docs_sqlx test_tesh_doc test_tesh_doc_sqlx
+.PHONY: crate_docs crate_docs_sqlx test_tesh_doc test_tesh_doc_postgres
 crate_docs:
 	RUSTDOCFLAGS="-D warnings" cargo doc
 
 crate_docs_sqlx:
 	RUSTDOCFLAGS="-D warnings" cargo doc --features sqlx
 
-test_tesh_doc: debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
+test_tesh_doc:
+	cargo build --release --features rusqlite
+	echo 'export RLTBL_CONNECTION=$(SQLITE_DB)' > doc/setup.sh
+	PATH="$${PATH}:$$(pwd)/target/release"; tesh --debug false ./doc
 
-test_tesh_doc_sqlx: sqlx_debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./doc
+test_tesh_doc_postgres:
+	cargo build --release --features sqlx
+	echo 'export RLTBL_CONNECTION=$(PG_DB)' > doc/setup.sh
+	PATH="$${PATH}:$$(pwd)/target/release"; tesh --debug false ./doc
 
 ### Round-trip load / validation tests
 .PHONY: test_round_trip test_round_trip_sqlite test_round_trip_sqlx_postgres
@@ -229,6 +233,7 @@ test_rusqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittes
 
 test_sqlx_postgres: src/resources/main.js src/resources/main.css test_round_trip_sqlx_postgres test_tesh_sqlx_common_as_postgres test_tesh_sqlx_postgres_only test_random_sqlx_postgres test_perf_sqlx_postgres test_caching_postgres
 
-test: test_rusqlite
+# test: test_rusqlite
+test: test_fmt_and_unittest test_tesh_doc test_tesh_doc_postgres
 
 test_all: test_rusqlite test_sqlx_postgres

@@ -272,7 +272,7 @@ impl DbConnection {
                 }
             }
             false => {
-                #[cfg(not(feature = "sqlx"))]
+                #[cfg(feature = "rusqlite")]
                 {
                     let conn = DbConnection::Rusqlite(database.to_string());
                     let active_conn = RusqliteConnection::open(database)?;
@@ -280,9 +280,9 @@ impl DbConnection {
                     return Ok((conn, Some(DbActiveConnection::Rusqlite(active_conn))));
                 }
 
-                #[cfg(feature = "sqlx")]
+                #[allow(unreachable_code)]
                 return Err(RelatableError::InputError(format!(
-                    "Invalid PostgreSQL database path: '{database}'"
+                    "Invalid database path: '{database}'"
                 ))
                 .into());
             }

@@ -12,6 +12,7 @@ use rltbl::{
     },
     table::{Cell, Column, Datatype, Message, Row, Table},
 };
+use sql_json::any::AnyConnection;
 
 use anyhow::Result;
 use colored::Colorize;
@@ -104,6 +105,7 @@ pub struct Relatable {
     pub root: String,
     pub readonly: bool,
     pub connection: DbConnection,
+    pub pool: AnyConnection,
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
     pub max_limit: usize,
@@ -149,10 +151,14 @@ impl Relatable {
             }
         }
         let (connection, _) = DbConnection::connect(&path).await?;
+        let pool = AnyConnection::connect(&path)
+            .await
+            .map_err(|e| anyhow::format_err!(e))?;
         Ok(Self {
             root,
             readonly,
             connection,
+            pool,
             // minijinja: env,
             default_limit: DEFAULT_LIMIT,
             max_limit: MAX_LIMIT,

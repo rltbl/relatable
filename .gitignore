@@ -47,3 +47,6 @@ Cargo.lock
 # Ignore JavaScript stuff
 /rltbl-frontend/build/
 /rltbl-frontend/node_modules/
+
+# Ignore setup for Tesh tests
+/doc/setup.sh

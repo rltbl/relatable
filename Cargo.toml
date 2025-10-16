@@ -38,11 +38,11 @@ promptly = "0.3"
 rand = "0.8.5"
 random_color = "1.0.0"
 regex = "1.11.1"
-rusqlite = { version = "0.32", features = ["bundled", "functions", "serde_json"], optional = true }
+rusqlite = { version = "0.37", features = ["bundled", "functions", "serde_json"], optional = true }
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = { version = "1.0.133", features = ["preserve_order"] }
 sprintf = "0.4"
-sqlx = { version = "0.8", features = ["runtime-async-std", "postgres", "bigdecimal"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-async-std", "postgres", "bigdecimal"], optional = true }
 sqlx-core = { version = "0.8", optional = true }
 tabwriter = "1.4.0"
 tokio = { version = "1.42.0", features = ["full"] }
@@ -51,13 +51,15 @@ tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 whoami = "1.5.2"
 
+sql_json = { path = "../../rltbl/sql_json", default-features = false, optional= true}
+
 [dev-dependencies]
 pretty_assertions = "1.4.1"
 
 [features]
 default = ["rusqlite"]
-rusqlite = ["dep:rusqlite"]
-sqlx = ["dep:sqlx", "dep:sqlx", "dep:sqlx-core"]
+rusqlite = ["dep:rusqlite", "sql_json/sqlite"]
+sqlx = ["dep:sqlx", "dep:sqlx-core", "sql_json/postgres"]
 
 # The profile that 'dist' will build with
 [profile.dist]

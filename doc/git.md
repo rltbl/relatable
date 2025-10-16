@@ -12,7 +12,7 @@ and then make a git commit with that author.
 
 First we set up a git repository:
 
-```console tesh-session="git"
+```console tesh-session="git" tesh-setup="setup.sh"
 $ git init
 ...
 $ git config user.name "Alice"
@@ -24,13 +24,14 @@ Now we set up Relatable and make a first commit:
 
 ```console tesh-session="git"
 $ rltbl -v demo --size 1 --force
-Created a demonstration database in '.relatable/relatable.db'
+Created a demonstration database in ...
 $ rltbl -v save
 $ echo '.relatable/' > .gitignore
+$ echo 'setup.sh' >> .gitignore
 $ git add .gitignore penguin.tsv island.tsv
 $ git commit --message 'Initial commit'
 [master (root-commit) ...] Initial commit
- 3 files changed, 7 insertions(+)
+ 3 files changed, 8 insertions(+)
  create mode 100644 .gitignore
  create mode 100644 island.tsv
  create mode 100644 penguin.tsv
