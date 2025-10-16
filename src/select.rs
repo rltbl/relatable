@@ -853,7 +853,7 @@ impl Select {
                 r#"(SELECT MAX(change_id) FROM history
                     WHERE "table" = {}
                       AND "row" = "{}"._id
-                   ) AS _change_id"#,
+                   )"#,
                 sql_param_gen.next(),
                 target
             )
@@ -869,7 +869,10 @@ impl Select {
             for filter in &self.filters {
                 let (_, c, _, _) = filter.parts();
                 if c == "_change_id" {
-                    lines.push(format!(", {}", get_change_sql(&mut sql_param_gen)));
+                    lines.push(format!(
+                        ", {} AS _change_id",
+                        get_change_sql(&mut sql_param_gen)
+                    ));
                     params.push(json!(self.table_name));
                 }
             }
@@ -878,7 +881,10 @@ impl Select {
             for filter in &self.filters {
                 let (_, c, _, _) = filter.parts();
                 if c == "_change_id" {
-                    lines.push(get_change_sql(&mut sql_param_gen));
+                    lines.push(format!(
+                        "{} AS _change_id",
+                        get_change_sql(&mut sql_param_gen)
+                    ));
                     params.push(json!(self.table_name));
                 }
             }
@@ -905,13 +911,12 @@ impl Select {
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let mut filter = filter.clone();
-            let (t, _, _, _) = filter.parts();
+            let (t, c, _, _) = filter.parts();
             if self.view_name != "" && t == self.table_name {
                 filter.set_table(&self.view_name);
             }
-            let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
-            lines.push(format!("{keyword} {filter_sql}"));
 
+            let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
             // If the select is using the text view, the query parameters must all be changed
             // to text:
             if self.view_name == format!("{}_text_view", self.table_name) {
@@ -924,6 +929,17 @@ impl Select {
                     .collect::<Vec<_>>();
             }
             params.append(&mut filter_params);
+
+            if c == "_change_id" {
+                lines.push(format!(
+                    "{keyword} {} {}",
+                    get_change_sql(&mut sql_param_gen),
+                    filter_sql.replace(&format!(r#""{c}" "#), "")
+                ));
+                params.push(json!(self.table_name));
+            } else {
+                lines.push(format!("{keyword} {filter_sql}"));
+            }
         }
         if self.order_by.len() == 0 && self.joins.len() == 0 {
             lines.push(format!(r#"ORDER BY "{target}"._order ASC"#));
@@ -946,10 +962,22 @@ impl Select {
     /// by the given [Select]
     pub fn to_sql_count(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
         tracing::trace!("Select::to_sql_count({self:?}, {kind:?})");
+        let mut sql_param_gen = SqlParam::new(kind);
         let target = match self.view_name.as_str() {
             "" => &self.table_name,
             _ => &self.view_name,
         };
+        let get_change_sql = |sql_param_gen: &mut SqlParam| -> String {
+            format!(
+                r#"(SELECT MAX(change_id) FROM history
+                    WHERE "table" = {}
+                      AND "row" = "{}"._id
+                   )"#,
+                sql_param_gen.next(),
+                target
+            )
+        };
+
         let mut lines = Vec::new();
         let mut params = Vec::new();
         lines.push(r#"SELECT COUNT(1) AS "count""#.to_string());
@@ -960,13 +988,23 @@ impl Select {
         for (i, filter) in self.filters.iter().enumerate() {
             let keyword = if i == 0 { "WHERE" } else { "  AND" };
             let mut filter = filter.clone();
-            let (t, _, _, _) = filter.parts();
+            let (t, c, _, _) = filter.parts();
             if self.view_name != "" && t == self.table_name {
                 filter.set_table(&self.view_name);
             }
-            let (s, p) = filter.to_sql_count(kind)?;
-            lines.push(format!("{keyword} {s}"));
-            params.append(&mut p.clone());
+            let (filter_sql, filter_params) = filter.to_sql_count(&mut sql_param_gen)?;
+            params.append(&mut filter_params.clone());
+
+            if c == "_change_id" {
+                lines.push(format!(
+                    "{keyword} {} {}",
+                    get_change_sql(&mut sql_param_gen),
+                    filter_sql.replace(&format!(r#""{c}" "#), "")
+                ));
+                params.push(json!(self.table_name));
+            } else {
+                lines.push(format!("{keyword} {filter_sql}"));
+            }
         }
 
         // If the select is using the text view, the query parameters must all be changed
@@ -1682,8 +1720,8 @@ impl Filter {
 
     /// Generate a SQL statement consisting of a SELECT COUNT(*) over the data that will bereturned
     /// by the given [Select]
-    pub fn to_sql_count(&self, kind: &DbKind) -> Result<(String, Vec<JsonValue>)> {
-        tracing::trace!("Filter::to_sql_count({self:?}, {kind:?})");
+    pub fn to_sql_count(&self, sql_param: &mut SqlParam) -> Result<(String, Vec<JsonValue>)> {
+        tracing::trace!("Filter::to_sql_count({self:?}, {sql_param:?})");
         match self {
             Filter::InSubquery {
                 table,
@@ -1697,7 +1735,7 @@ impl Filter {
                     "" => format!(r#""{column}""#),
                     _ => format!(r#""{table}"."{column}""#),
                 };
-                let (sql, params) = subquery.to_sql(kind)?;
+                let (sql, params) = subquery.to_sql(&sql_param.kind)?;
                 let lines: Vec<&str> = sql
                     .split("\n")
                     .filter(|x| !x.starts_with("ORDER BY"))
@@ -1707,7 +1745,7 @@ impl Filter {
                 let sql = lines.join("\n  ");
                 Ok((format!("{lhs} IN (\n  {sql}\n)"), params))
             }
-            _ => self.to_sql(&mut SqlParam::new(kind)),
+            _ => self.to_sql(sql_param),
         }
     }
 }
