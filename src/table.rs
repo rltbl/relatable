@@ -13,6 +13,7 @@ use rltbl::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use sql_json::core::DbQuery;
 use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,7 +109,7 @@ impl Table {
             DbKind::Sqlite => format!(r#"DROP TABLE IF EXISTS "{}""#, self.name),
         };
         tracing::info!("Dropped table '{}'", self.name);
-        rltbl.connection.query(&sql, None).await?;
+        rltbl.pool.execute(&sql, &[]).await?;
         Ok(())
     }
 
@@ -346,7 +347,7 @@ impl Table {
             &columns,
             &rltbl.connection.kind(),
         ) {
-            rltbl.connection.query(&sql, None).await?;
+            rltbl.pool.execute(&sql, &[]).await?;
         }
 
         // Set the table's view name to the default view:
@@ -377,7 +378,7 @@ impl Table {
             &columns,
             &rltbl.connection.kind(),
         ) {
-            rltbl.connection.query(&sql, None).await?;
+            rltbl.pool.execute(&sql, &[]).await?;
         }
 
         // Set the table's view name to the text view:
@@ -1757,29 +1758,30 @@ impl From<Row> for Vec<String> {
 
 impl From<JsonRow> for Row {
     fn from(row: JsonRow) -> Self {
-        let id = row
-            .content
-            .get("_id")
-            .and_then(|i| i.as_u64())
-            .unwrap_or_default() as u64;
+        row.content.into()
+    }
+}
+
+pub type JRow = serde_json::Map<String, serde_json::Value>;
+
+impl From<JRow> for Row {
+    fn from(row: JRow) -> Self {
+        let id = row.get("_id").and_then(|i| i.as_u64()).unwrap_or_default() as u64;
         let order = row
-            .content
             .get("_order")
             .and_then(|i| i.as_u64())
             .unwrap_or_default() as u64;
         let change_id = row
-            .content
             .get("_change_id")
             .and_then(|i| i.as_u64())
             .unwrap_or_default() as u64;
         let mut cells: IndexMap<String, Cell> = row
-            .content
             .iter()
             // Ignore columns that start with "_"
             .filter(|(k, _)| !k.starts_with("_"))
             .map(|(k, v)| (k.clone(), v.into()))
             .collect();
-        let messages = row.content.get("_message");
+        let messages = row.get("_message");
         if let Some(m) = messages {
             let mut messages = m.clone();
             // WARN: Converting _message string to JSON.

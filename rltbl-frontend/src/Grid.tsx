@@ -490,7 +490,8 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
         "type": "Update",
         row: row.id,
         column: columns[entry.location[0]].id,
-        value: value
+        before: "BEFORE",
+        after: value
       })
       onCellEdited(entry.location, entry.value, dataRef.current[entry.location[1]]);
     }

@@ -7,9 +7,11 @@ use rltbl::{
     cli::Cli,
     core::{ChangeSet, Cursor, Relatable, RelatableError},
     select::{joined_query, Format, QueryParams, Select},
-    sql::{CachingStrategy, JsonRow, SqlParam},
+    sql::{CachingStrategy, JsonRow},
     table::{Row, Table},
 };
+use sql_json::core::DbQuery;
+
 use std::io::Write;
 
 use anyhow::Result;
@@ -25,7 +27,7 @@ use axum::{
 use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, SessionStore};
 use indexmap::IndexMap;
 use minijinja::context;
-use serde_json::{json, to_string_pretty, to_value, Value as JsonValue};
+use serde_json::{json, to_string_pretty, Value as JsonValue};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_service::Service;
@@ -54,17 +56,14 @@ fn get_500(error: &anyhow::Error) -> Response<Body> {
 
 async fn get_root(State(rltbl): State<Arc<Relatable>>) -> impl IntoResponse {
     tracing::info!("request root");
-    let default = "table";
     let table = rltbl
-        .connection
-        .query_value(
+        .pool
+        .query_string(
             r#"SELECT "table" FROM "table" ORDER BY _order LIMIT 1"#,
-            None,
+            &[],
         )
         .await
-        .unwrap_or(Some(json!(default)))
-        .unwrap_or(json!(default));
-    let table = table.as_str().unwrap_or(default);
+        .unwrap_or(String::from("table"));
     Redirect::permanent(format!("{}/table/{table}", rltbl.root).as_str())
 }
 
@@ -287,16 +286,21 @@ async fn get_tableset(
 
     let site = rltbl.get_site(&username).await;
 
-    let sql = format!(r#"SELECT * FROM "tableset" WHERE tableset = '{tableset_name}'"#);
-    let json_rows = match rltbl.connection.query(&sql, None).await {
+    let sql = r#"SELECT * FROM "tableset" WHERE tableset = $1"#;
+    let json_rows = match rltbl.pool.query(&sql, &[json!(tableset_name)]).await {
         Ok(rows) => rows,
-        Err(error) => return get_500(&error),
+        Err(error) => return get_500(&error.into()),
     };
 
     // tracing::info!("TAB {json_rows:?}");
     let mut tabset = vec![];
     for json_row in json_rows {
-        let table = json_row.get_string("right_table").unwrap();
+        let table = json_row
+            .get("right_table")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
         if tabset.contains(&table) {
             continue;
         }
@@ -313,26 +317,17 @@ async fn get_tableset(
 
 async fn init_user(rltbl: &Relatable, username: &str) -> () {
     let color = random_color::RandomColor::new().to_hex();
-    let db_kind = rltbl.connection.kind();
-    let statement = format!(
-        r#"SELECT 1 FROM "user" WHERE "name" = {sql_param}"#,
-        sql_param = SqlParam::new(&db_kind).next()
-    );
-    let params = json!([username]);
-    if let None = rltbl
-        .connection
-        .query_value(&statement, Some(&params))
+    let sql = r#"SELECT COUNT(1) FROM "user" WHERE "name" = $1"#;
+    let count = rltbl
+        .pool
+        .query_u64(&sql, &[json!(username)])
         .await
-        .expect("Error getting user")
-    {
-        let statement = format!(
-            r#"INSERT INTO user("name", "color") VALUES ({sql_params})"#,
-            sql_params = SqlParam::new(&db_kind).get_as_list(2)
-        );
-        let params = json!([username, color]);
+        .expect("Error getting user count");
+    if count == 0 {
+        let sql = r#"INSERT INTO "user"("name", "color") VALUES ($1, $2)"#;
         rltbl
-            .connection
-            .query(&statement, Some(&params))
+            .pool
+            .execute(&sql, &[json!(username), json!(color)])
             .await
             .expect("Update user");
     }
@@ -384,19 +379,17 @@ async fn post_cursor(
     // tracing::info!("post_cursor({cursor:?})");
     let username = get_username(session);
     tracing::debug!("post_cursor({cursor:?}, {username})");
-    // TODO: sanitize the cursor JSON.
-    let mut sql_param = SqlParam::new(&rltbl.connection.kind());
-    let statement = format!(
-        r#"UPDATE user
-           SET "cursor" = {sql_param_1},
-               "datetime" = CURRENT_TIMESTAMP
-           WHERE "name" = {sql_param_2}"#,
-        sql_param_1 = sql_param.next(),
-        sql_param_2 = sql_param.next(),
-    );
-    let cursor = to_value(cursor).unwrap_or_default();
-    let params = json!([cursor, username]);
-    match rltbl.connection.query(&statement, Some(&params)).await {
+    let cursor = json!(cursor);
+    let cursor = format!("{cursor}");
+    let sql = r#"UPDATE "user"
+       SET "cursor" = $1,
+           "datetime" = CURRENT_TIMESTAMP
+       WHERE "name" = $2"#;
+    match rltbl
+        .pool
+        .execute(&sql, &[JsonValue::String(cursor), json!(username)])
+        .await
+    {
         Ok(_) => "Cursor updated".into_response(),
         Err(_) => "Cursor update failed".into_response(),
     }
@@ -415,29 +408,15 @@ async fn get_row_menu(
         Err(error) => return get_404(&error),
     };
     let row: Row = match rltbl
-        .connection
-        .query_one(
-            &format!(
-                r#"SELECT * FROM "{}" WHERE _id = {sql_param}"#,
-                table.view,
-                sql_param = SqlParam::new(&rltbl.connection.kind()).next()
-            ),
-            Some(&json!([row_id])),
+        .pool
+        .query_row(
+            &format!(r#"SELECT * FROM "{}" WHERE _id = $1"#, table.view,),
+            &[json!(row_id)],
         )
         .await
     {
-        Ok(row) => match row {
-            Some(row) => row.into(),
-            None => {
-                return get_404(
-                    &RelatableError::MissingError(format!(
-                        "No row in '{table_name}' with id {row_id}"
-                    ))
-                    .into(),
-                )
-            }
-        },
-        Err(error) => return get_500(&error),
+        Ok(row) => row.into(),
+        Err(error) => return get_500(&error.into()),
     };
     match rltbl.render("row_menu.html", context! {site, table, row}) {
         Ok(html) => Html(html).into_response(),
@@ -495,29 +474,15 @@ async fn get_cell_menu(
         Err(error) => return get_404(&error),
     };
     let row: Row = match rltbl
-        .connection
-        .query_one(
-            &format!(
-                r#"SELECT * FROM "{}" WHERE _id = {sql_param}"#,
-                table.view,
-                sql_param = SqlParam::new(&rltbl.connection.kind()).next()
-            ),
-            Some(&json!([row_id])),
+        .pool
+        .query_row(
+            &format!(r#"SELECT * FROM "{}" WHERE _id = $1"#, table.view,),
+            &[json!(row_id)],
         )
         .await
     {
-        Ok(row) => match row {
-            Some(row) => row.into(),
-            None => {
-                return get_404(
-                    &RelatableError::MissingError(format!(
-                        "No row in '{table_name}' with id {row_id}"
-                    ))
-                    .into(),
-                )
-            }
-        },
-        Err(error) => return get_500(&error),
+        Ok(row) => row.into(),
+        Err(error) => return get_500(&error.into()),
     };
     let cell = row.cells.get(&column);
     match rltbl.render("cell_menu.html", context! {site, table, row, column, cell}) {
@@ -545,13 +510,17 @@ async fn get_cell_options(
            LIMIT 20"#
     );
     let values: Vec<JsonValue> = rltbl
-        .connection
-        .query(&statement, None)
+        .pool
+        .query(&statement, &[])
         .await
         .expect("Get column values")
         .iter()
         .map(|row| {
-            let value = row.get_string("value").expect("No 'value' in row");
+            let value = row
+                .get("value")
+                .expect("No 'value' in row")
+                .as_str()
+                .expect("Not a string");
             json!({
                     "value": value,
                     "label": value,
@@ -564,18 +533,13 @@ async fn get_cell_options(
 async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &u64) -> u64 {
     let sql = format!(
         r#"SELECT "_id", MAX("_order") FROM "{table}"
-        WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = {sql_param})"#,
-        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
+        WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = $1)"#,
     );
-    let after_id = rltbl
-        .connection
-        .query_value(&sql, Some(&json!([row_id])))
-        .await;
-    after_id
-        .unwrap_or(Some(json!(0)))
-        .unwrap_or(json!(0))
-        .as_u64()
-        .unwrap_or_default() as u64
+    rltbl
+        .pool
+        .query_u64(&sql, &[json!(row_id)])
+        .await
+        .unwrap_or_default()
 }
 
 async fn add_row_before(
@@ -632,19 +596,12 @@ async fn add_row(
         Ok(row) => {
             // tracing::info!("Added row {row:?}");
             let offset = rltbl
-                .connection
-                .query_value(
-                    &format!(
-                        r#"SELECT COUNT() FROM "{table}" WHERE _order <= {sql_param}"#,
-                        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
-                    ),
-                    Some(&json!([row.order])),
+                .pool
+                .query_u64(
+                    &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= $1"#,),
+                    &[json!(row.order)],
                 )
-                .await;
-            let offset: u64 = offset
-                .unwrap_or(Some(json!(0)))
-                .unwrap_or(json!(0))
-                .as_u64()
+                .await
                 .unwrap_or_default();
             let url = format!("{}/table/{table}?offset={offset}", rltbl.root);
             return Redirect::temporary(url.as_str()).into_response();
@@ -668,20 +625,15 @@ async fn delete_row(
     match rltbl.delete_row(&table, &username, row_id).await {
         Ok(_) => {
             let offset = rltbl
-                .connection
-                .query_value(
+                .pool
+                .query_u64(
                     &format!(
                         r#"SELECT COUNT() FROM "{table}"
-                           WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = {sql_param})"#,
-                        sql_param = SqlParam::new(&rltbl.connection.kind()).next()
+                           WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = $1)"#,
                     ),
-                    Some(&json!([prev])),
+                    &[json!(prev)],
                 )
-                .await;
-            let offset: u64 = offset
-                .unwrap_or(Some(json!(0)))
-                .unwrap_or(json!(0))
-                .as_u64()
+                .await
                 .unwrap_or_default();
             let url = format!("{}/table/{table}?offset={offset}", rltbl.root);
             Redirect::temporary(url.as_str()).into_response()
