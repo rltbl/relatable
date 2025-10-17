@@ -1987,14 +1987,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_select_from_path_and_query() {
-        let rltbl = Relatable::build_demo(
-            Some("build/test_select_from_path_and_query.db"),
+        let rltbl = Relatable::init(
             &true,
-            0,
+            Some("build/test_select_from_path_and_query.db"),
             &CachingStrategy::Trigger,
         )
         .await
         .unwrap();
+        crate::demo::build_demo(&rltbl, &true, 0).await.unwrap();
         let sql_param = SqlParam::new(&rltbl.connection.kind()).next();
         let base = "http://example.com";
         let empty: Vec<JsonValue> = vec![];
@@ -2654,22 +2654,28 @@ WHERE "penguin"."study_name" NOT IN ({sql_param_1}, {sql_param_2})"#
                       AND "row" = "penguin"._id
                    ) AS _change_id
 FROM "penguin"
-WHERE "_change_id" > {sql_param}
+WHERE (SELECT MAX(change_id) FROM history
+                    WHERE "table" = {sql_param}
+                      AND "row" = "penguin"._id
+                   ) > {sql_param}
 ORDER BY "penguin"._order ASC
 LIMIT 100"#
             ),
         );
-        assert_eq!(params, vec![json!("penguin"), json!(5)]);
+        assert_eq!(params, vec![json!("penguin"), json!(5), json!("penguin")]);
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,
             format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
-WHERE "_change_id" > {sql_param}"#
+WHERE (SELECT MAX(change_id) FROM history
+                    WHERE "table" = {sql_param}
+                      AND "row" = "penguin"._id
+                   ) > {sql_param}"#
             ),
         );
-        assert_eq!(params, vec![json!(5)]);
+        assert_eq!(params, vec![json!(5), json!("penguin")]);
 
         // A URL that includes an expression
         let url = "http://example.com/penguin?select=sample_number,count()";

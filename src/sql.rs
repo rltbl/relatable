@@ -2045,14 +2045,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_cache() {
-        let rltbl = Relatable::build_demo(
-            Some("build/test_cache.db"),
+        let rltbl = Relatable::init(
             &true,
-            10,
+            Some("build/test_cache.db"),
             &CachingStrategy::Trigger,
         )
         .await
         .unwrap();
+        crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
 
         let select = Select::from("penguin")
             .filters(&vec![format!("island = Dream")])

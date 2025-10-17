@@ -293,15 +293,16 @@ async fn main() {
             force,
         } => {
             tracing::info!("Building demonstration database with {table_size} rows per table ...");
-            let rltbl =
-                Relatable::build_demo(Some(&cli.database), force, *table_size, &cli.caching)
-                    .await
-                    .unwrap();
+            let rltbl = Relatable::init(&true, Some(&cli.database), &cli.caching)
+                .await
+                .expect("Connect error");
+            rltbl::demo::build_demo(&rltbl, force, *table_size)
+                .await
+                .expect("Error building demonstration database");
             let tables_to_choose_from = vec!["penguin", "qenguin", "renguin", "senguin"];
             for table in tables_to_choose_from.iter() {
                 if *table != "penguin" {
-                    rltbl
-                        .create_penguin_table(Some(table), force, *table_size)
+                    rltbl::demo::create_penguin_table(&rltbl, Some(table), force, *table_size)
                         .await
                         .unwrap();
                 }

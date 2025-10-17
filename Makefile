@@ -111,12 +111,12 @@ crate_docs_sqlx:
 test_tesh_doc:
 	cargo build --release --features rusqlite
 	echo 'export RLTBL_CONNECTION=$(SQLITE_DB)' > doc/setup.sh
-	PATH="$${PATH}:$$(pwd)/target/release"; tesh --debug false ./doc
+	PATH="$$(pwd)/target/release:$${PATH}"; tesh --debug false ./doc
 
 test_tesh_doc_postgres:
 	cargo build --release --features sqlx
 	echo 'export RLTBL_CONNECTION=$(PG_DB)' > doc/setup.sh
-	PATH="$${PATH}:$$(pwd)/target/release"; tesh --debug false ./doc
+	PATH="$$(pwd)/target/release::$${PATH}"; tesh --debug false ./doc
 
 ### Round-trip load / validation tests
 .PHONY: test_round_trip test_round_trip_sqlite test_round_trip_sqlx_postgres

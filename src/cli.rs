@@ -1064,7 +1064,10 @@ pub async fn drop_database(cli: &Cli) {
 /// Build a demonstration database
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     tracing::trace!("build_demo({cli:?}, {force}, {size})");
-    Relatable::build_demo(cli.database.as_deref(), force, size, &cli.caching)
+    let rltbl = Relatable::init(force, cli.database.as_deref(), &cli.caching)
+        .await
+        .expect("Connect error");
+    crate::demo::build_demo(&rltbl, force, size)
         .await
         .expect("Error building demonstration database");
     println!(
