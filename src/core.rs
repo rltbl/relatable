@@ -15,7 +15,7 @@ use rltbl::{
     },
     table::Table,
 };
-use rltbl_db::any::AnyConnection;
+use rltbl_db::any::AnyPool;
 
 use anyhow::Result;
 use colored::Colorize;
@@ -107,7 +107,7 @@ pub struct Relatable {
     pub root: String,
     pub readonly: bool,
     pub connection: DbConnection,
-    pub pool: AnyConnection,
+    pub pool: AnyPool,
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
     pub max_limit: usize,
@@ -153,7 +153,7 @@ impl Relatable {
             }
         }
         let (connection, _) = DbConnection::connect(&path).await?;
-        let pool = AnyConnection::connect(&path).await?;
+        let pool = AnyPool::connect(&path).await?;
         Ok(Self {
             root,
             readonly,
