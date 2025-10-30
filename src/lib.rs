@@ -15,6 +15,18 @@ pub mod select;
 /// Git interface
 pub mod git;
 
+/// Structs for column datatypes
+pub mod datatype;
+
+/// Structs for column structures
+pub mod structure;
+
+/// Structs for table columns
+pub mod column;
+
+/// Structs for table rows
+pub mod row;
+
 /// Structs for representing tables, contents, changes, results
 pub mod table;
 

@@ -10,8 +10,9 @@
 //////////////////////////////////////////
 use crate as rltbl;
 use rltbl::{
+    column::Column,
     core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
-    table::{Column, Table},
+    table::Table,
 };
 
 //////////////////////////////////////////

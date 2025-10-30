@@ -711,7 +711,7 @@ pub async fn prompt_for_json_message(
         .filter(|c| !["message_id", "added_by"].contains(&c.name.as_str()))
         .map(|c| c.name.to_string())
         .collect::<Vec<_>>();
-    let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
+    let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<&str>>();
     let mut json_row = JsonRow::from_strings(&columns);
 
     json_row.content.insert("table".to_string(), json!(table));
@@ -720,10 +720,13 @@ pub async fn prompt_for_json_message(
     tracing::debug!("Received json row from user input: {json_row:?}");
 
     for column in columns {
-        if let Some(JsonValue::Null) = json_row.content.get(column) {
-            json_row
-                .content
-                .insert(column.to_string(), prompt_for_column_value(&column));
+        match json_row.get_value(column)? {
+            JsonValue::Null => {
+                json_row
+                    .content
+                    .insert(column.to_string(), prompt_for_column_value(&column));
+            }
+            _ => (),
         }
     }
 

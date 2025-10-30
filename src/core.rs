@@ -2,15 +2,18 @@
 //!
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
-use crate::{self as rltbl};
+use crate as rltbl;
 use rltbl::{
+    column::Column,
+    datatype::Datatype,
     git,
+    row::{Cell, Message, Row},
     select::{Select, SelectField},
     sql::{
         self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
         MemoryCacheKey, SqlParam, VecInto as _,
     },
-    table::{Cell, Column, Datatype, Message, Row, Table},
+    table::Table,
 };
 use rltbl_db::any::AnyConnection;
 

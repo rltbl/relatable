@@ -2,13 +2,14 @@
 //!
 //! This is [relatable](crate) (rltbl::[web](crate::web)).
 
-use crate::{self as rltbl, core::ResultSet};
+use crate as rltbl;
 use rltbl::{
     cli::Cli,
-    core::{ChangeSet, Cursor, Relatable, RelatableError},
+    core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet},
+    row::Row,
     select::{joined_query, Format, QueryParams, Select},
     sql::{CachingStrategy, JsonRow},
-    table::{Row, Table},
+    table::Table,
 };
 use rltbl_db::core::DbQuery;
 
