@@ -12,7 +12,7 @@ use rltbl::{
     },
     table::{Cell, Column, Datatype, Message, Row, Table},
 };
-use sql_json::any::AnyConnection;
+use rltbl_db::any::AnyConnection;
 
 use anyhow::Result;
 use colored::Colorize;

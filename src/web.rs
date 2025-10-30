@@ -10,7 +10,7 @@ use rltbl::{
     sql::{CachingStrategy, JsonRow},
     table::{Row, Table},
 };
-use sql_json::core::DbQuery;
+use rltbl_db::core::DbQuery;
 
 use std::io::Write;
 

@@ -10,7 +10,7 @@ use rltbl::{
     table::Table,
     web::{serve, serve_cgi},
 };
-use sql_json::core::DbQuery;
+use rltbl_db::core::DbQuery;
 
 use ansi_term::Style;
 use anyhow::Result;

@@ -7,8 +7,8 @@ use crate::{
 };
 
 use anyhow::Result;
+use rltbl_db::core::DbQuery;
 use serde_json::Value as JsonValue;
-use sql_json::core::DbQuery;
 
 /// Build a demonstration database. Based on <https://github.com/allisonhorst/palmerpenguins>.
 pub async fn build_demo(rltbl: &Relatable, force: &bool, size: usize) -> Result<()> {

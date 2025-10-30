@@ -1,6 +1,9 @@
 # Relatable: Connect your data!
 
-Relatable (rltbl) is a tool for cleaning and connecting your data. It preserves invalid data while you're in the process of cleaning it, and it helps you connect your data to controlled terminologies and data standards. You can use Relatable as a web app, as a command-line tool, in a notebook like Jupyter, or from your favourite programming language.
+Relatable (rltbl) is a tool for collecting, cleaning, and connecting your data.
+
+
+ It preserves invalid data while you're in the process of cleaning it, and it helps you connect your data to controlled terminologies and data standards. You can use Relatable as a web app, as a command-line tool, in a notebook like Jupyter, or from your favourite programming language.
 
 This early version of Relatable has a minimal feature set:
 

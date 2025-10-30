@@ -11,9 +11,9 @@ use rltbl::{
     core::{Relatable, RelatableError, NEW_ORDER_MULTIPLIER},
     sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
 };
+use rltbl_db::core::DbQuery;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use sql_json::core::DbQuery;
 use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
