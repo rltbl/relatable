@@ -3,6 +3,7 @@ use serde_json::json;
 
 use crate::{
     core::{Relatable, NEW_ORDER_MULTIPLIER},
+    datatype::{Datatype, DatatypeTable},
     sql::{self, CachingStrategy, DbKind, JsonRow, SqlParam},
 };
 
@@ -193,59 +194,29 @@ pub async fn create_island_table(
 
 /// Create the datatype table for the demonstration database
 pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Result<()> {
-    tracing::trace!("create_demo_datatype_table({rltbl:?}, {force})");
     if *force {
-        if let DbKind::Postgres = rltbl.connection.kind() {
-            rltbl
-                .pool
-                .execute(r#"DROP TABLE IF EXISTS "datatype" CASCADE"#, &[])
-                .await?;
-        }
+        rltbl.drop("datatype").await?;
     }
+    DatatypeTable::create(&rltbl.pool).await?;
 
-    let pkey_clause = match rltbl.connection.kind() {
-        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        DbKind::Postgres => "SERIAL PRIMARY KEY",
+    let decimal = Datatype {
+        datatype: "decimal".to_owned(),
+        description: "A decimal number".to_string(),
+        condition: r"match(-?\d+(\.\d+)?)".to_string(),
+        sql_type: "NUMERIC".to_string(),
+        format: "%.1f".to_string(),
+        ..Default::default()
     };
+    decimal.insert(&rltbl.pool).await?;
 
-    let sql = format!(
-        r#"CREATE TABLE "datatype" (
-             _id {pkey_clause},
-             _order INTEGER UNIQUE,
-             "datatype" TEXT,
-             "description" TEXT,
-             "parent" TEXT,
-             "condition" TEXT,
-             "sql_type" TEXT,
-             "format" TEXT
-           )"#,
-    );
-    rltbl.pool.execute(&sql, &[]).await?;
-
-    let mut ddl = vec![];
-    sql::add_metacolumn_trigger_ddl(&mut ddl, "datatype", &rltbl.connection.kind());
-    for sql in ddl {
-        rltbl.pool.execute(&sql, &[]).await?;
-    }
-
-    let datatype_contents = [
-        json!({
-            "datatype": "decimal",
-            "description": "A decimal number",
-            "parent": "",
-            "condition": r"match(-?\d+(\.\d+)?)",
-            "sql_type": "NUMERIC",
-            "format": "%.1f"
-        }),
-        json!({
-            "datatype": "study_name",
-            "description": "",
-            "parent": "text",
-            "condition": "in(FAKE123, FAKE456)",
-            "sql_type": "",
-            "format": ""
-        }),
-    ]
+    let datatype_contents = [json!({
+        "datatype": "study_name",
+        "description": "",
+        "parent": "text",
+        "condition": "in(FAKE123, FAKE456)",
+        "sql_type": "",
+        "format": ""
+    })]
     .iter()
     .map(|content| JsonRow {
         content: content.as_object().expect("Not a map").clone(),

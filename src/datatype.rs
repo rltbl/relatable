@@ -3,29 +3,23 @@
 //! This is [relatable](crate) (rltbl::[datatype](crate::datatype)).
 
 use crate as rltbl;
+use indexmap::IndexMap;
 use rltbl::{
     column::Column,
-    core::{Relatable, RelatableError},
     sql::{self, DbTransaction, SqlParam},
-    table::Table,
 };
+use rltbl_db::core::{DbKind, DbQuery, JsonRow};
 
 use anyhow::Result;
-use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use std::collections::HashMap;
 
-lazy_static! {
-    /// Relatable's core built-in datatypes
-    pub static ref BUILTIN_DATATYPES: Vec<&'static str> =
-        vec!["text", "empty", "line", "trimmed_line", "nonspace", "word", "integer"];
-}
+pub type DatatypeMap = IndexMap<String, Datatype>;
 
 /// Represents a column's datatype
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Datatype {
-    pub name: String,
+    pub datatype: String,
     pub description: String,
     pub parent: String,
     pub condition: String,
@@ -34,6 +28,30 @@ pub struct Datatype {
 }
 
 impl Datatype {
+    /// Insert this datatype into the "datatype" table,
+    /// returning the result.
+    pub async fn insert(&self, db: &impl DbQuery) -> Result<Datatype> {
+        let row = json!(self);
+        let row = row.as_object().unwrap();
+        let rows = db.insert("datatype", &[&row]).await?;
+        let row = rows.get(0).unwrap();
+        let dt: Datatype = serde_json::from_value(json!(row))?;
+        Ok(dt)
+    }
+
+    /// Extract a vector of ancestors for this datatype.
+    pub fn ancestors(&self, datatypes: &DatatypeMap) -> Vec<Datatype> {
+        let mut result = vec![self.clone()];
+        if self.parent != "" {
+            match datatypes.get(&self.parent) {
+                Some(parent) => result.extend(parent.ancestors(datatypes)),
+                None => (),
+            }
+        }
+        result
+    }
+
+    // TODO: Eliminate this in favour of reading the actual SQL type for the column from the database.
     /// Return the SQL type corresponding to the given datatype, or to one of its parents if it
     /// has no sql_type.
     pub fn infer_sql_type(&self, dt_hierarchy: &Vec<Datatype>) -> String {
@@ -47,7 +65,7 @@ impl Datatype {
             parent.infer_sql_type(&ancestors)
         } else {
             // Handle built-in types:
-            let sql_type = match self.name.to_lowercase().as_str() {
+            let sql_type = match self.datatype.to_lowercase().as_str() {
                 "text" => "TEXT",
                 "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" => "INTEGER",
                 "real" | "decimal" | "numeric" => "NUMERIC",
@@ -63,7 +81,7 @@ impl Datatype {
                 {
                     "TEXT"
                 }
-                datatype if BUILTIN_DATATYPES.contains(&datatype) => "TEXT",
+                datatype if DatatypeTable::builtins().contains_key(datatype) => "TEXT",
                 unknown => {
                     tracing::warn!("Cannot infer SQL type for unknown datatype '{unknown}'");
                     "TEXT"
@@ -73,245 +91,7 @@ impl Datatype {
         }
     }
 
-    /// Return a Datatype struct corresponding to the given built-in datatype
-    pub fn builtin_datatype(datatype: &str) -> Result<Self> {
-        tracing::trace!("Datatype::builtin_datatype({datatype})");
-        let builtins = Datatype::builtin_datatypes();
-        let builtin = match datatype {
-            "text" => builtins.get("text").expect("Builtin 'text' not found"),
-            "empty" => builtins.get("empty").expect("Builtin 'empty' not found"),
-            "line" => builtins.get("line").expect("Builtin 'line' not found"),
-            "trimmed_line" => builtins
-                .get("trimmed_line")
-                .expect("Builtin 'trimmed_line' not found"),
-            "nonspace" => builtins
-                .get("nonspace")
-                .expect("Builtin 'nonspace' not found"),
-            "word" => builtins.get("word").expect("Builtin 'word' not found"),
-            "integer" => builtins
-                .get("integer")
-                .expect("Builtin 'integer' not found"),
-            unrecognized => {
-                return Err(RelatableError::InputError(format!(
-                    "Unrecognized built-in datatype: '{unrecognized}'"
-                ))
-                .into())
-            }
-        };
-        Ok(builtin.to_owned())
-    }
-
-    // Returns a [HashMap] representing all of the built-in datatypes, indexed by datatype name
-    pub fn builtin_datatypes() -> HashMap<String, Self> {
-        tracing::trace!("Datatype::builtin_datatypes()");
-        [
-            (
-                "text".into(),
-                Datatype {
-                    name: "text".to_string(),
-                    description: "any text".to_string(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "empty".into(),
-                Datatype {
-                    name: "empty".to_string(),
-                    description: "the empty string".to_string(),
-                    parent: "text".to_string(),
-                    condition: r"equals('')".to_string(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "line".into(),
-                Datatype {
-                    name: "line".to_string(),
-                    description: "a line of text".to_string(),
-                    parent: "text".to_string(),
-                    condition: r"match([^\n]+)".to_string(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "trimmed_line".into(),
-                Datatype {
-                    name: "trimmed_line".to_string(),
-                    description: "a line of text that deos not begin or end with whitespace"
-                        .to_string(),
-                    parent: "line".to_string(),
-                    condition: r"match(\S([^\n]*\S)*)".to_string(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "nonspace".into(),
-                Datatype {
-                    name: "nonspace".to_string(),
-                    description: "text without whitespace".to_string(),
-                    parent: "trimmed_line".to_string(),
-                    condition: r"match([^\s]+)".to_string(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "word".into(),
-                Datatype {
-                    name: "word".to_string(),
-                    description: "a single word: letters, numbers, underscore".to_string(),
-                    parent: "nonspace".to_string(),
-                    condition: r"match(\w+)".to_string(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "integer".into(),
-                Datatype {
-                    name: "integer".to_string(),
-                    description: "an integer".to_string(),
-                    parent: "nonspace".to_string(),
-                    sql_type: "INTEGER".to_string(),
-                    condition: r"match(-?\d+)".to_string(),
-                    ..Default::default()
-                },
-            ),
-        ]
-        .into_iter()
-        .collect::<HashMap<_, _>>()
-    }
-
-    /// Get all of the datatypes in the database
-    pub async fn get_all_datatypes(rltbl: &Relatable) -> Result<HashMap<String, Self>> {
-        tracing::trace!("Datatype::get_all_datatypes({rltbl:?})");
-        let mut conn = rltbl.connection.reconnect()?;
-        let mut tx = rltbl.connection.begin(&mut conn).await?;
-        let datatypes = Datatype::_get_all_datatypes(&mut tx)?;
-        tx.commit()?;
-        Ok(datatypes)
-    }
-
-    /// Get all of the datatypes in the database using the given transaction
-    fn _get_all_datatypes(tx: &mut DbTransaction<'_>) -> Result<HashMap<String, Self>> {
-        tracing::trace!("Datatype::_get_all_datatypes(tx)");
-        let mut datatypes = Datatype::builtin_datatypes();
-        if Table::_table_exists("datatype", tx)? {
-            let sql = r#"SELECT * FROM "datatype""#;
-            let datatype_rows = tx.query(&sql, None)?;
-            for dt_row in &datatype_rows {
-                let dt_name = dt_row.get_string("datatype")?;
-                datatypes.insert(
-                    dt_name.to_string(),
-                    Datatype {
-                        name: dt_name,
-                        description: dt_row.get_string("description")?,
-                        parent: dt_row.get_string("parent")?,
-                        condition: dt_row.get_string("condition")?,
-                        sql_type: dt_row.get_string("sql_type")?,
-                        format: dt_row.get_string("format")?,
-                    },
-                );
-            }
-        }
-        Ok(datatypes)
-    }
-
-    /// Get the given [Datatype] from the database
-    pub async fn get_datatype(datatype: &str, rltbl: &Relatable) -> Result<Option<Self>> {
-        tracing::trace!("Datatype::get_datatype({datatype}, {rltbl:?})");
-        let mut conn = rltbl.connection.reconnect()?;
-        let mut tx = rltbl.connection.begin(&mut conn).await?;
-        let datatype = Datatype::_get_datatype(datatype, &mut tx)?;
-        tx.commit()?;
-        Ok(datatype)
-    }
-
-    pub fn _get_datatype(datatype: &str, tx: &mut DbTransaction<'_>) -> Result<Option<Self>> {
-        tracing::trace!("Datatype::_get_datatype({datatype}, tx)");
-        let datatypes = Datatype::_get_all_datatypes(tx)?;
-        match datatypes.get(datatype) {
-            Some(datatype) => Ok(Some(datatype.to_owned())),
-            None => {
-                tracing::warn!("No datatype '{datatype}' found");
-                Ok(None)
-            }
-        }
-    }
-
-    /// Get all of this datatype's ancestors
-    pub async fn get_all_ancestors(&self, rltbl: &Relatable) -> Result<Vec<Self>> {
-        tracing::trace!("Datatype::get_all_ancestors({self:?}, {rltbl:?})");
-        let mut conn = rltbl.connection.reconnect()?;
-        let mut tx = rltbl.connection.begin(&mut conn).await?;
-        let ancestors = self._get_all_ancestors(&mut tx)?;
-        tx.commit()?;
-        Ok(ancestors)
-    }
-
-    /// Get all of this datatype's ancestors using the given transaction.
-    pub fn _get_all_ancestors(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
-        tracing::trace!("Datatype::_get_all_ancestors({self:?}, tx)");
-        let datatypes = {
-            let mut datatypes = Datatype::builtin_datatypes()
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_owned()))
-                .collect::<HashMap<_, _>>();
-            if Table::_table_exists("datatype", tx)? {
-                let builtin_names = datatypes.keys().cloned().collect::<Vec<_>>();
-                let sql = r#"SELECT * from "datatype""#;
-                for row in tx.query(sql, None)? {
-                    let dt_name = row.get_string("datatype")?;
-                    if builtin_names.contains(&dt_name) {
-                        tracing::info!("Ignoring redefinition of built-in datatype '{dt_name}'");
-                    } else {
-                        datatypes.insert(
-                            dt_name.to_string(),
-                            Datatype {
-                                name: dt_name,
-                                description: row.get_string("description").unwrap_or_default(),
-                                parent: row.get_string("parent").unwrap_or_default(),
-                                condition: row.get_string("condition").unwrap_or_default(),
-                                sql_type: row.get_string("sql_type").unwrap_or_default(),
-                                format: row.get_string("format").unwrap_or_default(),
-                            },
-                        );
-                    }
-                }
-            }
-            datatypes
-        };
-
-        fn build_hierarchy(
-            dt_map: &HashMap<String, Datatype>,
-            start_dt_name: &str,
-            dt_name: &str,
-        ) -> Result<Vec<Datatype>> {
-            tracing::trace!(
-                "Datatype::get_all_ancestors()::build_hierarchy({dt_map:?}, {start_dt_name}, \
-                 {dt_name})"
-            );
-            let mut datatypes = vec![];
-            if dt_name != "" {
-                let datatype = match dt_map.get(dt_name) {
-                    Some(datatype) => datatype,
-                    None => {
-                        tracing::warn!("Undefined datatype '{dt_name}'");
-                        return Ok(datatypes);
-                    }
-                };
-                let dt_name = datatype.name.as_str();
-                let dt_parent = datatype.parent.as_str();
-                if dt_name != start_dt_name {
-                    datatypes.push(datatype.clone());
-                }
-                let mut more_datatypes = build_hierarchy(dt_map, start_dt_name, &dt_parent)?;
-                datatypes.append(&mut more_datatypes);
-            }
-            Ok(datatypes)
-        }
-
-        build_hierarchy(&datatypes, &self.name, &self.name)
-    }
-
+    // TODO: break into smaller pieces
     /// Validate a column of a database table, optionally only for the given row, using the
     /// given transaction. Returns true whenever messages are inserted to the message table as a
     /// result of validation, and false otherwise.
@@ -365,8 +145,8 @@ impl Datatype {
                             params = json!([
                                 column.table,
                                 column.name,
-                                format!("datatype:{}", self.name),
-                                format!("{} must be a {}", column.name, self.name),
+                                format!("datatype:{}", self.datatype),
+                                format!("{} must be a {}", column.name, self.datatype),
                                 condition,
                                 row
                             ]);
@@ -375,8 +155,8 @@ impl Datatype {
                             params = json!([
                                 column.table,
                                 column.name,
-                                format!("datatype:{}", self.name),
-                                format!("{} must be a {}", column.name, self.name),
+                                format!("datatype:{}", self.datatype),
+                                format!("{} must be a {}", column.name, self.datatype),
                                 condition
                             ]);
                         }
@@ -423,8 +203,8 @@ impl Datatype {
                     let mut params = json!([
                         column.table,
                         column.name,
-                        format!("datatype:{}", self.name),
-                        format!("{} must be a {}", column.name, self.name),
+                        format!("datatype:{}", self.datatype),
+                        format!("{} must be a {}", column.name, self.datatype),
                     ]);
                     for item in &condition_list {
                         if let JsonValue::Array(ref mut v) = params {
@@ -485,8 +265,8 @@ impl Datatype {
                             params = json!([
                                 column.table,
                                 column.name,
-                                format!("datatype:{}", self.name),
-                                format!("{} must be a {}", column.name, self.name),
+                                format!("datatype:{}", self.datatype),
+                                format!("{} must be a {}", column.name, self.datatype),
                                 format!("^{condition}$"),
                                 row
                             ]);
@@ -495,8 +275,8 @@ impl Datatype {
                             params = json!([
                                 column.table,
                                 column.name,
-                                format!("datatype:{}", self.name),
-                                format!("{} must be a {}", column.name, self.name),
+                                format!("datatype:{}", self.datatype),
+                                format!("{} must be a {}", column.name, self.datatype),
                                 format!("^{condition}$")
                             ]);
                         }
@@ -512,7 +292,7 @@ impl Datatype {
 
         tracing::debug!(
             "Validated datatype '{}' for column '{}.{}' (row: {:?}) {}",
-            self.name,
+            self.datatype,
             column.table,
             column.name,
             row,
@@ -522,5 +302,233 @@ impl Datatype {
             }
         );
         Ok(messages_were_added)
+    }
+}
+
+/// Represents the special "datatype" table.
+pub struct DatatypeTable {}
+
+impl DatatypeTable {
+    /// Get the SQL DDL as a string.
+    /// Requires the db only to know the SQL flavour to use.
+    pub fn ddl(db: &impl DbQuery) -> String {
+        let pkey_clause = match db.kind() {
+            DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+            DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
+        };
+
+        format!(
+            r#"CREATE TABLE "datatype" (
+             _id {pkey_clause},
+             _order INTEGER UNIQUE,
+             "datatype" TEXT,
+             "description" TEXT,
+             "parent" TEXT,
+             "condition" TEXT,
+             "sql_type" TEXT,
+             "format" TEXT
+           )"#,
+        )
+    }
+
+    /// Create the "datatype" table in the database
+    /// and insert the built-in datatypes.
+    pub async fn create(db: &impl DbQuery) -> Result<()> {
+        db.execute(&DatatypeTable::ddl(db), &[]).await?;
+        let rows: Vec<JsonRow> = DatatypeTable::builtins()
+            .values()
+            .map(|dt| json!(dt).as_object().unwrap().clone())
+            .collect();
+        let refs: Vec<&JsonRow> = rows.iter().collect();
+        db.insert("datatype", &refs).await?;
+        Ok(())
+    }
+
+    // Returns an [IndexMap] representing all of the built-in datatypes, indexed by datatype name
+    pub fn builtins() -> IndexMap<String, Datatype> {
+        tracing::trace!("Datatype::builtin_datatypes()");
+        [
+            (
+                "text".into(),
+                Datatype {
+                    datatype: "text".to_owned(),
+                    description: "any text".to_owned(),
+                    sql_type: "TEXT".to_owned(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "empty".into(),
+                Datatype {
+                    datatype: "empty".to_owned(),
+                    description: "the empty string".to_owned(),
+                    parent: "text".to_owned(),
+                    condition: r"equals('')".to_owned(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "line".into(),
+                Datatype {
+                    datatype: "line".to_owned(),
+                    description: "a line of text".to_owned(),
+                    parent: "text".to_owned(),
+                    condition: r"match([^\n]+)".to_owned(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "trimmed_line".into(),
+                Datatype {
+                    datatype: "trimmed_line".to_owned(),
+                    description: "a line of text that deos not begin or end with whitespace"
+                        .to_owned(),
+                    parent: "line".to_owned(),
+                    condition: r"match(\S([^\n]*\S)*)".to_owned(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "nonspace".into(),
+                Datatype {
+                    datatype: "nonspace".to_owned(),
+                    description: "text without whitespace".to_owned(),
+                    parent: "trimmed_line".to_owned(),
+                    condition: r"match([^\s]+)".to_owned(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "word".into(),
+                Datatype {
+                    datatype: "word".to_owned(),
+                    description: "a single word: letters, numbers, underscore".to_owned(),
+                    parent: "nonspace".to_owned(),
+                    condition: r"match(\w+)".to_owned(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "integer".into(),
+                Datatype {
+                    datatype: "integer".to_owned(),
+                    description: "an integer".to_owned(),
+                    parent: "nonspace".to_owned(),
+                    sql_type: "INTEGER".to_owned(),
+                    condition: r"match(-?\d+)".to_owned(),
+                    ..Default::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect::<IndexMap<_, _>>()
+    }
+
+    /// Get all the dataypes from the "datatype" table.
+    /// Built-in datatypes override rows found in the table.
+    /// If the "datatype" table does not exist, just return buildins.
+    pub async fn get(db: &impl DbQuery) -> DatatypeMap {
+        let rows = match db
+            .query(
+                "SELECT datatype, description, parent, sql_type, condition, format FROM datatype",
+                &[],
+            )
+            .await
+        {
+            Ok(rows) => rows,
+            Err(_) => return DatatypeTable::builtins(),
+        };
+        let mut map = rows
+            .iter()
+            .map(|row| serde_json::from_value(json!(row)))
+            .filter_map(|result| result.ok())
+            .map(|dt: Datatype| (dt.datatype.to_string(), dt))
+            .collect::<IndexMap<_, _>>();
+        map.extend(DatatypeTable::builtins());
+        map
+    }
+
+    // validate the "datatype" table
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use rltbl_db::any::AnyPool;
+
+    #[tokio::test]
+    async fn test_create() {
+        let pool = AnyPool::connect(":memory:")
+            .await
+            .expect("connect to SQLite");
+        DatatypeTable::create(&pool)
+            .await
+            .expect("create datatype table");
+        let count = pool
+            .query_u64("SELECT count() FROM datatype", &[])
+            .await
+            .expect("count rows");
+        assert_eq!(count, DatatypeTable::builtins().len() as u64);
+    }
+
+    #[tokio::test]
+    async fn test_insert() {
+        let pool = AnyPool::connect(":memory:")
+            .await
+            .expect("connect to SQLite");
+        DatatypeTable::create(&pool)
+            .await
+            .expect("create datatype table");
+        let test = Datatype {
+            datatype: "test".to_owned(),
+            ..Default::default()
+        };
+        test.insert(&pool).await.expect("insert test datatype");
+        let count = pool
+            .query_u64("SELECT count() FROM datatype", &[])
+            .await
+            .expect("count rows");
+        assert_eq!(count as usize, DatatypeTable::builtins().len() + 1);
+        assert_eq!(&test, DatatypeTable::get(&pool).await.get("test").unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_priority() {
+        // built-ins take priority over rows from the table
+        let pool = AnyPool::connect(":memory:")
+            .await
+            .expect("connect to SQLite");
+        DatatypeTable::create(&pool)
+            .await
+            .expect("create datatype table");
+        pool.execute(
+            "UPDATE datatype SET description = 'FOO' WHERE datatype = 'text'",
+            &[],
+        )
+        .await
+        .expect("update datatype table");
+        assert_eq!(
+            DatatypeTable::builtins().get("text").unwrap(),
+            DatatypeTable::get(&pool).await.get("text").unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ancestors() {
+        // built-ins take priority over rows from the table
+        let datatypes = DatatypeTable::builtins();
+        let dt = datatypes.get("integer").unwrap();
+        let ancestors = dt.ancestors(&datatypes);
+        assert_eq!(
+            ancestors.iter().collect::<Vec<_>>(),
+            vec![
+                datatypes.get("integer").unwrap(),
+                datatypes.get("nonspace").unwrap(),
+                datatypes.get("trimmed_line").unwrap(),
+                datatypes.get("line").unwrap(),
+                datatypes.get("text").unwrap(),
+            ]
+        );
     }
 }

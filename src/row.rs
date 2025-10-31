@@ -255,7 +255,7 @@ impl Cell {
         tracing::trace!("Cell::validate_sql_type({self:?}, {column:?})");
 
         fn invalidate(cell: &mut Cell, column: &Column) {
-            let datatype = &column.datatype.name;
+            let datatype = &column.datatype.datatype;
             cell.messages.push(Message {
                 value: cell.value.clone(),
                 level: "error".to_string(),

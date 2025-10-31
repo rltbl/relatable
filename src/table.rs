@@ -5,7 +5,7 @@
 use crate::{
     column::Column,
     core::{Relatable, RelatableError},
-    datatype::{Datatype, BUILTIN_DATATYPES},
+    datatype::{Datatype, DatatypeTable},
     sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
     structure::Structure,
 };
@@ -447,21 +447,23 @@ impl Table {
             let params = json!([table_name]);
             let json_columns = tx.query(&sql, Some(&params))?;
             let mut columns = IndexMap::new();
+            // TODO: replace with DatatypeTable::get(db)
+            let builtin_datatypes = DatatypeTable::builtins();
             for json_col in json_columns {
                 let datatype = match json_col.get_string("datatype").unwrap_or_default().as_str() {
                     "" => Datatype {
-                        name: "text".to_string(),
+                        datatype: "text".to_string(),
                         ..Default::default()
                     },
-                    datatype if BUILTIN_DATATYPES.contains(&datatype) => {
+                    datatype if builtin_datatypes.contains_key(datatype) => {
                         tracing::debug!(
                             "Ignoring datatype table entry for built-in datatype \
                              '{datatype}'"
                         );
-                        Datatype::builtin_datatype(datatype)?
+                        builtin_datatypes.get(datatype).unwrap().clone()
                     }
                     datatype => Datatype {
-                        name: datatype.to_string(),
+                        datatype: datatype.to_string(),
                         description: json_col
                             .get_string("datatype_description")
                             .unwrap_or_default(),
@@ -476,8 +478,8 @@ impl Table {
                 let nulltype = match json_col.get_string("nulltype").ok() {
                     None => None,
                     Some(nulltype) if nulltype == "" => None,
-                    Some(nulltype) => match Datatype::_get_datatype(&nulltype, tx)? {
-                        Some(nulltype) => Some(nulltype),
+                    Some(nulltype) => match builtin_datatypes.get(&nulltype) {
+                        Some(nulltype) => Some(nulltype.clone()),
                         None => {
                             tracing::warn!("Nulltype '{nulltype}' is not a recognized datatype");
                             None
@@ -495,7 +497,7 @@ impl Table {
                     table: json_col.get_string("table")?,
                     label: json_col.get_string("label").ok(),
                     description: json_col.get_string("description").ok(),
-                    datatype_hierarchy: datatype._get_all_ancestors(tx)?,
+                    datatype_hierarchy: datatype.ancestors(&builtin_datatypes),
                     datatype: datatype,
                     nulltype: nulltype,
                     structure: structure,
@@ -682,8 +684,9 @@ impl Table {
         // column table that we just collected:
         let mut columns = vec![];
         let mut meta_columns = vec![];
-        let meta_datatype = Datatype::builtin_datatype("integer")?;
-        let meta_datatype_hierarchy = meta_datatype._get_all_ancestors(tx)?;
+        let builtin_datatypes = DatatypeTable::builtins();
+        let meta_datatype = builtin_datatypes.get("integer").unwrap();
+        let meta_datatype_hierarchy = meta_datatype.ancestors(&builtin_datatypes);
         for db_column in Table::get_db_table_columns(table_name, tx)? {
             match db_column.get_string("name")? {
                 column_name if column_name.starts_with("_") => meta_columns.push(Column {
@@ -706,7 +709,7 @@ impl Table {
                                 datatype => datatype,
                             };
                             Datatype {
-                                name: db_datatype.to_lowercase(),
+                                datatype: db_datatype.to_lowercase(),
                                 ..Default::default()
                             }
                         }
@@ -722,7 +725,7 @@ impl Table {
                         nulltype: column_columns
                             .get(&column_name)
                             .and_then(|col| col.nulltype.clone()),
-                        datatype_hierarchy: datatype._get_all_ancestors(tx)?,
+                        datatype_hierarchy: datatype.ancestors(&builtin_datatypes),
                         datatype: datatype,
                         structure: column_columns
                             .get(&column_name)
@@ -801,10 +804,10 @@ impl Table {
                 Some(description) if description == "" => None,
                 Some(_) => col.description.clone(),
             },
-            "datatype" => Some(col.datatype.name.to_string()),
+            "datatype" => Some(col.datatype.datatype.to_string()),
             "nulltype" => match &col.nulltype {
                 None => None,
-                Some(nulltype) => Some(nulltype.name.clone()),
+                Some(nulltype) => Some(nulltype.datatype.clone()),
             },
             _ => None,
         })

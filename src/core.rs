@@ -2,7 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
-use crate as rltbl;
+use crate::{self as rltbl, datatype::DatatypeTable};
 use rltbl::{
     column::Column,
     datatype::Datatype,
@@ -15,7 +15,7 @@ use rltbl::{
     },
     table::Table,
 };
-use rltbl_db::any::AnyPool;
+use rltbl_db::{any::AnyPool, core::DbQuery};
 
 use anyhow::Result;
 use colored::Colorize;
@@ -222,6 +222,31 @@ impl Relatable {
         }
 
         Ok(rltbl)
+    }
+
+    /// Drop the given table in the database
+    pub async fn drop(&self, table: &str) -> Result<()> {
+        // To avoid SQL injection, first check that the table exists using a binding.
+        match self
+            .pool
+            .query_string(
+                r#"SELECT name FROM "table" WHERE "table" = $1"#,
+                &[json!(table)],
+            )
+            .await
+        {
+            Ok(name) => {
+                let sql = match self.pool.kind() {
+                    rltbl_db::core::DbKind::SQLite => format!(r#"DROP TABLE "{name}""#),
+                    rltbl_db::core::DbKind::PostgreSQL => {
+                        format!(r#"DROP TABLE "{name}" CASCADE"#)
+                    }
+                };
+                self.pool.execute(&sql, &[]).await?;
+            }
+            Err(_) => (),
+        }
+        Ok(())
     }
 
     // Drop all of the tables in the table table
@@ -470,10 +495,11 @@ impl Relatable {
             let table_columns = Table::get_column_table_columns(table_name, self)
                 .await
                 .expect(&format!("Error getting columns for table '{table_name}'"));
+            let datatypes = DatatypeTable::get(&self.pool).await;
             for column_name in headers.iter() {
                 let datatype = match table_columns.get(column_name) {
                     None => Datatype {
-                        name: "text".to_string(),
+                        datatype: "text".to_string(),
                         ..Default::default()
                     },
                     Some(col) => col.datatype.clone(),
@@ -481,10 +507,7 @@ impl Relatable {
                 let column = Column {
                     name: column_name.to_string(),
                     table: table_name.to_string(),
-                    datatype_hierarchy: datatype.get_all_ancestors(self).await.expect(&format!(
-                        "Error getting datatype hierarchy for '{}'",
-                        datatype.name
-                    )),
+                    datatype_hierarchy: datatype.ancestors(&datatypes),
                     datatype: datatype,
                     nulltype: table_columns
                         .get(column_name)
@@ -576,13 +599,16 @@ impl Relatable {
                         (column, nulltype)
                     };
                     match nulltype {
-                        Some(nulltype) if nulltype.name == "empty" && value == "" => {
+                        Some(nulltype) if nulltype.datatype == "empty" && value == "" => {
                             sql_params.push("NULL".to_string());
                         }
                         _ => {
                             if let Some(nulltype) = nulltype {
-                                if nulltype.name != "empty" {
-                                    tracing::warn!("Nulltype '{}' not supported", nulltype.name);
+                                if nulltype.datatype != "empty" {
+                                    tracing::warn!(
+                                        "Nulltype '{}' not supported",
+                                        nulltype.datatype
+                                    );
                                 }
                             }
                             // Use the value to create a cell:
@@ -731,11 +757,14 @@ impl Relatable {
                                     // Note that the behaviour for the 'empty' nulltype happens
                                     // to be the same as that for no nulltype, but in general
                                     // that won't be true for every nulltype.
-                                    Some(nulltype) if nulltype.name == "empty" => {
+                                    Some(nulltype) if nulltype.datatype == "empty" => {
                                         str_values.push("".to_string());
                                     }
                                     Some(unsup) => {
-                                        tracing::warn!("Unsupported nulltype: '{}'", unsup.name);
+                                        tracing::warn!(
+                                            "Unsupported nulltype: '{}'",
+                                            unsup.datatype
+                                        );
                                         str_values.push("".to_string());
                                     }
                                     None => {

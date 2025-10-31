@@ -1798,7 +1798,7 @@ impl JsonRow {
         let default_col = Column::default();
         for (column, value) in row.content.iter() {
             match &table.columns.get(column).unwrap_or(&default_col).nulltype {
-                Some(supported) if supported.name == "empty" => match value {
+                Some(supported) if supported.datatype == "empty" => match value {
                     JsonValue::String(s) if s == "" => {
                         nullified_row
                             .content
@@ -1811,7 +1811,7 @@ impl JsonRow {
                     }
                 },
                 Some(unsupported) => {
-                    tracing::warn!("Unsupported nulltype: '{}'", unsupported.name);
+                    tracing::warn!("Unsupported nulltype: '{}'", unsupported.datatype);
                     nullified_row
                         .content
                         .insert(column.to_string(), value.clone());
@@ -1834,12 +1834,12 @@ impl JsonRow {
         tracing::trace!("JsonRow::nullify_value({table:?}, {column}, {value:?})");
         let default_col = Column::default();
         match &table.columns.get(column).unwrap_or(&default_col).nulltype {
-            Some(supported) if supported.name == "empty" => match value {
+            Some(supported) if supported.datatype == "empty" => match value {
                 JsonValue::String(s) if s == "" => JsonValue::Null,
                 _ => value.clone(),
             },
             Some(unsupported) => {
-                tracing::warn!("Unsupported nulltype: '{}'", unsupported.name);
+                tracing::warn!("Unsupported nulltype: '{}'", unsupported.datatype);
                 value.clone()
             }
             None => value.clone(),
