@@ -197,14 +197,15 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
     if *force {
         rltbl.drop("datatype").await?;
     }
-    DatatypeTable::create(&rltbl.pool).await?;
 
     let decimal = Datatype::new("decimal")
         .description("A decimal number")
         .condition(r"match(-?\d+(\.\d+)?)")
         .sql_type("NUMERIC")
         .format("%.1f");
-    decimal.insert(&rltbl.pool).await?;
+
+    DatatypeTable::create(&rltbl.pool).await?;
+    DatatypeTable::add(&rltbl.pool, &decimal).await?;
 
     let datatype_contents = [json!({
         "datatype": "study_name",

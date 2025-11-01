@@ -85,17 +85,6 @@ impl Datatype {
         self
     }
 
-    /// Insert this datatype into the "datatype" table,
-    /// returning the result.
-    pub async fn insert(&self, db: &impl DbQuery) -> Result<Datatype> {
-        let row = json!(self);
-        let row = row.as_object().unwrap();
-        let rows = db.insert("datatype", &[&row]).await?;
-        let row = rows.get(0).unwrap();
-        let dt: Datatype = serde_json::from_value(json!(row))?;
-        Ok(dt)
-    }
-
     /// Get the sql_type of this datatype, or its closest ancestor.
     /// The default sql_type is "TEXT".
     pub fn get_sql_type(&self, datatypes: &DatatypeMap) -> String {
@@ -502,6 +491,17 @@ impl DatatypeTable {
         .collect::<IndexMap<_, _>>()
     }
 
+    /// Insert this datatype into the "datatype" table,
+    /// returning the result.
+    pub async fn add(db: &impl DbQuery, datatype: &Datatype) -> Result<Datatype> {
+        let row = json!(datatype);
+        let row = row.as_object().unwrap();
+        let rows = db.insert("datatype", &[&row]).await?;
+        let row = rows.get(0).unwrap();
+        let dt: Datatype = serde_json::from_value(json!(row))?;
+        Ok(dt)
+    }
+
     /// Get all the dataypes from the "datatype" table.
     /// Built-in datatypes override rows found in the table.
     /// If the "datatype" table does not exist, just return buildins.
@@ -551,7 +551,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert() {
+    async fn test_add() {
         let pool = AnyPool::connect(":memory:")
             .await
             .expect("connect to SQLite");
@@ -559,7 +559,9 @@ mod tests {
             .await
             .expect("create datatype table");
         let test = Datatype::new("test").description("test datatype");
-        test.insert(&pool).await.expect("insert test datatype");
+        DatatypeTable::add(&pool, &test)
+            .await
+            .expect("insert test datatype");
         let count = pool
             .query_u64("SELECT count() FROM datatype", &[])
             .await
