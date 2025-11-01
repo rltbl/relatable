@@ -13,8 +13,7 @@ use rltbl_db::core::{DbKind, DbQuery, JsonRow};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-
-pub type DatatypeMap = IndexMap<String, Datatype>;
+use std::ops::{Deref, DerefMut};
 
 /// Represents a column's datatype
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Ord, Eq)]
@@ -85,38 +84,6 @@ impl Datatype {
         self
     }
 
-    /// Get the sql_type of this datatype, or its closest ancestor.
-    /// The default sql_type is "TEXT".
-    pub fn get_sql_type(&self, datatypes: &DatatypeMap) -> String {
-        match self.sql_type.as_str() {
-            "" => match self.get_parent(datatypes) {
-                Some(parent) => parent.get_sql_type(datatypes),
-                None => "TEXT".to_owned(),
-            },
-            sql_type => sql_type.to_owned(),
-        }
-    }
-
-    /// Get the parent Datatype from the full list of datatypes.
-    pub fn get_parent<'a>(&self, datatypes: &'a DatatypeMap) -> Option<&'a Datatype> {
-        if self.parent != "" {
-            datatypes.get(&self.parent)
-        } else {
-            None
-        }
-    }
-
-    /// Extract a vector of ancestors for this datatype,
-    /// starting with itself.
-    pub fn ancestors<'a>(&'a self, datatypes: &'a DatatypeMap) -> Vec<&'a Datatype> {
-        let mut result = vec![self];
-        match self.get_parent(datatypes) {
-            Some(parent) => result.extend(parent.ancestors(datatypes)),
-            None => (),
-        }
-        result
-    }
-
     // TODO: Eliminate this in favour of reading the actual SQL type for the column from the database.
     /// Return the SQL type corresponding to the given datatype, or to one of its parents if it
     /// has no sql_type.
@@ -147,7 +114,7 @@ impl Datatype {
                 {
                     "TEXT"
                 }
-                datatype if DatatypeTable::builtins().contains_key(datatype) => "TEXT",
+                datatype if Datatypes::builtins().contains_key(datatype) => "TEXT",
                 unknown => {
                     tracing::warn!("Cannot infer SQL type for unknown datatype '{unknown}'");
                     "TEXT"
@@ -371,6 +338,136 @@ impl Datatype {
     }
 }
 
+pub struct Datatypes {
+    map: IndexMap<String, Datatype>,
+}
+
+impl Deref for Datatypes {
+    type Target = IndexMap<String, Datatype>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl DerefMut for Datatypes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.map
+    }
+}
+
+impl Datatypes {
+    // Returns an [IndexMap] representing all of the built-in datatypes, indexed by datatype name
+    pub fn builtins() -> Self {
+        Datatypes {
+            map: [
+                (
+                    "text".into(),
+                    Datatype {
+                        datatype: "text".to_owned(),
+                        parent: String::new(),
+                        description: "any text".to_owned(),
+                        sql_type: "TEXT".to_owned(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "empty".into(),
+                    Datatype {
+                        datatype: "empty".to_owned(),
+                        description: "the empty string".to_owned(),
+                        parent: "text".to_owned(),
+                        condition: r"equals('')".to_owned(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "line".into(),
+                    Datatype {
+                        datatype: "line".to_owned(),
+                        description: "a line of text".to_owned(),
+                        parent: "text".to_owned(),
+                        condition: r"match([^\n]+)".to_owned(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "trimmed_line".into(),
+                    Datatype {
+                        datatype: "trimmed_line".to_owned(),
+                        description: "a line of text that deos not begin or end with whitespace"
+                            .to_owned(),
+                        parent: "line".to_owned(),
+                        condition: r"match(\S([^\n]*\S)*)".to_owned(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "nonspace".into(),
+                    Datatype {
+                        datatype: "nonspace".to_owned(),
+                        description: "text without whitespace".to_owned(),
+                        parent: "trimmed_line".to_owned(),
+                        condition: r"match([^\s]+)".to_owned(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "word".into(),
+                    Datatype {
+                        datatype: "word".to_owned(),
+                        description: "a single word: letters, numbers, underscore".to_owned(),
+                        parent: "nonspace".to_owned(),
+                        condition: r"match(\w+)".to_owned(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "integer".into(),
+                    Datatype {
+                        datatype: "integer".to_owned(),
+                        description: "an integer".to_owned(),
+                        parent: "nonspace".to_owned(),
+                        sql_type: "INTEGER".to_owned(),
+                        condition: r"match(-?\d+)".to_owned(),
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect::<IndexMap<_, _>>(),
+        }
+    }
+
+    /// Get the sql_type of the given datatype, or its closest ancestor.
+    /// The default sql_type is "TEXT".
+    pub fn sql_type(&self, datatype: &Datatype) -> String {
+        match datatype.sql_type.as_str() {
+            "" => match self.parent(datatype) {
+                Some(parent) => self.sql_type(&parent),
+                None => "TEXT".to_owned(),
+            },
+            sql_type => sql_type.to_owned(),
+        }
+    }
+
+    /// Get the parent Datatype from the full list of datatypes.
+    pub fn parent(&self, datatype: &Datatype) -> Option<&Datatype> {
+        self.get(&datatype.parent)
+    }
+
+    /// Extract a vector of ancestors for this datatype,
+    /// starting with itself.
+    pub fn ancestors<'a>(&'a self, datatype: &'a Datatype) -> Vec<&'a Datatype> {
+        let mut ancestors = vec![datatype];
+        match self.parent(datatype) {
+            Some(parent) => ancestors.extend(self.ancestors(&parent)),
+            None => (),
+        }
+        ancestors
+    }
+}
+
 /// Represents the special "datatype" table.
 pub struct DatatypeTable {}
 
@@ -401,94 +498,13 @@ impl DatatypeTable {
     /// and insert the built-in datatypes.
     pub async fn create(db: &impl DbQuery) -> Result<()> {
         db.execute(&DatatypeTable::ddl(db), &[]).await?;
-        let rows: Vec<JsonRow> = DatatypeTable::builtins()
+        let rows: Vec<JsonRow> = Datatypes::builtins()
             .values()
             .map(|dt| json!(dt).as_object().unwrap().clone())
             .collect();
         let refs: Vec<&JsonRow> = rows.iter().collect();
         db.insert("datatype", &refs).await?;
         Ok(())
-    }
-
-    // Returns an [IndexMap] representing all of the built-in datatypes, indexed by datatype name
-    pub fn builtins() -> IndexMap<String, Datatype> {
-        tracing::trace!("Datatype::builtin_datatypes()");
-        [
-            (
-                "text".into(),
-                Datatype {
-                    datatype: "text".to_owned(),
-                    parent: String::new(),
-                    description: "any text".to_owned(),
-                    sql_type: "TEXT".to_owned(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "empty".into(),
-                Datatype {
-                    datatype: "empty".to_owned(),
-                    description: "the empty string".to_owned(),
-                    parent: "text".to_owned(),
-                    condition: r"equals('')".to_owned(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "line".into(),
-                Datatype {
-                    datatype: "line".to_owned(),
-                    description: "a line of text".to_owned(),
-                    parent: "text".to_owned(),
-                    condition: r"match([^\n]+)".to_owned(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "trimmed_line".into(),
-                Datatype {
-                    datatype: "trimmed_line".to_owned(),
-                    description: "a line of text that deos not begin or end with whitespace"
-                        .to_owned(),
-                    parent: "line".to_owned(),
-                    condition: r"match(\S([^\n]*\S)*)".to_owned(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "nonspace".into(),
-                Datatype {
-                    datatype: "nonspace".to_owned(),
-                    description: "text without whitespace".to_owned(),
-                    parent: "trimmed_line".to_owned(),
-                    condition: r"match([^\s]+)".to_owned(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "word".into(),
-                Datatype {
-                    datatype: "word".to_owned(),
-                    description: "a single word: letters, numbers, underscore".to_owned(),
-                    parent: "nonspace".to_owned(),
-                    condition: r"match(\w+)".to_owned(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "integer".into(),
-                Datatype {
-                    datatype: "integer".to_owned(),
-                    description: "an integer".to_owned(),
-                    parent: "nonspace".to_owned(),
-                    sql_type: "INTEGER".to_owned(),
-                    condition: r"match(-?\d+)".to_owned(),
-                    ..Default::default()
-                },
-            ),
-        ]
-        .into_iter()
-        .collect::<IndexMap<_, _>>()
     }
 
     /// Insert this datatype into the "datatype" table,
@@ -505,7 +521,7 @@ impl DatatypeTable {
     /// Get all the dataypes from the "datatype" table.
     /// Built-in datatypes override rows found in the table.
     /// If the "datatype" table does not exist, just return buildins.
-    pub async fn get(db: &impl DbQuery) -> DatatypeMap {
+    pub async fn get(db: &impl DbQuery) -> Datatypes {
         let rows = match db
             .query(
                 "SELECT datatype, description, parent, sql_type, condition, format FROM datatype",
@@ -514,7 +530,7 @@ impl DatatypeTable {
             .await
         {
             Ok(rows) => rows,
-            Err(_) => return DatatypeTable::builtins(),
+            Err(_) => return Datatypes::builtins(),
         };
         let mut map = rows
             .iter()
@@ -522,8 +538,8 @@ impl DatatypeTable {
             .filter_map(|result| result.ok())
             .map(|dt: Datatype| (dt.datatype.to_string(), dt))
             .collect::<IndexMap<_, _>>();
-        map.extend(DatatypeTable::builtins());
-        map
+        map.extend(Datatypes::builtins().map);
+        Datatypes { map }
     }
 
     // validate the "datatype" table
@@ -547,7 +563,7 @@ mod tests {
             .query_u64("SELECT count() FROM datatype", &[])
             .await
             .expect("count rows");
-        assert_eq!(count, DatatypeTable::builtins().len() as u64);
+        assert_eq!(count, Datatypes::builtins().len() as u64);
     }
 
     #[tokio::test]
@@ -566,7 +582,7 @@ mod tests {
             .query_u64("SELECT count() FROM datatype", &[])
             .await
             .expect("count rows");
-        assert_eq!(count as usize, DatatypeTable::builtins().len() + 1);
+        assert_eq!(count as usize, Datatypes::builtins().len() + 1);
         assert_eq!(&test, DatatypeTable::get(&pool).await.get("test").unwrap());
     }
 
@@ -586,7 +602,7 @@ mod tests {
         .await
         .expect("update datatype table");
         assert_eq!(
-            DatatypeTable::builtins().get("text").unwrap(),
+            Datatypes::builtins().get("text").unwrap(),
             DatatypeTable::get(&pool).await.get("text").unwrap()
         );
     }
@@ -594,9 +610,9 @@ mod tests {
     #[tokio::test]
     async fn test_ancestors() {
         // built-ins take priority over rows from the table
-        let datatypes = DatatypeTable::builtins();
-        let dt = datatypes.get("integer").unwrap();
-        let ancestors = dt.ancestors(&datatypes);
+        let datatypes = Datatypes::builtins();
+        let integer = datatypes.get("integer").expect("integer datatype");
+        let ancestors = datatypes.ancestors(integer);
         assert_eq!(
             ancestors,
             vec![

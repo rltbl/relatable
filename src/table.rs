@@ -5,7 +5,7 @@
 use crate::{
     column::Column,
     core::{Relatable, RelatableError},
-    datatype::{Datatype, DatatypeTable},
+    datatype::{Datatype, Datatypes},
     sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
     structure::Structure,
 };
@@ -448,7 +448,7 @@ impl Table {
             let json_columns = tx.query(&sql, Some(&params))?;
             let mut columns = IndexMap::new();
             // TODO: replace with DatatypeTable::get(db)
-            let builtin_datatypes = DatatypeTable::builtins();
+            let builtin_datatypes = Datatypes::builtins();
             for json_col in json_columns {
                 let datatype = match json_col.get_string("datatype").unwrap_or_default().as_str() {
                     "" => Datatype {
@@ -498,8 +498,8 @@ impl Table {
                     label: json_col.get_string("label").ok(),
                     description: json_col.get_string("description").ok(),
                     // TODO: remove this field
-                    datatype_hierarchy: datatype
-                        .ancestors(&builtin_datatypes)
+                    datatype_hierarchy: builtin_datatypes
+                        .ancestors(&datatype)
                         .into_iter()
                         .cloned()
                         .collect(),
@@ -689,10 +689,10 @@ impl Table {
         // column table that we just collected:
         let mut columns = vec![];
         let mut meta_columns = vec![];
-        let builtin_datatypes = DatatypeTable::builtins();
+        let builtin_datatypes = Datatypes::builtins();
         let meta_datatype = builtin_datatypes.get("integer").unwrap();
-        let meta_datatype_hierarchy: Vec<Datatype> = meta_datatype
-            .ancestors(&builtin_datatypes)
+        let meta_datatype_hierarchy: Vec<Datatype> = builtin_datatypes
+            .ancestors(meta_datatype)
             .into_iter()
             .cloned()
             .collect();
@@ -735,8 +735,8 @@ impl Table {
                         nulltype: column_columns
                             .get(&column_name)
                             .and_then(|col| col.nulltype.clone()),
-                        datatype_hierarchy: datatype
-                            .ancestors(&builtin_datatypes)
+                        datatype_hierarchy: builtin_datatypes
+                            .ancestors(&datatype)
                             .into_iter()
                             .cloned()
                             .collect(),

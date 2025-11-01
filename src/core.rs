@@ -2,10 +2,10 @@
 //!
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
-use crate::{self as rltbl, datatype::DatatypeTable};
+use crate as rltbl;
 use rltbl::{
     column::Column,
-    datatype::Datatype,
+    datatype::{Datatype, DatatypeTable},
     git,
     row::{Cell, Message, Row},
     select::{Select, SelectField},
@@ -508,8 +508,8 @@ impl Relatable {
                     name: column_name.to_string(),
                     table: table_name.to_string(),
                     // TODO: drop this field
-                    datatype_hierarchy: datatype
-                        .ancestors(&datatypes)
+                    datatype_hierarchy: datatypes
+                        .ancestors(&datatype)
                         .into_iter()
                         .cloned()
                         .collect(),
