@@ -3,7 +3,7 @@ use serde_json::json;
 
 use crate::{
     core::{Relatable, NEW_ORDER_MULTIPLIER},
-    datatype::{Datatype, DatatypeTable},
+    datatype::Datatype,
     sql::{self, CachingStrategy, DbKind, JsonRow, SqlParam},
 };
 
@@ -194,64 +194,27 @@ pub async fn create_island_table(
 
 /// Create the datatype table for the demonstration database
 pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Result<()> {
+    let datatype_table = rltbl.datatype_table();
     if *force {
-        rltbl.drop("datatype").await?;
+        datatype_table.drop().await?;
     }
-
-    let decimal = Datatype::new("decimal")
-        .description("A decimal number")
-        .condition(r"match(-?\d+(\.\d+)?)")
-        .sql_type("NUMERIC")
-        .format("%.1f");
-
-    DatatypeTable::create(&rltbl.pool).await?;
-    DatatypeTable::add(&rltbl.pool, &decimal).await?;
-
-    let datatype_contents = [json!({
-        "datatype": "study_name",
-        "description": "",
-        "parent": "text",
-        "condition": "in(FAKE123, FAKE456)",
-        "sql_type": "",
-        "format": ""
-    })]
-    .iter()
-    .map(|content| JsonRow {
-        content: content.as_object().expect("Not a map").clone(),
-    })
-    .collect::<Vec<_>>();
-
-    let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
-    let mut param_values = vec![];
-    let mut get_param = |row: &JsonRow, cname: &str| -> Result<String> {
-        match row.get_value(cname)? {
-            JsonValue::Null => Ok("NULL".to_string()),
-            JsonValue::String(value) => {
-                param_values.push(value.to_string());
-                Ok(sql_param_gen.next().to_string())
-            }
-            _ => panic!("Invalid value type for datatype table"),
-        }
-    };
-    let mut value_clauses = vec![];
-    for row in &datatype_contents {
-        let s1 = get_param(row, "datatype")?;
-        let s2 = get_param(row, "description")?;
-        let s3 = get_param(row, "parent")?;
-        let s4 = get_param(row, "condition")?;
-        let s5 = get_param(row, "sql_type")?;
-        let s6 = get_param(row, "format")?;
-        value_clauses.push(format!("({s1}, {s2}, {s3}, {s4}, {s5}, {s6})"));
-    }
-
-    let sql = format!(
-        r#"INSERT INTO "datatype"
-               ("datatype", "description", "parent", "condition", "sql_type", "format")
-               VALUES {values}"#,
-        values = value_clauses.join(", ")
-    );
-    let param_values = json!(param_values);
-    rltbl.connection.query(&sql, Some(&param_values)).await?;
+    datatype_table.create().await?;
+    datatype_table
+        .add(
+            &Datatype::new("decimal")
+                .description("A decimal number")
+                .condition(r"match(-?\d+(\.\d+)?)")
+                .sql_type("NUMERIC")
+                .format("%.1f"),
+        )
+        .await?;
+    datatype_table
+        .add(
+            &Datatype::new("study_name")
+                .description("A decimal number")
+                .condition(r"in(FAKE123, FAKE456)"),
+        )
+        .await?;
     Ok(())
 }
 

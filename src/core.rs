@@ -2,7 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
-use crate as rltbl;
+use crate::{self as rltbl, datatype::Datatypes};
 use rltbl::{
     column::Column,
     datatype::{Datatype, DatatypeTable},
@@ -222,6 +222,16 @@ impl Relatable {
         }
 
         Ok(rltbl)
+    }
+
+    /// Get the datatype table for this Relatable instance.
+    pub fn datatype_table(&self) -> DatatypeTable<'_> {
+        DatatypeTable::connect(&self.pool)
+    }
+
+    /// Get all the defined datatypes.
+    pub async fn datatypes(&self) -> Datatypes {
+        self.datatype_table().get().await
     }
 
     /// Drop the given table in the database
@@ -495,7 +505,7 @@ impl Relatable {
             let table_columns = Table::get_column_table_columns(table_name, self)
                 .await
                 .expect(&format!("Error getting columns for table '{table_name}'"));
-            let datatypes = DatatypeTable::get(&self.pool).await;
+            let datatypes = self.datatypes().await;
             for column_name in headers.iter() {
                 let datatype = match table_columns.get(column_name) {
                     None => Datatype {

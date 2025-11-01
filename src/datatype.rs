@@ -2,13 +2,17 @@
 //!
 //! This is [relatable](crate) (rltbl::[datatype](crate::datatype)).
 
-use crate as rltbl;
+use crate::{self as rltbl, core::RelatableError};
 use indexmap::IndexMap;
+use regex::Regex;
 use rltbl::{
     column::Column,
     sql::{self, DbTransaction, SqlParam},
 };
-use rltbl_db::core::{DbKind, DbQuery, JsonRow};
+use rltbl_db::{
+    any::AnyPool,
+    core::{DbKind, DbQuery, JsonRow},
+};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -469,50 +473,95 @@ impl Datatypes {
 }
 
 /// Represents the special "datatype" table.
-pub struct DatatypeTable {}
+pub struct DatatypeTable<'a> {
+    // This table_name is "datatype" by default.
+    table_name: String,
+    pool: &'a AnyPool,
+}
 
-impl DatatypeTable {
+impl<'a> DatatypeTable<'a> {
+    /// Create a new instance of DatatypeTable from an AnyPool.
+    pub fn connect<'b>(pool: &'b AnyPool) -> Self
+    where
+        'b: 'a,
+    {
+        Self {
+            table_name: "datatype".to_owned(),
+            pool,
+        }
+    }
+
+    // TODO: use rltbl_db to sanitize the name
+    /// Use this name for the datatype table.
+    /// The default is "datatype".
+    pub fn name(mut self, table_name: &str) -> Result<Self> {
+        let pattern = Regex::new(r"^\w+$").unwrap();
+        if !pattern.is_match(table_name) {
+            return Err(
+                RelatableError::DataError(format!("Not a valid table name: {table_name}")).into(),
+            );
+        }
+        self.table_name = table_name.to_owned();
+        Ok(self)
+    }
+
     /// Get the SQL DDL as a string.
     /// Requires the db only to know the SQL flavour to use.
-    pub fn ddl(db: &impl DbQuery) -> String {
-        let pkey_clause = match db.kind() {
+    pub fn ddl(&self) -> String {
+        let pkey_clause = match self.pool.kind() {
             DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
             DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
         };
 
         format!(
-            r#"CREATE TABLE "datatype" (
-             _id {pkey_clause},
-             _order INTEGER UNIQUE,
-             "datatype" TEXT,
-             "description" TEXT,
-             "parent" TEXT,
-             "condition" TEXT,
-             "sql_type" TEXT,
-             "format" TEXT
-           )"#,
+            r#"CREATE TABLE "{}" (
+              _id {pkey_clause},
+              _order INTEGER UNIQUE,
+              "datatype" TEXT,
+              "description" TEXT,
+              "parent" TEXT,
+              "condition" TEXT,
+              "sql_type" TEXT,
+              "format" TEXT
+            )"#,
+            self.table_name
         )
+    }
+
+    // TODO: replace this with self.pool.drop(self.name).
+    /// Drop the datatype table from the database.
+    pub async fn drop(&self) -> Result<()> {
+        let sql = match self.pool.kind() {
+            rltbl_db::core::DbKind::SQLite => {
+                format!(r#"DROP TABLE IF EXISTS "{}""#, self.table_name)
+            }
+            rltbl_db::core::DbKind::PostgreSQL => {
+                format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.table_name)
+            }
+        };
+        self.pool.execute(&sql, &[]).await?;
+        Ok(())
     }
 
     /// Create the "datatype" table in the database
     /// and insert the built-in datatypes.
-    pub async fn create(db: &impl DbQuery) -> Result<()> {
-        db.execute(&DatatypeTable::ddl(db), &[]).await?;
+    pub async fn create(&self) -> Result<()> {
+        self.pool.execute(&self.ddl(), &[]).await?;
         let rows: Vec<JsonRow> = Datatypes::builtins()
             .values()
             .map(|dt| json!(dt).as_object().unwrap().clone())
             .collect();
         let refs: Vec<&JsonRow> = rows.iter().collect();
-        db.insert("datatype", &refs).await?;
+        self.pool.insert(&self.table_name, &refs).await?;
         Ok(())
     }
 
     /// Insert this datatype into the "datatype" table,
     /// returning the result.
-    pub async fn add(db: &impl DbQuery, datatype: &Datatype) -> Result<Datatype> {
+    pub async fn add(&self, datatype: &Datatype) -> Result<Datatype> {
         let row = json!(datatype);
         let row = row.as_object().unwrap();
-        let rows = db.insert("datatype", &[&row]).await?;
+        let rows = self.pool.insert(&self.table_name, &[&row]).await?;
         let row = rows.get(0).unwrap();
         let dt: Datatype = serde_json::from_value(json!(row))?;
         Ok(dt)
@@ -521,10 +570,11 @@ impl DatatypeTable {
     /// Get all the dataypes from the "datatype" table.
     /// Built-in datatypes override rows found in the table.
     /// If the "datatype" table does not exist, just return buildins.
-    pub async fn get(db: &impl DbQuery) -> Datatypes {
-        let rows = match db
+    pub async fn get(&self) -> Datatypes {
+        let rows = match self.pool
             .query(
-                "SELECT datatype, description, parent, sql_type, condition, format FROM datatype",
+                &format!(
+                r#"SELECT datatype, description, parent, sql_type, condition, format FROM "{}""#, self.table_name),
                 &[],
             )
             .await
@@ -556,9 +606,8 @@ mod tests {
         let pool = AnyPool::connect(":memory:")
             .await
             .expect("connect to SQLite");
-        DatatypeTable::create(&pool)
-            .await
-            .expect("create datatype table");
+        let table = DatatypeTable::connect(&pool);
+        table.create().await.expect("create datatype table");
         let count = pool
             .query_u64("SELECT count() FROM datatype", &[])
             .await
@@ -571,19 +620,16 @@ mod tests {
         let pool = AnyPool::connect(":memory:")
             .await
             .expect("connect to SQLite");
-        DatatypeTable::create(&pool)
-            .await
-            .expect("create datatype table");
+        let table = DatatypeTable::connect(&pool);
+        table.create().await.expect("create datatype table");
         let test = Datatype::new("test").description("test datatype");
-        DatatypeTable::add(&pool, &test)
-            .await
-            .expect("insert test datatype");
+        table.add(&test).await.expect("add test datatype");
         let count = pool
             .query_u64("SELECT count() FROM datatype", &[])
             .await
             .expect("count rows");
         assert_eq!(count as usize, Datatypes::builtins().len() + 1);
-        assert_eq!(&test, DatatypeTable::get(&pool).await.get("test").unwrap());
+        assert_eq!(&test, table.get().await.get("test").unwrap());
     }
 
     #[tokio::test]
@@ -592,9 +638,8 @@ mod tests {
         let pool = AnyPool::connect(":memory:")
             .await
             .expect("connect to SQLite");
-        DatatypeTable::create(&pool)
-            .await
-            .expect("create datatype table");
+        let table = DatatypeTable::connect(&pool);
+        table.create().await.expect("create datatype table");
         pool.execute(
             "UPDATE datatype SET description = 'FOO' WHERE datatype = 'text'",
             &[],
@@ -603,7 +648,7 @@ mod tests {
         .expect("update datatype table");
         assert_eq!(
             Datatypes::builtins().get("text").unwrap(),
-            DatatypeTable::get(&pool).await.get("text").unwrap()
+            table.get().await.get("text").unwrap()
         );
     }
 
