@@ -17,7 +17,7 @@ use serde_json::{json, Value as JsonValue};
 pub type DatatypeMap = IndexMap<String, Datatype>;
 
 /// Represents a column's datatype
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Ord, Eq)]
 pub struct Datatype {
     pub datatype: String,
     pub description: String,
@@ -27,7 +27,64 @@ pub struct Datatype {
     pub format: String,
 }
 
+impl Default for Datatype {
+    fn default() -> Self {
+        Self {
+            datatype: Default::default(),
+            description: Default::default(),
+            parent: "text".to_owned(),
+            condition: Default::default(),
+            sql_type: Default::default(),
+            format: Default::default(),
+        }
+    }
+}
+
 impl Datatype {
+    /// Create a new datatype.
+    pub fn new(datatype: &str) -> Self {
+        Datatype {
+            datatype: datatype.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    /// Rename the datatype
+    pub fn name(mut self, datatype: &str) -> Self {
+        self.datatype = datatype.to_owned();
+        self
+    }
+
+    /// Set the description.
+    pub fn description(mut self, description: &str) -> Self {
+        self.description = description.to_owned();
+        self
+    }
+
+    /// Set the parent.
+    pub fn parent(mut self, parent: &str) -> Self {
+        self.parent = parent.to_owned();
+        self
+    }
+
+    /// Set the condition.
+    pub fn condition(mut self, condition: &str) -> Self {
+        self.condition = condition.to_owned();
+        self
+    }
+
+    /// Set the sql_type.
+    pub fn sql_type(mut self, sql_type: &str) -> Self {
+        self.sql_type = sql_type.to_owned();
+        self
+    }
+
+    /// Set the format.
+    pub fn format(mut self, format: &str) -> Self {
+        self.format = format.to_owned();
+        self
+    }
+
     /// Insert this datatype into the "datatype" table,
     /// returning the result.
     pub async fn insert(&self, db: &impl DbQuery) -> Result<Datatype> {
@@ -39,8 +96,20 @@ impl Datatype {
         Ok(dt)
     }
 
+    /// Get the sql_type of this datatype, or its closest ancestor.
+    /// The default sql_type is "TEXT".
+    pub fn get_sql_type(&self, datatypes: &DatatypeMap) -> String {
+        match self.sql_type.as_str() {
+            "" => match self.get_parent(datatypes) {
+                Some(parent) => parent.get_sql_type(datatypes),
+                None => "TEXT".to_owned(),
+            },
+            sql_type => sql_type.to_owned(),
+        }
+    }
+
     /// Get the parent Datatype from the full list of datatypes.
-    pub fn parent<'a>(&self, datatypes: &'a DatatypeMap) -> Option<&'a Datatype> {
+    pub fn get_parent<'a>(&self, datatypes: &'a DatatypeMap) -> Option<&'a Datatype> {
         if self.parent != "" {
             datatypes.get(&self.parent)
         } else {
@@ -49,10 +118,10 @@ impl Datatype {
     }
 
     /// Extract a vector of ancestors for this datatype,
-    /// including itself.
+    /// starting with itself.
     pub fn ancestors<'a>(&'a self, datatypes: &'a DatatypeMap) -> Vec<&'a Datatype> {
         let mut result = vec![self];
-        match self.parent(datatypes) {
+        match self.get_parent(datatypes) {
             Some(parent) => result.extend(parent.ancestors(datatypes)),
             None => (),
         }
@@ -360,6 +429,7 @@ impl DatatypeTable {
                 "text".into(),
                 Datatype {
                     datatype: "text".to_owned(),
+                    parent: String::new(),
                     description: "any text".to_owned(),
                     sql_type: "TEXT".to_owned(),
                     ..Default::default()
@@ -488,10 +558,7 @@ mod tests {
         DatatypeTable::create(&pool)
             .await
             .expect("create datatype table");
-        let test = Datatype {
-            datatype: "test".to_owned(),
-            ..Default::default()
-        };
+        let test = Datatype::new("test").description("test datatype");
         test.insert(&pool).await.expect("insert test datatype");
         let count = pool
             .query_u64("SELECT count() FROM datatype", &[])

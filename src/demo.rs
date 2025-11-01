@@ -199,14 +199,11 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
     }
     DatatypeTable::create(&rltbl.pool).await?;
 
-    let decimal = Datatype {
-        datatype: "decimal".to_owned(),
-        description: "A decimal number".to_string(),
-        condition: r"match(-?\d+(\.\d+)?)".to_string(),
-        sql_type: "NUMERIC".to_string(),
-        format: "%.1f".to_string(),
-        ..Default::default()
-    };
+    let decimal = Datatype::new("decimal")
+        .description("A decimal number")
+        .condition(r"match(-?\d+(\.\d+)?)")
+        .sql_type("NUMERIC")
+        .format("%.1f");
     decimal.insert(&rltbl.pool).await?;
 
     let datatype_contents = [json!({
