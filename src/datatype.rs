@@ -39,14 +39,22 @@ impl Datatype {
         Ok(dt)
     }
 
-    /// Extract a vector of ancestors for this datatype.
-    pub fn ancestors(&self, datatypes: &DatatypeMap) -> Vec<Datatype> {
-        let mut result = vec![self.clone()];
+    /// Get the parent Datatype from the full list of datatypes.
+    pub fn parent<'a>(&self, datatypes: &'a DatatypeMap) -> Option<&'a Datatype> {
         if self.parent != "" {
-            match datatypes.get(&self.parent) {
-                Some(parent) => result.extend(parent.ancestors(datatypes)),
-                None => (),
-            }
+            datatypes.get(&self.parent)
+        } else {
+            None
+        }
+    }
+
+    /// Extract a vector of ancestors for this datatype,
+    /// including itself.
+    pub fn ancestors<'a>(&'a self, datatypes: &'a DatatypeMap) -> Vec<&'a Datatype> {
+        let mut result = vec![self];
+        match self.parent(datatypes) {
+            Some(parent) => result.extend(parent.ancestors(datatypes)),
+            None => (),
         }
         result
     }
@@ -521,7 +529,7 @@ mod tests {
         let dt = datatypes.get("integer").unwrap();
         let ancestors = dt.ancestors(&datatypes);
         assert_eq!(
-            ancestors.iter().collect::<Vec<_>>(),
+            ancestors,
             vec![
                 datatypes.get("integer").unwrap(),
                 datatypes.get("nonspace").unwrap(),

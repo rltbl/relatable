@@ -507,7 +507,12 @@ impl Relatable {
                 let column = Column {
                     name: column_name.to_string(),
                     table: table_name.to_string(),
-                    datatype_hierarchy: datatype.ancestors(&datatypes),
+                    // TODO: drop this field
+                    datatype_hierarchy: datatype
+                        .ancestors(&datatypes)
+                        .into_iter()
+                        .cloned()
+                        .collect(),
                     datatype: datatype,
                     nulltype: table_columns
                         .get(column_name)

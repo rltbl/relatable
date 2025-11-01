@@ -497,7 +497,12 @@ impl Table {
                     table: json_col.get_string("table")?,
                     label: json_col.get_string("label").ok(),
                     description: json_col.get_string("description").ok(),
-                    datatype_hierarchy: datatype.ancestors(&builtin_datatypes),
+                    // TODO: remove this field
+                    datatype_hierarchy: datatype
+                        .ancestors(&builtin_datatypes)
+                        .into_iter()
+                        .cloned()
+                        .collect(),
                     datatype: datatype,
                     nulltype: nulltype,
                     structure: structure,
@@ -686,7 +691,11 @@ impl Table {
         let mut meta_columns = vec![];
         let builtin_datatypes = DatatypeTable::builtins();
         let meta_datatype = builtin_datatypes.get("integer").unwrap();
-        let meta_datatype_hierarchy = meta_datatype.ancestors(&builtin_datatypes);
+        let meta_datatype_hierarchy: Vec<Datatype> = meta_datatype
+            .ancestors(&builtin_datatypes)
+            .into_iter()
+            .cloned()
+            .collect();
         for db_column in Table::get_db_table_columns(table_name, tx)? {
             match db_column.get_string("name")? {
                 column_name if column_name.starts_with("_") => meta_columns.push(Column {
@@ -695,6 +704,7 @@ impl Table {
                     primary_key: db_column.get_unsigned("pk")? == 1,
                     unique: db_column.get_unsigned("unique")? == 1,
                     datatype: meta_datatype.clone(),
+                    // TODO: drop this field
                     datatype_hierarchy: meta_datatype_hierarchy.clone(),
                     ..Default::default()
                 }),
@@ -725,7 +735,11 @@ impl Table {
                         nulltype: column_columns
                             .get(&column_name)
                             .and_then(|col| col.nulltype.clone()),
-                        datatype_hierarchy: datatype.ancestors(&builtin_datatypes),
+                        datatype_hierarchy: datatype
+                            .ancestors(&builtin_datatypes)
+                            .into_iter()
+                            .cloned()
+                            .collect(),
                         datatype: datatype,
                         structure: column_columns
                             .get(&column_name)
