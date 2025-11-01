@@ -264,11 +264,7 @@ impl Cell {
             });
         }
 
-        match column
-            .datatype
-            .infer_sql_type(&column.datatype_hierarchy)
-            .as_str()
-        {
+        match column.sql_type().as_str() {
             "INTEGER" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<i64>() {
                     Ok(_) => (),

@@ -81,4 +81,19 @@ impl Column {
         );
         Ok(dependent_columns)
     }
+
+    /// Get the SQL type for this column according to its datatype,
+    /// or the first datatype ancestor with a sql_type,
+    /// or just "TEXT".
+    pub fn sql_type(&self) -> String {
+        match self
+            .datatype_hierarchy
+            .iter()
+            .filter(|dt| dt.sql_type != "")
+            .nth(0)
+        {
+            Some(dt) => dt.sql_type.to_owned(),
+            None => "TEXT".to_owned(),
+        }
+    }
 }

@@ -88,46 +88,6 @@ impl Datatype {
         self
     }
 
-    // TODO: Eliminate this in favour of reading the actual SQL type for the column from the database.
-    /// Return the SQL type corresponding to the given datatype, or to one of its parents if it
-    /// has no sql_type.
-    pub fn infer_sql_type(&self, dt_hierarchy: &Vec<Datatype>) -> String {
-        tracing::trace!("infer_sql_type({self:?}, {dt_hierarchy:?})");
-        if self.sql_type != "" {
-            self.sql_type.to_string()
-        } else if !dt_hierarchy.is_empty() {
-            let mut ancestors = dt_hierarchy.clone();
-            let parent = dt_hierarchy[0].clone();
-            ancestors.remove(0);
-            parent.infer_sql_type(&ancestors)
-        } else {
-            // Handle built-in types:
-            let sql_type = match self.datatype.to_lowercase().as_str() {
-                "text" => "TEXT",
-                "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" => "INTEGER",
-                "real" | "decimal" | "numeric" => "NUMERIC",
-                datatype
-                    if (datatype.starts_with("real")
-                        || datatype.starts_with("numeric")
-                        || datatype.starts_with("decimal")) =>
-                {
-                    "NUMERIC"
-                }
-                datatype
-                    if (datatype.starts_with("varchar") || datatype.starts_with("character")) =>
-                {
-                    "TEXT"
-                }
-                datatype if Datatypes::builtins().contains_key(datatype) => "TEXT",
-                unknown => {
-                    tracing::warn!("Cannot infer SQL type for unknown datatype '{unknown}'");
-                    "TEXT"
-                }
-            };
-            sql_type.to_string()
-        }
-    }
-
     // TODO: break into smaller pieces
     /// Validate a column of a database table, optionally only for the given row, using the
     /// given transaction. Returns true whenever messages are inserted to the message table as a
@@ -574,7 +534,9 @@ impl<'a> DatatypeTable<'a> {
         let rows = match self.pool
             .query(
                 &format!(
-                r#"SELECT datatype, description, parent, sql_type, condition, format FROM "{}""#, self.table_name),
+                    r#"SELECT datatype, description, parent, sql_type, condition, format FROM "{}""#,
+                    self.table_name
+                ),
                 &[],
             )
             .await

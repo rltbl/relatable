@@ -972,7 +972,7 @@ pub fn generate_table_ddl(
             ))
             .into());
         }
-        let sql_type = col.datatype.infer_sql_type(&col.datatype_hierarchy);
+        let sql_type = col.sql_type();
         let clause = format!(
             r#""{cname}" {sql_type}{unique}"#,
             unique = match col.unique {
