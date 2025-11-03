@@ -524,7 +524,7 @@ pub async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
     let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = $1"#,);
     let text = rltbl
         .pool
-        .query_string(&statement, &[json!(row)])
+        .query_string(&statement, [row])
         .await
         .expect("Error querying value");
     println!("{text}");
@@ -641,7 +641,7 @@ pub async fn set_value(
     let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#,);
     let before = rltbl
         .pool
-        .query_value(&sql, &[json!(row)])
+        .query_value(&sql, [row])
         .await
         .expect("Error getting value");
     let after = serde_json::from_str::<JsonValue>(value).unwrap_or(json!(value));

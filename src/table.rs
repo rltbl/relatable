@@ -110,7 +110,7 @@ impl Table {
             DbKind::Sqlite => format!(r#"DROP TABLE IF EXISTS "{}""#, self.name),
         };
         tracing::info!("Dropped table '{}'", self.name);
-        rltbl.pool.execute(&sql, &[]).await?;
+        rltbl.pool.execute(&sql, ()).await?;
         Ok(())
     }
 
@@ -348,7 +348,7 @@ impl Table {
             &columns,
             &rltbl.connection.kind(),
         ) {
-            rltbl.pool.execute(&sql, &[]).await?;
+            rltbl.pool.execute(&sql, ()).await?;
         }
 
         // Set the table's view name to the default view:
@@ -379,7 +379,7 @@ impl Table {
             &columns,
             &rltbl.connection.kind(),
         ) {
-            rltbl.pool.execute(&sql, &[]).await?;
+            rltbl.pool.execute(&sql, ()).await?;
         }
 
         // Set the table's view name to the text view:

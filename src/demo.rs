@@ -8,7 +8,7 @@ use crate::{
 };
 
 use anyhow::Result;
-use rltbl_db::core::DbQuery;
+use rltbl_db::{core::DbQuery, params};
 use serde_json::Value as JsonValue;
 
 /// Build a demonstration database. Based on <https://github.com/allisonhorst/palmerpenguins>.
@@ -38,11 +38,11 @@ pub async fn create_penguin_table(
             DbKind::Postgres => format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#),
             DbKind::Sqlite => format!(r#"DROP TABLE IF EXISTS "{table}""#),
         };
-        rltbl.pool.execute(&sql, &[]).await?;
+        rltbl.pool.execute(&sql, ()).await?;
     }
 
     let sql = format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
-    rltbl.pool.execute(&sql, &[]).await?;
+    rltbl.pool.execute(&sql, ()).await?;
 
     let pkey_clause = match rltbl.connection.kind() {
         DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
@@ -64,7 +64,7 @@ pub async fn create_penguin_table(
              body_mass BIGINT
            )"#,
     );
-    rltbl.pool.execute(&sql, &[]).await?;
+    rltbl.pool.execute(&sql, ()).await?;
 
     let mut ddl = vec![];
     sql::add_metacolumn_trigger_ddl(&mut ddl, table, &rltbl.connection.kind());
@@ -72,7 +72,7 @@ pub async fn create_penguin_table(
         sql::add_caching_trigger_ddl(&mut ddl, table, &rltbl.connection.kind());
     }
     for sql in ddl {
-        rltbl.pool.execute(&sql, &[]).await?;
+        rltbl.pool.execute(&sql, ()).await?;
     }
     // Populate the demo table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
@@ -91,19 +91,19 @@ pub async fn create_penguin_table(
                 "{sql_first_part} {sql_value_part}",
                 sql_value_part = sql_value_parts.join(", ")
             );
-            rltbl.pool.execute(&sql, &param_values).await?;
+            rltbl.pool.execute(&sql, param_values).await?;
             tracing::info!(
                 "{num_rows} rows loaded to table '{table}'",
                 num_rows = i - 1
             );
-            param_values.clear();
+            param_values = vec![];
             sql_value_parts.clear();
             sql_param.reset();
         }
 
         let id = i + 1;
         let order = id * NEW_ORDER_MULTIPLIER;
-        let island = islands.iter().choose(&mut rng);
+        let island = islands.iter().choose(&mut rng).unwrap().to_string();
         let bill_length = rng.gen_range(300..500) as f64 / 10.0;
         let bill_depth = rng.gen_range(200..400) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
@@ -114,21 +114,23 @@ pub async fn create_penguin_table(
             lone_sql_param = sql_param.next(),
             sql_param_list_2 = sql_param.get_as_list(5),
         ));
-        param_values.push(json!(id));
-        param_values.push(json!(order));
-        param_values.push(json!(id));
-        param_values.push(json!(island));
-        param_values.push(json!(format!("N{}A{}", (i / 2) + 1, (i % 2) + 1)));
-        param_values.push(json!(bill_length));
-        param_values.push(json!(bill_depth));
-        param_values.push(json!(body_mass));
+        param_values.extend(params![
+            id,
+            order,
+            id,
+            island,
+            format!("N{}A{}", (i / 2) + 1, (i % 2) + 1),
+            bill_length,
+            bill_depth,
+            body_mass
+        ]);
     }
     if param_values.len() > 0 {
         let sql = format!(
             "{sql_first_part} {sql_value_part}",
             sql_value_part = sql_value_parts.join(", ")
         );
-        rltbl.pool.execute(&sql, &param_values).await?;
+        rltbl.pool.execute(&sql, param_values).await?;
     }
 
     Ok(())
@@ -150,13 +152,13 @@ pub async fn create_island_table(
         if let DbKind::Postgres = rltbl.connection.kind() {
             rltbl
                 .pool
-                .execute(&format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#), &[])
+                .execute(&format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#), ())
                 .await?;
         }
     }
 
     let sql = format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
-    rltbl.pool.execute(&sql, &[]).await?;
+    rltbl.pool.execute(&sql, ()).await?;
 
     let pkey_clause = match rltbl.connection.kind() {
         DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
@@ -172,7 +174,7 @@ pub async fn create_island_table(
                  island TEXT
                )"#,
     );
-    rltbl.pool.query(&sql, &[]).await?;
+    rltbl.pool.query(&sql, ()).await?;
 
     let mut ddl = vec![];
     sql::add_metacolumn_trigger_ddl(&mut ddl, table, &rltbl.connection.kind());
@@ -180,7 +182,7 @@ pub async fn create_island_table(
         sql::add_caching_trigger_ddl(&mut ddl, table, &rltbl.connection.kind());
     }
     for sql in ddl {
-        rltbl.pool.execute(&sql, &[]).await?;
+        rltbl.pool.execute(&sql, ()).await?;
     }
 
     let sql = format!(
@@ -188,7 +190,7 @@ pub async fn create_island_table(
                VALUES (1, 'Torgersen'), (2, 'Biscoe'), (3, 'Dream')"#
     );
 
-    rltbl.pool.execute(&sql, &[]).await?;
+    rltbl.pool.execute(&sql, ()).await?;
     Ok(())
 }
 
@@ -225,7 +227,7 @@ pub async fn create_demo_column_table(rltbl: &Relatable, force: &bool) -> Result
         if let DbKind::Postgres = rltbl.connection.kind() {
             rltbl
                 .pool
-                .execute(r#"DROP TABLE IF EXISTS "column" CASCADE"#, &[])
+                .execute(r#"DROP TABLE IF EXISTS "column" CASCADE"#, ())
                 .await?;
         }
     }
@@ -248,12 +250,12 @@ pub async fn create_demo_column_table(rltbl: &Relatable, force: &bool) -> Result
              "structure" TEXT
            )"#,
     );
-    rltbl.pool.execute(&sql, &[]).await?;
+    rltbl.pool.execute(&sql, ()).await?;
 
     let mut ddl = vec![];
     sql::add_metacolumn_trigger_ddl(&mut ddl, "column", &rltbl.connection.kind());
     for sql in ddl {
-        rltbl.pool.execute(&sql, &[]).await?;
+        rltbl.pool.execute(&sql, ()).await?;
     }
 
     let column_contents = [
@@ -372,7 +374,7 @@ pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) 
     }
 
     let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('tableset', 'tableset.tsv')"#;
-    rltbl.pool.execute(sql, &[]).await?;
+    rltbl.pool.execute(sql, ()).await?;
 
     // Create the tableset table.
     let sql = r#"CREATE TABLE tableset (
@@ -384,17 +386,17 @@ pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) 
               right_table TEXT,
               right_column TEXT
             )"#;
-    rltbl.pool.execute(sql, &[]).await?;
+    rltbl.pool.execute(sql, ()).await?;
 
     let sql = r#"INSERT INTO "tableset" VALUES
               (1, 1000, 'combined', NULL, NULL, 'study', 'study_name'),
               (2, 2000, 'combined', 'study', 'study_name', 'penguin', 'individual_id'),
               (3, 3000, 'combined', 'penguin', 'individual_id', 'egg', 'egg_id')
             "#;
-    rltbl.pool.execute(sql, &[]).await?;
+    rltbl.pool.execute(sql, ()).await?;
 
     let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('study', 'study.tsv')"#;
-    rltbl.pool.execute(sql, &[]).await?;
+    rltbl.pool.execute(sql, ()).await?;
 
     // Create the study table.
     let sql = r#"CREATE TABLE study (
@@ -403,16 +405,16 @@ pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) 
               study_name TEXT UNIQUE,
               description TEXT
             )"#;
-    rltbl.pool.execute(sql, &[]).await?;
+    rltbl.pool.execute(sql, ()).await?;
 
     let sql = r#"INSERT INTO study VALUES
             (0, 0, 'FAKE123', 'Fake Study 123')"#;
-    rltbl.pool.execute(sql, &[]).await?;
+    rltbl.pool.execute(sql, ()).await?;
 
     create_penguin_table(rltbl, None, force, size).await?;
 
     let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('egg', 'egg.tsv')"#;
-    rltbl.pool.execute(sql, &[]).await?;
+    rltbl.pool.execute(sql, ()).await?;
 
     // Create the egg table.
     let sql = r#"CREATE TABLE egg (
@@ -421,11 +423,11 @@ pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) 
       egg_id TEXT UNIQUE,
       individual_id TEXT
     )"#;
-    rltbl.pool.execute(sql, &[]).await?;
+    rltbl.pool.execute(sql, ()).await?;
 
     let sql = r#"INSERT INTO egg VALUES
         (0, 0, 'E1', 'N1')"#;
-    rltbl.pool.execute(sql, &[]).await?;
+    rltbl.pool.execute(sql, ()).await?;
 
     Ok(())
 }

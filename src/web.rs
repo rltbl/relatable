@@ -59,10 +59,7 @@ async fn get_root(State(rltbl): State<Arc<Relatable>>) -> impl IntoResponse {
     tracing::info!("request root");
     let table = rltbl
         .pool
-        .query_string(
-            r#"SELECT "table" FROM "table" ORDER BY _order LIMIT 1"#,
-            &[],
-        )
+        .query_string(r#"SELECT "table" FROM "table" ORDER BY _order LIMIT 1"#, ())
         .await
         .unwrap_or(String::from("table"));
     Redirect::permanent(format!("{}/table/{table}", rltbl.root).as_str())
@@ -288,7 +285,7 @@ async fn get_tableset(
     let site = rltbl.get_site(&username).await;
 
     let sql = r#"SELECT * FROM "tableset" WHERE tableset = $1"#;
-    let json_rows = match rltbl.pool.query(&sql, &[json!(tableset_name)]).await {
+    let json_rows = match rltbl.pool.query(&sql, [&tableset_name]).await {
         Ok(rows) => rows,
         Err(error) => return get_500(&error.into()),
     };
@@ -321,14 +318,14 @@ async fn init_user(rltbl: &Relatable, username: &str) -> () {
     let sql = r#"SELECT COUNT(1) FROM "user" WHERE "name" = $1"#;
     let count = rltbl
         .pool
-        .query_u64(&sql, &[json!(username)])
+        .query_u64(&sql, [username])
         .await
         .expect("Error getting user count");
     if count == 0 {
         let sql = r#"INSERT INTO "user"("name", "color") VALUES ($1, $2)"#;
         rltbl
             .pool
-            .execute(&sql, &[json!(username), json!(color)])
+            .execute(&sql, [username, &color])
             .await
             .expect("Update user");
     }
@@ -388,7 +385,7 @@ async fn post_cursor(
        WHERE "name" = $2"#;
     match rltbl
         .pool
-        .execute(&sql, &[JsonValue::String(cursor), json!(username)])
+        .execute(&sql, [json!(cursor).to_string(), username])
         .await
     {
         Ok(_) => "Cursor updated".into_response(),
@@ -412,7 +409,7 @@ async fn get_row_menu(
         .pool
         .query_row(
             &format!(r#"SELECT * FROM "{}" WHERE _id = $1"#, table.view,),
-            &[json!(row_id)],
+            [row_id],
         )
         .await
     {
@@ -478,7 +475,7 @@ async fn get_cell_menu(
         .pool
         .query_row(
             &format!(r#"SELECT * FROM "{}" WHERE _id = $1"#, table.view,),
-            &[json!(row_id)],
+            [row_id],
         )
         .await
     {
@@ -512,7 +509,7 @@ async fn get_cell_options(
     );
     let values: Vec<JsonValue> = rltbl
         .pool
-        .query(&statement, &[])
+        .query(&statement, ())
         .await
         .expect("Get column values")
         .iter()
@@ -538,7 +535,7 @@ async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &u64) -> u64 {
     );
     rltbl
         .pool
-        .query_u64(&sql, &[json!(row_id)])
+        .query_u64(&sql, [*row_id])
         .await
         .unwrap_or_default()
 }
@@ -600,7 +597,7 @@ async fn add_row(
                 .pool
                 .query_u64(
                     &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= $1"#,),
-                    &[json!(row.order)],
+                    [row.order],
                 )
                 .await
                 .unwrap_or_default();
@@ -632,7 +629,7 @@ async fn delete_row(
                         r#"SELECT COUNT() FROM "{table}"
                            WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = $1)"#,
                     ),
-                    &[json!(prev)],
+                    [prev],
                 )
                 .await
                 .unwrap_or_default();

@@ -499,14 +499,14 @@ impl<'a> DatatypeTable<'a> {
                 format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.table_name)
             }
         };
-        self.pool.execute(&sql, &[]).await?;
+        self.pool.execute(&sql, ()).await?;
         Ok(())
     }
 
     /// Create the "datatype" table in the database
     /// and insert the built-in datatypes.
     pub async fn create(&self) -> Result<()> {
-        self.pool.execute(&self.ddl(), &[]).await?;
+        self.pool.execute(&self.ddl(), ()).await?;
         let rows: Vec<JsonRow> = Datatypes::builtins()
             .values()
             .map(|dt| json!(dt).as_object().unwrap().clone())
@@ -537,7 +537,7 @@ impl<'a> DatatypeTable<'a> {
                     r#"SELECT datatype, description, parent, sql_type, condition, format FROM "{}""#,
                     self.table_name
                 ),
-                &[],
+                (),
             )
             .await
         {
@@ -571,7 +571,7 @@ mod tests {
         let table = DatatypeTable::connect(&pool);
         table.create().await.expect("create datatype table");
         let count = pool
-            .query_u64("SELECT count() FROM datatype", &[])
+            .query_u64("SELECT count() FROM datatype", ())
             .await
             .expect("count rows");
         assert_eq!(count, Datatypes::builtins().len() as u64);
@@ -587,7 +587,7 @@ mod tests {
         let test = Datatype::new("test").description("test datatype");
         table.add(&test).await.expect("add test datatype");
         let count = pool
-            .query_u64("SELECT count() FROM datatype", &[])
+            .query_u64("SELECT count() FROM datatype", ())
             .await
             .expect("count rows");
         assert_eq!(count as usize, Datatypes::builtins().len() + 1);
@@ -604,7 +604,7 @@ mod tests {
         table.create().await.expect("create datatype table");
         pool.execute(
             "UPDATE datatype SET description = 'FOO' WHERE datatype = 'text'",
-            &[],
+            (),
         )
         .await
         .expect("update datatype table");

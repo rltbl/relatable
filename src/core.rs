@@ -239,10 +239,7 @@ impl Relatable {
         // To avoid SQL injection, first check that the table exists using a binding.
         match self
             .pool
-            .query_string(
-                r#"SELECT name FROM "table" WHERE "table" = $1"#,
-                &[json!(table)],
-            )
+            .query_string(r#"SELECT name FROM "table" WHERE "table" = $1"#, [table])
             .await
         {
             Ok(name) => {
@@ -252,7 +249,7 @@ impl Relatable {
                         format!(r#"DROP TABLE "{name}" CASCADE"#)
                     }
                 };
-                self.pool.execute(&sql, &[]).await?;
+                self.pool.execute(&sql, ()).await?;
             }
             Err(_) => (),
         }
