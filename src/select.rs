@@ -93,7 +93,7 @@ impl Select {
         query_params.shift_remove("offset");
         query_params.shift_remove("order");
 
-        fn value_as_type(datatype: &Option<String>, column: &str, value: &str) -> JsonValue {
+        fn value_as_type(sql_type: &str, column: &str, value: &str) -> JsonValue {
             fn try_parse_as_int(value: &str) -> JsonValue {
                 match value.parse::<i64>() {
                     Ok(signed) => json!(signed),
@@ -119,17 +119,14 @@ impl Select {
             } else if ["_history", "_message"].contains(&column) {
                 JsonValue::String(value.to_string())
             } else {
-                match datatype {
-                    Some(datatype) if datatype == "integer" => try_parse_as_int(value),
-                    Some(datatype) if datatype == "decimal" => try_parse_as_decimal(value),
-                    Some(datatype) if datatype == "text" => JsonValue::String(value.to_string()),
-                    Some(datatype) => {
-                        tracing::warn!(
-                            "Unsupported datatype: {datatype}. Treating {value} as string"
-                        );
+                match sql_type.to_lowercase().as_str() {
+                    "text" | "" => JsonValue::String(value.to_string()),
+                    "integer" => try_parse_as_int(value),
+                    "decimal" => try_parse_as_decimal(value),
+                    other => {
+                        tracing::warn!("Unsupported datatype: {other}. Treating {value} as string");
                         JsonValue::String(value.to_string())
                     }
-                    None => JsonValue::String(value.to_string()),
                 }
             }
         }
@@ -139,6 +136,8 @@ impl Select {
             Ok(table_config) => table_config.view,
             Err(_) => String::new(),
         };
+
+        let datatypes = rltbl.datatypes().await;
 
         for (lhs, pattern) in query_params {
             let (table, column) = match lhs.split_once(".") {
@@ -169,10 +168,14 @@ impl Select {
                     }),
                 }
             } else {
-                let datatype = table_config.get_configured_column_attribute(&column, "datatype");
+                let sql_type = table_config
+                    .columns
+                    .get(&column)
+                    .and_then(|col| Some(col.sql_type(&datatypes)))
+                    .unwrap_or("TEXT".to_owned());
                 if pattern.starts_with("eq.") {
                     let value = &pattern.replace("eq.", "");
-                    let value = value_as_type(&datatype, &column, value);
+                    let value = value_as_type(&sql_type, &column, value);
                     filters.push(Filter::Equal {
                         table,
                         column,
@@ -180,7 +183,7 @@ impl Select {
                     })
                 } else if pattern.starts_with("not_eq.") {
                     let value = &pattern.replace("not_eq.", "");
-                    let value = value_as_type(&datatype, &column, value);
+                    let value = value_as_type(&sql_type, &column, value);
                     filters.push(Filter::NotEqual {
                         table,
                         column,
@@ -188,7 +191,7 @@ impl Select {
                     })
                 } else if pattern.starts_with("gt.") {
                     let value = &pattern.replace("gt.", "");
-                    let value = value_as_type(&datatype, &column, value);
+                    let value = value_as_type(&sql_type, &column, value);
                     filters.push(Filter::GreaterThan {
                         table,
                         column,
@@ -196,7 +199,7 @@ impl Select {
                     })
                 } else if pattern.starts_with("gte.") {
                     let value = &pattern.replace("gte.", "");
-                    let value = value_as_type(&datatype, &column, value);
+                    let value = value_as_type(&sql_type, &column, value);
                     filters.push(Filter::GreaterThanOrEqual {
                         table,
                         column,
@@ -204,7 +207,7 @@ impl Select {
                     })
                 } else if pattern.starts_with("lt.") {
                     let value = &pattern.replace("lt.", "");
-                    let value = value_as_type(&datatype, &column, value);
+                    let value = value_as_type(&sql_type, &column, value);
                     filters.push(Filter::LessThan {
                         table,
                         column,
@@ -212,7 +215,7 @@ impl Select {
                     })
                 } else if pattern.starts_with("lte.") {
                     let value = &pattern.replace("lte.", "");
-                    let value = value_as_type(&datatype, &column, value);
+                    let value = value_as_type(&sql_type, &column, value);
                     filters.push(Filter::LessThanOrEqual {
                         table,
                         column,
@@ -227,7 +230,7 @@ impl Select {
                             value: JsonValue::Null,
                         })
                     } else {
-                        let value = value_as_type(&datatype, &column, &value);
+                        let value = value_as_type(&sql_type, &column, &value);
                         filters.push(Filter::Is {
                             table,
                             column,
@@ -243,7 +246,7 @@ impl Select {
                             value: JsonValue::Null,
                         })
                     } else {
-                        let value = value_as_type(&datatype, &column, &value);
+                        let value = value_as_type(&sql_type, &column, &value);
                         filters.push(Filter::IsNot {
                             table,
                             column,
@@ -262,7 +265,7 @@ impl Select {
                     };
                     let values = separator
                         .split(values)
-                        .map(|v| value_as_type(&datatype, &column, v))
+                        .map(|v| value_as_type(&sql_type, &column, v))
                         .collect::<Vec<_>>();
                     filters.push(Filter::In {
                         table,
@@ -281,7 +284,7 @@ impl Select {
                     };
                     let values = separator
                         .split(values)
-                        .map(|v| value_as_type(&datatype, &column, v))
+                        .map(|v| value_as_type(&sql_type, &column, v))
                         .collect::<Vec<_>>();
                     filters.push(Filter::NotIn {
                         table,
@@ -410,7 +413,7 @@ impl Select {
         for column in rltbl.fetch_all_columns(&table).await? {
             self.select.push(SelectField::Column {
                 table: String::new(),
-                column: column.name,
+                column: column.column,
                 alias: String::new(),
             });
         }

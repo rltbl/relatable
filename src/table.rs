@@ -5,7 +5,6 @@
 use crate::{
     column::Column,
     core::{Relatable, RelatableError},
-    datatype::{Datatype, Datatypes},
     sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
     structure::Structure,
 };
@@ -94,7 +93,7 @@ impl Table {
             columns: Table::_collect_column_info(table_name, tx)?
                 .0
                 .into_iter()
-                .map(|column| (column.name.clone(), column))
+                .map(|column| (column.column.clone(), column))
                 .collect::<IndexMap<_, _>>(),
             ..Default::default()
         })
@@ -318,11 +317,11 @@ impl Table {
             "change" => ("change_id", "change_id"),
             "history" => ("history_id", "history_id"),
             _ => {
-                let id_col = match meta_columns.iter().any(|c| c.name == "_id") {
+                let id_col = match meta_columns.iter().any(|c| c.column == "_id") {
                     false => r#"rowid"#, // This *must* be lowercase.
                     true => r#"_id"#,
                 };
-                let order_col = match meta_columns.iter().any(|c| c.name == "_order") {
+                let order_col = match meta_columns.iter().any(|c| c.column == "_order") {
                     false => r#"rowid"#, // This *must* be lowercase.
                     true => r#"_order"#,
                 };
@@ -372,7 +371,9 @@ impl Table {
         tracing::debug!(r#"Creating text view "{view_name}" with columns {columns:?}"#);
         let (id_col, order_col) = self.get_id_order_columns(&meta_columns);
 
+        let datatypes = rltbl.datatypes().await;
         for sql in sql::generate_text_view_ddl(
+            &datatypes,
             &self.name,
             id_col,
             order_col,
@@ -415,94 +416,27 @@ impl Table {
         table_name: &str,
         tx: &mut DbTransaction<'_>,
     ) -> Result<IndexMap<String, Column>> {
-        tracing::trace!("Table::_get_column_table_columns({table_name:?}, tx)");
+        // println!("Table::_get_column_table_columns({table_name:?}, tx)");
         if !Table::_table_exists("column", tx)? {
             Ok(IndexMap::new())
         } else {
-            let sql = match Table::_table_exists("datatype", tx)? {
-                true => format!(
-                    r#"SELECT
-                         c."table",
-                         c."column",
-                         c."label",
-                         c."description",
-                         c."nulltype",
-                         c."datatype",
-                         c."structure",
-                         d."description" AS "datatype_description",
-                         d."parent" AS "datatype_parent",
-                         d."condition" AS "datatype_condition",
-                         d."sql_type" AS "datatype_sql_type",
-                         d."format" AS "datatype_format"
-                       FROM "column" c
-                         LEFT JOIN "datatype" d ON c."datatype" = d."datatype"
-                       WHERE c."table" = {sql_param}"#,
-                    sql_param = SqlParam::new(&tx.kind()).next()
-                ),
-                false => format!(
-                    r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
-                    sql_param = SqlParam::new(&tx.kind()).next()
-                ),
-            };
+            let sql = format!(
+                r#"SELECT * FROM "column" WHERE "table" = {sql_param}"#,
+                sql_param = SqlParam::new(&tx.kind()).next()
+            );
             let params = json!([table_name]);
             let json_columns = tx.query(&sql, Some(&params))?;
             let mut columns = IndexMap::new();
-            // TODO: replace with DatatypeTable::get(db)
-            let builtin_datatypes = Datatypes::builtins();
-            for json_col in json_columns {
-                let datatype = match json_col.get_string("datatype").unwrap_or_default().as_str() {
-                    "" => Datatype {
-                        datatype: "text".to_string(),
-                        ..Default::default()
-                    },
-                    datatype if builtin_datatypes.contains_key(datatype) => {
-                        tracing::debug!(
-                            "Ignoring datatype table entry for built-in datatype \
-                             '{datatype}'"
-                        );
-                        builtin_datatypes.get(datatype).unwrap().clone()
-                    }
-                    datatype => Datatype {
-                        datatype: datatype.to_string(),
-                        description: json_col
-                            .get_string("datatype_description")
-                            .unwrap_or_default(),
-                        parent: json_col.get_string("datatype_parent").unwrap_or_default(),
-                        condition: json_col
-                            .get_string("datatype_condition")
-                            .unwrap_or_default(),
-                        sql_type: json_col.get_string("datatype_sql_type").unwrap_or_default(),
-                        format: json_col.get_string("datatype_format").unwrap_or_default(),
-                    },
-                };
-                let nulltype = match json_col.get_string("nulltype").ok() {
-                    None => None,
-                    Some(nulltype) if nulltype == "" => None,
-                    Some(nulltype) => match builtin_datatypes.get(&nulltype) {
-                        Some(nulltype) => Some(nulltype.clone()),
-                        None => {
-                            tracing::warn!("Nulltype '{nulltype}' is not a recognized datatype");
-                            None
-                        }
-                    },
-                };
-                let structure = match json_col.get_string("structure").ok() {
-                    None => None,
-                    Some(structure) if structure == "" => None,
-                    Some(structure) => Some(Structure::from_str(&structure)?),
-                };
+            for json_col in &json_columns {
+                let datatype = json_col.get_string("datatype").unwrap_or("text".to_owned());
+                let nulltype = json_col.get_string("nulltype").unwrap_or_default();
+                let structure = json_col.get_string("structure").unwrap_or_default();
                 let column_name = json_col.get_string("column")?;
                 let column = Column {
-                    name: column_name.clone(),
+                    column: column_name.clone(),
                     table: json_col.get_string("table")?,
-                    label: json_col.get_string("label").ok(),
-                    description: json_col.get_string("description").ok(),
-                    // TODO: remove this field
-                    datatype_hierarchy: builtin_datatypes
-                        .ancestors(&datatype)
-                        .into_iter()
-                        .cloned()
-                        .collect(),
+                    label: json_col.get_string("label")?,
+                    description: json_col.get_string("description")?,
                     datatype: datatype,
                     nulltype: nulltype,
                     structure: structure,
@@ -689,68 +623,43 @@ impl Table {
         // column table that we just collected:
         let mut columns = vec![];
         let mut meta_columns = vec![];
-        let builtin_datatypes = Datatypes::builtins();
-        let meta_datatype = builtin_datatypes.get("integer").unwrap();
-        let meta_datatype_hierarchy: Vec<Datatype> = builtin_datatypes
-            .ancestors(meta_datatype)
-            .into_iter()
-            .cloned()
-            .collect();
         for db_column in Table::get_db_table_columns(table_name, tx)? {
             match db_column.get_string("name")? {
                 column_name if column_name.starts_with("_") => meta_columns.push(Column {
-                    name: column_name,
+                    column: column_name,
                     table: table_name.to_string(),
                     primary_key: db_column.get_unsigned("pk")? == 1,
                     unique: db_column.get_unsigned("unique")? == 1,
-                    datatype: meta_datatype.clone(),
-                    // TODO: drop this field
-                    datatype_hierarchy: meta_datatype_hierarchy.clone(),
+                    datatype: "integer".to_owned(),
                     ..Default::default()
                 }),
-                column_name => {
-                    // Fall back to the SQL type (these are returned for each column from
-                    // get_db_table_columns()) if no datatype is defined in the column table
-                    // or the column table does not exist:
-                    let datatype = match column_columns.get(&column_name) {
-                        None => {
-                            let db_datatype = match db_column.get_string("datatype")? {
-                                datatype if datatype == "" => "text".to_string(),
-                                datatype => datatype,
-                            };
-                            Datatype {
-                                datatype: db_datatype.to_lowercase(),
-                                ..Default::default()
-                            }
-                        }
-                        Some(col) => col.datatype.clone(),
-                    };
-                    columns.push(Column {
-                        label: column_columns
-                            .get(&column_name)
-                            .and_then(|col| col.label.clone()),
-                        description: column_columns
-                            .get(&column_name)
-                            .and_then(|col| col.description.clone()),
-                        nulltype: column_columns
-                            .get(&column_name)
-                            .and_then(|col| col.nulltype.clone()),
-                        datatype_hierarchy: builtin_datatypes
-                            .ancestors(&datatype)
-                            .into_iter()
-                            .cloned()
-                            .collect(),
-                        datatype: datatype,
-                        structure: column_columns
-                            .get(&column_name)
-                            .and_then(|col| col.structure.clone()),
-                        name: column_name,
-                        table: table_name.to_string(),
-                        primary_key: db_column.get_unsigned("pk")? == 1,
-                        unique: db_column.get_unsigned("unique")? == 1,
-                        ..Default::default()
-                    })
-                }
+                column_name => columns.push(Column {
+                    label: column_columns
+                        .get(&column_name)
+                        .and_then(|col| Some(col.label.clone()))
+                        .unwrap_or_default(),
+                    description: column_columns
+                        .get(&column_name)
+                        .and_then(|col| Some(col.description.clone()))
+                        .unwrap_or_default(),
+                    datatype: column_columns
+                        .get(&column_name)
+                        .and_then(|col| Some(col.datatype.clone()))
+                        .unwrap_or_default(),
+                    nulltype: column_columns
+                        .get(&column_name)
+                        .and_then(|col| Some(col.nulltype.clone()))
+                        .unwrap_or_default(),
+                    structure: column_columns
+                        .get(&column_name)
+                        .and_then(|col| Some(col.structure.clone()))
+                        .unwrap_or_default(),
+                    column: column_name,
+                    table: table_name.to_string(),
+                    primary_key: db_column.get_unsigned("pk")? == 1,
+                    unique: db_column.get_unsigned("unique")? == 1,
+                    ..Default::default()
+                }),
             };
         }
         if columns.is_empty() && meta_columns.is_empty() {
@@ -797,34 +706,6 @@ impl Table {
                 Column::default()
             }
         }
-    }
-
-    /// Retrieve the given attribute of the given column from this table's
-    /// [columns configuration](Table::columns)
-    pub fn get_configured_column_attribute(&self, column: &str, attribute: &str) -> Option<String> {
-        tracing::trace!(
-            "Table::get_configured_column_attribute({self:?}, {column:?}, {attribute:?})"
-        );
-        self.columns.get(column).and_then(|col| match attribute {
-            "table" => Some(col.table.to_string()),
-            "column" => Some(col.name.to_string()),
-            "label" => match &col.label {
-                None => None,
-                Some(label) if label == "" => None,
-                Some(_) => col.label.clone(),
-            },
-            "description" => match &col.description {
-                None => None,
-                Some(description) if description == "" => None,
-                Some(_) => col.description.clone(),
-            },
-            "datatype" => Some(col.datatype.datatype.to_string()),
-            "nulltype" => match &col.nulltype {
-                None => None,
-                Some(nulltype) => Some(nulltype.datatype.clone()),
-            },
-            _ => None,
-        })
     }
 
     /// Return a [JsonRow] representing the given row of the given table, using the

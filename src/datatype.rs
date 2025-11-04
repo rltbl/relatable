@@ -125,7 +125,7 @@ impl Datatype {
                            FROM "{table_name}"
                            WHERE {casted_column} != {sql_param_5}"#,
                         table_name = column.table,
-                        casted_column = sql::cast_column_as_text(&column.name, &tx.kind()),
+                        casted_column = sql::cast_column_as_text(&column.column, &tx.kind()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
@@ -141,9 +141,9 @@ impl Datatype {
                             ));
                             params = json!([
                                 column.table,
-                                column.name,
+                                column.column,
                                 format!("datatype:{}", self.datatype),
-                                format!("{} must be a {}", column.name, self.datatype),
+                                format!("{} must be a {}", column.column, self.datatype),
                                 condition,
                                 row
                             ]);
@@ -151,9 +151,9 @@ impl Datatype {
                         None => {
                             params = json!([
                                 column.table,
-                                column.name,
+                                column.column,
                                 format!("datatype:{}", self.datatype),
-                                format!("{} must be a {}", column.name, self.datatype),
+                                format!("{} must be a {}", column.column, self.datatype),
                                 condition
                             ]);
                         }
@@ -190,7 +190,7 @@ impl Datatype {
                            FROM "{table_name}"
                            WHERE {casted_column} NOT IN ({sql_param_5})"#,
                         table_name = column.table,
-                        casted_column = sql::cast_column_as_text(&column.name, &tx.kind()),
+                        casted_column = sql::cast_column_as_text(&column.column, &tx.kind()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
@@ -199,9 +199,9 @@ impl Datatype {
                     );
                     let mut params = json!([
                         column.table,
-                        column.name,
+                        column.column,
                         format!("datatype:{}", self.datatype),
-                        format!("{} must be a {}", column.name, self.datatype),
+                        format!("{} must be a {}", column.column, self.datatype),
                     ]);
                     for item in &condition_list {
                         if let JsonValue::Array(ref mut v) = params {
@@ -245,12 +245,12 @@ impl Datatype {
                            FROM "{table_name}"
                            WHERE {match_condition}"#,
                         table_name = column.table,
-                        casted_column = sql::cast_column_as_text(&column.name, &tx.kind()),
+                        casted_column = sql::cast_column_as_text(&column.column, &tx.kind()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
                         sql_param_4 = sql_param_gen.next(),
-                        match_condition = sql::regexp_mismatch(&column.name, &mut sql_param_gen),
+                        match_condition = sql::regexp_mismatch(&column.column, &mut sql_param_gen),
                     );
                     let params;
                     match row {
@@ -261,9 +261,9 @@ impl Datatype {
                             ));
                             params = json!([
                                 column.table,
-                                column.name,
+                                column.column,
                                 format!("datatype:{}", self.datatype),
-                                format!("{} must be a {}", column.name, self.datatype),
+                                format!("{} must be a {}", column.column, self.datatype),
                                 format!("^{condition}$"),
                                 row
                             ]);
@@ -271,9 +271,9 @@ impl Datatype {
                         None => {
                             params = json!([
                                 column.table,
-                                column.name,
+                                column.column,
                                 format!("datatype:{}", self.datatype),
-                                format!("{} must be a {}", column.name, self.datatype),
+                                format!("{} must be a {}", column.column, self.datatype),
                                 format!("^{condition}$")
                             ]);
                         }
@@ -291,7 +291,7 @@ impl Datatype {
             "Validated datatype '{}' for column '{}.{}' (row: {:?}) {}",
             self.datatype,
             column.table,
-            column.name,
+            column.column,
             row,
             match messages_were_added {
                 false => "with messages added.",
@@ -325,80 +325,38 @@ impl Datatypes {
     pub fn builtins() -> Self {
         Datatypes {
             map: [
-                (
-                    "text".into(),
-                    Datatype {
-                        datatype: "text".to_owned(),
-                        parent: String::new(),
-                        description: "any text".to_owned(),
-                        sql_type: "TEXT".to_owned(),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "empty".into(),
-                    Datatype {
-                        datatype: "empty".to_owned(),
-                        description: "the empty string".to_owned(),
-                        parent: "text".to_owned(),
-                        condition: r"equals('')".to_owned(),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "line".into(),
-                    Datatype {
-                        datatype: "line".to_owned(),
-                        description: "a line of text".to_owned(),
-                        parent: "text".to_owned(),
-                        condition: r"match([^\n]+)".to_owned(),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "trimmed_line".into(),
-                    Datatype {
-                        datatype: "trimmed_line".to_owned(),
-                        description: "a line of text that deos not begin or end with whitespace"
-                            .to_owned(),
-                        parent: "line".to_owned(),
-                        condition: r"match(\S([^\n]*\S)*)".to_owned(),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "nonspace".into(),
-                    Datatype {
-                        datatype: "nonspace".to_owned(),
-                        description: "text without whitespace".to_owned(),
-                        parent: "trimmed_line".to_owned(),
-                        condition: r"match([^\s]+)".to_owned(),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "word".into(),
-                    Datatype {
-                        datatype: "word".to_owned(),
-                        description: "a single word: letters, numbers, underscore".to_owned(),
-                        parent: "nonspace".to_owned(),
-                        condition: r"match(\w+)".to_owned(),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "integer".into(),
-                    Datatype {
-                        datatype: "integer".to_owned(),
-                        description: "an integer".to_owned(),
-                        parent: "nonspace".to_owned(),
-                        sql_type: "INTEGER".to_owned(),
-                        condition: r"match(-?\d+)".to_owned(),
-                        ..Default::default()
-                    },
-                ),
+                Datatype::new("text")
+                    .description("any text")
+                    .parent("")
+                    .sql_type("TEXT"),
+                Datatype::new("empty")
+                    .description("the empty string")
+                    .parent("text")
+                    .condition("equals('')"),
+                Datatype::new("line")
+                    .description("a line of text")
+                    .parent("text")
+                    .condition(r"match([^\n]+)"),
+                Datatype::new("trimmed_line")
+                    .description("a line of text that deos not begin or end with whitespace")
+                    .parent("line")
+                    .condition(r"match(\S([^\n]*\S)*)"),
+                Datatype::new("nonspace")
+                    .description("text without whitespace")
+                    .parent("trimmed_line")
+                    .condition(r"match([^\s]+)"),
+                Datatype::new("word")
+                    .description("a single word: letters, numbers, underscore")
+                    .parent("nonspace")
+                    .condition(r"match(\w+)"),
+                Datatype::new("integer")
+                    .description("an integer")
+                    .parent("nonspace")
+                    .sql_type("INTEGER")
+                    .condition(r"match(-?\d+)"),
             ]
             .into_iter()
+            .map(|dt| (dt.datatype.clone(), dt))
             .collect::<IndexMap<_, _>>(),
         }
     }
@@ -516,20 +474,26 @@ impl<'a> DatatypeTable<'a> {
         Ok(())
     }
 
-    /// Insert this datatype into the "datatype" table,
-    /// returning the result.
-    pub async fn add(&self, datatype: &Datatype) -> Result<Datatype> {
-        let row = json!(datatype);
-        let row = row.as_object().unwrap();
-        let rows = self.pool.insert(&self.table_name, &[&row]).await?;
-        let row = rows.get(0).unwrap();
-        let dt: Datatype = serde_json::from_value(json!(row))?;
-        Ok(dt)
+    /// Insert these datatypes into the "datatype" table,
+    /// returning the results.
+    pub async fn add(&self, datatypes: &[&Datatype]) -> Result<Vec<Datatype>> {
+        let rows: Vec<JsonRow> = datatypes
+            .iter()
+            .map(|dt| json!(dt).as_object().unwrap().clone())
+            .collect();
+        let refs: Vec<&JsonRow> = rows.iter().collect();
+        let rows = self.pool.insert(&self.table_name, &refs).await?;
+        let dts: Vec<Datatype> = rows
+            .into_iter()
+            // WARN: This silently ignores invalid datatypes.
+            .filter_map(|row| serde_json::from_value::<Datatype>(json!(row)).ok())
+            .collect();
+        Ok(dts)
     }
 
-    /// Get all the dataypes from the "datatype" table.
+    /// Get all the dataypes from the datatype table.
     /// Built-in datatypes override rows found in the table.
-    /// If the "datatype" table does not exist, just return buildins.
+    /// If the datatype table does not exist, just return buildins.
     pub async fn get(&self) -> Datatypes {
         let rows = match self.pool
             .query(
@@ -585,7 +549,7 @@ mod tests {
         let table = DatatypeTable::connect(&pool);
         table.create().await.expect("create datatype table");
         let test = Datatype::new("test").description("test datatype");
-        table.add(&test).await.expect("add test datatype");
+        table.add(&[&test]).await.expect("add test datatype");
         let count = pool
             .query_u64("SELECT count() FROM datatype", ())
             .await

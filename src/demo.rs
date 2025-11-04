@@ -1,15 +1,14 @@
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
-use serde_json::json;
 
 use crate::{
+    column::Column,
     core::{Relatable, NEW_ORDER_MULTIPLIER},
     datatype::Datatype,
-    sql::{self, CachingStrategy, DbKind, JsonRow, SqlParam},
+    sql::{self, CachingStrategy, DbKind, SqlParam},
 };
 
 use anyhow::Result;
 use rltbl_db::{core::DbQuery, params};
-use serde_json::Value as JsonValue;
 
 /// Build a demonstration database. Based on <https://github.com/allisonhorst/palmerpenguins>.
 pub async fn build_demo(rltbl: &Relatable, force: &bool, size: usize) -> Result<()> {
@@ -202,154 +201,61 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
     }
     datatype_table.create().await?;
     datatype_table
-        .add(
+        .add(&[
             &Datatype::new("decimal")
                 .description("A decimal number")
                 .condition(r"match(-?\d+(\.\d+)?)")
                 .sql_type("NUMERIC")
                 .format("%.1f"),
-        )
-        .await?;
-    datatype_table
-        .add(
             &Datatype::new("study_name")
                 .description("A decimal number")
                 .condition(r"in(FAKE123, FAKE456)"),
-        )
+        ])
         .await?;
     Ok(())
 }
 
 /// Create the column table for the demonstration database
 pub async fn create_demo_column_table(rltbl: &Relatable, force: &bool) -> Result<()> {
-    tracing::trace!("create_demo_column_table({rltbl:?}, {force})");
+    let column_table = rltbl.column_table();
     if *force {
-        if let DbKind::Postgres = rltbl.connection.kind() {
-            rltbl
-                .pool
-                .execute(r#"DROP TABLE IF EXISTS "column" CASCADE"#, ())
-                .await?;
-        }
+        column_table.drop().await?;
     }
-
-    let pkey_clause = match rltbl.connection.kind() {
-        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        DbKind::Postgres => "SERIAL PRIMARY KEY",
-    };
-
-    let sql = format!(
-        r#"CREATE TABLE "column" (
-             _id {pkey_clause},
-             _order INTEGER UNIQUE,
-             "table" TEXT,
-             "column" TEXT,
-             "label" TEXT,
-             "description" TEXT,
-             "datatype" TEXT,
-             "nulltype" TEXT,
-             "structure" TEXT
-           )"#,
-    );
-    rltbl.pool.execute(&sql, ()).await?;
-
-    let mut ddl = vec![];
-    sql::add_metacolumn_trigger_ddl(&mut ddl, "column", &rltbl.connection.kind());
-    for sql in ddl {
-        rltbl.pool.execute(&sql, ()).await?;
-    }
-
-    let column_contents = [
-        json!({
-            "table": "penguin",
-            "column": "study_name",
-            "label": "study name",
-            "datatype": "study_name",
-        }),
-        json!({
-            "table": "penguin",
-            "column": "sample_number",
-            "label": "sample number",
-            "description": "a sample number",
-            "datatype": "integer",
-        }),
-        json!({
-            "table": "penguin",
-            "column": "species",
-            "label": "species",
-            "nulltype": "empty",
-        }),
-        json!({
-            "table": "penguin",
-            "column": "island",
-            "label": "island",
-            "datatype": "text",
-            "structure": "from(island.island)",
-        }),
-        json!({
-            "table": "penguin",
-            "column": "individual_id",
-            "label": "individual id",
-            "nulltype": "empty",
-            "datatype": "word",
-        }),
-        json!({
-            "table": "penguin",
-            "column": "bill_length",
-            "label": "bill length (mm)",
-            "datatype": "decimal",
-        }),
-        json!({
-            "table": "penguin",
-            "column": "bill_depth",
-            "label": "bill depth (mm)",
-            "datatype": "decimal",
-        }),
-        json!({
-            "table": "penguin",
-            "column": "body_mass",
-            "label": "body mass (g)",
-            "nulltype": "empty",
-            "datatype": "integer",
-        }),
-    ]
-    .iter()
-    .map(|content| JsonRow {
-        content: content.as_object().expect("Not a map").clone(),
-    })
-    .collect::<Vec<_>>();
-
-    let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
-    let mut param_values = vec![];
-    let mut get_param = |row: &JsonRow, cname: &str| -> Result<String> {
-        match row.get_value(cname).unwrap_or_default() {
-            JsonValue::Null => Ok("NULL".to_string()),
-            JsonValue::String(value) => {
-                param_values.push(value.to_string());
-                Ok(sql_param_gen.next().to_string())
-            }
-            _ => panic!("Invalid value type for column table"),
-        }
-    };
-    let mut value_clauses = vec![];
-    for row in &column_contents {
-        let s1 = get_param(row, "table")?;
-        let s2 = get_param(row, "column")?;
-        let s3 = get_param(row, "label")?;
-        let s4 = get_param(row, "description")?;
-        let s5 = get_param(row, "nulltype")?;
-        let s6 = get_param(row, "datatype")?;
-        let s7 = get_param(row, "structure")?;
-        value_clauses.push(format!("({s1}, {s2}, {s3}, {s4}, {s5}, {s6}, {s7})"));
-    }
-
-    let sql = format!(
-        r#"INSERT INTO "column"
-               ("table", "column", "label", "description", "nulltype", "datatype", "structure")
-               VALUES {values}"#,
-        values = value_clauses.join(", ")
-    );
-    let param_values = json!(param_values);
-    rltbl.connection.query(&sql, Some(&param_values)).await?;
+    column_table.create().await?;
+    column_table
+        .add(&[
+            &Column::new("penguin", "study_name")
+                .label("study name")
+                .description("the name of the study")
+                .datatype("study_name"),
+            &Column::new("penguin", "sample_number")
+                .label("sample number")
+                .description("a sample number for this measurement")
+                .datatype("integer"),
+            &Column::new("penguin", "species")
+                .description("the species of this penguin")
+                .nulltype("empty"),
+            &Column::new("penguin", "island")
+                .description("the island where this penguin was studied")
+                .datatype("text")
+                .structure("from(island.island)"),
+            &Column::new("penguin", "individual_id")
+                .label("individual id")
+                .description("an identifier for this penguin")
+                .nulltype("empty")
+                .datatype("word"),
+            &Column::new("penguin", "bill_length")
+                .label("bill length (mm)")
+                .datatype("decimal"),
+            &Column::new("penguin", "bill_depth")
+                .label("bill depth (mm)")
+                .datatype("decimal"),
+            &Column::new("penguin", "body_mass")
+                .label("body mass (g)")
+                .nulltype("empty")
+                .datatype("integer"),
+        ])
+        .await?;
     Ok(())
 }
 

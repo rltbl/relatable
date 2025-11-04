@@ -2,10 +2,10 @@
 //!
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
-use crate::{self as rltbl, datatype::Datatypes};
+use crate as rltbl;
 use rltbl::{
-    column::Column,
-    datatype::{Datatype, DatatypeTable},
+    column::{Column, ColumnTable},
+    datatype::{Datatype, DatatypeTable, Datatypes},
     git,
     row::{Cell, Message, Row},
     select::{Select, SelectField},
@@ -13,6 +13,7 @@ use rltbl::{
         self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
         MemoryCacheKey, SqlParam, VecInto as _,
     },
+    structure::Structure,
     table::Table,
 };
 use rltbl_db::{any::AnyPool, core::DbQuery};
@@ -223,6 +224,10 @@ impl Relatable {
 
         Ok(rltbl)
     }
+    /// Get the column table for this Relatable instance.
+    pub fn column_table(&self) -> ColumnTable<'_> {
+        ColumnTable::connect(&self.pool)
+    }
 
     /// Get the datatype table for this Relatable instance.
     pub fn datatype_table(&self) -> DatatypeTable<'_> {
@@ -376,15 +381,23 @@ impl Relatable {
                             column: select_column,
                             ..
                         } => {
-                            *select_column == column.name
+                            *select_column == column.column
                                 && (select_table == "" || *select_table == table.name)
                         }
-                        SelectField::Expression { alias, .. } => *alias == column.name,
+                        SelectField::Expression { alias, .. } => *alias == column.column,
                     })
                 })
                 .map(|c| c.clone())
                 .collect();
         }
+
+        let column_names: Vec<String> = columns.iter().map(|col| col.column.clone()).collect();
+        let datatypes = self.datatypes().await;
+        let datatypes = datatypes
+            .values()
+            .filter(|dt| column_names.contains(&dt.datatype))
+            .cloned()
+            .collect();
 
         // Return the data:
         let rows: Vec<Row> = json_rows.clone().vec_into();
@@ -401,6 +414,7 @@ impl Relatable {
             },
             table,
             columns,
+            datatypes,
             rows,
         })
     }
@@ -502,31 +516,22 @@ impl Relatable {
             let table_columns = Table::get_column_table_columns(table_name, self)
                 .await
                 .expect(&format!("Error getting columns for table '{table_name}'"));
-            let datatypes = self.datatypes().await;
             for column_name in headers.iter() {
-                let datatype = match table_columns.get(column_name) {
-                    None => Datatype {
-                        datatype: "text".to_string(),
-                        ..Default::default()
-                    },
-                    Some(col) => col.datatype.clone(),
-                };
                 let column = Column {
-                    name: column_name.to_string(),
+                    column: column_name.to_string(),
                     table: table_name.to_string(),
-                    // TODO: drop this field
-                    datatype_hierarchy: datatypes
-                        .ancestors(&datatype)
-                        .into_iter()
-                        .cloned()
-                        .collect(),
-                    datatype: datatype,
                     nulltype: table_columns
                         .get(column_name)
-                        .and_then(|col| col.nulltype.clone()),
+                        .and_then(|col| Some(col.nulltype.clone()))
+                        .unwrap_or_default(),
+                    datatype: table_columns
+                        .get(column_name)
+                        .and_then(|col| Some(col.datatype.clone()))
+                        .unwrap_or("text".to_owned()),
                     structure: table_columns
                         .get(column_name)
-                        .and_then(|col| col.structure.clone()),
+                        .and_then(|col| Some(col.structure.clone()))
+                        .unwrap_or_default(),
                     ..Default::default()
                 };
                 table.columns.insert(column_name.to_string(), column);
@@ -535,8 +540,10 @@ impl Relatable {
         };
 
         // Generate the SQL statements needed to create the table and execute them:
-        for sql in sql::generate_table_ddl(&table, force, &db_kind, &self.caching_strategy)
-            .expect("Error getting DDL")
+        let datatypes = self.datatypes().await;
+        for sql in
+            sql::generate_table_ddl(&datatypes, &table, force, &db_kind, &self.caching_strategy)
+                .expect("Error getting DDL")
         {
             self.connection
                 .query(&sql, None)
@@ -610,62 +617,57 @@ impl Relatable {
                             .to_owned();
                         (column, nulltype)
                     };
-                    match nulltype {
-                        Some(nulltype) if nulltype.datatype == "empty" && value == "" => {
-                            sql_params.push("NULL".to_string());
+                    if nulltype == "emtpy" && value == "" {
+                        sql_params.push("NULL".to_string());
+                    } else {
+                        if nulltype != "empty" {
+                            tracing::warn!("Nulltype '{nulltype}' not supported",);
                         }
-                        _ => {
-                            if let Some(nulltype) = nulltype {
-                                if nulltype.datatype != "empty" {
-                                    tracing::warn!(
-                                        "Nulltype '{}' not supported",
-                                        nulltype.datatype
-                                    );
-                                }
-                            }
-                            // Use the value to create a cell:
-                            let mut cell = {
-                                let value = match serde_json::from_str::<JsonValue>(value) {
-                                    Ok(JsonValue::Number(num)) => JsonValue::Number(num),
-                                    _ => json!(value),
-                                };
-                                let value = JsonRow::nullify_value(&table, column, &value);
-                                Cell {
-                                    text: sql::json_to_string(&value),
-                                    value: value,
-                                    ..Default::default()
-                                }
+                        // Use the value to create a cell:
+                        let mut cell = {
+                            let value = match serde_json::from_str::<JsonValue>(value) {
+                                Ok(JsonValue::Number(num)) => JsonValue::Number(num),
+                                _ => json!(value),
                             };
-
-                            // Validate the cell and add any messages to the message table:
-                            if self.validation_level != ValidationLevel::None {
-                                cell.validate_sql_type(&table.get_config_for_column(column))
-                                    .expect("Error validating cell");
-                                for message in cell.messages.iter() {
-                                    let (msg_id, msg) = self
-                                        .add_message(
-                                            "rltbl",
-                                            &table.name,
-                                            id,
-                                            column,
-                                            &cell.value,
-                                            &message.level,
-                                            &message.rule,
-                                            &message.message,
-                                        )
-                                        .await
-                                        .expect("Error adding message");
-                                    tracing::debug!("Added message (ID {msg_id}): {msg:?}");
-                                }
+                            let value = JsonRow::nullify_value(&table, column, &value);
+                            Cell {
+                                text: sql::json_to_string(&value),
+                                value: value,
+                                ..Default::default()
                             }
+                        };
 
-                            // Add the parameter for the value to the SQL insert statement:
-                            if cell.has_sql_type_error() || cell.value == JsonValue::Null {
-                                sql_params.push("NULL".to_string());
-                            } else {
-                                sql_params.push(sql_param_gen.next());
-                                param_values.push(cell.value);
+                        // Validate the cell and add any messages to the message table:
+                        if self.validation_level != ValidationLevel::None {
+                            cell.validate_sql_type(
+                                &datatypes,
+                                &table.get_config_for_column(column),
+                            )
+                            .expect("Error validating cell");
+                            for message in cell.messages.iter() {
+                                let (msg_id, msg) = self
+                                    .add_message(
+                                        "rltbl",
+                                        &table.name,
+                                        id,
+                                        column,
+                                        &cell.value,
+                                        &message.level,
+                                        &message.rule,
+                                        &message.message,
+                                    )
+                                    .await
+                                    .expect("Error adding message");
+                                tracing::debug!("Added message (ID {msg_id}): {msg:?}");
                             }
+                        }
+
+                        // Add the parameter for the value to the SQL insert statement:
+                        if cell.has_sql_type_error() || cell.value == JsonValue::Null {
+                            sql_params.push("NULL".to_string());
+                        } else {
+                            sql_params.push(sql_param_gen.next());
+                            param_values.push(cell.value);
                         }
                     };
                 }
@@ -737,7 +739,7 @@ impl Relatable {
                 .fetch_columns(&table_name)
                 .await?
                 .iter()
-                .map(|c| c.name.to_string())
+                .map(|c| c.column.to_string())
                 .collect::<Vec<_>>();
             writer.write_record(header_row.clone())?;
 
@@ -758,28 +760,26 @@ impl Relatable {
                             JsonValue::String(s) => str_values.push(s.to_string()),
                             JsonValue::Number(n) => str_values.push(n.to_string()),
                             JsonValue::Null => {
-                                match &table
+                                match table
                                     .columns
                                     .get(column)
                                     .ok_or(RelatableError::InputError(format!(
                                         "Column '{column}' not found"
                                     )))?
                                     .nulltype
+                                    .as_str()
                                 {
+                                    "" => {
+                                        str_values.push("".to_string());
+                                    }
                                     // Note that the behaviour for the 'empty' nulltype happens
                                     // to be the same as that for no nulltype, but in general
                                     // that won't be true for every nulltype.
-                                    Some(nulltype) if nulltype.datatype == "empty" => {
+                                    "emtpy" => {
                                         str_values.push("".to_string());
                                     }
-                                    Some(unsup) => {
-                                        tracing::warn!(
-                                            "Unsupported nulltype: '{}'",
-                                            unsup.datatype
-                                        );
-                                        str_values.push("".to_string());
-                                    }
-                                    None => {
+                                    nulltype => {
+                                        tracing::warn!("Unsupported nulltype: '{nulltype}'",);
                                         str_values.push("".to_string());
                                     }
                                 };
@@ -1678,8 +1678,9 @@ impl Relatable {
             None => Ok(None),
             Some(change) => {
                 if let Change::Update { .. } = change {
+                    let datatypes = self.datatypes().await;
                     let conn = self.connection.reconnect()?;
-                    let actual_changes = self._set_values(conn, &changeset).await?;
+                    let actual_changes = self._set_values(&datatypes, conn, &changeset).await?;
                     Ok(Some(actual_changes))
                 } else {
                     let mut actual_changes = vec![];
@@ -1820,6 +1821,7 @@ impl Relatable {
     /// Update the database using the given [ChangeSet]
     async fn _set_values(
         &self,
+        datatypes: &Datatypes,
         mut conn: Option<DbActiveConnection>,
         changeset: &ChangeSet,
     ) -> Result<ChangeSet> {
@@ -1877,7 +1879,7 @@ impl Relatable {
                     let column_config = table.get_config_for_column(column);
                     let mut sql_value = cell.value.clone();
                     if self.validation_level != ValidationLevel::None {
-                        cell.validate_sql_type(&column_config)
+                        cell.validate_sql_type(&datatypes, &column_config)
                             .expect("Error validating cell");
                         for message in cell.messages.iter() {
                             let (msg_id, msg) = Relatable::_add_message(
@@ -1949,12 +1951,13 @@ impl Relatable {
                     // messages to the message table:
                     if self.validation_level == ValidationLevel::Full {
                         self._validate_column_optionally_for_row(
+                            &datatypes,
                             &column_config,
                             Some(row),
                             &mut tx,
                         )?;
                         for column in &column_config._get_dependent_columns(&mut tx)? {
-                            tracing::debug!("Validating dependent column '{}'", column.name);
+                            tracing::debug!("Validating dependent column '{}'", column.column);
                             self._validate_structure_for_column_and_optionally_for_row(
                                 column, None, &mut tx,
                             )?;
@@ -1992,8 +1995,9 @@ impl Relatable {
     /// Update the database using the given [ChangeSet]
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<ChangeSet> {
         tracing::trace!("Relatable::set_values({changeset:?})");
+        let datatypes = self.datatypes().await;
         let conn = self.connection.reconnect()?;
-        let changeset = self._set_values(conn, changeset).await?;
+        let changeset = self._set_values(&datatypes, conn, changeset).await?;
         if changeset.changes.len() > 0 {
             self.commit_to_git().await?;
         }
@@ -2092,6 +2096,8 @@ impl Relatable {
                          {after_id:?}, {row:?})"
         );
 
+        let datatypes = self.datatypes().await;
+
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
@@ -2122,7 +2128,7 @@ impl Relatable {
 
         // Validate the row and add it to the table:
         if self.validation_level != ValidationLevel::None {
-            new_row.validate_sql_types(&table, &mut tx)?;
+            new_row.validate_sql_types(&datatypes, &table, &mut tx)?;
             for (_column, cell) in new_row.cells.iter_mut() {
                 if cell.has_sql_type_error() {
                     cell.value = JsonValue::Null;
@@ -2135,7 +2141,7 @@ impl Relatable {
 
         // Optionally do full validation on the row after it has been inserted:
         if self.validation_level == ValidationLevel::Full {
-            self._validate_row(&table, &new_row.id, &mut tx)?;
+            self._validate_row(&datatypes, &table, &new_row.id, &mut tx)?;
             for table in &table._get_dependent_tables(None, &mut tx)? {
                 tracing::debug!("Validating dependent table '{}'", table.name);
                 self._validate_structure_for_table(table, &mut tx)?;
@@ -2683,11 +2689,13 @@ impl Relatable {
     pub async fn validate_table(&self, table: &Table) -> Result<()> {
         tracing::trace!("Relatable::validate_table({self:?}, {table:?})");
 
+        let datatypes = self.datatypes().await;
+
         // Reconnect and begin a transaction:
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        self._validate_table(table, &mut tx)?;
+        self._validate_table(&datatypes, table, &mut tx)?;
 
         // Commit the transaction
         tx.commit()?;
@@ -2697,12 +2705,17 @@ impl Relatable {
     }
 
     /// Validate all of the data in the given database table using the given transaction
-    fn _validate_table(&self, table: &Table, tx: &mut DbTransaction<'_>) -> Result<()> {
+    fn _validate_table(
+        &self,
+        datatypes: &Datatypes,
+        table: &Table,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
         tracing::trace!("Relatable::_validate_table({self:?}, {table:?}, tx)");
 
         // Validate each table column
         for (_, column) in table.columns.iter() {
-            self._validate_column_optionally_for_row(column, None, tx)?;
+            self._validate_column_optionally_for_row(datatypes, column, None, tx)?;
         }
 
         tracing::debug!("Validated table '{}'", table.name);
@@ -2717,7 +2730,8 @@ impl Relatable {
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
 
-        self._validate_datatype_for_table(table, &mut tx)?;
+        let datatypes = self.datatypes().await;
+        self._validate_datatype_for_table(&datatypes, table, &mut tx)?;
 
         // Commit the transaction
         tx.commit()?;
@@ -2730,6 +2744,7 @@ impl Relatable {
     /// transaction
     fn _validate_datatype_for_table(
         &self,
+        datatypes: &Datatypes,
         table: &Table,
         tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
@@ -2737,7 +2752,7 @@ impl Relatable {
 
         // Validate each table column
         for (_, column) in table.columns.iter() {
-            self._validate_datatype_for_column_and_optionally_for_row(column, None, tx)?;
+            self._validate_datatype_for_column_and_optionally_for_row(datatypes, column, None, tx)?;
         }
 
         tracing::debug!("Validated datatype for table '{}'", table.name);
@@ -2781,12 +2796,12 @@ impl Relatable {
 
     /// Validate the data in the given column associated with a table in the database
     pub async fn validate_column(&self, column: &Column) -> Result<()> {
-        tracing::trace!("Relatable::validate_column({self:?}, {column:?})");
+        let datatypes = self.datatypes().await;
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
-        self._validate_column_optionally_for_row(column, None, &mut tx)?;
+        self._validate_column_optionally_for_row(&datatypes, column, None, &mut tx)?;
         tx.commit()?;
-        tracing::info!("Validated column '{}.{}'", column.table, column.name);
+        tracing::info!("Validated column '{}.{}'", column.table, column.column);
         Ok(())
     }
 
@@ -2794,15 +2809,16 @@ impl Relatable {
     /// table
     pub async fn validate_value(&self, column: &Column, row: &u64) -> Result<()> {
         tracing::trace!("Relatable::validate_value({self:?}, {column:?}, {row})");
+        let datatypes = self.datatypes().await;
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
-        self._validate_column_optionally_for_row(column, Some(row), &mut tx)?;
+        self._validate_column_optionally_for_row(&datatypes, column, Some(row), &mut tx)?;
         tx.commit()?;
         tracing::info!(
             "Validated value at row {}, column '{}.{}'",
             row,
             column.table,
-            column.name
+            column.column
         );
         Ok(())
     }
@@ -2810,19 +2826,26 @@ impl Relatable {
     /// Validate the given row of the given table
     pub async fn validate_row(&self, table: &Table, row: &u64) -> Result<()> {
         tracing::trace!("Relatable::validate_row({self:?}, {table:?}, {row})");
+        let datatypes = self.datatypes().await;
         let mut conn = self.connection.reconnect()?;
         let mut tx = self.connection.begin(&mut conn).await?;
-        self._validate_row(table, row, &mut tx)?;
+        self._validate_row(&datatypes, table, row, &mut tx)?;
         tx.commit()?;
         tracing::info!("Validated row {} of table '{}'", row, table.name);
         Ok(())
     }
 
     /// Validate the given row of the given table using the given database transaction
-    fn _validate_row(&self, table: &Table, row: &u64, tx: &mut DbTransaction<'_>) -> Result<()> {
+    fn _validate_row(
+        &self,
+        datatypes: &Datatypes,
+        table: &Table,
+        row: &u64,
+        tx: &mut DbTransaction<'_>,
+    ) -> Result<()> {
         tracing::trace!("Relatable::_validate_row({self:?}, {table:?}, {row}, tx)");
         for (_, column) in table.columns.iter() {
-            self._validate_column_optionally_for_row(column, Some(row), tx)?;
+            self._validate_column_optionally_for_row(datatypes, column, Some(row), tx)?;
         }
         tracing::debug!("Validated row {} of table '{}'", row, table.name);
         Ok(())
@@ -2832,6 +2855,7 @@ impl Relatable {
     /// given transaction. If `row` is given, only validate the column for that row.
     fn _validate_datatype_for_column_and_optionally_for_row(
         &self,
+        datatypes: &Datatypes,
         column: &Column,
         row: Option<&u64>,
         tx: &mut DbTransaction<'_>,
@@ -2849,15 +2873,16 @@ impl Relatable {
             tx,
             table_name,
             row.copied(),
-            Some(&column.name),
+            Some(&column.column),
             Some("datatype:%"),
             Some("rltbl"),
         )?;
 
         // Gather the datatypes to check: The column's datatype, plus any further datatypes in
         // the datatype hierarchy:
-        let mut datatypes_to_check = vec![column.datatype.clone()];
-        datatypes_to_check.append(&mut column.datatype_hierarchy.clone());
+        let datatype = Datatypes::builtins().get("text").cloned().unwrap();
+        let datatype = datatypes.get(&column.datatype).unwrap_or(&datatype);
+        let datatypes_to_check = datatypes.ancestors(&datatype);
 
         // Validate the column against each datatype in the hierarchy:
         for datatype in datatypes_to_check {
@@ -2870,7 +2895,7 @@ impl Relatable {
         tracing::debug!(
             "Validated datatype for column: '{}.{}'{}",
             column.table,
-            column.name,
+            column.column,
             match row {
                 None => "".to_string(),
                 Some(row) => format!(", row: {row}"),
@@ -2900,20 +2925,21 @@ impl Relatable {
             tx,
             table_name,
             row.copied(),
-            Some(&column.name),
+            Some(&column.column),
             Some("key:%"),
             Some("rltbl"),
         )?;
 
         // Validate the cell's structure condition:
-        if let Some(structure) = &column.structure {
+        if column.structure != "" {
+            let structure = Structure::from_str(&column.structure)?;
             structure.validate(column, row, tx)?;
         }
 
         tracing::debug!(
             "Validated structure for column: '{}.{}'{}",
             column.table,
-            column.name,
+            column.column,
             match row {
                 None => "".to_string(),
                 Some(row) => format!(", row: {row}"),
@@ -2926,6 +2952,7 @@ impl Relatable {
     /// If `row` is given, only validate the column for that row.
     fn _validate_column_optionally_for_row(
         &self,
+        datatypes: &Datatypes,
         column: &Column,
         row: Option<&u64>,
         tx: &mut DbTransaction<'_>,
@@ -2933,12 +2960,12 @@ impl Relatable {
         tracing::trace!(
             "Relatable::_validate_column_optionally_for_row({self:?}, {column:?}, {row:?}, tx)"
         );
-        self._validate_datatype_for_column_and_optionally_for_row(column, row, tx)?;
+        self._validate_datatype_for_column_and_optionally_for_row(datatypes, column, row, tx)?;
         self._validate_structure_for_column_and_optionally_for_row(column, row, tx)?;
         tracing::debug!(
             "Validated column: '{}.{}'{}",
             column.table,
-            column.name,
+            column.column,
             match row {
                 None => "".to_string(),
                 Some(row) => format!(", row: {row}"),
@@ -3322,6 +3349,8 @@ pub struct ResultSet {
     pub table: Table,
     /// The columns (and only the columns) used in the Select statement
     pub columns: Vec<Column>,
+    /// The datatypes used in the Select statement
+    pub datatypes: Vec<Datatype>,
     pub rows: Vec<Row>,
 }
 
@@ -3346,7 +3375,7 @@ impl ResultSet {
         let header_row = &self
             .columns
             .iter()
-            .map(|c| c.name.clone())
+            .map(|c| c.column.clone())
             .collect::<Vec<String>>();
         writer.write_record(header_row.clone()).unwrap();
         for row in &self.rows {
@@ -3426,7 +3455,7 @@ impl ResultSet {
         let header = &self
             .columns
             .iter()
-            .map(|c| c.name.clone())
+            .map(|c| c.column.clone())
             .collect::<Vec<String>>();
         tw.write(format!("{}\n", header.join("\t")).as_bytes())
             .unwrap_or_default();
@@ -3439,15 +3468,21 @@ impl ResultSet {
                 .iter()
                 .map(|(column_name, cell)| {
                     let value_to_print = {
-                        let column_format = match self.table.columns.get(column_name) {
-                            Some(column) if column.datatype.format == "" => "%s",
-                            Some(column) => &column.datatype.format,
-                            None => {
-                                tracing::warn!(
-                                    "Can't determine cell format. No column found: '{column_name}'"
-                                );
-                                "%s"
-                            }
+                        let column = self
+                            .columns
+                            .iter()
+                            .filter(|col| &col.column == column_name)
+                            .nth(0)
+                            .unwrap();
+                        let datatype = self
+                            .datatypes
+                            .iter()
+                            .filter(|dt| dt.datatype == column.datatype)
+                            .nth(0)
+                            .unwrap();
+                        let column_format = match datatype.format.as_str() {
+                            "" => "%s",
+                            value => value,
                         };
                         ResultSet::format_cell_text_value(&column_format, &format_regex, &cell.text)
                     };
@@ -3476,7 +3511,7 @@ impl std::fmt::Display for ResultSet {
         let header = &self
             .columns
             .iter()
-            .map(|c| c.name.clone())
+            .map(|c| c.column.clone())
             .collect::<Vec<String>>();
         tw.write(format!("{}\n", header.join("\t")).as_bytes())
             .unwrap_or_default();

@@ -587,7 +587,7 @@ async fn add_row(
     let json_row: JsonRow = JsonRow {
         content: columns
             .iter()
-            .map(|c| (c.name.clone(), json!(String::new())))
+            .map(|c| (c.column.clone(), json!(String::new())))
             .collect(),
     };
     match rltbl.add_row(&table, &username, after_id, &json_row).await {

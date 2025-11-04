@@ -35,7 +35,7 @@ impl Structure {
         match self {
             Structure::From(s_table, s_column) => {
                 let c_table = &column.table;
-                let c_column = &column.name;
+                let c_column = &column.column;
                 let s_table = match s_table {
                     None => c_table,
                     Some(s_table) => s_table,
@@ -100,7 +100,7 @@ impl Structure {
             "Validated structure '{}' for column '{}.{}' (row: {:?}) {}",
             self,
             column.table,
-            column.name,
+            column.column,
             row,
             match messages_were_added {
                 false => "with messages added.",

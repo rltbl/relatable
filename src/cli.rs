@@ -708,8 +708,8 @@ pub async fn prompt_for_json_message(
         .fetch_columns("message")
         .await?
         .iter()
-        .filter(|c| !["message_id", "added_by"].contains(&c.name.as_str()))
-        .map(|c| c.name.to_string())
+        .filter(|c| !["message_id", "added_by"].contains(&c.column.as_str()))
+        .map(|c| c.column.to_string())
         .collect::<Vec<_>>();
     let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<&str>>();
     let mut json_row = JsonRow::from_strings(&columns);
@@ -739,7 +739,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
         .fetch_columns(table_name)
         .await?
         .iter()
-        .map(|c| c.name.to_string())
+        .map(|c| c.column.to_string())
         .collect::<Vec<_>>();
     let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
     let mut json_row = JsonRow::from_strings(&columns);

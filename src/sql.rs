@@ -12,6 +12,7 @@ use crate as rltbl;
 use rltbl::{
     column::Column,
     core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
+    datatype::Datatypes,
     table::Table,
 };
 
@@ -936,6 +937,7 @@ fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
 /// Generate DDL to create the given table in the database. If `force` is set, drop the table
 /// first.
 pub fn generate_table_ddl(
+    datatypes: &Datatypes,
     table: &Table,
     force: bool,
     db_kind: &DbKind,
@@ -972,7 +974,7 @@ pub fn generate_table_ddl(
             ))
             .into());
         }
-        let sql_type = col.sql_type();
+        let sql_type = col.sql_type(datatypes);
         let clause = format!(
             r#""{cname}" {sql_type}{unique}"#,
             unique = match col.unique {
@@ -1200,7 +1202,7 @@ pub(crate) fn generate_default_view_ddl(
                 view = view_name,
                 columns = columns
                     .iter()
-                    .map(|c| format!(r#""{}""#, c.name))
+                    .map(|c| format!(r#""{}""#, c.column))
                     .collect::<Vec<_>>()
                     .join(", "),
             ),
@@ -1244,7 +1246,7 @@ pub(crate) fn generate_default_view_ddl(
             view = view_name,
             columns = columns
                 .iter()
-                .map(|c| format!(r#""{}""#, c.name))
+                .map(|c| format!(r#""{}""#, c.column))
                 .collect::<Vec<_>>()
                 .join(", "),
         )],
@@ -1398,6 +1400,7 @@ pub fn split_sprintf_format(sprintf_format: &str) -> (String, String, String, St
 
 /// Generate the DDL for creating the text view on the given table,
 pub(crate) fn generate_text_view_ddl(
+    datatypes: &Datatypes,
     table_name: &str,
     id_col: &str,
     order_col: &str,
@@ -1412,9 +1415,13 @@ pub(crate) fn generate_text_view_ddl(
     let mut inner_columns = columns
         .iter()
         .map(|column| {
+            let format = datatypes
+                .get(&column.datatype)
+                .and_then(|dt| Some(dt.format.clone()))
+                .unwrap_or_default();
             let column_cast = {
                 let (flag_opt, width_opt, precision_opt, format_type) =
-                    split_sprintf_format(column.datatype.format.as_ref());
+                    split_sprintf_format(&format);
                 if *kind == DbKind::Sqlite {
                     let dt_format = format!(
                         "%{flag_opt}{width_opt}{precision_opt}{format_type}",
@@ -1423,15 +1430,15 @@ pub(crate) fn generate_text_view_ddl(
                             _ => format!(".{precision_opt}"),
                         }
                     );
-                    tracing::debug!("Formatting column '{}' using '{dt_format}'", column.name);
-                    format!(r#"FORMAT('{}', "{}")"#, dt_format, column.name)
+                    tracing::debug!("Formatting column '{}' using '{dt_format}'", column.column);
+                    format!(r#"FORMAT('{}', "{}")"#, dt_format, column.column)
                 } else {
                     match sprintf_to_pg_char(&flag_opt, &width_opt, &precision_opt, &format_type)
                         .as_str()
                     {
-                        "" => format!(r#""{}"::TEXT"#, column.name),
+                        "" => format!(r#""{}"::TEXT"#, column.column),
                         dt_format => {
-                            format!(r#"LTRIM(TO_CHAR("{}", '{dt_format}'), ' ')"#, column.name)
+                            format!(r#"LTRIM(TO_CHAR("{}", '{dt_format}'), ' ')"#, column.column)
                         }
                     }
                 }
@@ -1449,7 +1456,7 @@ pub(crate) fn generate_text_view_ddl(
                      )
                      ELSE {column_cast}
                    END AS "{column}""#,
-                column = column.name,
+                column = column.column,
                 is_clause = is_clause(kind)
             )
         })
@@ -1468,7 +1475,7 @@ pub(crate) fn generate_text_view_ddl(
 
     let mut outer_columns = columns
         .iter()
-        .map(|column| format!(r#"t."{}""#, column.name))
+        .map(|column| format!(r#"t."{}""#, column.column))
         .collect::<Vec<_>>();
 
     let outer_columns = {
@@ -1797,8 +1804,19 @@ impl JsonRow {
         let mut nullified_row = JsonRow::new();
         let default_col = Column::default();
         for (column, value) in row.content.iter() {
-            match &table.columns.get(column).unwrap_or(&default_col).nulltype {
-                Some(supported) if supported.datatype == "empty" => match value {
+            match table
+                .columns
+                .get(column)
+                .unwrap_or(&default_col)
+                .nulltype
+                .as_str()
+            {
+                "" => {
+                    nullified_row
+                        .content
+                        .insert(column.to_string(), value.clone());
+                }
+                "empty" => match value {
                     JsonValue::String(s) if s == "" => {
                         nullified_row
                             .content
@@ -1810,13 +1828,8 @@ impl JsonRow {
                             .insert(column.to_string(), value.clone());
                     }
                 },
-                Some(unsupported) => {
-                    tracing::warn!("Unsupported nulltype: '{}'", unsupported.datatype);
-                    nullified_row
-                        .content
-                        .insert(column.to_string(), value.clone());
-                }
-                None => {
+                nulltype => {
+                    tracing::warn!("Unsupported nulltype: '{nulltype}'");
                     nullified_row
                         .content
                         .insert(column.to_string(), value.clone());
@@ -1833,16 +1846,22 @@ impl JsonRow {
     pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValue {
         tracing::trace!("JsonRow::nullify_value({table:?}, {column}, {value:?})");
         let default_col = Column::default();
-        match &table.columns.get(column).unwrap_or(&default_col).nulltype {
-            Some(supported) if supported.datatype == "empty" => match value {
+        match table
+            .columns
+            .get(column)
+            .unwrap_or(&default_col)
+            .nulltype
+            .as_str()
+        {
+            "" => value.clone(),
+            "empty" => match value {
                 JsonValue::String(s) if s == "" => JsonValue::Null,
                 _ => value.clone(),
             },
-            Some(unsupported) => {
-                tracing::warn!("Unsupported nulltype: '{}'", unsupported.datatype);
+            nulltype => {
+                tracing::warn!("Unsupported nulltype: '{nulltype}'");
                 value.clone()
             }
-            None => value.clone(),
         }
     }
 

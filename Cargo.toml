@@ -20,7 +20,7 @@ path = "src/test.rs"
 [dependencies]
 ansi_term = "0.12"
 anyhow = "1.0.94"
-axum = "0.8.1"
+axum = { version = "0.8.1", features = ["macros"] }
 axum_session = "0.16.0"
 bigdecimal = { version = "0.4", features = ["serde"] }
 chrono = "0.4"

@@ -5,6 +5,7 @@
 use crate::{
     column::Column,
     core::{Relatable, RelatableError, NEW_ORDER_MULTIPLIER},
+    datatype::Datatypes,
     sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
     table::Table,
 };
@@ -119,12 +120,13 @@ impl Row {
     /// and add any resulting validation [messages](Message) to the message table
     pub fn validate_sql_types(
         &mut self,
+        datatypes: &Datatypes,
         table: &Table,
         tx: &mut DbTransaction<'_>,
     ) -> Result<&Self> {
         for (column, cell) in self.cells.iter_mut() {
             let column_details = table.get_config_for_column(column);
-            cell.validate_sql_type(&column_details)?;
+            cell.validate_sql_type(datatypes, &column_details)?;
             for message in cell.messages.iter() {
                 let (msg_id, msg) = Relatable::_add_message(
                     "rltbl",
@@ -251,35 +253,37 @@ impl From<&JsonValue> for Cell {
 impl Cell {
     /// Validate this cell, which belongs to the given [Column], adding any validation
     /// [messages](Message) to the cell's [messages](Cell::messages) field.
-    pub fn validate_sql_type(&mut self, column: &Column) -> Result<&Self> {
-        tracing::trace!("Cell::validate_sql_type({self:?}, {column:?})");
+    pub fn validate_sql_type(&mut self, datatypes: &Datatypes, column: &Column) -> Result<&Self> {
+        let sql_type = column.sql_type(datatypes);
 
-        fn invalidate(cell: &mut Cell, column: &Column) {
-            let datatype = &column.datatype.datatype;
+        fn invalidate(cell: &mut Cell, sql_type: &str, column: &Column) {
             cell.messages.push(Message {
                 value: cell.value.clone(),
                 level: "error".to_string(),
-                rule: format!("sql_type:{datatype}"),
-                message: format!("{column} must be of type {datatype}", column = column.name),
+                rule: format!("sql_type:{sql_type}"),
+                message: format!(
+                    "{column} must be of type {sql_type}",
+                    column = column.column
+                ),
             });
         }
 
-        match column.sql_type().as_str() {
+        match sql_type.as_str() {
             "INTEGER" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<i64>() {
                     Ok(_) => (),
-                    Err(_) => invalidate(self, column),
+                    Err(_) => invalidate(self, &sql_type, column),
                 },
                 JsonValue::Null => (),
-                _ => invalidate(self, column),
+                _ => invalidate(self, &sql_type, column),
             },
             "REAL" | "NUMERIC" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<f64>() {
                     Ok(_) => (),
-                    Err(_) => invalidate(self, column),
+                    Err(_) => invalidate(self, &sql_type, column),
                 },
                 JsonValue::Null => (),
-                _ => invalidate(self, column),
+                _ => invalidate(self, &sql_type, column),
             },
             "TEXT" => (),
             unsupported => {
