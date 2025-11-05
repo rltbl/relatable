@@ -1,9 +1,9 @@
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
 
 use crate::{
-    column::Column,
+    column::ColumnBuilder,
     core::{Relatable, NEW_ORDER_MULTIPLIER},
-    datatype::Datatype,
+    datatype::DatatypeBuilder,
     sql::{self, CachingStrategy, DbKind, SqlParam},
 };
 
@@ -202,14 +202,16 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
     datatype_table.create().await?;
     datatype_table
         .add(&[
-            &Datatype::new("decimal")
+            &DatatypeBuilder::new("decimal")
                 .description("A decimal number")
                 .condition(r"match(-?\d+(\.\d+)?)")
                 .sql_type("NUMERIC")
-                .format("%.1f"),
-            &Datatype::new("study_name")
+                .format("%.1f")
+                .build()?,
+            &DatatypeBuilder::new("study_name")
                 .description("A decimal number")
-                .condition(r"in(FAKE123, FAKE456)"),
+                .condition(r"in(FAKE123, FAKE456)")
+                .build()?,
         ])
         .await?;
     Ok(())
@@ -224,36 +226,44 @@ pub async fn create_demo_column_table(rltbl: &Relatable, force: &bool) -> Result
     column_table.create().await?;
     column_table
         .add(&[
-            &Column::new("penguin", "study_name")
+            &ColumnBuilder::new("penguin", "study_name")
                 .label("study name")
                 .description("the name of the study")
-                .datatype("study_name"),
-            &Column::new("penguin", "sample_number")
+                .datatype("study_name")
+                .build()?,
+            &ColumnBuilder::new("penguin", "sample_number")
                 .label("sample number")
                 .description("a sample number for this measurement")
-                .datatype("integer"),
-            &Column::new("penguin", "species")
+                .datatype("integer")
+                .build()?,
+            &ColumnBuilder::new("penguin", "species")
                 .description("the species of this penguin")
-                .nulltype("empty"),
-            &Column::new("penguin", "island")
+                .nulltype("empty")
+                .build()?,
+            &ColumnBuilder::new("penguin", "island")
                 .description("the island where this penguin was studied")
                 .datatype("text")
-                .structure("from(island.island)"),
-            &Column::new("penguin", "individual_id")
+                .structure("from(island.island)")
+                .build()?,
+            &ColumnBuilder::new("penguin", "individual_id")
                 .label("individual id")
                 .description("an identifier for this penguin")
                 .nulltype("empty")
-                .datatype("word"),
-            &Column::new("penguin", "bill_length")
+                .datatype("word")
+                .build()?,
+            &ColumnBuilder::new("penguin", "bill_length")
                 .label("bill length (mm)")
-                .datatype("decimal"),
-            &Column::new("penguin", "bill_depth")
+                .datatype("decimal")
+                .build()?,
+            &ColumnBuilder::new("penguin", "bill_depth")
                 .label("bill depth (mm)")
-                .datatype("decimal"),
-            &Column::new("penguin", "body_mass")
+                .datatype("decimal")
+                .build()?,
+            &ColumnBuilder::new("penguin", "body_mass")
                 .label("body mass (g)")
                 .nulltype("empty")
-                .datatype("integer"),
+                .datatype("integer")
+                .build()?,
         ])
         .await?;
     Ok(())

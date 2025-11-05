@@ -22,6 +22,7 @@ use rltbl_db::{
 };
 
 use anyhow::Result;
+use derive_builder::Builder;
 use regex::Regex;
 use serde::{
     de::{self, Visitor},
@@ -30,8 +31,11 @@ use serde::{
 use serde_json::json;
 
 /// Represents a column from some table
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Builder, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(default)]
+#[builder(default, setter(into))]
 pub struct Column {
     pub table: String,
     pub column: String,
@@ -116,76 +120,7 @@ where
     deserializer.deserialize_u8(BoolVisitor)
 }
 
-// fn to_bool<'de, D>(D) -> Result<bool, D::Error> where D: Deserializer<'de> {
-//     struct BoolVisitor;
-
-//     impl<'de> de::Visitor<'de> for BoolVisitor {
-//         type Value = bool;
-
-//         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-//             formatter.write_str("a string containing json data")
-//         }
-
-//         fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-//         where
-//             E: de::Error,
-//         {
-//             // unfortunately we lose some typed information
-//             // from errors deserializing the json string
-//             serde_json::from_str(v).map_err(E::custom)
-//         }
-//     }
-
-//     // use our visitor to deserialize an `ActualValue`
-//     deserializer.deserialize_any(JsonStringVisitor)
-// }
-
 impl Column {
-    /// Create a new column.
-    pub fn new(table: &str, column: &str) -> Self {
-        Column {
-            table: table.to_owned(),
-            column: column.to_owned(),
-            ..Default::default()
-        }
-    }
-
-    /// Rename the column
-    pub fn name(mut self, column: &str) -> Self {
-        self.column = column.to_owned();
-        self
-    }
-
-    /// Relabel the column
-    pub fn label(mut self, label: &str) -> Self {
-        self.label = label.to_owned();
-        self
-    }
-
-    /// Set the description of the column
-    pub fn description(mut self, description: &str) -> Self {
-        self.description = description.to_owned();
-        self
-    }
-
-    // Set the nulltype for this column.
-    pub fn nulltype(mut self, nulltype: &str) -> Self {
-        self.nulltype = nulltype.to_owned();
-        self
-    }
-
-    // Set the datatype for this column.
-    pub fn datatype(mut self, datatype: &str) -> Self {
-        self.datatype = datatype.to_owned();
-        self
-    }
-
-    // Set the structure for this column.
-    pub fn structure(mut self, structure: &str) -> Self {
-        self.structure = structure.to_owned();
-        self
-    }
-
     // TODO: replace this
     /// Get the columns, either from the same or from another table, that depend on this column,
     /// using the given transaction
@@ -255,6 +190,15 @@ impl Column {
     }
 }
 
+impl ColumnBuilder {
+    pub fn new(table: &str, column: &str) -> Self {
+        let mut new = Self::default();
+        new.table = Some(table.to_owned());
+        new.column = Some(column.to_owned());
+        new
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Columns {
     list: Vec<Column>,
@@ -279,13 +223,36 @@ impl Columns {
     pub fn builtins() -> Self {
         Columns {
             list: vec![
-                Column::new("column", "table").description("the table for this column"),
-                Column::new("column", "column").description("the name of this column"),
-                Column::new("column", "label").description("the label of this column"),
-                Column::new("column", "description").description("the description of this column"),
-                Column::new("column", "nulltype").description("the null type of this column"),
-                Column::new("column", "datatype").description("the datatype of this column"),
-                Column::new("column", "structure").description("the structure of this column"),
+                ColumnBuilder::default()
+                    .table("table")
+                    .column("table")
+                    .description("the table for this column")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "column")
+                    .description("the name of this column")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "label")
+                    .description("the label of this column")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "description")
+                    .description("the description of this column")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "nulltype")
+                    .description("the null type of this column")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "datatype")
+                    .description("the datatype of this column")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "structure")
+                    .description("the structure of this column")
+                    .build()
+                    .unwrap(),
             ],
         }
     }
@@ -472,10 +439,13 @@ mod tests {
     async fn test_sql_type() {
         let datatypes = Datatypes::builtins();
 
-        let column = Column::new("foo", "bar");
+        let column = ColumnBuilder::new("foo", "bar").build().unwrap();
         assert_eq!(column.sql_type(&datatypes), "TEXT");
 
-        let column = Column::new("foo", "bar").datatype("integer");
+        let column = ColumnBuilder::new("foo", "bar")
+            .datatype("integer")
+            .build()
+            .unwrap();
         assert_eq!(column.sql_type(&datatypes), "INTEGER");
     }
 

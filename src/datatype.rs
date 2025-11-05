@@ -15,12 +15,14 @@ use rltbl_db::{
 };
 
 use anyhow::Result;
+use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::ops::{Deref, DerefMut};
 
 /// Represents a column's datatype
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Builder, Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Ord, Eq)]
+#[builder(default, setter(into))]
 pub struct Datatype {
     pub datatype: String,
     pub description: String,
@@ -43,51 +45,16 @@ impl Default for Datatype {
     }
 }
 
-impl Datatype {
+impl DatatypeBuilder {
     /// Create a new datatype.
     pub fn new(datatype: &str) -> Self {
-        Datatype {
-            datatype: datatype.to_owned(),
-            ..Default::default()
-        }
+        let mut new = Self::default();
+        new.datatype = Some(datatype.to_owned());
+        new
     }
+}
 
-    /// Rename the datatype
-    pub fn name(mut self, datatype: &str) -> Self {
-        self.datatype = datatype.to_owned();
-        self
-    }
-
-    /// Set the description.
-    pub fn description(mut self, description: &str) -> Self {
-        self.description = description.to_owned();
-        self
-    }
-
-    /// Set the parent.
-    pub fn parent(mut self, parent: &str) -> Self {
-        self.parent = parent.to_owned();
-        self
-    }
-
-    /// Set the condition.
-    pub fn condition(mut self, condition: &str) -> Self {
-        self.condition = condition.to_owned();
-        self
-    }
-
-    /// Set the sql_type.
-    pub fn sql_type(mut self, sql_type: &str) -> Self {
-        self.sql_type = sql_type.to_owned();
-        self
-    }
-
-    /// Set the format.
-    pub fn format(mut self, format: &str) -> Self {
-        self.format = format.to_owned();
-        self
-    }
-
+impl Datatype {
     // TODO: break into smaller pieces
     /// Validate a column of a database table, optionally only for the given row, using the
     /// given transaction. Returns true whenever messages are inserted to the message table as a
@@ -325,35 +292,49 @@ impl Datatypes {
     pub fn builtins() -> Self {
         Datatypes {
             map: [
-                Datatype::new("text")
+                DatatypeBuilder::new("text")
                     .description("any text")
                     .parent("")
-                    .sql_type("TEXT"),
-                Datatype::new("empty")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("empty")
                     .description("the empty string")
                     .parent("text")
-                    .condition("equals('')"),
-                Datatype::new("line")
+                    .condition("equals('')")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("line")
                     .description("a line of text")
                     .parent("text")
-                    .condition(r"match([^\n]+)"),
-                Datatype::new("trimmed_line")
+                    .condition(r"match([^\n]+)")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("trimmed_line")
                     .description("a line of text that deos not begin or end with whitespace")
                     .parent("line")
-                    .condition(r"match(\S([^\n]*\S)*)"),
-                Datatype::new("nonspace")
+                    .condition(r"match(\S([^\n]*\S)*)")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("nonspace")
                     .description("text without whitespace")
                     .parent("trimmed_line")
-                    .condition(r"match([^\s]+)"),
-                Datatype::new("word")
+                    .condition(r"match([^\s]+)")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("word")
                     .description("a single word: letters, numbers, underscore")
                     .parent("nonspace")
-                    .condition(r"match(\w+)"),
-                Datatype::new("integer")
+                    .condition(r"match(\w+)")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("integer")
                     .description("an integer")
                     .parent("nonspace")
                     .sql_type("INTEGER")
-                    .condition(r"match(-?\d+)"),
+                    .condition(r"match(-?\d+)")
+                    .build()
+                    .unwrap(),
             ]
             .into_iter()
             .map(|dt| (dt.datatype.clone(), dt))
@@ -548,7 +529,10 @@ mod tests {
             .expect("connect to SQLite");
         let table = DatatypeTable::connect(&pool);
         table.create().await.expect("create datatype table");
-        let test = Datatype::new("test").description("test datatype");
+        let test = DatatypeBuilder::new("test")
+            .description("test datatype")
+            .build()
+            .unwrap();
         table.add(&[&test]).await.expect("add test datatype");
         let count = pool
             .query_u64("SELECT count() FROM datatype", ())
