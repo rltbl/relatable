@@ -254,7 +254,7 @@ impl Cell {
     /// Validate this cell, which belongs to the given [Column], adding any validation
     /// [messages](Message) to the cell's [messages](Cell::messages) field.
     pub fn validate_sql_type(&mut self, datatypes: &Datatypes, column: &Column) -> Result<&Self> {
-        let sql_type = column.sql_type(datatypes);
+        let sql_type = column.sql_type(datatypes).to_lowercase();
 
         fn invalidate(cell: &mut Cell, sql_type: &str, column: &Column) {
             cell.messages.push(Message {
@@ -269,7 +269,7 @@ impl Cell {
         }
 
         match sql_type.as_str() {
-            "INTEGER" => match &mut self.value {
+            "integer" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<i64>() {
                     Ok(_) => (),
                     Err(_) => invalidate(self, &sql_type, column),
@@ -277,7 +277,7 @@ impl Cell {
                 JsonValue::Null => (),
                 _ => invalidate(self, &sql_type, column),
             },
-            "REAL" | "NUMERIC" => match &mut self.value {
+            "real" | "numeric" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<f64>() {
                     Ok(_) => (),
                     Err(_) => invalidate(self, &sql_type, column),
@@ -285,7 +285,7 @@ impl Cell {
                 JsonValue::Null => (),
                 _ => invalidate(self, &sql_type, column),
             },
-            "TEXT" => (),
+            "text" => (),
             unsupported => {
                 return Err(RelatableError::InputError(format!(
                     "Unsupported SQL type: '{unsupported}'"

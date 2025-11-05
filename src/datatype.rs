@@ -479,7 +479,7 @@ impl<'a> DatatypeTable<'a> {
         let rows = match self.pool
             .query(
                 &format!(
-                    r#"SELECT datatype, description, parent, sql_type, condition, format FROM "{}""#,
+                    r#"SELECT "datatype", "description", "parent", "condition", "sql_type", "format" FROM "{}""#,
                     self.table_name
                 ),
                 (),

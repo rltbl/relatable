@@ -262,27 +262,32 @@ impl Table {
         let params = json!([self.name]);
         let mut dependent_tables: Vec<Table> = vec![];
         for row in &tx.query(&sql, Some(&params))? {
-            let Structure::From(structure_table, structure_column) =
-                Structure::from_str(&row.get_string("structure")?)?;
-            if let Some(structure_table) = structure_table {
-                if structure_table == self.name {
-                    match column {
-                        Some(column) if column == structure_column => {
-                            let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
-                            let dependent_column = row.get_string("column")?;
-                            let mut indirect_deps = dependent_table
-                                ._get_dependent_tables(Some(&dependent_column), tx)?;
-                            dependent_tables.push(dependent_table);
-                            dependent_tables.append(&mut indirect_deps);
-                        }
-                        _ => {
-                            let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
-                            let mut indirect_deps =
-                                dependent_table._get_dependent_tables(None, tx)?;
-                            dependent_tables.push(dependent_table);
-                            dependent_tables.append(&mut indirect_deps);
-                        }
-                    };
+            // TODO: Clean this up
+            if &row.get_string("structure")? != "" {
+                let Structure::From(structure_table, structure_column) =
+                    Structure::from_str(&row.get_string("structure")?)?;
+                if let Some(structure_table) = structure_table {
+                    if structure_table == self.name {
+                        match column {
+                            Some(column) if column == structure_column => {
+                                let dependent_table =
+                                    Table::_get_table(&row.get_string("table")?, tx)?;
+                                let dependent_column = row.get_string("column")?;
+                                let mut indirect_deps = dependent_table
+                                    ._get_dependent_tables(Some(&dependent_column), tx)?;
+                                dependent_tables.push(dependent_table);
+                                dependent_tables.append(&mut indirect_deps);
+                            }
+                            _ => {
+                                let dependent_table =
+                                    Table::_get_table(&row.get_string("table")?, tx)?;
+                                let mut indirect_deps =
+                                    dependent_table._get_dependent_tables(None, tx)?;
+                                dependent_tables.push(dependent_table);
+                                dependent_tables.append(&mut indirect_deps);
+                            }
+                        };
+                    }
                 }
             }
         }

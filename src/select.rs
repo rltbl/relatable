@@ -16,7 +16,7 @@ use serde_json::{json, to_value, Value as JsonValue};
 use std::collections::{BTreeSet, HashSet};
 
 /// Represents a SELECT statement.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Select {
     pub table_name: String,
     pub view_name: String,
@@ -1167,7 +1167,7 @@ impl Select {
 }
 
 /// A field in a [Select] clause.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SelectField {
     Column {
         table: String,
@@ -1238,7 +1238,7 @@ impl SelectField {
 }
 
 /// Represents a database join
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Join {
     LeftJoin {
         left_table: String,
@@ -1270,7 +1270,7 @@ impl Join {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type")]
 pub enum Filter {
     Like {
@@ -1754,7 +1754,7 @@ impl Filter {
 }
 
 /// Represents an ORDER BY clause in a SELECT statement.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Order {
     #[default]
     ASC,

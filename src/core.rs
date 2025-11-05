@@ -391,11 +391,16 @@ impl Relatable {
                 .collect();
         }
 
-        let column_names: Vec<String> = columns.iter().map(|col| col.column.clone()).collect();
+        // Maybe we also want the ancestors?
+        let required_datatypes: HashSet<String> = columns
+            .iter()
+            .map(|col| [col.nulltype.clone(), col.datatype.clone()])
+            .flatten()
+            .collect();
         let datatypes = self.datatypes().await;
         let datatypes = datatypes
             .values()
-            .filter(|dt| column_names.contains(&dt.datatype))
+            .filter(|dt| required_datatypes.contains(&dt.datatype))
             .cloned()
             .collect();
 
@@ -620,7 +625,7 @@ impl Relatable {
                     if nulltype == "emtpy" && value == "" {
                         sql_params.push("NULL".to_string());
                     } else {
-                        if nulltype != "empty" {
+                        if nulltype != "" && nulltype != "empty" {
                             tracing::warn!("Nulltype '{nulltype}' not supported",);
                         }
                         // Use the value to create a cell:
@@ -775,11 +780,11 @@ impl Relatable {
                                     // Note that the behaviour for the 'empty' nulltype happens
                                     // to be the same as that for no nulltype, but in general
                                     // that won't be true for every nulltype.
-                                    "emtpy" => {
+                                    "empty" => {
                                         str_values.push("".to_string());
                                     }
                                     nulltype => {
-                                        tracing::warn!("Unsupported nulltype: '{nulltype}'",);
+                                        tracing::warn!("Unsupported nulltype: '{nulltype}'");
                                         str_values.push("".to_string());
                                     }
                                 };
@@ -3326,7 +3331,7 @@ impl Display for Change {
 
 // Ranges and Results
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Range {
     count: usize,
     total: u64,
@@ -3340,7 +3345,7 @@ impl std::fmt::Display for Range {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResultSet {
     pub select: Select,
     pub statement: String,
@@ -3478,11 +3483,13 @@ impl ResultSet {
                             .datatypes
                             .iter()
                             .filter(|dt| dt.datatype == column.datatype)
-                            .nth(0)
-                            .unwrap();
-                        let column_format = match datatype.format.as_str() {
-                            "" => "%s",
-                            value => value,
+                            .nth(0);
+                        let column_format = match datatype {
+                            Some(datatype) => match datatype.format.as_str() {
+                                "" => "%s",
+                                value => value,
+                            },
+                            None => "%s",
                         };
                         ResultSet::format_cell_text_value(&column_format, &format_regex, &cell.text)
                     };
@@ -3571,4 +3578,37 @@ pub struct Tab {
     pub active: bool,
     pub url: String,
     pub count: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use serde_json::from_value;
+
+    #[tokio::test]
+    async fn test_result_set() {
+        let rltbl = Relatable::init(
+            &true,
+            Some("build/test_result_set.db"),
+            &CachingStrategy::Trigger,
+        )
+        .await
+        .unwrap();
+        crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
+
+        // A basic URL
+        let query_params = from_value(json!({})).unwrap();
+        let select = Select::from_path_and_query("penguin", &query_params, &rltbl)
+            .await
+            .limit(&1)
+            .offset(&9);
+
+        let result_set = rltbl.fetch(&select).await.expect("select one row");
+        let expected = r"Rows 10-10 of 10
+study_name  sample_number  species             island     individual_id  bill_length  bill_depth  body_mass
+FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5         30.0        4521
+";
+        assert_eq!(result_set.to_console(), expected);
+    }
 }

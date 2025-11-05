@@ -203,13 +203,15 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
     datatype_table
         .add(&[
             &DatatypeBuilder::new("decimal")
-                .description("A decimal number")
+                .parent("nonspace")
+                .description("a decimal number")
                 .condition(r"match(-?\d+(\.\d+)?)")
                 .sql_type("NUMERIC")
                 .format("%.1f")
                 .build()?,
             &DatatypeBuilder::new("study_name")
-                .description("A decimal number")
+                .parent("word")
+                .description("the name of this study")
                 .condition(r"in(FAKE123, FAKE456)")
                 .build()?,
         ])

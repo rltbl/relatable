@@ -121,6 +121,11 @@ where
 }
 
 impl Column {
+    /// True if this is a "meta" column.
+    pub fn is_meta(&self) -> bool {
+        self.column.starts_with("_")
+    }
+
     // TODO: replace this
     /// Get the columns, either from the same or from another table, that depend on this column,
     /// using the given transaction
@@ -144,24 +149,27 @@ impl Column {
         );
         let mut dependent_columns: Vec<Column> = vec![];
         for row in &tx.query(&sql, None)? {
-            let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
-            let Structure::From(structure_table, structure_column) =
-                Structure::from_str(&row.get_string("structure")?)?;
-            let structure_table = structure_table.unwrap_or(dependent_table.name.to_string());
-            if structure_table == self.table && structure_column == self.column {
-                let dependent_column = row.get_string("column")?;
-                let dependent_column = match dependent_table.columns.get(&dependent_column) {
-                    Some(col) => col.clone(),
-                    None => {
-                        return Err(RelatableError::DataError(format!(
-                            "No column found: '{dependent_column}'"
-                        ))
-                        .into());
-                    }
-                };
-                let mut indirect_deps = dependent_column._get_dependent_columns(tx)?;
-                dependent_columns.push(dependent_column);
-                dependent_columns.append(&mut indirect_deps);
+            // TODO: Clean this up
+            if &row.get_string("structure")? != "" {
+                let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
+                let Structure::From(structure_table, structure_column) =
+                    Structure::from_str(&row.get_string("structure")?)?;
+                let structure_table = structure_table.unwrap_or(dependent_table.name.to_string());
+                if structure_table == self.table && structure_column == self.column {
+                    let dependent_column = row.get_string("column")?;
+                    let dependent_column = match dependent_table.columns.get(&dependent_column) {
+                        Some(col) => col.clone(),
+                        None => {
+                            return Err(RelatableError::DataError(format!(
+                                "No column found: '{dependent_column}'"
+                            ))
+                            .into());
+                        }
+                    };
+                    let mut indirect_deps = dependent_column._get_dependent_columns(tx)?;
+                    dependent_columns.push(dependent_column);
+                    dependent_columns.append(&mut indirect_deps);
+                }
             }
         }
         tracing::debug!(
@@ -172,7 +180,7 @@ impl Column {
         Ok(dependent_columns)
     }
 
-    /// Get the SQL type for this column according to its column,
+    /// Get the SQL type for this column according to its datatype,
     /// or the first column ancestor with a sql_type,
     /// or just "TEXT".
     pub fn sql_type(&self, datatypes: &Datatypes) -> String {
@@ -224,37 +232,56 @@ impl Columns {
         Columns {
             list: vec![
                 ColumnBuilder::default()
-                    .table("table")
+                    .table("column")
                     .column("table")
                     .description("the table for this column")
+                    .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "column")
                     .description("the name of this column")
+                    .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "label")
                     .description("the label of this column")
+                    .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "description")
+                    .sql_type("TEXT")
                     .description("the description of this column")
+                    .sql_type("TEXT")
+                    .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "nulltype")
                     .description("the null type of this column")
+                    .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "datatype")
                     .description("the datatype of this column")
+                    .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "structure")
                     .description("the structure of this column")
+                    .sql_type("TEXT")
                     .build()
                     .unwrap(),
             ],
         }
+    }
+
+    /// Return all the "meta" columns, starting with "_".
+    pub fn meta(&self) -> Vec<&Column> {
+        self.list.iter().filter(|col| col.is_meta()).collect()
+    }
+
+    /// Return all the data (non-meta) columns.
+    pub fn data(&self) -> Vec<&Column> {
+        self.list.iter().filter(|col| !col.is_meta()).collect()
     }
 }
 
@@ -365,31 +392,25 @@ impl<'a> ColumnTable<'a> {
     pub async fn get(&self) -> Result<Columns> {
         let sql = match self.pool.kind() {
             rltbl_db::core::DbKind::SQLite => {
-                // format!(
-                //     r#"
-                //     SELECT
-                //       main.name AS 'table',
-                //       pti.name AS 'column',
-                //       col.label AS 'label',
-                //       col.description AS 'description',
-                //       pti.type AS 'sql_type',
-                //       col.nulltype AS 'nulltype',
-                //       col.datatype AS 'datatype',
-                //       col.structure AS 'structure',
-                //       pti.pk AS 'primary_key',
-                //       (SELECT name = pti.name FROM pragma_index_info(pil.name)) AS 'unique'
-                //     FROM sqlite_master AS main
-                //     JOIN pragma_table_info(main.name) AS pti
-                //     JOIN pragma_index_list(main.name) AS pil
-                //     LEFT JOIN "{}" AS col ON col."table" = main.name AND col."column" = pti.name
-                //     WHERE main.type = 'table'
-                //     ORDER BY main.name;"#,
-                //     self.table_name
-                // )
                 format!(
-                    r#"SELECT "table", "column", "label", "description", "nulltype", "datatype", "structure"
-                    FROM "{}"
-                    ORDER BY _order;"#,
+                    r#"
+                    SELECT
+                      main.name AS 'table',
+                      pti.name AS 'column',
+                      col.label AS 'label',
+                      col.description AS 'description',
+                      pti.type AS 'sql_type',
+                      col.nulltype AS 'nulltype',
+                      col.datatype AS 'datatype',
+                      col.structure AS 'structure',
+                      pti.pk AS 'primary_key',
+                      (SELECT name = pti.name FROM pragma_index_info(pil.name)) AS 'unique'
+                    FROM sqlite_master AS main
+                    JOIN pragma_table_info(main.name) AS pti
+                    JOIN pragma_index_list(main.name) AS pil
+                    LEFT JOIN "{}" AS col ON col."table" = main.name AND col."column" = pti.name
+                    WHERE main.type = 'table'
+                    ORDER BY main.name;"#,
                     self.table_name
                 )
             }
@@ -459,6 +480,9 @@ mod tests {
         table.drop().await.expect("delete column table");
         table.create().await.expect("create column table");
         let columns = table.get().await.expect("get columns");
-        assert_eq!(columns, Columns::builtins());
+        assert_eq!(
+            columns.data(),
+            Columns::builtins().iter().collect::<Vec<_>>()
+        );
     }
 }
