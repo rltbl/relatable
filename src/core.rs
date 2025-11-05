@@ -222,16 +222,18 @@ impl Relatable {
             rltbl.connection.query(&sql, None).await?;
         }
 
+        rltbl.column_table().create().await?;
+
         Ok(rltbl)
     }
 
     /// Get the column table for this Relatable instance.
-    pub fn column_table(&self) -> ColumnTable {
+    pub fn column_table(&self) -> ColumnTable<'_> {
         ColumnTable::connect(&self.pool)
     }
 
     /// Get the datatype table for this Relatable instance.
-    pub fn datatype_table(&self) -> DatatypeTable {
+    pub fn datatype_table(&self) -> DatatypeTable<'_> {
         DatatypeTable::connect(&self.pool)
     }
 
@@ -347,7 +349,7 @@ impl Relatable {
         tracing::trace!("Relatable::fetch({select:?})");
 
         // Get the table and columns information and use the given select to set the table's view:
-        let mut table = Table::get_table(select.table_name.as_str(), self).await?;
+        let mut table = self.get_table(select.table_name.as_str()).await?;
         if select.view_name == format!("{}_default_view", table.name) || select.view_name == "" {
             table.set_view(self, "default").await?;
         } else if select.view_name == format!("{}_text_view", table.name) {
@@ -725,6 +727,43 @@ impl Relatable {
         self.commit_to_git().await.expect("Error committing to git");
     }
 
+    /// Returns a [Table] corresponding to the given table name.
+    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
+        // If the default view exists, set the table's view to it, otherwise leave it blank:
+        let result = Table::view_exists(table_name, "default", self).await?;
+        let view = {
+            if result {
+                format!("{table_name}_default_view")
+            } else {
+                String::from("")
+            }
+        };
+
+        // Get the last change for this table:
+        let statement = r#"SELECT MAX("change_id") FROM "history" WHERE "table" = $1"#;
+        let params = [table_name];
+        let change_id = self
+            .pool
+            .query_u64(&statement, params)
+            .await
+            .unwrap_or_default();
+
+        Ok(Table {
+            name: table_name.to_string(),
+            view,
+            change_id,
+            columns: self
+                .column_table()
+                .get(&[table_name])
+                .await?
+                .data()
+                .into_iter()
+                .map(|col| (col.column.clone(), col.clone()))
+                .collect(),
+            ..Default::default()
+        })
+    }
+
     /// Save all of the tables that have entries in the table table to the path indicated for each
     /// table there, unless `save_dir` has been given, in which case save them all there instead.
     pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
@@ -736,7 +775,7 @@ impl Relatable {
         let table_rows = self.connection.query(&sql, None).await?;
         for table_row in table_rows {
             let table_name = table_row.get_string("table")?;
-            let mut table = Table::get_table(&table_name, self).await?;
+            let mut table = self.get_table(&table_name).await?;
             table.set_view(self, "text").await?;
 
             let path = match save_dir {
@@ -1151,9 +1190,14 @@ impl Relatable {
 
     /// Returns a list of the given table's columns, not including metacolumns
     pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
-        tracing::trace!("Relatable::fetch_columns({table_name:?})");
-        let table = Table::get_table(table_name, self).await?;
-        Ok(table.columns.values().cloned().collect::<Vec<_>>())
+        Ok(self
+            .column_table()
+            .get(&[table_name])
+            .await?
+            .data()
+            .into_iter()
+            .cloned()
+            .collect())
     }
 
     /// Returns a list of the given table's columns, including metacolumns
@@ -1833,7 +1877,7 @@ impl Relatable {
         self.prepare_user_cursor(changeset, &mut tx)?;
 
         // Actually make the changes:
-        let table = Table::get_table(&changeset.table, &self).await?;
+        let table = self.get_table(&changeset.table).await?;
         let mut actual_changes = vec![];
         for change in &changeset.changes {
             match change {
@@ -2105,7 +2149,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = Table::get_table(table_name, &self).await?;
+        let table = self.get_table(table_name).await?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
@@ -2231,21 +2275,11 @@ impl Relatable {
         user: &str,
         row: u64,
     ) -> Result<usize> {
-        tracing::trace!(
-            "Relatable::_delete_row(conn, {action:?}, {table_name:?}, {user:?} \
-                         {row})"
-        );
         // Begin a transaction:
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        // let table = Table::get_table(table_name, &self).await?;
-        let columns = self.column_table().get(&[table_name]).await?;
-        let table = Table {
-            name: table_name.to_owned(),
-            columns: columns.into(),
-            ..Default::default()
-        };
+        let table = self.get_table(table_name).await?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
@@ -2416,7 +2450,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = Table::get_table(table_name, &self).await?;
+        let table = self.get_table(table_name).await?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),

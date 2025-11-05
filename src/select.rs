@@ -5,7 +5,6 @@
 use crate::{
     core::{Page, Relatable, RelatableError, Tab, DEFAULT_LIMIT},
     sql::{self, DbKind, SqlParam},
-    table::Table,
 };
 use anyhow::Result;
 use enquote::unquote;
@@ -132,7 +131,7 @@ impl Select {
         }
 
         let base_table_name = path.split(".").next().unwrap_or_default();
-        let base_view_name = match Table::get_table(base_table_name, &rltbl).await {
+        let base_view_name = match rltbl.get_table(base_table_name).await {
             Ok(table_config) => table_config.view,
             Err(_) => String::new(),
         };
@@ -149,7 +148,12 @@ impl Select {
                     "" => base_table_name,
                     table => &table,
                 };
-                Table::get_table(table_name, &rltbl)
+                match rltbl.get_table(table_name).await {
+                    Ok(_) => (),
+                    Err(err) => println!("ERROR {err} for {table_name}"),
+                };
+                rltbl
+                    .get_table(table_name)
                     .await
                     .expect("Can't get table '{table_name}'")
             };
@@ -3141,7 +3145,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         rltbl.connection.query(create_sql, None).await.unwrap();
         rltbl.connection.query(insert_sql, None).await.unwrap();
 
-        let mut table_a = Table::get_table("A", &rltbl).await.unwrap();
+        let mut table_a = rltbl.get_table("A").await.unwrap();
         table_a.ensure_default_view_created(&rltbl).await.unwrap();
 
         let drop_sql = r#"DROP TABLE IF EXISTS "B""#;

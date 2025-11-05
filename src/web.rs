@@ -9,7 +9,6 @@ use rltbl::{
     row::Row,
     select::{joined_query, Format, QueryParams, Select},
     sql::{CachingStrategy, JsonRow},
-    table::Table,
 };
 use rltbl_db::core::DbQuery;
 
@@ -248,9 +247,7 @@ async fn get_tableset(
         Err(error) => match error.downcast_ref() {
             Some(RelatableError::ConfigError(e)) => match e.as_str() {
                 "empty tableset" => {
-                    let mut table = Table::get_table(select.table_name.as_str(), &rltbl)
-                        .await
-                        .unwrap();
+                    let mut table = rltbl.get_table(select.table_name.as_str()).await.unwrap();
                     table.ensure_default_view_created(&rltbl).await.unwrap();
                     let columns = match rltbl.column_table().get(&[&table.name]).await {
                         Ok(columns) => columns.into(),
@@ -402,7 +399,7 @@ async fn get_row_menu(
     tracing::info!("get_row_menu({table_name}, {row_id})");
     let username = get_username(session);
     let site = rltbl.get_site(&username).await;
-    let table = match Table::get_table(&table_name, &rltbl).await {
+    let table = match rltbl.get_table(&table_name).await {
         Ok(table) => table,
         Err(error) => return get_404(&error),
     };
@@ -468,7 +465,7 @@ async fn get_cell_menu(
     tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
     let username = get_username(session);
     let site = rltbl.get_site(&username).await;
-    let table = match Table::get_table(&table_name, &rltbl).await {
+    let table = match rltbl.get_table(&table_name).await {
         Ok(table) => table,
         Err(error) => return get_404(&error),
     };
@@ -653,7 +650,8 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
         .route("/sign-in", post(post_sign_in))
         .route("/sign-out", post(post_sign_out))
         .route("/cursor", post(post_cursor))
-        .route("/table/{*path}", get(get_table).post(post_table))
+        // .route("/table/{*path}", get(get_table).post(post_table))
+        .route("/table/{*path}", get(get_table))
         .route("/tableset/{tableset_name}/{*path}", get(get_tableset))
         .route("/row-menu/{table_name}/{row_id}", get(get_row_menu))
         .route("/column-menu/{table_name}/{column}", get(get_column_menu))
@@ -665,10 +663,10 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
             "/cell-options/{table}/{row_id}/{column}",
             get(get_cell_options),
         )
-        .route("/add-row/{table}", get(add_row_end))
-        .route("/add-row-before/{table}/{row_id}", get(add_row_before))
-        .route("/add-row-after/{table}/{row_id}", get(add_row_after))
-        .route("/delete-row/{table}/{row_id}", get(delete_row))
+        // .route("/add-row/{table}", get(add_row_end))
+        // .route("/add-row-before/{table}/{row_id}", get(add_row_before))
+        // .route("/add-row-after/{table}/{row_id}", get(add_row_after))
+        // .route("/delete-row/{table}/{row_id}", get(delete_row))
         .layer(SessionLayer::new(session_store))
         .with_state(shared_state)
 }

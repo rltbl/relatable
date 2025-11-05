@@ -7,7 +7,6 @@ use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Relatable, ValidationLevel},
     select::{Format, Select},
     sql::{CachingStrategy, JsonRow, VecInto},
-    table::Table,
     web::{serve, serve_cgi},
 };
 use rltbl_db::core::DbQuery;
@@ -861,7 +860,8 @@ pub async fn validate_row(cli: &Cli, table_name: &str, row: &u64) {
         .await
         .expect("Connect error");
 
-    let table = Table::get_table(table_name, &rltbl)
+    let table = rltbl
+        .get_table(table_name)
         .await
         .expect("Error getting table");
 
@@ -879,7 +879,8 @@ pub async fn validate_table(cli: &Cli, table_name: &str) {
         .await
         .expect("Connect error");
 
-    let table = Table::get_table(table_name, &rltbl)
+    let table = rltbl
+        .get_table(table_name)
         .await
         .expect("Error getting table");
 
@@ -897,7 +898,8 @@ pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
         .await
         .expect("Connect error");
 
-    let table = Table::get_table(table_name, &rltbl)
+    let table = rltbl
+        .get_table(table_name)
         .await
         .expect("Error getting table");
     let column = table.columns.get(column_name).expect(&format!(
@@ -918,7 +920,8 @@ pub async fn validate_value(cli: &Cli, table_name: &str, row: &u64, column_name:
         .await
         .expect("Connect error");
 
-    let table = Table::get_table(table_name, &rltbl)
+    let table = rltbl
+        .get_table(table_name)
         .await
         .expect("Error getting table");
     let column = table.columns.get(column_name).expect(&format!(

@@ -45,38 +45,6 @@ impl Default for Table {
 }
 
 impl Table {
-    /// Returns a [Table] corresponding to the given table name.
-    pub async fn get_table(table_name: &str, rltbl: &Relatable) -> Result<Self> {
-        // If the default view exists, set the table's view to it, otherwise leave it blank:
-        let result = Table::view_exists(table_name, "default", rltbl).await?;
-        let view = {
-            if result {
-                format!("{table_name}_default_view")
-            } else {
-                String::from("")
-            }
-        };
-
-        // Get the last change for this table:
-        let statement = r#"SELECT MAX("change_id") FROM "history" WHERE "table" = $1"#;
-        let params = [table_name];
-        let change_id = rltbl.pool.query_u64(&statement, params).await?;
-
-        Ok(Table {
-            name: table_name.to_string(),
-            view,
-            change_id,
-            columns: rltbl
-                .column_table()
-                .get(&[table_name])
-                .await?
-                .iter()
-                .map(|column| (column.column.clone(), column.clone()))
-                .collect::<IndexMap<_, _>>(),
-            ..Default::default()
-        })
-    }
-
     /// Drop the given table in the database
     pub async fn drop_table(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::drop_data_tables({self:?}, {rltbl:?})");
@@ -173,7 +141,10 @@ impl Table {
                 vec![format!("{table}_{view_type}_view"), "VIEW".to_owned()],
             ),
         };
-        Ok(rltbl.pool.query_u64(&statement, params).await? == 1)
+        match rltbl.pool.query_u64(&statement, params).await {
+            Ok(value) => Ok(value > 0),
+            Err(_) => Ok(false),
+        }
     }
 
     /// Get the tables that depend on this table. If `column_name` is specified, only get the

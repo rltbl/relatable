@@ -244,38 +244,43 @@ impl Columns {
                     .table("column")
                     .column("table")
                     .description("the table for this column")
+                    .datatype("word")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "column")
                     .description("the name of this column")
+                    .datatype("word")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "label")
                     .description("the label of this column")
+                    .datatype("trimmed_line")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "description")
-                    .sql_type("TEXT")
                     .description("the description of this column")
-                    .sql_type("TEXT")
+                    .datatype("trimmed_line")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "nulltype")
                     .description("the null type of this column")
+                    .datatype("word")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "datatype")
                     .description("the datatype of this column")
+                    .datatype("word")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "structure")
                     .description("the structure of this column")
+                    .datatype("trimmed_line")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
@@ -303,7 +308,7 @@ pub struct ColumnTable<'a> {
 
 impl<'a> ColumnTable<'a> {
     /// Create a new instance of ColumnTable from an AnyPool.
-    pub fn connect<'b: 'a>(pool: &'b AnyPool) -> Self {
+    pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
             table_name: "column".to_owned(),
             pool,
@@ -404,7 +409,7 @@ impl<'a> ColumnTable<'a> {
                         "\n  AND main.name IN({})",
                         tables
                             .iter()
-                            .map(|t| format!("'{t}"))
+                            .map(|t| format!("'{t}'"))
                             .collect::<Vec<String>>()
                             .join(", ")
                     )
@@ -426,9 +431,10 @@ impl<'a> ColumnTable<'a> {
                       (SELECT name = pti.name FROM pragma_index_info(pil.name)) AS 'unique'
                     FROM sqlite_master AS main
                     JOIN pragma_table_info(main.name) AS pti
-                    JOIN pragma_index_list(main.name) AS pil
+                    LEFT JOIN pragma_index_list(main.name) AS pil
                     LEFT JOIN "{}" AS col ON col."table" = main.name AND col."column" = pti.name
-                    WHERE main.type = 'table'{filter}
+                    WHERE main.type = 'table'
+                      AND main.name != 'sqlite_sequence'{filter}
                     ORDER BY main.name;"#,
                     self.table_name
                 ))
