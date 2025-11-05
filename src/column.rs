@@ -5,17 +5,11 @@
 use std::{
     fmt,
     ops::{Deref, DerefMut},
-    str::FromStr,
 };
 
 use crate as rltbl;
-use rltbl::{
-    core::RelatableError,
-    datatype::Datatypes,
-    sql::{self, DbTransaction},
-    structure::Structure,
-    table::Table,
-};
+use indexmap::IndexMap;
+use rltbl::{core::RelatableError, datatype::Datatypes};
 use rltbl_db::{
     any::AnyPool,
     core::{DbKind, DbQuery, JsonRow},
@@ -129,13 +123,13 @@ impl Column {
     // TODO: replace this
     /// Get the columns, either from the same or from another table, that depend on this column,
     /// using the given transaction
-    pub fn _get_dependent_columns(&self, tx: &mut DbTransaction<'_>) -> Result<Vec<Self>> {
+    pub fn get_dependent_columns(&self, _columns: &Columns) -> Vec<Self> {
         tracing::trace!("Column::_get_dependent_columns({self:?}, tx)");
 
-        if !Table::_table_exists("column", tx)? {
-            tracing::debug!("No column table found");
-            return Ok(vec![]);
-        }
+        // if !Table::_table_exists("column", tx)? {
+        //     tracing::debug!("No column table found");
+        //     return Ok(vec![]);
+        // }
 
         tracing::debug!(
             "Looking through column table for dependent columns of '{}.{}'",
@@ -143,41 +137,41 @@ impl Column {
             self.column
         );
 
-        let sql = format!(
-            r#"SELECT * FROM "column" WHERE "structure" {is_not} NULL"#,
-            is_not = sql::is_not_clause(&tx.kind())
-        );
-        let mut dependent_columns: Vec<Column> = vec![];
-        for row in &tx.query(&sql, None)? {
-            // TODO: Clean this up
-            if &row.get_string("structure")? != "" {
-                let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
-                let Structure::From(structure_table, structure_column) =
-                    Structure::from_str(&row.get_string("structure")?)?;
-                let structure_table = structure_table.unwrap_or(dependent_table.name.to_string());
-                if structure_table == self.table && structure_column == self.column {
-                    let dependent_column = row.get_string("column")?;
-                    let dependent_column = match dependent_table.columns.get(&dependent_column) {
-                        Some(col) => col.clone(),
-                        None => {
-                            return Err(RelatableError::DataError(format!(
-                                "No column found: '{dependent_column}'"
-                            ))
-                            .into());
-                        }
-                    };
-                    let mut indirect_deps = dependent_column._get_dependent_columns(tx)?;
-                    dependent_columns.push(dependent_column);
-                    dependent_columns.append(&mut indirect_deps);
-                }
-            }
-        }
+        // let sql = format!(
+        //     r#"SELECT * FROM "column" WHERE "structure" {is_not} NULL"#,
+        //     is_not = sql::is_not_clause(&tx.kind())
+        // );
+        let dependent_columns: Vec<Column> = vec![];
+        // for row in &tx.query(&sql, None)? {
+        //     // TODO: Clean this up
+        //     if &row.get_string("structure")? != "" {
+        //         let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
+        //         let Structure::From(structure_table, structure_column) =
+        //             Structure::from_str(&row.get_string("structure")?)?;
+        //         let structure_table = structure_table.unwrap_or(dependent_table.name.to_string());
+        //         if structure_table == self.table && structure_column == self.column {
+        //             let dependent_column = row.get_string("column")?;
+        //             let dependent_column = match dependent_table.columns.get(&dependent_column) {
+        //                 Some(col) => col.clone(),
+        //                 None => {
+        //                     return Err(RelatableError::DataError(format!(
+        //                         "No column found: '{dependent_column}'"
+        //                     ))
+        //                     .into());
+        //                 }
+        //             };
+        //             let mut indirect_deps = dependent_column._get_dependent_columns(tx)?;
+        //             dependent_columns.push(dependent_column);
+        //             dependent_columns.append(&mut indirect_deps);
+        //         }
+        //     }
+        // }
         tracing::debug!(
             "Column '{}.{}' has the following dependent columns: {dependent_columns:#?}",
             self.table,
             self.column
         );
-        Ok(dependent_columns)
+        dependent_columns
     }
 
     /// Get the SQL type for this column according to its datatype,
@@ -223,6 +217,21 @@ impl Deref for Columns {
 impl DerefMut for Columns {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.list
+    }
+}
+
+impl Into<Vec<Column>> for Columns {
+    fn into(self) -> Vec<Column> {
+        self.list
+    }
+}
+
+impl Into<IndexMap<String, Column>> for Columns {
+    fn into(self) -> IndexMap<String, Column> {
+        self.list
+            .into_iter()
+            .map(|col| (col.column.clone(), col.clone()))
+            .collect()
     }
 }
 
@@ -285,19 +294,16 @@ impl Columns {
     }
 }
 
-/// Represents the special "datatype" table.
+/// Represents the special "column" table.
 pub struct ColumnTable<'a> {
-    // This table_name is "datatype" by default.
+    // This table_name is "column" by default.
     table_name: String,
     pool: &'a AnyPool,
 }
 
 impl<'a> ColumnTable<'a> {
     /// Create a new instance of ColumnTable from an AnyPool.
-    pub fn connect<'b>(pool: &'b AnyPool) -> Self
-    where
-        'b: 'a,
-    {
+    pub fn connect<'b: 'a>(pool: &'b AnyPool) -> Self {
         Self {
             table_name: "column".to_owned(),
             pool,
@@ -387,12 +393,25 @@ impl<'a> ColumnTable<'a> {
         Ok(dts)
     }
 
-    /// Get all the columns for this database.
-    /// This merges the actual columns with the content of the column table.
-    pub async fn get(&self) -> Result<Columns> {
-        let sql = match self.pool.kind() {
+    /// Get a SQL string for a query over actual columns,
+    /// merged with column configuration.
+    fn get_sql(&self, tables: &[&str]) -> Result<String> {
+        // TODO: Validate table names.
+        match self.pool.kind() {
             rltbl_db::core::DbKind::SQLite => {
-                format!(
+                let filter = if tables.len() > 0 {
+                    format!(
+                        "\n  AND main.name IN({})",
+                        tables
+                            .iter()
+                            .map(|t| format!("'{t}"))
+                            .collect::<Vec<String>>()
+                            .join(", ")
+                    )
+                } else {
+                    String::new()
+                };
+                Ok(format!(
                     r#"
                     SELECT
                       main.name AS 'table',
@@ -409,41 +428,37 @@ impl<'a> ColumnTable<'a> {
                     JOIN pragma_table_info(main.name) AS pti
                     JOIN pragma_index_list(main.name) AS pil
                     LEFT JOIN "{}" AS col ON col."table" = main.name AND col."column" = pti.name
-                    WHERE main.type = 'table'
+                    WHERE main.type = 'table'{filter}
                     ORDER BY main.name;"#,
                     self.table_name
-                )
+                ))
             }
             rltbl_db::core::DbKind::PostgreSQL => {
                 todo!()
             }
-        };
+        }
+    }
+
+    /// Get all the columns for this database.
+    /// This merges the actual columns with the content of the column table.
+    pub async fn get_all(&self) -> Result<Columns> {
+        self.get(&[]).await
+    }
+
+    /// Get all the columns for this database.
+    /// This merges the actual columns with the content of the column table.
+    pub async fn get(&self, tables: &[&str]) -> Result<Columns> {
+        let sql = self.get_sql(tables)?;
         let rows = self.pool.query(&sql, ()).await?;
         let list = rows
             .iter()
-            // .map(|row| match serde_json::from_value(json!(row)) {
-            //     Ok(col) => Some(col),
-            //     Err(err) => {
-            //         println!("{row:?} {err}");
-            //         None
-            //     }
-            // })
-            // .filter_map(|result| result)
-            // .filter_map(|row| serde_json::from_value(json!(row)).ok())
             .filter_map(|row: &JsonRow| {
                 let row: JsonRow = row
                     .iter()
                     .filter(|(_, value)| !value.is_null())
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect();
-                // serde_json::from_value(json!(row)).ok()
-                match serde_json::from_value(json!(row)) {
-                    Ok(col) => Some(col),
-                    Err(err) => {
-                        println!("{row:?} {err}");
-                        None
-                    }
-                }
+                serde_json::from_value(json!(row)).ok()
             })
             .collect::<Vec<_>>();
         Ok(Columns { list })
@@ -479,7 +494,7 @@ mod tests {
         let table = ColumnTable::connect(&pool);
         table.drop().await.expect("delete column table");
         table.create().await.expect("create column table");
-        let columns = table.get().await.expect("get columns");
+        let columns = table.get_all().await.expect("get columns");
         assert_eq!(
             columns.data(),
             Columns::builtins().iter().collect::<Vec<_>>()

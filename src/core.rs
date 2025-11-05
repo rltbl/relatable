@@ -4,7 +4,7 @@
 
 use crate as rltbl;
 use rltbl::{
-    column::{Column, ColumnTable},
+    column::{Column, ColumnTable, Columns},
     datatype::{Datatype, DatatypeTable, Datatypes},
     git,
     row::{Cell, Message, Row},
@@ -224,13 +224,14 @@ impl Relatable {
 
         Ok(rltbl)
     }
+
     /// Get the column table for this Relatable instance.
-    pub fn column_table(&self) -> ColumnTable<'_> {
+    pub fn column_table(&self) -> ColumnTable {
         ColumnTable::connect(&self.pool)
     }
 
     /// Get the datatype table for this Relatable instance.
-    pub fn datatype_table(&self) -> DatatypeTable<'_> {
+    pub fn datatype_table(&self) -> DatatypeTable {
         DatatypeTable::connect(&self.pool)
     }
 
@@ -518,9 +519,15 @@ impl Relatable {
                 name: table_name.to_string(),
                 ..Default::default()
             };
-            let table_columns = Table::get_column_table_columns(table_name, self)
+            let table_columns = self
+                .column_table()
+                .get(&[table_name])
                 .await
-                .expect(&format!("Error getting columns for table '{table_name}'"));
+                .expect("get columns for this table");
+            let table_columns = table_columns
+                .iter()
+                .map(|col| (col.column.clone(), col))
+                .collect::<IndexMap<String, &Column>>();
             for column_name in headers.iter() {
                 let column = Column {
                     column: column_name.to_string(),
@@ -1151,23 +1158,7 @@ impl Relatable {
 
     /// Returns a list of the given table's columns, including metacolumns
     pub async fn fetch_all_columns(&self, table_name: &str) -> Result<Vec<Column>> {
-        tracing::trace!("Relatable::fetch_all_columns({table_name:?})");
-        let mut conn = self.connection.reconnect()?;
-        // Begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
-
-        let columns = {
-            let (mut normal_columns, meta_columns) =
-                Table::_collect_column_info(table_name, &mut tx)?;
-            let mut all_columns = meta_columns;
-            all_columns.append(&mut normal_columns);
-            all_columns
-        };
-
-        // Commit the transaction:
-        tx.commit()?;
-
-        Ok(columns)
+        Ok(self.column_table().get(&[table_name]).await?.into())
     }
 
     /// Returns a vector of the names of the tables that have entries in the table table
@@ -1683,9 +1674,12 @@ impl Relatable {
             None => Ok(None),
             Some(change) => {
                 if let Change::Update { .. } = change {
+                    let columns = self.column_table().get(&[&changeset.table]).await?;
                     let datatypes = self.datatypes().await;
                     let conn = self.connection.reconnect()?;
-                    let actual_changes = self._set_values(&datatypes, conn, &changeset).await?;
+                    let actual_changes = self
+                        ._set_values(&columns, &datatypes, conn, &changeset)
+                        .await?;
                     Ok(Some(actual_changes))
                 } else {
                     let mut actual_changes = vec![];
@@ -1826,6 +1820,7 @@ impl Relatable {
     /// Update the database using the given [ChangeSet]
     async fn _set_values(
         &self,
+        columns: &Columns,
         datatypes: &Datatypes,
         mut conn: Option<DbActiveConnection>,
         changeset: &ChangeSet,
@@ -1838,7 +1833,7 @@ impl Relatable {
         self.prepare_user_cursor(changeset, &mut tx)?;
 
         // Actually make the changes:
-        let table = Table::_get_table(&changeset.table, &mut tx)?;
+        let table = Table::get_table(&changeset.table, &self).await?;
         let mut actual_changes = vec![];
         for change in &changeset.changes {
             match change {
@@ -1961,7 +1956,7 @@ impl Relatable {
                             Some(row),
                             &mut tx,
                         )?;
-                        for column in &column_config._get_dependent_columns(&mut tx)? {
+                        for column in &column_config.get_dependent_columns(&columns) {
                             tracing::debug!("Validating dependent column '{}'", column.column);
                             self._validate_structure_for_column_and_optionally_for_row(
                                 column, None, &mut tx,
@@ -2000,9 +1995,12 @@ impl Relatable {
     /// Update the database using the given [ChangeSet]
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<ChangeSet> {
         tracing::trace!("Relatable::set_values({changeset:?})");
+        let columns = self.column_table().get(&[&changeset.table]).await?;
         let datatypes = self.datatypes().await;
         let conn = self.connection.reconnect()?;
-        let changeset = self._set_values(&datatypes, conn, changeset).await?;
+        let changeset = self
+            ._set_values(&columns, &datatypes, conn, changeset)
+            .await?;
         if changeset.changes.len() > 0 {
             self.commit_to_git().await?;
         }
@@ -2107,7 +2105,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = Table::_get_table(table_name, &mut tx)?;
+        let table = Table::get_table(table_name, &self).await?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
@@ -2147,7 +2145,7 @@ impl Relatable {
         // Optionally do full validation on the row after it has been inserted:
         if self.validation_level == ValidationLevel::Full {
             self._validate_row(&datatypes, &table, &new_row.id, &mut tx)?;
-            for table in &table._get_dependent_tables(None, &mut tx)? {
+            for table in &table.get_dependent_tables(None, &self).await? {
                 tracing::debug!("Validating dependent table '{}'", table.name);
                 self._validate_structure_for_table(table, &mut tx)?;
             }
@@ -2241,7 +2239,13 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = Table::_get_table(table_name, &mut tx)?;
+        // let table = Table::get_table(table_name, &self).await?;
+        let columns = self.column_table().get(&[table_name]).await?;
+        let table = Table {
+            name: table_name.to_owned(),
+            columns: columns.into(),
+            ..Default::default()
+        };
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
@@ -2412,7 +2416,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
-        let table = Table::_get_table(table_name, &mut tx)?;
+        let table = Table::get_table(table_name, &self).await?;
         if !table.editable {
             return Err(
                 RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),

@@ -1146,7 +1146,7 @@ pub(crate) fn generate_default_view_ddl(
     table_name: &str,
     id_col: &str,
     order_col: &str,
-    columns: &Vec<Column>,
+    columns: &Vec<&Column>,
     kind: &DbKind,
 ) -> Vec<String> {
     tracing::trace!(
@@ -1404,7 +1404,7 @@ pub(crate) fn generate_text_view_ddl(
     table_name: &str,
     id_col: &str,
     order_col: &str,
-    columns: &Vec<Column>,
+    columns: &Vec<&Column>,
     kind: &DbKind,
 ) -> Vec<String> {
     tracing::trace!(

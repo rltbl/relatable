@@ -252,9 +252,10 @@ async fn get_tableset(
                         .await
                         .unwrap();
                     table.ensure_default_view_created(&rltbl).await.unwrap();
-                    let (columns, _) = Table::collect_column_info(&table.name, &rltbl)
-                        .await
-                        .unwrap();
+                    let columns = match rltbl.column_table().get(&[&table.name]).await {
+                        Ok(columns) => columns.into(),
+                        Err(error) => return get_500(&error),
+                    };
                     ResultSet {
                         select: select.clone(),
                         table,
