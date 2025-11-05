@@ -55,7 +55,7 @@
     <thead>
       <tr>
         {% for column in columns %}
-        <th>{{ column.name }}</th>
+        <th>{{ column.column }}</th>
         {% endfor %}
       </tr>
     </thead>
@@ -101,7 +101,7 @@
   const table = {{result.table.name | tojson}};
   var columns = {{result.columns | tojson}};
   for (var i = 0; i < columns.length; i++) {
-    var column_name = columns[i].name;
+    var column_name = columns[i].column;
     var kind = "text";
     if (table === "penguin") {
       if (column_name === "island") {
@@ -135,7 +135,7 @@
     var column = document.getElementById("filter-value");
     if (column) {
       // TODO: This should handle multiple columns.
-      column = column.name;
+      column = column.column;
       var order = "";
       if (e.target.id === "sort-asc") {
         order = column;

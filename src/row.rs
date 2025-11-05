@@ -6,14 +6,14 @@ use crate::{
     column::Column,
     core::{Relatable, RelatableError},
     datatype::Datatypes,
-    sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
+    sql::{self, JsonRow},
     table::Table,
 };
 
 use anyhow::Result;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::Value as JsonValue;
 
 /// Represents a row from some table
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -45,59 +45,13 @@ impl Row {
         self.cells.values().map(|cell| cell.text.clone()).collect()
     }
 
-    /// Generate an insert statement and a [JsonValue] representing an [Array](JsonValue::Array) of
-    /// parameters that need to be bound to the statement before it is executed.
-    pub fn as_insert(&self, table: &str, db_kind: &DbKind) -> (String, JsonValue) {
-        tracing::trace!("Row::as_insert({table:?})");
-        let id = self.id;
-        let order = self.order;
-        let quoted_column_names = self
-            .cells
-            .keys()
-            .map(|k| format!(r#""{k}""#))
-            .collect::<Vec<_>>();
-
-        let mut sql_param_gen = SqlParam::new(db_kind);
-        let (value_placeholders, params) = {
-            let mut params = vec![json!(id), json!(order)];
-            let mut value_placeholders = vec![sql_param_gen.next(), sql_param_gen.next()];
-            for cell in self.cells.values() {
-                if cell.value == JsonValue::Null {
-                    value_placeholders.push("NULL".to_string());
-                } else {
-                    value_placeholders.push(sql_param_gen.next());
-                    params.push(cell.value.clone());
-                }
-            }
-            (value_placeholders, params)
-        };
-
-        let sql = if quoted_column_names.len() == 0 {
-            format!(
-                r#"INSERT INTO "{table}"
-                   ("_id", "_order")
-                   VALUES ({column_values})"#,
-                column_values = value_placeholders.join(", ")
-            )
-        } else {
-            format!(
-                r#"INSERT INTO "{table}"
-                   ("_id", "_order", {quoted_column_names})
-                   VALUES ({column_values})"#,
-                quoted_column_names = quoted_column_names.join(", "),
-                column_values = value_placeholders.join(", "),
-            )
-        };
-        (sql, json!(params))
-    }
-
-    /// Validate this row, which belongs to the given [Table], using the given [DbTransaction],
+    /// Validate this row, which belongs to the given [Table],
     /// and add any resulting validation [messages](Message) to the message table
-    pub fn validate_sql_types(
+    pub async fn validate_sql_types(
         &mut self,
         datatypes: &Datatypes,
         table: &Table,
-        tx: &mut DbTransaction<'_>,
+        rltbl: &Relatable,
     ) -> Result<&Self> {
         for (column, cell) in self.cells.iter_mut() {
             let column_details = table
@@ -107,17 +61,18 @@ impl Row {
                 .unwrap_or_default();
             cell.validate_sql_type(datatypes, &column_details)?;
             for message in cell.messages.iter() {
-                let (msg_id, msg) = Relatable::_add_message(
-                    "rltbl",
-                    &table.name,
-                    &self.id,
-                    column,
-                    &cell.value,
-                    &message.level,
-                    &message.rule,
-                    &message.message,
-                    tx,
-                )?;
+                let (msg_id, msg) = rltbl
+                    .add_message(
+                        "rltbl",
+                        &table.name,
+                        self.id,
+                        column,
+                        &cell.value,
+                        &message.level,
+                        &message.rule,
+                        &message.message,
+                    )
+                    .await?;
                 tracing::debug!("Added message (ID {msg_id}): {msg:?}");
             }
         }
@@ -330,6 +285,7 @@ pub struct Message {
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
+    use serde_json::json;
 
     use super::*;
 

@@ -267,6 +267,7 @@ async fn get_tableset(
             }
         },
     };
+
     result.select = select.clone();
     match format {
         Format::Csv => return respond_csv(result),
@@ -650,8 +651,7 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
         .route("/sign-in", post(post_sign_in))
         .route("/sign-out", post(post_sign_out))
         .route("/cursor", post(post_cursor))
-        // .route("/table/{*path}", get(get_table).post(post_table))
-        .route("/table/{*path}", get(get_table))
+        .route("/table/{*path}", get(get_table).post(post_table))
         .route("/tableset/{tableset_name}/{*path}", get(get_tableset))
         .route("/row-menu/{table_name}/{row_id}", get(get_row_menu))
         .route("/column-menu/{table_name}/{column}", get(get_column_menu))
@@ -663,10 +663,10 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
             "/cell-options/{table}/{row_id}/{column}",
             get(get_cell_options),
         )
-        // .route("/add-row/{table}", get(add_row_end))
-        // .route("/add-row-before/{table}/{row_id}", get(add_row_before))
-        // .route("/add-row-after/{table}/{row_id}", get(add_row_after))
-        // .route("/delete-row/{table}/{row_id}", get(delete_row))
+        .route("/add-row/{table}", get(add_row_end))
+        .route("/add-row-before/{table}/{row_id}", get(add_row_before))
+        .route("/add-row-after/{table}/{row_id}", get(add_row_after))
+        .route("/delete-row/{table}/{row_id}", get(delete_row))
         .layer(SessionLayer::new(session_store))
         .with_state(shared_state)
 }

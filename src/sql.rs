@@ -35,7 +35,7 @@ use std::{fmt::Display, str::FromStr};
 use rusqlite::{
     functions::FunctionFlags as RusqliteFunctionFlags, types::ValueRef as RusqliteValueRef,
     Connection as RusqliteConnection, Error as RusqliteError, Result as RusqliteResult,
-    Row as RusqliteRow, Statement as RusqliteStatement, Transaction as RusqliteTransaction,
+    Row as RusqliteRow, Statement as RusqliteStatement,
 };
 
 #[cfg(feature = "rusqlite")]
@@ -306,36 +306,6 @@ impl DbConnection {
         }
     }
 
-    /// Begin a transaction
-    pub async fn begin<'a>(
-        &self,
-        conn: &'a mut Option<DbActiveConnection>,
-    ) -> Result<DbTransaction<'a>> {
-        tracing::trace!("DbConnection::begin({self:?}, {conn:?})");
-        match self {
-            #[cfg(feature = "sqlx")]
-            DbConnection::Sqlx(db_pool, kind) => match db_pool {
-                DbPool::Postgres(pool) => {
-                    let tx = pool.begin().await?;
-                    Ok(DbTransaction::Sqlx(SqlxDbTransaction::Postgres(tx), *kind))
-                }
-            },
-            #[cfg(feature = "rusqlite")]
-            DbConnection::Rusqlite(_) => match conn {
-                None => {
-                    return Err(RelatableError::InputError(
-                        "Can't begin Rusqlite transaction: No connection provided".to_string(),
-                    )
-                    .into())
-                }
-                Some(DbActiveConnection::Rusqlite(ref mut conn)) => {
-                    let tx = conn.transaction()?;
-                    Ok(DbTransaction::Rusqlite(tx))
-                }
-            },
-        }
-    }
-
     /// Given a generic SQL string with placeholders and a list of parameters to interpolate into
     /// the string, return a vector of [JsonRow]s. Note that since this returns a vector,
     /// statements should be limited to those that will return a sane number of rows.
@@ -573,111 +543,6 @@ impl DbConnection {
 #[derive(Debug)]
 pub enum SqlxDbTransaction<'a> {
     Postgres(Transaction<'a, Postgres>),
-}
-
-/// A database transaction
-#[derive(Debug)]
-pub enum DbTransaction<'a> {
-    #[cfg(feature = "sqlx")]
-    Sqlx(SqlxDbTransaction<'a>, DbKind),
-
-    #[cfg(feature = "rusqlite")]
-    Rusqlite(RusqliteTransaction<'a>),
-}
-
-impl DbTransaction<'_> {
-    /// The kind of database this transaction is associated with
-    pub fn kind(&self) -> DbKind {
-        tracing::trace!("DbTransaction::kind({self:?})");
-        match self {
-            #[cfg(feature = "sqlx")]
-            DbTransaction::Sqlx(_, kind) => *kind,
-            #[cfg(feature = "rusqlite")]
-            DbTransaction::Rusqlite(_) => DbKind::Sqlite,
-        }
-    }
-
-    /// Commit this transaction
-    pub fn commit(self) -> Result<()> {
-        tracing::trace!("DbTransaction::commit({self:?})");
-        match self {
-            #[cfg(feature = "sqlx")]
-            DbTransaction::Sqlx(tx, _) => match tx {
-                SqlxDbTransaction::Postgres(tx) => block_on(tx.commit())?,
-            },
-            #[cfg(feature = "rusqlite")]
-            DbTransaction::Rusqlite(tx) => tx.commit()?,
-        };
-        Ok(())
-    }
-
-    /// Rollback this transaction
-    pub fn rollback(self) -> Result<()> {
-        tracing::trace!("DbTransaction::rollback({self:?})");
-        match self {
-            #[cfg(feature = "sqlx")]
-            DbTransaction::Sqlx(tx, _) => match tx {
-                SqlxDbTransaction::Postgres(tx) => block_on(tx.rollback())?,
-            },
-            #[cfg(feature = "rusqlite")]
-            DbTransaction::Rusqlite(tx) => tx.rollback()?,
-        };
-        Ok(())
-    }
-
-    /// Given a generic SQL string with placeholders and a list of parameters to interpolate into
-    /// the string, return a vector of [JsonRow]s. Note that since this returns a vector,
-    /// statements should be limited to those that will return a sane number of rows.
-    pub fn query(&mut self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
-        tracing::trace!("DbTransaction::query({self:?}, {statement}, {params:?})");
-        if !valid_params(params) {
-            tracing::warn!("invalid parameter argument");
-            return Ok(vec![]);
-        }
-        match self {
-            #[cfg(feature = "sqlx")]
-            DbTransaction::Sqlx(tx, _) => match tx {
-                SqlxDbTransaction::Postgres(tx) => {
-                    let query = prepare_sqlx_pg_query(&statement, params)?;
-                    let mut rows = vec![];
-                    for row in block_on(query.fetch_all(block_on(tx.acquire())?))? {
-                        rows.push(JsonRow::try_from(row)?);
-                    }
-                    Ok(rows)
-                }
-            },
-            #[cfg(feature = "rusqlite")]
-            DbTransaction::Rusqlite(tx) => {
-                let mut stmt = tx.prepare(&statement)?;
-                submit_rusqlite_statement(&mut stmt, params)
-            }
-        }
-    }
-
-    /// Query for a single row
-    pub fn query_one(
-        &mut self,
-        statement: &str,
-        params: Option<&JsonValue>,
-    ) -> Result<Option<JsonRow>> {
-        tracing::trace!("DbTransaction::query_one({self:?}, {statement}, {params:?})");
-        let rows = self.query(&statement, params)?;
-        match rows.iter().next() {
-            Some(row) => Ok(Some(row.clone())),
-            None => Ok(None),
-        }
-    }
-
-    /// Query for a single value
-    pub fn query_value(
-        &mut self,
-        statement: &str,
-        params: Option<&JsonValue>,
-    ) -> Result<Option<JsonValue>> {
-        tracing::trace!("DbTransaction::query_value({self:?}, {statement}, {params:?})");
-        let rows = self.query(statement, params)?;
-        Ok(extract_value(&rows))
-    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1149,9 +1014,6 @@ pub(crate) fn generate_default_view_ddl(
     columns: &Vec<&Column>,
     kind: &DbKind,
 ) -> Vec<String> {
-    tracing::trace!(
-        "generate_default_view_ddl({table_name}, {id_col}, {order_col}, {columns:?}, {kind:?})"
-    );
     let view_name = format!("{table_name}_default_view");
     // Note that '?' parameters are not allowed in views so we must hard code them:
     match kind {

@@ -2,22 +2,24 @@
 //!
 //! This is [relatable](crate) (rltbl::[datatype](crate::datatype)).
 
-use crate::{self as rltbl, core::RelatableError};
-use indexmap::IndexMap;
-use regex::Regex;
+use crate as rltbl;
 use rltbl::{
     column::Column,
-    sql::{self, DbTransaction, SqlParam},
+    core::{Relatable, RelatableError},
+    sql::{self, SqlParam},
 };
 use rltbl_db::{
     any::AnyPool,
-    core::{DbKind, DbQuery, JsonRow},
+    core::{DbKind, DbQuery, JsonRow, ParamValue},
 };
+
+use indexmap::IndexMap;
+use regex::Regex;
 
 use anyhow::Result;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::json;
 use std::ops::{Deref, DerefMut};
 
 /// Represents a column's datatype
@@ -59,13 +61,12 @@ impl Datatype {
     /// Validate a column of a database table, optionally only for the given row, using the
     /// given transaction. Returns true whenever messages are inserted to the message table as a
     /// result of validation, and false otherwise.
-    pub fn validate(
+    pub async fn validate(
         &self,
         column: &Column,
         row: Option<&u64>,
-        tx: &mut DbTransaction<'_>,
+        rltbl: &Relatable,
     ) -> Result<bool> {
-        tracing::trace!("Datatype::validate({self:?}, {column:?}, {row:?}, tx)");
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
         let mut messages_were_added = false;
         match self.condition.as_str() {
@@ -75,7 +76,7 @@ impl Datatype {
                 if let Some(captures) = re.captures(condition) {
                     let condition = &captures[1];
                     let condition = unquoted_re.replace(&condition, "$unquoted");
-                    let mut sql_param_gen = SqlParam::new(&tx.kind());
+                    let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",
@@ -92,43 +93,37 @@ impl Datatype {
                            FROM "{table_name}"
                            WHERE {casted_column} != {sql_param_5}"#,
                         table_name = column.table,
-                        casted_column = sql::cast_column_as_text(&column.column, &tx.kind()),
+                        casted_column =
+                            sql::cast_column_as_text(&column.column, &rltbl.connection.kind()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
                         sql_param_4 = sql_param_gen.next(),
                         sql_param_5 = sql_param_gen.next(),
                     );
-                    let params;
+                    let mut params: Vec<ParamValue> = vec![
+                        column.table.clone(),
+                        column.column.clone(),
+                        format!("datatype:{}", self.datatype),
+                        format!("{} must be a {}", column.column, self.datatype),
+                        condition.to_string(),
+                    ]
+                    .iter()
+                    .map(|v| v.into())
+                    .collect();
                     match row {
                         Some(row) => {
                             sql.push_str(&format!(
                                 r#" AND "_id" = {sql_param}"#,
                                 sql_param = sql_param_gen.next()
                             ));
-                            params = json!([
-                                column.table,
-                                column.column,
-                                format!("datatype:{}", self.datatype),
-                                format!("{} must be a {}", column.column, self.datatype),
-                                condition,
-                                row
-                            ]);
+                            params.push(ParamValue::from(*row));
                         }
-                        None => {
-                            params = json!([
-                                column.table,
-                                column.column,
-                                format!("datatype:{}", self.datatype),
-                                format!("{} must be a {}", column.column, self.datatype),
-                                condition
-                            ]);
-                        }
+                        None => (),
                     };
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
-                    if let Some(_) = tx.query_one(&sql, Some(&params))? {
-                        messages_were_added = true;
-                    }
+                    let rows = rltbl.pool.query_row(&sql, params).await?;
+                    messages_were_added = rows.len() > 0;
                 }
             }
             condition if condition.starts_with("in(") => {
@@ -140,7 +135,7 @@ impl Datatype {
                         .split(condition_list_str)
                         .map(|item| unquoted_re.replace(item, "$unquoted"))
                         .collect::<Vec<_>>();
-                    let mut sql_param_gen = SqlParam::new(&tx.kind());
+                    let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",
@@ -157,37 +152,36 @@ impl Datatype {
                            FROM "{table_name}"
                            WHERE {casted_column} NOT IN ({sql_param_5})"#,
                         table_name = column.table,
-                        casted_column = sql::cast_column_as_text(&column.column, &tx.kind()),
+                        casted_column =
+                            sql::cast_column_as_text(&column.column, &rltbl.connection.kind()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
                         sql_param_4 = sql_param_gen.next(),
                         sql_param_5 = sql_param_gen.get_as_list(condition_list.len()),
                     );
-                    let mut params = json!([
-                        column.table,
-                        column.column,
+                    let mut params: Vec<ParamValue> = vec![
+                        column.table.clone(),
+                        column.column.clone(),
                         format!("datatype:{}", self.datatype),
                         format!("{} must be a {}", column.column, self.datatype),
-                    ]);
+                    ]
+                    .iter()
+                    .map(|v| v.into())
+                    .collect();
                     for item in &condition_list {
-                        if let JsonValue::Array(ref mut v) = params {
-                            v.push(json!(item));
-                        }
+                        params.push(item.to_string().into())
                     }
                     if let Some(row) = row {
                         sql.push_str(&format!(
                             r#" AND "_id" = {sql_param}"#,
                             sql_param = sql_param_gen.next()
                         ));
-                        if let JsonValue::Array(ref mut v) = params {
-                            v.push(json!(row));
-                        }
+                        params.push(ParamValue::from(*row));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
-                    if let Some(_) = tx.query_one(&sql, Some(&params))? {
-                        messages_were_added = true;
-                    }
+                    let rows = rltbl.pool.query(&sql, params).await?;
+                    messages_were_added = rows.len() > 0;
                 }
             }
             condition if condition.starts_with("match(") => {
@@ -195,7 +189,7 @@ impl Datatype {
                 if let Some(captures) = re.captures(condition) {
                     let condition = &captures[1];
                     let condition = unquoted_re.replace(&condition, "$unquoted");
-                    let mut sql_param_gen = SqlParam::new(&tx.kind());
+                    let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",
@@ -212,43 +206,38 @@ impl Datatype {
                            FROM "{table_name}"
                            WHERE {match_condition}"#,
                         table_name = column.table,
-                        casted_column = sql::cast_column_as_text(&column.column, &tx.kind()),
+                        casted_column =
+                            sql::cast_column_as_text(&column.column, &rltbl.connection.kind()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
                         sql_param_4 = sql_param_gen.next(),
                         match_condition = sql::regexp_mismatch(&column.column, &mut sql_param_gen),
                     );
-                    let params;
+                    let mut params: Vec<ParamValue> = vec![
+                        column.table.clone(),
+                        column.column.clone(),
+                        format!("datatype:{}", self.datatype),
+                        format!("{} must be a {}", column.column, self.datatype),
+                        condition.to_string(),
+                    ]
+                    .iter()
+                    .map(|v| v.into())
+                    .collect();
                     match row {
                         Some(row) => {
                             sql.push_str(&format!(
                                 r#" AND "_id" = {sql_param}"#,
                                 sql_param = sql_param_gen.next()
                             ));
-                            params = json!([
-                                column.table,
-                                column.column,
-                                format!("datatype:{}", self.datatype),
-                                format!("{} must be a {}", column.column, self.datatype),
-                                format!("^{condition}$"),
-                                row
-                            ]);
+                            params.push(ParamValue::from(*row));
                         }
-                        None => {
-                            params = json!([
-                                column.table,
-                                column.column,
-                                format!("datatype:{}", self.datatype),
-                                format!("{} must be a {}", column.column, self.datatype),
-                                format!("^{condition}$")
-                            ]);
-                        }
+                        None => (),
                     };
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
-                    if let Some(_) = tx.query_one(&sql, Some(&params))? {
-                        messages_were_added = true;
-                    }
+                    // TODO: re-enable this!
+                    // let rows = rltbl.pool.query(&sql, params).await?;
+                    // messages_were_added = rows.len() > 0;
                 }
             }
             invalid => tracing::warn!("Unrecognized datatype condition '{invalid}'"),

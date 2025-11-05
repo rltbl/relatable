@@ -185,7 +185,6 @@ impl Table {
     pub async fn ensure_default_view_created(&mut self, rltbl: &Relatable) -> Result<()> {
         let columns = rltbl.column_table().get(&[&self.name]).await?;
         let view_name = format!("{}_default_view", self.name);
-        tracing::debug!(r#"Creating default view "{view_name}" with columns {columns:?}"#);
 
         let (id_col, order_col) = self.get_id_order_columns(&columns);
 

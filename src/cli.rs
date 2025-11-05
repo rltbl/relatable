@@ -864,9 +864,10 @@ pub async fn validate_row(cli: &Cli, table_name: &str, row: &u64) {
         .get_table(table_name)
         .await
         .expect("Error getting table");
+    let datatypes = rltbl.datatypes().await;
 
     rltbl
-        .validate_row(&table, row)
+        .validate_row(&datatypes, &table, row)
         .await
         .expect("Error while validating row");
     tracing::info!("Validated row {row} of table '{table_name}'");

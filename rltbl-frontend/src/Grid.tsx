@@ -193,8 +193,8 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
     return Object.values(result.columns)
       .map((x: any) => {
         var c = {
-          title: x.label || x.name,
-          id: x.name,
+          title: x.label || x.column,
+          id: x.column,
           grow: 1,
           kind: x.kind,
           hasMenu: true,
@@ -202,14 +202,14 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
         var selected = false;
         for (var i = 0; i < result.select.filters.length; i++) {
           const filter = result.select.filters[i];
-          if (filter.column === x.name) {
+          if (filter.column === x.column) {
             selected = true;
             break;
           }
         }
         for (i = 0; i < result.select.order_by.length; i++) {
           const [column, ] = result.select.order_by[i];
-          if (column === x.name) {
+          if (column === x.column) {
             selected = true;
             break;
           }

@@ -418,7 +418,7 @@ impl<'a> ColumnTable<'a> {
                 };
                 Ok(format!(
                     r#"
-                    SELECT
+                    SELECT DISTINCT
                       main.name AS 'table',
                       pti.name AS 'column',
                       col.label AS 'label',

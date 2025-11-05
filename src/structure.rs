@@ -5,13 +5,13 @@
 use crate as rltbl;
 use rltbl::{
     column::Column,
-    core::RelatableError,
-    sql::{DbTransaction, SqlParam},
+    core::{Relatable, RelatableError},
+    sql::SqlParam,
 };
+use rltbl_db::core::{DbQuery, ParamValue};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::{fmt::Display, str::FromStr};
 
 /// Represents a column's structure.
@@ -23,15 +23,14 @@ pub enum Structure {
 impl Structure {
     /// Use this structure condition to validate the given column using the given transaction.
     /// If `row` is specified, then only validate that row.
-    pub fn validate(
+    pub async fn validate(
         &self,
         column: &Column,
         row: Option<&u64>,
-        tx: &mut DbTransaction<'_>,
+        rltbl: &Relatable,
     ) -> Result<bool> {
-        tracing::trace!("Structre::validate({self:?}, {column:?}, {row:?}, tx)");
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
-        let mut messages_were_added = false;
+        let messages_were_added;
         match self {
             Structure::From(s_table, s_column) => {
                 let c_table = &column.table;
@@ -42,7 +41,7 @@ impl Structure {
                 };
                 let s_table = unquoted_re.replace(&s_table, "$unquoted").to_string();
                 let s_column = unquoted_re.replace(&s_column, "$unquoted").to_string();
-                let mut sql_param_gen = SqlParam::new(&tx.kind());
+                let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
                 let mut sql = format!(
                     r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",
@@ -65,48 +64,30 @@ impl Structure {
                     sql_param_3 = sql_param_gen.next(),
                     sql_param_4 = sql_param_gen.next(),
                 );
-                let params;
+                let mut params: Vec<ParamValue> = vec![
+                    c_table.to_owned(),
+                    c_column.to_owned(),
+                    format!("key:foreign"),
+                    format!("{c_column} must be in {s_table}.{s_column}"),
+                ]
+                .iter()
+                .map(|v| v.into())
+                .collect();
                 match row {
                     Some(row) => {
                         sql.push_str(&format!(
                             r#" AND "_id" = {sql_param}"#,
                             sql_param = sql_param_gen.next()
                         ));
-                        params = json!([
-                            c_table,
-                            c_column,
-                            format!("key:foreign"),
-                            format!("{c_column} must be in {s_table}.{s_column}"),
-                            row
-                        ]);
+                        params.push(ParamValue::from(*row));
                     }
-                    None => {
-                        params = json!([
-                            c_table,
-                            c_column,
-                            format!("key:foreign"),
-                            format!("{c_column} must be in {s_table}.{s_column}"),
-                        ]);
-                    }
+                    None => (),
                 };
                 sql.push_str(r#" RETURNING 1 AS "inserted""#);
-                if let Some(_) = tx.query_one(&sql, Some(&params))? {
-                    messages_were_added = true;
-                }
+                let rows = rltbl.pool.query(&sql, params).await?;
+                messages_were_added = rows.len() > 0;
             }
         };
-
-        tracing::debug!(
-            "Validated structure '{}' for column '{}.{}' (row: {:?}) {}",
-            self,
-            column.table,
-            column.column,
-            row,
-            match messages_were_added {
-                false => "with messages added.",
-                true => "with no messages added.",
-            }
-        );
         Ok(messages_were_added)
     }
 }

@@ -10,13 +10,17 @@ use rltbl::{
     row::{Cell, Message, Row},
     select::{Select, SelectField},
     sql::{
-        self, CachingStrategy, DbActiveConnection, DbConnection, DbKind, DbTransaction, JsonRow,
-        MemoryCacheKey, SqlParam, VecInto as _,
+        self, CachingStrategy, DbConnection, DbKind, JsonRow, MemoryCacheKey, SqlParam,
+        VecInto as _,
     },
     structure::Structure,
     table::Table,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery};
+use rltbl_db::{
+    any::AnyPool,
+    core::{DbQuery, ParamValue},
+    params,
+};
 
 use anyhow::Result;
 use colored::Colorize;
@@ -913,14 +917,12 @@ impl Relatable {
     }
 
     /// Get the details of the last change made by the user from the change table.
-    fn _get_last_change_for_user(
+    async fn get_last_change_for_user(
         &self,
-        tx: &mut DbTransaction<'_>,
         user: &str,
         action: &ChangeAction,
     ) -> Result<Option<(u64, ChangeSet)>> {
-        tracing::trace!("Relatable::_get_last_change_for_user(tx, {user:?}, {action:?})");
-        let mut sql_param = SqlParam::new(&tx.kind());
+        let mut sql_param = SqlParam::new(&self.connection.kind());
         let sql = format!(
             r#"SELECT "change_id", "user", "table", "description", "content"
                FROM "change"
@@ -929,24 +931,42 @@ impl Relatable {
             sql_param_1 = sql_param.next(),
             sql_param_2 = sql_param.next(),
         );
-        let params = json!([user, format!("{action}")]);
-        let records = tx.query(&sql, Some(&params))?;
+        let params = [user, &format!("{action}")];
+        let records = self.pool.query(&sql, params).await?;
         match records.len() {
             0 => Ok(None),
             _ => {
-                let change_id = records[0].get_unsigned("change_id")?;
-                let user = records[0].get_string("user")?;
-                let table = records[0].get_string("table")?;
-                let description = records[0].get_string("description")?;
-                let content = records[0].get_string("content")?;
+                let change_id = records[0]
+                    .get("change_id")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_default();
+                let user = records[0]
+                    .get("user")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                let table = records[0]
+                    .get("table")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                let description = records[0]
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                let content = records[0]
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 let changes = Change::many_from_str(&content)?;
                 Ok(Some((
                     change_id,
                     ChangeSet {
                         action: *action,
-                        table: table,
-                        user: user,
-                        description: description,
+                        table,
+                        user,
+                        description,
                         changes: changes,
                     },
                 )))
@@ -955,12 +975,7 @@ impl Relatable {
     }
 
     /// Record the given [ChangeSet] to the change and history tables.
-    pub async fn record_changeset(
-        &self,
-        changeset: &ChangeSet,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<()> {
-        tracing::trace!("Relatable::record_changeset({changeset:?}, tx)");
+    pub async fn record_changeset(&self, changeset: &ChangeSet) -> Result<()> {
         let user = changeset.user.clone();
         let action = changeset.action.to_string();
         let table = changeset.table.clone();
@@ -971,7 +986,8 @@ impl Relatable {
         let old_change_id = match &changeset.action {
             ChangeAction::Undo => {
                 let (change_id, _) = self
-                    ._get_last_change_for_user(tx, &changeset.user, &ChangeAction::Do)?
+                    .get_last_change_for_user(&changeset.user, &ChangeAction::Do)
+                    .await?
                     .ok_or(RelatableError::DataError(
                         "No action for user found".to_string(),
                     ))?;
@@ -979,7 +995,8 @@ impl Relatable {
             }
             ChangeAction::Redo => {
                 let (change_id, _) = self
-                    ._get_last_change_for_user(tx, &changeset.user, &ChangeAction::Undo)?
+                    .get_last_change_for_user(&changeset.user, &ChangeAction::Undo)
+                    .await?
                     .ok_or(RelatableError::DataError(
                         "No undo for user found".to_string(),
                     ))?;
@@ -993,17 +1010,11 @@ impl Relatable {
             r#"INSERT INTO change("user", "action", "table", "description", "content")
                VALUES ({sql_params})
                RETURNING change_id"#,
-            sql_params = SqlParam::new(&tx.kind()).get_as_list(5)
+            sql_params = SqlParam::new(&self.connection.kind()).get_as_list(5)
         );
         let content = to_value(&changeset.changes).unwrap_or_default();
-        let params = json!([user, action, table, description, content]);
-        let change_id = tx.query_value(&statement, Some(&params))?;
-        let change_id = change_id
-            .ok_or(RelatableError::DataError(
-                "Expected a change_id".to_string(),
-            ))?
-            .as_u64()
-            .ok_or(RelatableError::DataError("Expected an integer".to_string()))?;
+        let params = params![user, action, &table, description, content.to_string()];
+        let change_id = self.pool.query_u64(&statement, params).await?;
 
         for change in &changeset.changes {
             match change {
@@ -1018,12 +1029,12 @@ impl Relatable {
                            ("change_id", "table", "row", "before", "after")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = SqlParam::new(&tx.kind()).get_as_list(5)
+                        sql_params = SqlParam::new(&self.connection.kind()).get_as_list(5)
                     );
                     let before = json!({column: before}).to_string();
                     let after = json!({column: after}).to_string();
-                    let params = json!([change_id, table, row, before, after]);
-                    tx.query_value(&sql, Some(&params))?;
+                    let params = params![change_id, &table, row, before, after];
+                    self.pool.execute(&sql, params).await?;
                 }
                 Change::Add { row, after: _ } => {
                     // If the row has just been newly added, it will be found in the table,
@@ -1037,15 +1048,9 @@ impl Relatable {
                                     r#"SELECT "before"
                                          FROM "history"
                                         WHERE "change_id" = {sql_param}"#,
-                                    sql_param = SqlParam::new(&tx.kind()).next()
+                                    sql_param = SqlParam::new(&self.connection.kind()).next()
                                 );
-                                let params = json!([change_id]);
-                                let before = tx
-                                    .query_one(&sql, Some(&params))?
-                                    .ok_or(RelatableError::DataError(format!(
-                                        "No history row found with change_id {change_id}"
-                                    )))?
-                                    .get_string("before")?;
+                                let before = self.pool.query_string(&sql, [change_id]).await?;
                                 let before = match serde_json::from_str::<JsonValue>(&before) {
                                     Err(err) => return Err(err.into()),
                                     Ok(JsonValue::Object(o)) => o,
@@ -1071,11 +1076,11 @@ impl Relatable {
                            ("change_id", "table", "row", "after")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = SqlParam::new(&tx.kind()).get_as_list(4)
+                        sql_params = SqlParam::new(&self.connection.kind()).get_as_list(4)
                     );
                     let json_row_str = json!(json_row.content).to_string();
-                    let params = json!([change_id, table, row, json_row_str]);
-                    tx.query_value(&sql, Some(&params))?;
+                    let params = params![change_id, &table, row, json_row_str];
+                    self.pool.execute(&sql, params).await?;
                 }
                 Change::Move {
                     row,
@@ -1087,10 +1092,10 @@ impl Relatable {
                            ("change_id", "table", "row")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = SqlParam::new(&tx.kind()).get_as_list(3)
+                        sql_params = SqlParam::new(&self.connection.kind()).get_as_list(3)
                     );
-                    let params = json!([change_id, table, row]);
-                    tx.query_value(&sql, Some(&params))?;
+                    let params = params![change_id, &table, row];
+                    self.pool.execute(&sql, params).await?;
                 }
                 Change::Delete { row, after: _ } => {
                     let json_row = match Table::get_row(&table, *row, self).await? {
@@ -1108,11 +1113,11 @@ impl Relatable {
                            ("change_id", "table", "row", "before")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = SqlParam::new(&tx.kind()).get_as_list(4)
+                        sql_params = SqlParam::new(&self.connection.kind()).get_as_list(4)
                     );
                     let json_row_str = json!(json_row.content).to_string();
-                    let params = json!([change_id, table, row, json_row_str]);
-                    tx.query_value(&sql, Some(&params))?;
+                    let params = params![change_id, &table, row, json_row_str];
+                    self.pool.query_value(&sql, params).await?;
                 }
             };
         }
@@ -1123,8 +1128,8 @@ impl Relatable {
             // this step automatically every time the table is edited in that case.
             CachingStrategy::None | CachingStrategy::Trigger => (),
             CachingStrategy::Memory(_) => self.clear_mem_cache(&table),
-            CachingStrategy::TruncateAll => Relatable::clear_cache(tx, None)?,
-            CachingStrategy::Truncate => Relatable::clear_cache(tx, Some(&table))?,
+            CachingStrategy::TruncateAll => self.clear_cache(None).await?,
+            CachingStrategy::Truncate => self.clear_cache(Some(&table)).await?,
         };
 
         Ok(())
@@ -1280,7 +1285,7 @@ impl Relatable {
         let rows = self.pool.query(&statement, [&user]).await?;
         if rows.len() == 0 {
             let color = random_color::RandomColor::new().to_hex();
-            let statement = r#"INSERT INTO "user" ("name", "color") VALUES ($1)"#;
+            let statement = r#"INSERT INTO "user" ("name", "color") VALUES ($1, $2)"#;
             self.pool.execute(&statement, [&user, &color]).await?;
         }
 
@@ -1708,21 +1713,16 @@ impl Relatable {
                 if let Change::Update { .. } = change {
                     let columns = self.column_table().get(&[&changeset.table]).await?;
                     let datatypes = self.datatypes().await;
-                    let conn = self.connection.reconnect()?;
-                    let actual_changes = self
-                        ._set_values(&columns, &datatypes, conn, &changeset)
-                        .await?;
+                    let actual_changes = self._set_values(&columns, &datatypes, &changeset).await?;
                     Ok(Some(actual_changes))
                 } else {
                     let mut actual_changes = vec![];
                     for change in changeset.changes.iter() {
-                        let conn = self.connection.reconnect()?;
                         match change {
                             Change::Update { .. } => (), // Change::Update already handled above.
                             Change::Add { row, after: _ } => {
                                 let num_deleted = self
                                     ._delete_row(
-                                        conn,
                                         &changeset.action,
                                         &changeset.table,
                                         &changeset.user,
@@ -1740,7 +1740,6 @@ impl Relatable {
                             } => {
                                 let new_order = self
                                     ._move_and_record_row(
-                                        conn,
                                         &changeset.action,
                                         &changeset.table,
                                         &changeset.user,
@@ -1785,7 +1784,6 @@ impl Relatable {
                                     changeset.table
                                 );
                                 self._add_row(
-                                    conn,
                                     &changeset.action,
                                     &changeset.table,
                                     &changeset.user,
@@ -1854,13 +1852,8 @@ impl Relatable {
         &self,
         columns: &Columns,
         datatypes: &Datatypes,
-        mut conn: Option<DbActiveConnection>,
         changeset: &ChangeSet,
     ) -> Result<ChangeSet> {
-        tracing::trace!("Relatable::set_values(conn, {changeset:?})");
-        // Begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
-
         // Update the user cursor
         self.prepare_user_cursor(changeset).await?;
 
@@ -1881,14 +1874,8 @@ impl Relatable {
                         table.name,
                         column
                     );
-                    self._delete_message(
-                        &mut tx,
-                        &table.name,
-                        Some(*row),
-                        Some(column),
-                        None,
-                        None,
-                    )?;
+                    self.delete_message(&table.name, Some(*row), Some(column), None, None)
+                        .await?;
 
                     // Depending on whether this is an undo/redo or an original action, the
                     // new value will be taken from either `before` or `after`.
@@ -1918,17 +1905,18 @@ impl Relatable {
                         cell.validate_sql_type(&datatypes, &column_config)
                             .expect("Error validating cell");
                         for message in cell.messages.iter() {
-                            let (msg_id, msg) = Relatable::_add_message(
-                                "rltbl",
-                                &table.name,
-                                &row,
-                                column,
-                                &cell.value,
-                                &message.level,
-                                &message.rule,
-                                &message.message,
-                                &mut tx,
-                            )?;
+                            let (msg_id, msg) = self
+                                .add_message(
+                                    "rltbl",
+                                    &table.name,
+                                    *row,
+                                    column,
+                                    &cell.value,
+                                    &message.level,
+                                    &message.rule,
+                                    &message.message,
+                                )
+                                .await?;
                             tracing::debug!("Added message (ID {msg_id}): {msg:?}");
                         }
 
@@ -1939,34 +1927,21 @@ impl Relatable {
                     }
 
                     // Generate the UPDATE statement:
-                    let (sql, params) = {
-                        let mut sql_param = SqlParam::new(&self.connection.kind());
-                        let sql = format!(
-                            r#"UPDATE "{table}"
-                               SET "{column}" = {sql_value}
-                               WHERE _id = {sql_param}
+                    let sql = format!(
+                        r#"UPDATE "{table}"
+                               SET "{column}" = $1
+                               WHERE _id = $2
                                RETURNING 1 AS "updated""#,
-                            table = changeset.table,
-                            sql_value = match sql_value {
-                                JsonValue::Null => "NULL".to_string(),
-                                _ => sql_param.next(),
-                            },
-                            sql_param = sql_param.next()
-                        );
-                        let params = match sql_value {
-                            JsonValue::Null => json!([row]),
-                            _ => json!([sql_value, row]),
-                        };
-                        (sql, params)
-                    };
-
-                    tracing::debug!(
-                        "Updating value of row {row} in {table}.{column} to {sql_value:?}",
-                        table = table.name
+                        table = changeset.table,
                     );
+                    let param = match sql_value {
+                        JsonValue::String(s) => s,
+                        _ => sql_value.to_string(),
+                    };
+                    let params = params![param, row];
 
                     // Execute the UPDATE statement.
-                    if tx.query(&sql, Some(&params))?.len() < 1 {
+                    if self.pool.query(&sql, params).await?.len() < 1 {
                         tracing::warn!("No row with _id {row} found to update");
                     } else {
                         actual_changes.push(Change::Update {
@@ -1990,13 +1965,14 @@ impl Relatable {
                             &datatypes,
                             &column_config,
                             Some(row),
-                            &mut tx,
-                        )?;
+                        )
+                        .await?;
                         for column in &column_config.get_dependent_columns(&columns) {
                             tracing::debug!("Validating dependent column '{}'", column.column);
                             self._validate_structure_for_column_and_optionally_for_row(
-                                column, None, &mut tx,
-                            )?;
+                                column, None,
+                            )
+                            .await?;
                         }
                     }
                 }
@@ -2019,11 +1995,8 @@ impl Relatable {
         };
         if num_changes > 0 {
             // Record the changes to the change and history tables:
-            self.record_changeset(&actual_changeset, &mut tx).await?;
+            self.record_changeset(&actual_changeset).await?;
         }
-
-        // Commit the transaction:
-        tx.commit()?;
 
         Ok(actual_changeset)
     }
@@ -2033,59 +2006,11 @@ impl Relatable {
         tracing::trace!("Relatable::set_values({changeset:?})");
         let columns = self.column_table().get(&[&changeset.table]).await?;
         let datatypes = self.datatypes().await;
-        let conn = self.connection.reconnect()?;
-        let changeset = self
-            ._set_values(&columns, &datatypes, conn, changeset)
-            .await?;
+        let changeset = self._set_values(&columns, &datatypes, changeset).await?;
         if changeset.changes.len() > 0 {
             self.commit_to_git().await?;
         }
         Ok(changeset)
-    }
-
-    /// Add a message to the message table using the given [DbTransaction]
-    pub fn _add_message(
-        user: &str,
-        table_name: &str,
-        row: &u64,
-        column: &str,
-        value: &JsonValue,
-        level: &str,
-        rule: &str,
-        message: &str,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<(u64, Message)> {
-        tracing::trace!(
-            "Relatable::add_message({user:?}, {table_name:?}, {row}, \
-             {column:?}, {value:?}, {level:?}, {rule:?}, {message:?}, tx)"
-        );
-
-        let sql = format!(
-            r#"INSERT INTO "message"
-               ("added_by", "table", "row", "column", "value",
-                "level", "rule", "message")
-               VALUES
-               ({sql_params})
-               RETURNING "message_id""#,
-            sql_params = SqlParam::new(&tx.kind()).get_as_list(8)
-        );
-        let params = json!([user, table_name, row, column, value, level, rule, message]);
-        let message_id = tx
-            .query_one(&sql, Some(&params))?
-            .ok_or(RelatableError::DataError(
-                "Error inserting message".to_string(),
-            ))?
-            .get_unsigned("message_id")?;
-
-        Ok((
-            message_id,
-            Message {
-                value: value.clone(),
-                level: level.to_string(),
-                rule: rule.to_string(),
-                message: message.to_string(),
-            },
-        ))
     }
 
     /// Add a message to the message table.
@@ -2100,29 +2025,41 @@ impl Relatable {
         rule: &str,
         message: &str,
     ) -> Result<(u64, Message)> {
-        tracing::trace!(
-            "Relatable::add_message({self:?},  {user:?}, {table_name:?}, {row}, \
-             {column:?}, {value:?}, {level:?}, {rule:?}, {message:?})"
+        let sql = format!(
+            r#"INSERT INTO "message"
+               ("added_by", "table", "row", "column", "value",
+                "level", "rule", "message")
+               VALUES
+               ({sql_params})
+               RETURNING "message_id""#,
+            sql_params = SqlParam::new(&self.connection.kind()).get_as_list(8)
         );
+        let params = params![
+            user,
+            table_name,
+            row,
+            column,
+            value.to_string(),
+            level,
+            rule,
+            message
+        ];
+        let message_id = self.pool.query_u64(&sql, params).await?;
 
-        // Begin a transaction:
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-
-        let (message_id, message) = Relatable::_add_message(
-            user, table_name, &row, column, value, level, rule, message, &mut tx,
-        )?;
-
-        // Commit the transaction:
-        tx.commit()?;
-
-        Ok((message_id, message))
+        Ok((
+            message_id,
+            Message {
+                value: value.clone(),
+                level: level.to_string(),
+                rule: rule.to_string(),
+                message: message.to_string(),
+            },
+        ))
     }
 
     /// Add a row to the given table
     async fn _add_row(
         &self,
-        mut conn: Option<DbActiveConnection>,
         action: &ChangeAction,
         table_name: &str,
         user: &str,
@@ -2130,15 +2067,7 @@ impl Relatable {
         after_id: Option<u64>,
         row: &JsonRow,
     ) -> Result<Row> {
-        tracing::trace!(
-            "Relatable::_add_row(conn, {action:?}, {user:?}, {new_row_id:?}, \
-                         {after_id:?}, {row:?})"
-        );
-
         let datatypes = self.datatypes().await;
-
-        // Begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
 
         // Get the current database information for the table:
         let table = self.get_table(table_name).await?;
@@ -2150,7 +2079,7 @@ impl Relatable {
 
         // Nullify the JSON row by setting any column values whose content matches the column's
         // nulltype to Null:
-        let row = JsonRow::nullify(row, &table);
+        let mut row = JsonRow::nullify(row, &table);
 
         // Prepare a new row to be inserted using the JSON row as a base:
         let mut new_row = Row::prepare_new(&table, Some(&row))?;
@@ -2160,14 +2089,23 @@ impl Relatable {
         // is for now, since we are not assured that the old row order is actually still free in
         // the table (recall that there is a unique constraint on _order). However the row_order
         // currently assigned is at the end of the table so there should not be any conflicts.
-        if let Some(new_row_id) = new_row_id {
-            tracing::debug!("Changing new row ID to {new_row_id}");
-            new_row.id = new_row_id;
-        }
+        let new_row_id = match new_row_id {
+            Some(new_row_id) => new_row_id,
+            None => {
+                self.pool
+                    .query_u64(
+                        r"SELECT seq + 1 FROM sqlite_sequence WHERE name = $1",
+                        [table_name],
+                    )
+                    .await?
+            }
+        };
+        new_row.id = new_row_id;
+        row.content.insert("_id".to_owned(), json!(new_row_id));
 
         // Validate the row and add it to the table:
         if self.validation_level != ValidationLevel::None {
-            new_row.validate_sql_types(&datatypes, &table, &mut tx)?;
+            new_row.validate_sql_types(&datatypes, &table, self).await?;
             for (_column, cell) in new_row.cells.iter_mut() {
                 if cell.has_sql_type_error() {
                     cell.value = JsonValue::Null;
@@ -2175,15 +2113,14 @@ impl Relatable {
                 }
             }
         }
-        let (sql, params) = new_row.as_insert(&table.name, &tx.kind());
-        tx.query(&sql, Some(&params))?;
+        self.pool.insert(&table.name, &[&row.content]).await?;
 
         // Optionally do full validation on the row after it has been inserted:
         if self.validation_level == ValidationLevel::Full {
-            self._validate_row(&datatypes, &table, &new_row.id, &mut tx)?;
+            self.validate_row(&datatypes, &table, &new_row.id).await?;
             for table in &table.get_dependent_tables(None, &self).await? {
                 tracing::debug!("Validating dependent table '{}'", table.name);
-                self._validate_structure_for_table(table, &mut tx)?;
+                self.validate_structure_for_table(table).await?;
             }
         }
 
@@ -2196,7 +2133,7 @@ impl Relatable {
                     id = new_row.id,
                     table = table.name
                 );
-                let new_order = self._move_row(&mut tx, &table, new_row.id, after_id)?;
+                let new_order = self._move_row(&table, new_row.id, after_id).await?;
                 new_row.order = new_order;
                 after_id
             }
@@ -2225,10 +2162,7 @@ impl Relatable {
         self.prepare_user_cursor(&changeset).await?;
 
         // Record the changes to the history table:
-        self.record_changeset(&changeset, &mut tx).await?;
-
-        // Commit the transaction:
-        tx.commit()?;
+        self.record_changeset(&changeset).await?;
 
         Ok(new_row)
     }
@@ -2242,17 +2176,8 @@ impl Relatable {
         row: &JsonRow,
     ) -> Result<Row> {
         tracing::trace!("Relatable::add_row({table_name:?}, {user:?}, {after_id:?}, {row:?})");
-        let conn = self.connection.reconnect()?;
         let new_row = self
-            ._add_row(
-                conn,
-                &ChangeAction::Do,
-                table_name,
-                user,
-                None,
-                after_id,
-                row,
-            )
+            ._add_row(&ChangeAction::Do, table_name, user, None, after_id, row)
             .await?;
         self.commit_to_git().await?;
         Ok(new_row)
@@ -2261,15 +2186,11 @@ impl Relatable {
     /// Delete a row from the table. Returns the number of rows deleted.
     async fn _delete_row(
         &self,
-        mut conn: Option<DbActiveConnection>,
         action: &ChangeAction,
         table_name: &str,
         user: &str,
         row: u64,
     ) -> Result<usize> {
-        // Begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
-
         // Get the current database information for the table:
         let table = self.get_table(table_name).await?;
         if !table.editable {
@@ -2300,27 +2221,15 @@ impl Relatable {
             table.name,
             sql_param = SqlParam::new(&self.connection.kind()).next()
         );
-        let params = json!([row]);
-        tracing::debug!("Deleted row {row} from table {table_name}");
 
         // Delete any messages associated with the row
-        self._delete_message(&mut tx, table_name, Some(row), None, None, None)?;
-        tracing::debug!("Deleted messages for deleted row {row} of table {table_name}");
+        self.delete_message(table_name, Some(row), None, None, None)
+            .await?;
 
         // Record the change to the history table:
-        self.record_changeset(&changeset, &mut tx).await?;
+        self.record_changeset(&changeset).await?;
 
-        let num_deleted = tx.query(&sql, Some(&params))?.len();
-        if num_deleted < 1 {
-            tracing::warn!("No row found with _id {row} to delete");
-            // Roll back the changes to the history and change table. The reason we made these
-            // prior to the actual delete was so that we could record the row's position in the
-            // table before it was deleted.
-            tx.rollback()?;
-        } else {
-            // Commit the transaction:
-            tx.commit()?;
-        }
+        let num_deleted = self.pool.query(&sql, [row]).await?.len();
 
         Ok(num_deleted)
     }
@@ -2328,9 +2237,8 @@ impl Relatable {
     /// Delete a row from a given table
     pub async fn delete_row(&self, table_name: &str, user: &str, row: u64) -> Result<usize> {
         tracing::trace!("Relatable::delete_row({table_name:?}, {user:?}, {row})");
-        let conn = self.connection.reconnect()?;
         let num_deleted = self
-            ._delete_row(conn, &ChangeAction::Do, table_name, user, row)
+            ._delete_row(&ChangeAction::Do, table_name, user, row)
             .await?;
         if num_deleted > 0 {
             self.commit_to_git().await?;
@@ -2351,96 +2259,56 @@ impl Relatable {
             "Relatable::delete_message({self:?}, {table:?}, {row:?}, {column:?}, \
              {target_rule:?}, {target_user:?})"
         );
-
-        // Begin a transaction:
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-
-        // Delete the messages using the transaction
-        let num_deleted =
-            self._delete_message(&mut tx, table, row, column, target_rule, target_user)?;
-
-        // Commit the transaction:
-        tx.commit()?;
-
-        Ok(num_deleted)
-    }
-
-    /// Delete messages from the message table using the given transaction. Returns the
-    /// number of messages deleted.
-    fn _delete_message(
-        &self,
-        tx: &mut DbTransaction<'_>,
-        table: &str,
-        row: Option<u64>,
-        column: Option<&str>,
-        target_rule: Option<&str>,
-        target_user: Option<&str>,
-    ) -> Result<usize> {
-        tracing::trace!(
-            "Relatable::_delete_message({self:?}, tx, {table:?}, {row:?}, {column:?}, \
-             {target_rule:?}, {target_user:?})"
-        );
-
         let mut sql_param = SqlParam::new(&self.connection.kind());
         let mut sql = format!(
             r#"DELETE FROM "message" WHERE "table" = {sql_param}"#,
             sql_param = sql_param.next()
         );
-        let mut params = vec![json!(table)];
+        let mut params: Vec<ParamValue> = vec![table.into()];
 
         if let Some(row) = row {
             sql.push_str(&format!(
                 r#" AND "row" = {sql_param}"#,
                 sql_param = sql_param.next(),
             ));
-            params.push(json!(row));
+            params.push(row.into());
         }
         if let Some(column) = column {
             sql.push_str(&format!(
                 r#" AND "column" = {sql_param}"#,
                 sql_param = sql_param.next()
             ));
-            params.push(json!(column));
+            params.push(column.into());
         }
         if let Some(target_rule) = target_rule {
             sql.push_str(&format!(
                 r#" AND "rule" LIKE {sql_param}"#,
                 sql_param = sql_param.next()
             ));
-            params.push(json!(target_rule));
+            params.push(target_rule.into());
         }
         if let Some(target_user) = target_user {
             sql.push_str(&format!(
                 r#" AND "added_by" = {sql_param}"#,
                 sql_param = sql_param.next()
             ));
-            params.push(json!(target_user));
+            params.push(target_user.into());
         }
 
         sql.push_str(r#" RETURNING 1 AS "deleted""#);
-        let num_deleted = tx.query(&sql, Some(&json!(params)))?.len();
+        let num_deleted = self.pool.query(&sql, params).await?.len();
         Ok(num_deleted)
     }
 
     /// Move a row and record the change in the change table
     async fn _move_and_record_row(
         &self,
-        mut conn: Option<DbActiveConnection>,
         action: &ChangeAction,
         table_name: &str,
         user: &str,
         id: u64,
         after_id: u64,
     ) -> Result<u64> {
-        tracing::trace!(
-            "Relatable::_move_and_record_row(conn, {action:?}, {table_name:?}, \
-                         {user:?}, {id}, {after_id})"
-        );
-
-        // Begin a transaction:
-        let mut tx = self.connection.begin(&mut conn).await?;
-
         // Get the current database information for the table:
         let table = self.get_table(table_name).await?;
         if !table.editable {
@@ -2467,36 +2335,42 @@ impl Relatable {
         self.prepare_user_cursor(&changeset).await?;
 
         // Move the row within the table:
-        let new_order = self._move_row(&mut tx, &table, id, after_id)?;
+        let new_order = self._move_row(&table, id, after_id).await?;
 
         if new_order != 0 {
             // Record the change to the history table:
-            self.record_changeset(&changeset, &mut tx).await?;
+            self.record_changeset(&changeset).await?;
         }
-
-        // Commit the transaction:
-        tx.commit()?;
 
         Ok(new_order)
     }
 
-    /// Move a row to a different position in a given table
-    fn _move_row(
+    /// Move a row to a different position in a given table.
+    pub async fn move_row(
         &self,
-        tx: &mut DbTransaction<'_>,
-        table: &Table,
+        table_name: &str,
+        user: &str,
         id: u64,
         after_id: u64,
     ) -> Result<u64> {
-        tracing::trace!("Relatable::_move_row(tx, {table:?}, {id}, {after_id})");
-        fn get_row_order(tx: &mut DbTransaction<'_>, table: &Table, row_id: u64) -> Result<u64> {
+        let new_order = self
+            ._move_and_record_row(&ChangeAction::Do, table_name, user, id, after_id)
+            .await?;
+        if new_order != 0 {
+            self.commit_to_git().await?;
+        }
+        Ok(new_order)
+    }
+
+    /// Move a row to a different position in a given table
+    async fn _move_row(&self, table: &Table, id: u64, after_id: u64) -> Result<u64> {
+        async fn get_row_order(rltbl: &Relatable, table: &Table, row_id: u64) -> Result<u64> {
             let sql = format!(
                 r#"SELECT "_order" FROM "{}" WHERE "_id" = {sql_param}"#,
                 table.name,
-                sql_param = SqlParam::new(&tx.kind()).next()
+                sql_param = SqlParam::new(&rltbl.connection.kind()).next()
             );
-            let params = json!([row_id]);
-            let rows = tx.query(&sql, Some(&params))?;
+            let rows = rltbl.pool.query(&sql, [row_id]).await?;
             if rows.is_empty() {
                 return Err(RelatableError::DataError(format!(
                     "Unable to fetch _order for row {row_id} of table '{table}'",
@@ -2504,7 +2378,7 @@ impl Relatable {
                 ))
                 .into());
             }
-            match rows[0].content.get("_order").and_then(|o| o.as_u64()) {
+            match rows[0].get("_order").and_then(|o| o.as_u64()) {
                 Some(order) => Ok(order as u64),
                 None => {
                     return Err(
@@ -2518,7 +2392,7 @@ impl Relatable {
         let order_prev = {
             if after_id > 0 {
                 let mut id_to_try = after_id;
-                let mut result = get_row_order(tx, table, id_to_try);
+                let mut result = get_row_order(&self, table, id_to_try).await;
                 // This handles the case in which the after row has been deleted for some reason
                 // (this might happen if we are redoing).
                 while let Err(_) = result {
@@ -2528,7 +2402,7 @@ impl Relatable {
                     tracing::debug!("Could not obtain _order for row {id_to_try}");
                     id_to_try -= 1;
                     tracing::debug!("Trying to find the _order of row {id_to_try}");
-                    result = get_row_order(tx, table, id_to_try);
+                    result = get_row_order(&self, table, id_to_try).await;
                 }
                 result?
             } else {
@@ -2544,10 +2418,9 @@ impl Relatable {
             let sql = format!(
                 r#"SELECT MIN("_order") AS "_order" FROM "{}" WHERE "_order" > {sql_param}"#,
                 table.name,
-                sql_param = SqlParam::new(&tx.kind()).next()
+                sql_param = SqlParam::new(&self.connection.kind()).next()
             );
-            let params = json!([order_prev]);
-            let rows = tx.query(&sql, Some(&params))?;
+            let rows = self.pool.query(&sql, [order_prev]).await?;
             if rows.is_empty() {
                 return Err(RelatableError::DataError(format!(
                     "Could not determine the minimum row order greater than {order_prev}"
@@ -2555,7 +2428,7 @@ impl Relatable {
                 .into());
             }
 
-            match rows[0].content.get("_order") {
+            match rows[0].get("_order") {
                 Some(value) => match value {
                     JsonValue::Null => {
                         // The row_order will be null if we ask Relatable to move a row to
@@ -2588,7 +2461,7 @@ impl Relatable {
                 // violations will ensue:
                 let upper_bound = (order_next as f32 / NEW_ORDER_MULTIPLIER as f32).ceil() as u64
                     * NEW_ORDER_MULTIPLIER as u64;
-                let mut sql_param = SqlParam::new(&tx.kind());
+                let mut sql_param = SqlParam::new(&self.connection.kind());
                 let sql = format!(
                     r#"SELECT "_order"
                          FROM "{}"
@@ -2598,15 +2471,14 @@ impl Relatable {
                     sql_param_1 = sql_param.next(),
                     sql_param_2 = sql_param.next()
                 );
-                let params = json!([order_next, upper_bound]);
-                let rows = tx.query(&sql, Some(&params))?;
+                let rows = self.pool.query(&sql, [order_next, upper_bound]).await?;
                 if rows.is_empty() {
                     return Err(RelatableError::DataError(
                         "Could not determine the highest row order".to_string(),
                     )
                     .into());
                 }
-                let highest_order = match rows[0].content.get("_order").and_then(|o| o.as_u64()) {
+                let highest_order = match rows[0].get("_order").and_then(|o| o.as_u64()) {
                     Some(order) => order as u64,
                     None => {
                         return Err(RelatableError::DataError(
@@ -2625,7 +2497,7 @@ impl Relatable {
                 }
 
                 for row in rows {
-                    let current_order = match row.content.get("_order").and_then(|o| o.as_u64()) {
+                    let current_order = match row.get("_order").and_then(|o| o.as_u64()) {
                         Some(order) => order as u64,
                         None => {
                             return Err(RelatableError::DataError(
@@ -2639,10 +2511,9 @@ impl Relatable {
                               SET "_order" = "_order" + 1
                             WHERE "_order" = {sql_param}"#,
                         table.name,
-                        sql_param = SqlParam::new(&tx.kind()).next()
+                        sql_param = SqlParam::new(&self.connection.kind()).next()
                     );
-                    let params = json!([current_order]);
-                    tx.query(&sql, Some(&params))?;
+                    self.pool.query(&sql, [current_order]).await?;
                 }
                 // Now that we have made some room, we can use order_prev + 1,
                 // which should no longer be occupied:
@@ -2655,7 +2526,7 @@ impl Relatable {
             table = table.name
         );
 
-        let mut sql_param = SqlParam::new(&tx.kind());
+        let mut sql_param = SqlParam::new(&self.connection.kind());
         let sql = format!(
             r#"UPDATE "{}" SET "_order" = {sql_param_1}
                WHERE "_id" = {sql_param_2}
@@ -2664,8 +2535,7 @@ impl Relatable {
             sql_param_1 = sql_param.next(),
             sql_param_2 = sql_param.next(),
         );
-        let params = json!([new_order, id]);
-        if tx.query(&sql, Some(&params))?.len() < 1 {
+        if self.pool.query(&sql, [new_order, id]).await?.len() < 1 {
             tracing::warn!("Now row with _id {id} found to move");
             // It is not possible for a row to have an order of zero. It is used here to
             // represent the case where no row was actually moved to the caller.
@@ -2674,244 +2544,86 @@ impl Relatable {
         Ok(new_order)
     }
 
-    /// Change the _id of the given row in the given table.
-    fn _change_row_id(
-        &self,
-        tx: &mut DbTransaction<'_>,
-        table: &Table,
-        id: u64,
-        new_id: u64,
-    ) -> Result<()> {
-        tracing::trace!("Relatable::_change_row_id(tx, {table:?}, {id}, {new_id})");
-        let mut sql_param = SqlParam::new(&tx.kind());
-        let sql = format!(
-            r#"UPDATE "{table}"
-                  SET "_id" = {sql_param_1}, "_order" = {sql_param_2}
-                WHERE "_id" = {sql_param_3}
-            RETURNING "_id" AS "_id""#,
-            table = table.name,
-            sql_param_1 = sql_param.next(),
-            sql_param_2 = sql_param.next(),
-            sql_param_3 = sql_param.next(),
-        );
-        let params = json!([new_id, id, id * NEW_ORDER_MULTIPLIER as u64]);
-        tx.query_one(&sql, Some(&params))?
-            .ok_or(RelatableError::DataError(format!("No row with _id = {id}")))?
-            .get_unsigned("_id")?;
-        Ok(())
-    }
-
-    /// Move a row to a different position in a given table.
-    pub async fn move_row(
-        &self,
-        table_name: &str,
-        user: &str,
-        id: u64,
-        after_id: u64,
-    ) -> Result<u64> {
-        tracing::trace!("Relatable::move_row({table_name:?}, {user:?}, {after_id:?})");
-        let conn = self.connection.reconnect()?;
-        let new_order = self
-            ._move_and_record_row(conn, &ChangeAction::Do, table_name, user, id, after_id)
-            .await?;
-        if new_order != 0 {
-            self.commit_to_git().await?;
-        }
-        Ok(new_order)
-    }
-
     /// Validate all of the data in the given database table
     pub async fn validate_table(&self, table: &Table) -> Result<()> {
-        tracing::trace!("Relatable::validate_table({self:?}, {table:?})");
-
         let datatypes = self.datatypes().await;
-
-        // Reconnect and begin a transaction:
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-
-        self._validate_table(&datatypes, table, &mut tx)?;
-
-        // Commit the transaction
-        tx.commit()?;
-
-        tracing::info!("Validated table '{}'", table.name);
-        Ok(())
-    }
-
-    /// Validate all of the data in the given database table using the given transaction
-    fn _validate_table(
-        &self,
-        datatypes: &Datatypes,
-        table: &Table,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<()> {
-        tracing::trace!("Relatable::_validate_table({self:?}, {table:?}, tx)");
-
-        // Validate each table column
         for (_, column) in table.columns.iter() {
-            self._validate_column_optionally_for_row(datatypes, column, None, tx)?;
+            self._validate_column_optionally_for_row(&datatypes, column, None)
+                .await?;
         }
-
-        tracing::debug!("Validated table '{}'", table.name);
         Ok(())
     }
 
     /// Do datatype validation on all of the data in the given database table
     pub async fn validate_datatype_for_table(&self, table: &Table) -> Result<()> {
-        tracing::trace!("Relatable::validate_datatype_for_table({self:?}, {table:?})");
-
-        // Reconnect and begin a transaction:
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-
         let datatypes = self.datatypes().await;
-        self._validate_datatype_for_table(&datatypes, table, &mut tx)?;
-
-        // Commit the transaction
-        tx.commit()?;
-
-        tracing::info!("Validated datatype for table '{}'", table.name);
-        Ok(())
-    }
-
-    /// Do datatype validation on all of the data in the given table using the given database
-    /// transaction
-    fn _validate_datatype_for_table(
-        &self,
-        datatypes: &Datatypes,
-        table: &Table,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<()> {
-        tracing::trace!("Relatable::_validate_datatype_for_table({self:?}, {table:?}, tx)");
-
-        // Validate each table column
         for (_, column) in table.columns.iter() {
-            self._validate_datatype_for_column_and_optionally_for_row(datatypes, column, None, tx)?;
+            self._validate_datatype_for_column_and_optionally_for_row(&datatypes, column, None)
+                .await?;
         }
-
-        tracing::debug!("Validated datatype for table '{}'", table.name);
         Ok(())
     }
 
     /// Do structure validation on all of the data in the given database table
     pub async fn validate_structure_for_table(&self, table: &Table) -> Result<()> {
-        tracing::trace!("Relatable::validate_structure_for_table({self:?}, {table:?})");
-
-        // Reconnect and begin a transaction:
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-
-        self._validate_structure_for_table(table, &mut tx)?;
-
-        // Commit the transaction
-        tx.commit()?;
-
-        tracing::info!("Validated structure for table '{}'", table.name);
-        Ok(())
-    }
-
-    /// Do structure validation on all of the data in the given database table using the given
-    /// database transation
-    fn _validate_structure_for_table(
-        &self,
-        table: &Table,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<()> {
-        tracing::trace!("Relatable::_validate_structure_for_table({self:?}, {table:?}, tx)");
-
-        // Validate each table column
         for (_, column) in table.columns.iter() {
-            self._validate_structure_for_column_and_optionally_for_row(column, None, tx)?;
+            self._validate_structure_for_column_and_optionally_for_row(column, None)
+                .await?;
         }
-
-        tracing::debug!("Validated structure for table '{}'", table.name);
         Ok(())
     }
 
     /// Validate the data in the given column associated with a table in the database
     pub async fn validate_column(&self, column: &Column) -> Result<()> {
         let datatypes = self.datatypes().await;
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-        self._validate_column_optionally_for_row(&datatypes, column, None, &mut tx)?;
-        tx.commit()?;
-        tracing::info!("Validated column '{}.{}'", column.table, column.column);
+        self._validate_column_optionally_for_row(&datatypes, column, None)
+            .await?;
         Ok(())
     }
 
     /// Validate the value of the given column in the given row in the associated database
     /// table
     pub async fn validate_value(&self, column: &Column, row: &u64) -> Result<()> {
-        tracing::trace!("Relatable::validate_value({self:?}, {column:?}, {row})");
         let datatypes = self.datatypes().await;
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-        self._validate_column_optionally_for_row(&datatypes, column, Some(row), &mut tx)?;
-        tx.commit()?;
-        tracing::info!(
-            "Validated value at row {}, column '{}.{}'",
-            row,
-            column.table,
-            column.column
-        );
+        self._validate_column_optionally_for_row(&datatypes, column, Some(row))
+            .await?;
         Ok(())
     }
 
     /// Validate the given row of the given table
-    pub async fn validate_row(&self, table: &Table, row: &u64) -> Result<()> {
-        tracing::trace!("Relatable::validate_row({self:?}, {table:?}, {row})");
-        let datatypes = self.datatypes().await;
-        let mut conn = self.connection.reconnect()?;
-        let mut tx = self.connection.begin(&mut conn).await?;
-        self._validate_row(&datatypes, table, row, &mut tx)?;
-        tx.commit()?;
-        tracing::info!("Validated row {} of table '{}'", row, table.name);
-        Ok(())
-    }
-
-    /// Validate the given row of the given table using the given database transaction
-    fn _validate_row(
+    pub async fn validate_row(
         &self,
         datatypes: &Datatypes,
         table: &Table,
         row: &u64,
-        tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
-        tracing::trace!("Relatable::_validate_row({self:?}, {table:?}, {row}, tx)");
         for (_, column) in table.columns.iter() {
-            self._validate_column_optionally_for_row(datatypes, column, Some(row), tx)?;
+            self._validate_column_optionally_for_row(datatypes, column, Some(row))
+                .await?;
         }
-        tracing::debug!("Validated row {} of table '{}'", row, table.name);
         Ok(())
     }
 
     /// Validate the datatype of the given column in its associated database table using the
     /// given transaction. If `row` is given, only validate the column for that row.
-    fn _validate_datatype_for_column_and_optionally_for_row(
+    async fn _validate_datatype_for_column_and_optionally_for_row(
         &self,
         datatypes: &Datatypes,
         column: &Column,
         row: Option<&u64>,
-        tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
-        tracing::trace!(
-            "Relatable::_validate_datatype_for_column_and_optionally_for_row(\
-             {self:?}, {column:?}, {row:?}, tx)"
-        );
-
         let table_name = column.table.as_str();
 
         // Delete pre-existing datatype validation messages for this column and then
         // validate the datatype conditions for each datatype in the column's datatype hierarchy.
-        self._delete_message(
-            tx,
+        self.delete_message(
             table_name,
             row.copied(),
             Some(&column.column),
             Some("datatype:%"),
             Some("rltbl"),
-        )?;
+        )
+        .await?;
 
         // Gather the datatypes to check: The column's datatype, plus any further datatypes in
         // the datatype hierarchy:
@@ -2921,7 +2633,7 @@ impl Relatable {
 
         // Validate the column against each datatype in the hierarchy:
         for datatype in datatypes_to_check {
-            let inserted = datatype.validate(column, row, tx)?;
+            let inserted = datatype.validate(column, row, self).await?;
             if !inserted {
                 break;
             }
@@ -2941,34 +2653,28 @@ impl Relatable {
 
     /// Validate the structure of the given column in its associated database table using the
     /// given transaction. If `row` is given, only validate the column for that row.
-    fn _validate_structure_for_column_and_optionally_for_row(
+    async fn _validate_structure_for_column_and_optionally_for_row(
         &self,
         column: &Column,
         row: Option<&u64>,
-        tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
-        tracing::trace!(
-            "Relatable::_validate_structure_for_column_and_optionally_for_row(\
-             {self:?}, {column:?}, {row:?}, tx)"
-        );
-
         let table_name = column.table.as_str();
 
         // Delete pre-existing structure validation messages for this column and then re-validate
         // the structure condition for this column and (optionally) row:
-        self._delete_message(
-            tx,
+        self.delete_message(
             table_name,
             row.copied(),
             Some(&column.column),
             Some("key:%"),
             Some("rltbl"),
-        )?;
+        )
+        .await?;
 
         // Validate the cell's structure condition:
         if column.structure != "" {
             let structure = Structure::from_str(&column.structure)?;
-            structure.validate(column, row, tx)?;
+            structure.validate(column, row, self).await?;
         }
 
         tracing::debug!(
@@ -2985,59 +2691,46 @@ impl Relatable {
 
     /// Validate the given column in its associated database table using the given transaction.
     /// If `row` is given, only validate the column for that row.
-    fn _validate_column_optionally_for_row(
+    async fn _validate_column_optionally_for_row(
         &self,
         datatypes: &Datatypes,
         column: &Column,
         row: Option<&u64>,
-        tx: &mut DbTransaction<'_>,
     ) -> Result<()> {
-        tracing::trace!(
-            "Relatable::_validate_column_optionally_for_row({self:?}, {column:?}, {row:?}, tx)"
-        );
-        self._validate_datatype_for_column_and_optionally_for_row(datatypes, column, row, tx)?;
-        self._validate_structure_for_column_and_optionally_for_row(column, row, tx)?;
-        tracing::debug!(
-            "Validated column: '{}.{}'{}",
-            column.table,
-            column.column,
-            match row {
-                None => "".to_string(),
-                Some(row) => format!(", row: {row}"),
-            }
-        );
+        self._validate_datatype_for_column_and_optionally_for_row(datatypes, column, row)
+            .await?;
+        self._validate_structure_for_column_and_optionally_for_row(column, row)
+            .await?;
         Ok(())
     }
 
     /// Delete all entries from the cache corresponding to the given table, or clear it completely
     /// if no table is given.
-    pub(crate) fn clear_cache(tx: &mut DbTransaction<'_>, table: Option<&str>) -> Result<()> {
+    pub(crate) async fn clear_cache(&self, table: Option<&str>) -> Result<()> {
         let mut sql = r#"DELETE FROM "cache""#.to_string();
         if let Some(table) = table {
             let mut table = table.to_string();
             tracing::debug!("Deleting entries for table '{table}' from cache");
-            match tx.kind() {
+            match self.connection.kind() {
                 DbKind::Postgres => {
                     // Note that the '?' is *not* being used as a parameter placeholder here
                     // but a JSONB operator.
                     sql.push_str(&format!(
                         r#" WHERE "tables" ? {}"#,
-                        SqlParam::new(&tx.kind()).next()
+                        SqlParam::new(&self.connection.kind()).next()
                     ));
                 }
                 DbKind::Sqlite => {
                     sql.push_str(&format!(
                         r#" WHERE "tables" LIKE {}"#,
-                        SqlParam::new(&tx.kind()).next()
+                        SqlParam::new(&self.connection.kind()).next()
                     ));
                     table = format!(r#"%"{table}"%"#);
                 }
             };
-            let params = json!([table]);
-            tx.query(&sql, Some(&params))?;
+            self.pool.execute(&sql, [table]).await?;
         } else {
-            tracing::debug!("Truncating cache");
-            tx.query(&sql, None)?;
+            self.pool.execute(&sql, ()).await?;
         }
 
         Ok(())
