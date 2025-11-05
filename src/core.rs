@@ -655,7 +655,11 @@ impl Relatable {
                         if self.validation_level != ValidationLevel::None {
                             cell.validate_sql_type(
                                 &datatypes,
-                                &table.get_config_for_column(column),
+                                &table
+                                    .columns
+                                    .get(column.as_str())
+                                    .cloned()
+                                    .unwrap_or_default(),
                             )
                             .expect("Error validating cell");
                             for message in cell.messages.iter() {
@@ -951,7 +955,7 @@ impl Relatable {
     }
 
     /// Record the given [ChangeSet] to the change and history tables.
-    pub fn record_changeset(
+    pub async fn record_changeset(
         &self,
         changeset: &ChangeSet,
         tx: &mut DbTransaction<'_>,
@@ -1025,7 +1029,7 @@ impl Relatable {
                     // If the row has just been newly added, it will be found in the table,
                     // otherwise we will use the old_change_id to look for it in the history
                     // table:
-                    let json_row = match Table::_get_row(&table, *row, tx)? {
+                    let json_row = match Table::get_row(&table, *row, &self).await? {
                         Some(json_row) => json_row,
                         None => match old_change_id {
                             Some(change_id) => {
@@ -1089,7 +1093,7 @@ impl Relatable {
                     tx.query_value(&sql, Some(&params))?;
                 }
                 Change::Delete { row, after: _ } => {
-                    let json_row = match Table::_get_row(&table, *row, tx)? {
+                    let json_row = match Table::get_row(&table, *row, self).await? {
                         Some(json_row) => json_row,
                         None => {
                             // It must be there since we supposedly just added it, so if it is
@@ -1269,27 +1273,15 @@ impl Relatable {
 
     /// Updates the cursor field in the user table for the user associated with the given
     /// changeset.
-    pub fn prepare_user_cursor(
-        &self,
-        changeset: &ChangeSet,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<()> {
-        tracing::trace!("Relatable::prepare_user_cursor({changeset:?}, tx)");
+    pub async fn prepare_user_cursor(&self, changeset: &ChangeSet) -> Result<()> {
         // Make sure the user is present in the user table
         let user = changeset.user.clone();
-        let color = random_color::RandomColor::new().to_hex();
-        let statement = format!(
-            r#"SELECT 1 FROM "user" WHERE "name" = {sql_param}"#,
-            sql_param = SqlParam::new(&tx.kind()).next()
-        );
-        let params = json!([user]);
-        if let None = tx.query_value(&statement, Some(&params))? {
-            let statement = format!(
-                r#"INSERT INTO "user" ("name", "color") VALUES ({sql_params})"#,
-                sql_params = SqlParam::new(&tx.kind()).get_as_list(2)
-            );
-            let params = json!([user, color]);
-            tx.query(&statement, Some(&params))?;
+        let statement = r#"SELECT 1 FROM "user" WHERE "name" = $1"#;
+        let rows = self.pool.query(&statement, [&user]).await?;
+        if rows.len() == 0 {
+            let color = random_color::RandomColor::new().to_hex();
+            let statement = r#"INSERT INTO "user" ("name", "color") VALUES ($1)"#;
+            self.pool.execute(&statement, [&user, &color]).await?;
         }
 
         // Update the user's cursor position.
@@ -1297,24 +1289,20 @@ impl Relatable {
         match changeset.action {
             ChangeAction::Undo | ChangeAction::Redo => match changeset.changes.first() {
                 Some(Change::Delete { row, after: _ }) => {
-                    cursor.row = Table::_get_previous_row_id(&changeset.table, *row, tx)?;
+                    cursor.row = Table::get_previous_row_id(&changeset.table, *row, &self).await?;
                 }
                 _ => (),
             },
             ChangeAction::Do => (),
         };
 
-        let mut sql_param = SqlParam::new(&tx.kind());
         let statement = format!(
             r#"UPDATE "user"
-               SET "cursor" = {sql_param_1}, "datetime" = CURRENT_TIMESTAMP
-               WHERE "name" = {sql_param_2}"#,
-            sql_param_1 = sql_param.next(),
-            sql_param_2 = sql_param.next(),
+               SET "cursor" = $1, "datetime" = CURRENT_TIMESTAMP
+               WHERE "name" = $2"#,
         );
-        let params = json!([to_value(cursor).unwrap_or_default(), user]);
-        tx.query_value(&statement, Some(&params))?;
-
+        let params = [&to_value(cursor).unwrap_or_default().to_string(), &user];
+        self.pool.execute(&statement, params).await?;
         Ok(())
     }
 
@@ -1874,7 +1862,7 @@ impl Relatable {
         let mut tx = self.connection.begin(&mut conn).await?;
 
         // Update the user cursor
-        self.prepare_user_cursor(changeset, &mut tx)?;
+        self.prepare_user_cursor(changeset).await?;
 
         // Actually make the changes:
         let table = self.get_table(&changeset.table).await?;
@@ -1920,7 +1908,11 @@ impl Relatable {
                     };
 
                     // Validate the cell's SQL type and add any messages to the message table:
-                    let column_config = table.get_config_for_column(column);
+                    let column_config = table
+                        .columns
+                        .get(column.as_str())
+                        .cloned()
+                        .unwrap_or_default();
                     let mut sql_value = cell.value.clone();
                     if self.validation_level != ValidationLevel::None {
                         cell.validate_sql_type(&datatypes, &column_config)
@@ -2027,7 +2019,7 @@ impl Relatable {
         };
         if num_changes > 0 {
             // Record the changes to the change and history tables:
-            self.record_changeset(&actual_changeset, &mut tx)?;
+            self.record_changeset(&actual_changeset, &mut tx).await?;
         }
 
         // Commit the transaction:
@@ -2161,7 +2153,7 @@ impl Relatable {
         let row = JsonRow::nullify(row, &table);
 
         // Prepare a new row to be inserted using the JSON row as a base:
-        let mut new_row = Row::prepare_new(&table, Some(&row), &mut tx)?;
+        let mut new_row = Row::prepare_new(&table, Some(&row))?;
 
         // A new_row_id will have been passed if the row is being added as part of an undo/redo.
         // In that case an after_id must have been passed as well but we leave the row order as
@@ -2196,7 +2188,7 @@ impl Relatable {
         }
 
         let after_id = match after_id {
-            None => Table::_get_previous_row_id(&table.name, new_row.id, &mut tx)?,
+            None => Table::get_previous_row_id(&table.name, new_row.id, &self).await?,
             Some(after_id) => {
                 // Move the row to its assigned spot within the table:
                 tracing::debug!(
@@ -2230,10 +2222,10 @@ impl Relatable {
         };
 
         // Use the changeset to prepare the user cursor:
-        self.prepare_user_cursor(&changeset, &mut tx)?;
+        self.prepare_user_cursor(&changeset).await?;
 
         // Record the changes to the history table:
-        self.record_changeset(&changeset, &mut tx)?;
+        self.record_changeset(&changeset, &mut tx).await?;
 
         // Commit the transaction:
         tx.commit()?;
@@ -2295,12 +2287,12 @@ impl Relatable {
             description: "Delete one row".to_string(),
             changes: vec![Change::Delete {
                 row: row,
-                after: Table::_get_previous_row_id(table_name, row, &mut tx)?,
+                after: Table::get_previous_row_id(table_name, row, self).await?,
             }],
         };
 
         // Use the changeset to prepare the user cursor:
-        self.prepare_user_cursor(&changeset, &mut tx)?;
+        self.prepare_user_cursor(&changeset).await?;
 
         // Delete the row:
         let sql = format!(
@@ -2316,7 +2308,7 @@ impl Relatable {
         tracing::debug!("Deleted messages for deleted row {row} of table {table_name}");
 
         // Record the change to the history table:
-        self.record_changeset(&changeset, &mut tx)?;
+        self.record_changeset(&changeset, &mut tx).await?;
 
         let num_deleted = tx.query(&sql, Some(&params))?.len();
         if num_deleted < 1 {
@@ -2466,20 +2458,20 @@ impl Relatable {
             description: "Move one row".to_string(),
             changes: vec![Change::Move {
                 row: id,
-                from_after: Table::_get_previous_row_id(table_name, id, &mut tx)?,
+                from_after: Table::get_previous_row_id(table_name, id, self).await?,
                 to_after: after_id,
             }],
         };
 
         // Use the changeset to prepare the user cursor:
-        self.prepare_user_cursor(&changeset, &mut tx)?;
+        self.prepare_user_cursor(&changeset).await?;
 
         // Move the row within the table:
         let new_order = self._move_row(&mut tx, &table, id, after_id)?;
 
         if new_order != 0 {
             // Record the change to the history table:
-            self.record_changeset(&changeset, &mut tx)?;
+            self.record_changeset(&changeset, &mut tx).await?;
         }
 
         // Commit the transaction:

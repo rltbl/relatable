@@ -4,7 +4,7 @@
 
 use crate::{
     column::Column,
-    core::{Relatable, RelatableError, NEW_ORDER_MULTIPLIER},
+    core::{Relatable, RelatableError},
     datatype::Datatypes,
     sql::{self, DbKind, DbTransaction, JsonRow, SqlParam},
     table::Table,
@@ -27,40 +27,15 @@ pub struct Row {
 impl Row {
     /// Prepares a new [Row] for insertion to the given [Table], with its [id](Row::id) and
     /// [order](Row::order) fields pre-assigned with their correct next values for this table
-    pub fn prepare_new(
-        table: &Table,
-        json_row: Option<&JsonRow>,
-        tx: &mut DbTransaction<'_>,
-    ) -> Result<Self> {
-        tracing::trace!("Row::prepare_new({table:?}, {json_row:?}, tx)");
+    pub fn prepare_new(table: &Table, json_row: Option<&JsonRow>) -> Result<Self> {
         let json_row = match json_row {
             None => {
-                let columns = {
-                    let columns = Table::get_db_table_columns(&table.name, tx)?;
-                    if columns.is_empty() {
-                        return Err(RelatableError::DataError(format!(
-                            "No defined columns for: {table}",
-                            table = table.name
-                        ))
-                        .into());
-                    }
-                    columns
-                        .iter()
-                        .map(|c| c.get_string("name").expect("No 'name' found"))
-                        .filter(|n| !n.starts_with("_"))
-                        .collect::<Vec<_>>()
-                };
-                let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
-                JsonRow::from_strings(&columns)
+                let column_names = table.columns.keys().map(|s| s.as_str()).collect::<Vec<_>>();
+                JsonRow::from_strings(&column_names)
             }
             Some(json_row) => json_row.clone(),
         };
-        let mut row = Row::from(json_row);
-        row.id = table._get_next_id(tx)?;
-        row.order = NEW_ORDER_MULTIPLIER as u64 * row.id;
-        row.change_id = table.change_id;
-        tracing::debug!("Prepared a new row: {row:?}");
-        Ok(row)
+        Ok(Row::from(json_row))
     }
 
     /// Convert the [text](Cell::text) values of all of the row's [cells](Row::cells) to
@@ -125,7 +100,11 @@ impl Row {
         tx: &mut DbTransaction<'_>,
     ) -> Result<&Self> {
         for (column, cell) in self.cells.iter_mut() {
-            let column_details = table.get_config_for_column(column);
+            let column_details = table
+                .columns
+                .get(column.as_str())
+                .cloned()
+                .unwrap_or_default();
             cell.validate_sql_type(datatypes, &column_details)?;
             for message in cell.messages.iter() {
                 let (msg_id, msg) = Relatable::_add_message(
@@ -269,7 +248,7 @@ impl Cell {
         }
 
         match sql_type.as_str() {
-            "integer" => match &mut self.value {
+            "integer" | "bigint" => match &mut self.value {
                 JsonValue::Number(number) => match number.to_string().parse::<i64>() {
                     Ok(_) => (),
                     Err(_) => invalidate(self, &sql_type, column),
