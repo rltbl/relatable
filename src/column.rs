@@ -9,7 +9,7 @@ use std::{
 
 use crate as rltbl;
 use indexmap::IndexMap;
-use rltbl::{core::RelatableError, datatype::Datatypes};
+use rltbl::{core::RelatableError, datatype::Datatypes, structure::Structures};
 use rltbl_db::{
     any::AnyPool,
     core::{DbKind, DbQuery, JsonRow},
@@ -38,7 +38,7 @@ pub struct Column {
     pub sql_type: String,
     pub nulltype: String,
     pub datatype: String,
-    pub structure: String,
+    pub structure: Structures,
     #[serde(deserialize_with = "to_bool")]
     pub primary_key: bool,
     #[serde(deserialize_with = "to_bool")]
@@ -374,7 +374,7 @@ impl<'a> ColumnTable<'a> {
         self.pool.execute(&self.ddl(), ()).await?;
         let rows: Vec<JsonRow> = Columns::builtins()
             .iter()
-            .map(|dt| json!(dt).as_object().unwrap().clone())
+            .map(|col| json!(col).as_object().unwrap().clone())
             .collect();
         let refs: Vec<&JsonRow> = rows.iter().collect();
         self.pool.insert(&self.table_name, &refs).await?;
@@ -493,8 +493,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create() {
-        // let pool = AnyPool::connect(":memory:")
-        let pool = AnyPool::connect("test_create.db")
+        let pool = AnyPool::connect("build/test_column_create.db")
             .await
             .expect("connect to SQLite");
         let table = ColumnTable::connect(&pool);

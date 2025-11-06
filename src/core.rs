@@ -13,7 +13,6 @@ use rltbl::{
         self, CachingStrategy, DbConnection, DbKind, JsonRow, MemoryCacheKey, SqlParam,
         VecInto as _,
     },
-    structure::Structure,
     table::Table,
 };
 use rltbl_db::{
@@ -1934,6 +1933,7 @@ impl Relatable {
                                RETURNING 1 AS "updated""#,
                         table = changeset.table,
                     );
+                    // TODO: improve this hack
                     let param = match sql_value {
                         JsonValue::String(s) => s,
                         _ => sql_value.to_string(),
@@ -2034,16 +2034,12 @@ impl Relatable {
                RETURNING "message_id""#,
             sql_params = SqlParam::new(&self.connection.kind()).get_as_list(8)
         );
-        let params = params![
-            user,
-            table_name,
-            row,
-            column,
-            value.to_string(),
-            level,
-            rule,
-            message
-        ];
+        // TODO: improve this hack
+        let param = match value {
+            JsonValue::String(s) => s,
+            _ => &value.to_string(),
+        };
+        let params = params![user, table_name, row, column, param, level, rule, message];
         let message_id = self.pool.query_u64(&sql, params).await?;
 
         Ok((
@@ -2672,9 +2668,10 @@ impl Relatable {
         .await?;
 
         // Validate the cell's structure condition:
-        if column.structure != "" {
-            let structure = Structure::from_str(&column.structure)?;
-            structure.validate(column, row, self).await?;
+        if column.structure.len() > 0 {
+            for structure in column.structure.iter() {
+                structure.validate(column, row, self).await?;
+            }
         }
 
         tracing::debug!(

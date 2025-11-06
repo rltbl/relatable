@@ -12,12 +12,23 @@ use rltbl_db::core::{DbQuery, ParamValue};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::{fmt::Display, str::FromStr};
+use std::{
+    fmt::Display,
+    ops::{Deref, DerefMut},
+    str::FromStr,
+};
 
 /// Represents a column's structure.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(try_from = "String", into = "String")]
 pub enum Structure {
     From(Option<String>, String),
+}
+
+impl Default for Structure {
+    fn default() -> Self {
+        Structure::From(None, String::new())
+    }
 }
 
 impl Structure {
@@ -134,5 +145,173 @@ impl Display for Structure {
                 Some(s_table) => write!(f, "from({s_table}.{s_column})"),
             },
         }
+    }
+}
+
+impl TryFrom<&str> for Structure {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+        Self::from_str(value)
+    }
+}
+
+impl TryFrom<String> for Structure {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        Self::from_str(&value)
+    }
+}
+
+impl From<Structure> for String {
+    fn from(value: Structure) -> Self {
+        value.to_string()
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(try_from = "String", into = "String")]
+pub struct Structures {
+    list: Vec<Structure>,
+}
+
+impl Deref for Structures {
+    type Target = Vec<Structure>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.list
+    }
+}
+
+impl DerefMut for Structures {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.list
+    }
+}
+
+impl Into<Vec<Structure>> for Structures {
+    fn into(self) -> Vec<Structure> {
+        self.list
+    }
+}
+
+impl FromStr for Structures {
+    type Err = anyhow::Error;
+
+    fn from_str(structure: &str) -> Result<Self> {
+        match structure.trim() {
+            "" => Ok(Self::default()),
+            // TODO: handle multiple structures
+            _ => Ok(Structures {
+                list: vec![Structure::from_str(structure)?],
+            }),
+        }
+    }
+}
+
+impl From<&str> for Structures {
+    fn from(value: &str) -> Self {
+        match Self::from_str(value) {
+            Ok(structure) => structure,
+            Err(_) => Self::default(),
+        }
+    }
+}
+
+impl TryFrom<String> for Structures {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        Self::from_str(&value)
+    }
+}
+
+impl From<Structures> for String {
+    fn from(value: Structures) -> Self {
+        value.to_string()
+    }
+}
+
+impl Display for Structures {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.list
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>()
+                .join(" ")
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use derive_builder::Builder;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    #[test]
+    fn test_structure() {
+        let string = "from(tbl.col)";
+        let structure = Structure::from_str(&string).expect("get structure");
+        assert_eq!(
+            structure,
+            Structure::From(Some("tbl".to_owned()), "col".to_owned())
+        );
+        assert_eq!(structure.to_string(), string);
+        assert_eq!(json!(structure), json!(string));
+
+        let structure: Structure = string.try_into().expect("valid structure");
+        assert_eq!(
+            structure,
+            Structure::From(Some("tbl".to_owned()), "col".to_owned())
+        );
+    }
+
+    #[test]
+    fn test_structures() {
+        let string = "";
+        let structures = Structures::from_str(&string).expect("get structure");
+        assert_eq!(structures, Structures { list: vec![] });
+        assert_eq!(structures.to_string(), string);
+        assert_eq!(json!(structures), json!(string));
+
+        let string = "from(tbl.col)";
+        let structures = Structures::from_str(&string).expect("get structure");
+        assert_eq!(
+            structures,
+            Structures {
+                list: vec![Structure::From(Some("tbl".to_owned()), "col".to_owned())]
+            }
+        );
+        assert_eq!(structures.to_string(), string);
+        assert_eq!(json!(structures), json!(string));
+
+        let structures: Structures = string.into();
+        assert_eq!(
+            structures,
+            Structures {
+                list: vec![Structure::From(Some("tbl".to_owned()), "col".to_owned())]
+            }
+        );
+    }
+
+    #[derive(Builder, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+    #[builder(default, setter(into))]
+    struct Column {
+        structure: Structures,
+    }
+
+    #[test]
+    fn test_column() {
+        let column = ColumnBuilder::default()
+            .structure("from(tbl.col)")
+            .build()
+            .unwrap();
+        assert_eq!(json!(column), json!({"structure": "from(tbl.col)"}));
     }
 }
