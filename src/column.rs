@@ -3,13 +3,18 @@
 //! This is [relatable](crate) (rltbl::[column](crate::column)).
 
 use std::{
+    collections::HashSet,
     fmt,
     ops::{Deref, DerefMut},
 };
 
 use crate as rltbl;
 use indexmap::IndexMap;
-use rltbl::{core::RelatableError, datatype::Datatypes, structure::Structures};
+use rltbl::{
+    core::RelatableError,
+    datatype::Datatypes,
+    structure::{Structure, Structures},
+};
 use rltbl_db::{
     any::AnyPool,
     core::{DbKind, DbQuery, JsonRow},
@@ -26,7 +31,7 @@ use serde_json::json;
 
 /// Represents a column from some table
 #[derive(
-    Builder, Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord,
+    Builder, Clone, Debug, Default, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord,
 )]
 #[serde(default)]
 #[builder(default, setter(into))]
@@ -120,58 +125,9 @@ impl Column {
         self.column.starts_with("_")
     }
 
-    // TODO: replace this
-    /// Get the columns, either from the same or from another table, that depend on this column,
-    /// using the given transaction
-    pub fn get_dependent_columns(&self, _columns: &Columns) -> Vec<Self> {
-        tracing::trace!("Column::_get_dependent_columns({self:?}, tx)");
-
-        // if !Table::_table_exists("column", tx)? {
-        //     tracing::debug!("No column table found");
-        //     return Ok(vec![]);
-        // }
-
-        tracing::debug!(
-            "Looking through column table for dependent columns of '{}.{}'",
-            self.table,
-            self.column
-        );
-
-        // let sql = format!(
-        //     r#"SELECT * FROM "column" WHERE "structure" {is_not} NULL"#,
-        //     is_not = sql::is_not_clause(&tx.kind())
-        // );
-        let dependent_columns: Vec<Column> = vec![];
-        // for row in &tx.query(&sql, None)? {
-        //     // TODO: Clean this up
-        //     if &row.get_string("structure")? != "" {
-        //         let dependent_table = Table::_get_table(&row.get_string("table")?, tx)?;
-        //         let Structure::From(structure_table, structure_column) =
-        //             Structure::from_str(&row.get_string("structure")?)?;
-        //         let structure_table = structure_table.unwrap_or(dependent_table.name.to_string());
-        //         if structure_table == self.table && structure_column == self.column {
-        //             let dependent_column = row.get_string("column")?;
-        //             let dependent_column = match dependent_table.columns.get(&dependent_column) {
-        //                 Some(col) => col.clone(),
-        //                 None => {
-        //                     return Err(RelatableError::DataError(format!(
-        //                         "No column found: '{dependent_column}'"
-        //                     ))
-        //                     .into());
-        //                 }
-        //             };
-        //             let mut indirect_deps = dependent_column._get_dependent_columns(tx)?;
-        //             dependent_columns.push(dependent_column);
-        //             dependent_columns.append(&mut indirect_deps);
-        //         }
-        //     }
-        // }
-        tracing::debug!(
-            "Column '{}.{}' has the following dependent columns: {dependent_columns:#?}",
-            self.table,
-            self.column
-        );
-        dependent_columns
+    /// True if this is a "meta" column.
+    pub fn is_data(&self) -> bool {
+        !self.is_meta()
     }
 
     /// Get the SQL type for this column according to its datatype,
@@ -295,7 +251,55 @@ impl Columns {
 
     /// Return all the data (non-meta) columns.
     pub fn data(&self) -> Vec<&Column> {
-        self.list.iter().filter(|col| !col.is_meta()).collect()
+        self.list.iter().filter(|col| col.is_data()).collect()
+    }
+
+    /// Return the column for this table name and column name, or None.
+    pub fn column(&self, table: &str, column: &str) -> Option<&Column> {
+        self.iter()
+            .filter(|c| c.table == table && c.column == column)
+            .nth(0)
+    }
+
+    /// Given a column
+    /// return a list of the columns that depend on this column
+    /// because of their `from()` structure.
+    pub fn direct_dependents(&self, column: &Column) -> Vec<&Column> {
+        self.list
+            .iter()
+            .filter(|col| {
+                let mut dependent = false;
+                for structure in col.structure.iter() {
+                    #[allow(irrefutable_let_patterns)]
+                    if let Structure::From(t, c) = structure {
+                        // If no table is specified, it means "from the same table".
+                        let t = match t {
+                            Some(t) => t,
+                            None => &col.table,
+                        };
+                        if t == &column.table && c == &column.column {
+                            dependent = true;
+                            break;
+                        };
+                    }
+                }
+                dependent
+            })
+            .collect()
+    }
+
+    /// Given a column
+    /// return a list of the columns that depend on this column
+    /// because of their `from()` structure,
+    /// and all their dependents recursively.
+    pub fn dependents(&self, column: &Column) -> HashSet<&Column> {
+        let mut dependents: HashSet<&Column> = HashSet::new();
+        let direct_dependents = self.direct_dependents(column);
+        for dependent in direct_dependents {
+            dependents.insert(dependent);
+            dependents.extend(self.dependents(dependent))
+        }
+        dependents
     }
 }
 
@@ -504,5 +508,29 @@ mod tests {
             columns.data(),
             Columns::builtins().iter().collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn test_dependent() {
+        let a = ColumnBuilder::new("foo", "a").build().unwrap();
+        // column b depends on column a from the same "foo" table.
+        let b = ColumnBuilder::new("foo", "b")
+            .structure("from(a)")
+            .build()
+            .unwrap();
+        // column c depends on column a from the "bar" table.
+        let c = ColumnBuilder::new("bar", "c")
+            .structure("from(foo.b)")
+            .build()
+            .unwrap();
+        let columns = Columns {
+            list: vec![a.clone(), b.clone(), c.clone()],
+        };
+        assert_eq!(columns.direct_dependents(&a), vec![&b]);
+        assert_eq!(columns.dependents(&a), HashSet::from([&b, &c]));
+        assert_eq!(columns.direct_dependents(&b), vec![&c]);
+        assert_eq!(columns.dependents(&b), HashSet::from([&c]));
+        assert_eq!(columns.direct_dependents(&c), Vec::<&Column>::new());
+        assert_eq!(columns.dependents(&c), HashSet::<&Column>::new());
     }
 }

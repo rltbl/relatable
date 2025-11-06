@@ -273,14 +273,10 @@ impl Relatable {
         if !Table::table_exists("table", self).await? {
             tracing::warn!("Can't get list of tables to drop: The table table does not exist");
         } else {
-            let mut tables = self.get_tables().await?;
-            for (_, table) in tables.iter_mut() {
-                let mut dependent_tables = table.get_dependent_tables(None, &self).await?;
-                dependent_tables.reverse();
-                for table in &mut dependent_tables {
-                    table.drop_table(self).await?;
-                }
-                table.drop_table(self).await?;
+            // TODO: sort tables by dependency, drop in referse order
+            let tables = self.get_tables().await?;
+            for table in tables.keys() {
+                self.drop(table).await?;
             }
         }
         Ok(())
@@ -719,10 +715,8 @@ impl Relatable {
             self.validate_table(&table)
                 .await
                 .expect("Error validating table");
-            let dependent_tables = table
-                .get_dependent_tables(None, &self)
-                .await
-                .expect("Error getting dependent tables");
+            let tables = self.get_tables().await.expect("all tables");
+            let dependent_tables = table.get_dependent_tables(&tables);
             for table in &dependent_tables {
                 tracing::debug!("Validating dependent table '{}'", table.name);
                 self.validate_structure_for_table(&table)
@@ -1710,7 +1704,7 @@ impl Relatable {
             None => Ok(None),
             Some(change) => {
                 if let Change::Update { .. } = change {
-                    let columns = self.column_table().get(&[&changeset.table]).await?;
+                    let columns = self.column_table().get_all().await?;
                     let datatypes = self.datatypes().await;
                     let actual_changes = self._set_values(&columns, &datatypes, &changeset).await?;
                     Ok(Some(actual_changes))
@@ -1967,7 +1961,8 @@ impl Relatable {
                             Some(row),
                         )
                         .await?;
-                        for column in &column_config.get_dependent_columns(&columns) {
+
+                        for column in &columns.dependents(&column_config) {
                             tracing::debug!("Validating dependent column '{}'", column.column);
                             self._validate_structure_for_column_and_optionally_for_row(
                                 column, None,
@@ -2004,7 +1999,7 @@ impl Relatable {
     /// Update the database using the given [ChangeSet]
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<ChangeSet> {
         tracing::trace!("Relatable::set_values({changeset:?})");
-        let columns = self.column_table().get(&[&changeset.table]).await?;
+        let columns = self.column_table().get_all().await?;
         let datatypes = self.datatypes().await;
         let changeset = self._set_values(&columns, &datatypes, changeset).await?;
         if changeset.changes.len() > 0 {
@@ -2114,7 +2109,8 @@ impl Relatable {
         // Optionally do full validation on the row after it has been inserted:
         if self.validation_level == ValidationLevel::Full {
             self.validate_row(&datatypes, &table, &new_row.id).await?;
-            for table in &table.get_dependent_tables(None, &self).await? {
+            let tables = self.get_tables().await?;
+            for table in &table.get_dependent_tables(&tables) {
                 tracing::debug!("Validating dependent table '{}'", table.name);
                 self.validate_structure_for_table(table).await?;
             }

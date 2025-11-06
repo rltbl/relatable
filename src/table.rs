@@ -2,15 +2,21 @@
 //!
 //! This is [relatable](crate) (rltbl::[table](crate::table)).
 
-use crate::{
+use std::collections::HashSet;
+
+use crate as rltbl;
+
+use rltbl::{
     column::Column,
     core::Relatable,
     sql::{self, JsonRow},
+    structure::Structure,
 };
+use rltbl_db::core::{DbKind, DbQuery};
 
 use anyhow::Result;
 use indexmap::IndexMap;
-use rltbl_db::core::{DbKind, DbQuery};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,26 +127,41 @@ impl Table {
         }
     }
 
-    /// Get the tables that depend on this table. If `column_name` is specified, only get the
-    /// tables that depend on this particular column.
-    pub async fn get_dependent_tables(
-        &self,
-        _column: Option<&str>,
-        rltbl: &Relatable,
-    ) -> Result<Vec<Self>> {
-        if !Table::table_exists("column", rltbl).await? {
-            return Ok(vec![]);
+    /// Given the full set of tables,
+    /// return a list of the tables that this table depends on,
+    /// because of `from()` structures in its columns.
+    pub fn depends_on(&self) -> HashSet<String> {
+        self.columns
+            .values()
+            .filter_map(|col| {
+                for structure in col.structure.iter() {
+                    #[allow(irrefutable_let_patterns)]
+                    if let Structure::From(t, _) = structure {
+                        return t.clone();
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+
+    /// Given a map of all the tables in the database,
+    /// return a list of tables that depend on this table
+    /// because of `from()` structures on their columns.
+    /// Dependencies are recursive and in order, with no duplicates.
+    pub fn get_dependent_tables<'a>(&self, tables: &'a IndexMap<String, Table>) -> Vec<&'a Self> {
+        let mut dependent_tables = Vec::new();
+        for table in tables.values() {
+            if table.depends_on().contains(&self.name) {
+                dependent_tables.push(table);
+                // TODO: This is probably not correct.
+                dependent_tables.extend(self.get_dependent_tables(tables));
+            }
         }
-
-        let dependent_tables: Vec<Table> = vec![];
-
-        // TODO: reimplement using dependent_columns then getting just the tables
-
-        tracing::debug!(
-            "Table '{}' has the following dependent tables: {dependent_tables:#?}",
-            self.name
-        );
-        Ok(dependent_tables)
+        dependent_tables
+            .into_iter()
+            .unique_by(|table| table.name.clone())
+            .collect()
     }
 
     /// Set the view for the table to the given view type (accepted types are "default" and "text"),
