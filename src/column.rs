@@ -408,6 +408,7 @@ impl<'a> ColumnTable<'a> {
         // TODO: Validate table names.
         match self.pool.kind() {
             rltbl_db::core::DbKind::SQLite => {
+                // TODO: Improve this
                 let filter = if tables.len() > 0 {
                     format!(
                         "\n  AND main.name IN({})",
@@ -459,6 +460,44 @@ impl<'a> ColumnTable<'a> {
     /// This merges the actual columns with the content of the column table.
     pub async fn get(&self, tables: &[&str]) -> Result<Columns> {
         let sql = self.get_sql(tables)?;
+        let rows = self.pool.query(&sql, ()).await?;
+        let list = rows
+            .iter()
+            .filter_map(|row: &JsonRow| {
+                let row: JsonRow = row
+                    .iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
+                serde_json::from_value(json!(row)).ok()
+            })
+            .collect::<Vec<_>>();
+        Ok(Columns { list })
+    }
+
+    /// Get columns for these tables from the "column" table,
+    /// whether or not they are actually in the database.
+    pub async fn get_configured(&self, tables: &[&str]) -> Result<Columns> {
+        let sql = format!(
+            r#"
+              SELECT
+                "table",
+                "column",
+                "label",
+                "description",
+                "nulltype",
+                "datatype",
+                "structure"
+              FROM "{}"
+              WHERE "table" IN({})
+            "#,
+            self.table_name,
+            tables
+                .iter()
+                .map(|t| format!("'{t}'"))
+                .collect::<Vec<String>>()
+                .join(", ")
+        );
         let rows = self.pool.query(&sql, ()).await?;
         let list = rows
             .iter()

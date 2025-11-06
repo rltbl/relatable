@@ -522,7 +522,7 @@ impl Relatable {
             };
             let table_columns = self
                 .column_table()
-                .get(&[table_name])
+                .get_configured(&[table_name])
                 .await
                 .expect("get columns for this table");
             let table_columns = table_columns
@@ -630,7 +630,7 @@ impl Relatable {
                             .to_owned();
                         (column, nulltype)
                     };
-                    if nulltype == "emtpy" && value == "" {
+                    if nulltype == "empty" && value == "" {
                         sql_params.push("NULL".to_string());
                     } else {
                         if nulltype != "" && nulltype != "empty" {
@@ -1927,11 +1927,7 @@ impl Relatable {
                                RETURNING 1 AS "updated""#,
                         table = changeset.table,
                     );
-                    // TODO: improve this hack
-                    let param = match sql_value {
-                        JsonValue::String(s) => s,
-                        _ => sql_value.to_string(),
-                    };
+                    let param = ParamValue::from_json(sql_value);
                     let params = params![param, row];
 
                     // Execute the UPDATE statement.
@@ -2029,11 +2025,7 @@ impl Relatable {
                RETURNING "message_id""#,
             sql_params = SqlParam::new(&self.connection.kind()).get_as_list(8)
         );
-        // TODO: improve this hack
-        let param = match value {
-            JsonValue::String(s) => s,
-            _ => &value.to_string(),
-        };
+        let param = ParamValue::from_json(value.clone());
         let params = params![user, table_name, row, column, param, level, rule, message];
         let message_id = self.pool.query_u64(&sql, params).await?;
 
