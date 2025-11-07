@@ -579,16 +579,7 @@ async fn add_row(
     if rltbl.readonly {
         return forbid().into();
     }
-    let columns = match rltbl.fetch_columns(&table).await {
-        Ok(columns) => columns,
-        Err(error) => return get_500(&error),
-    };
-    let json_row: JsonRow = JsonRow {
-        content: columns
-            .iter()
-            .map(|c| (c.column.clone(), json!(String::new())))
-            .collect(),
-    };
+    let json_row = JsonRow::new();
     match rltbl.add_row(&table, &username, after_id, &json_row).await {
         Ok(row) => {
             // tracing::info!("Added row {row:?}");

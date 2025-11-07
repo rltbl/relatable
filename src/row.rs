@@ -6,8 +6,8 @@ use crate::{
     column::Column,
     core::{Relatable, RelatableError},
     datatype::Datatypes,
+    schema::Schema,
     sql::{self, JsonRow},
-    table::Table,
 };
 
 use anyhow::Result;
@@ -27,10 +27,18 @@ pub struct Row {
 impl Row {
     /// Prepares a new [Row] for insertion to the given [Table], with its [id](Row::id) and
     /// [order](Row::order) fields pre-assigned with their correct next values for this table
-    pub fn prepare_new(table: &Table, json_row: Option<&JsonRow>) -> Result<Self> {
+    pub fn prepare_new(
+        schema: &Schema,
+        table_name: &str,
+        json_row: Option<&JsonRow>,
+    ) -> Result<Self> {
         let json_row = match json_row {
             None => {
-                let column_names = table.columns.keys().map(|s| s.as_str()).collect::<Vec<_>>();
+                let column_names = schema
+                    .columns(table_name)
+                    .keys()
+                    .map(|key| key.as_str())
+                    .collect::<Vec<&str>>();
                 JsonRow::from_strings(&column_names)
             }
             Some(json_row) => json_row.clone(),
@@ -49,24 +57,23 @@ impl Row {
     /// and add any resulting validation [messages](Message) to the message table
     pub async fn validate_sql_types(
         &mut self,
-        datatypes: &Datatypes,
-        table: &Table,
+        schema: &Schema,
+        table_name: &str,
         rltbl: &Relatable,
     ) -> Result<&Self> {
-        for (column, cell) in self.cells.iter_mut() {
-            let column_details = table
-                .columns
-                .get(column.as_str())
+        for (column_name, cell) in self.cells.iter_mut() {
+            let column = schema
+                .column(table_name, column_name.as_str())
                 .cloned()
                 .unwrap_or_default();
-            cell.validate_sql_type(datatypes, &column_details)?;
+            cell.validate_sql_type(&schema.datatypes, &column)?;
             for message in cell.messages.iter() {
                 let (msg_id, msg) = rltbl
                     .add_message(
                         "rltbl",
-                        &table.name,
+                        table_name,
                         self.id,
-                        column,
+                        column_name,
                         &cell.value,
                         &message.level,
                         &message.rule,

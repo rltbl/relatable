@@ -45,7 +45,6 @@ impl Select {
         query_params: &QueryParams,
         rltbl: &Relatable,
     ) -> Self {
-        tracing::trace!("Select::from_path_and_query({path:?}, {query_params:?})");
         let mut query_params = query_params.clone();
         let mut filters = Vec::new();
         let mut order_by = Vec::new();
@@ -130,114 +129,105 @@ impl Select {
             }
         }
 
-        let base_table_name = path.split(".").next().unwrap_or_default();
-        let base_view_name = match rltbl.get_table(base_table_name).await {
-            Ok(table_config) => table_config.view,
-            Err(_) => String::new(),
-        };
+        let schema = rltbl.schema().await.unwrap_or_default();
 
-        let datatypes = rltbl.datatypes().await;
+        let base_table_name = path.split(".").next().unwrap_or_default();
+        let base_view_name = schema
+            .table(base_table_name)
+            .cloned()
+            .unwrap_or_default()
+            .view;
 
         for (lhs, pattern) in query_params {
-            let (table, column) = match lhs.split_once(".") {
-                Some((table, column)) => (table.to_string(), column.to_string()),
+            let (table_name, column_name) = match lhs.split_once(".") {
+                Some((table_name, column)) => (table_name.to_string(), column.to_string()),
                 None => (String::new(), lhs),
-            };
-            let table_config = {
-                let table_name = match table.as_str() {
-                    "" => base_table_name,
-                    table => &table,
-                };
-                match rltbl.get_table(table_name).await {
-                    Ok(_) => (),
-                    Err(err) => println!("ERROR {err} for {table_name}"),
-                };
-                rltbl
-                    .get_table(table_name)
-                    .await
-                    .expect("Can't get table '{table_name}'")
             };
             if pattern.starts_with("like.") {
                 let value = &pattern.replace("like.", "");
                 match serde_json::from_str(value) {
                     Ok(value) => filters.push(Filter::Like {
-                        table,
-                        column,
+                        table: table_name,
+                        column: column_name,
                         value,
                     }),
                     Err(_) => filters.push(Filter::Like {
-                        table,
-                        column,
+                        table: table_name,
+                        column: column_name,
                         value: JsonValue::String(value.to_string()),
                     }),
                 }
             } else {
-                let sql_type = table_config
-                    .columns
-                    .get(&column)
-                    .and_then(|col| Some(col.sql_type(&datatypes)))
-                    .unwrap_or("TEXT".to_owned());
+                let inner_table_name = match table_name.as_str() {
+                    "" => base_table_name,
+                    _ => &table_name,
+                };
+                let sql_type = schema
+                    .column(inner_table_name, &column_name)
+                    .cloned()
+                    .unwrap_or_default()
+                    .sql_type;
                 if pattern.starts_with("eq.") {
                     let value = &pattern.replace("eq.", "");
-                    let value = value_as_type(&sql_type, &column, value);
+                    let value = value_as_type(&sql_type, &column_name, value);
                     filters.push(Filter::Equal {
-                        table,
-                        column,
+                        table: table_name,
+                        column: column_name,
                         value,
                     })
                 } else if pattern.starts_with("not_eq.") {
                     let value = &pattern.replace("not_eq.", "");
-                    let value = value_as_type(&sql_type, &column, value);
+                    let value = value_as_type(&sql_type, &column_name, value);
                     filters.push(Filter::NotEqual {
-                        table,
-                        column,
+                        table: table_name,
+                        column: column_name,
                         value,
                     })
                 } else if pattern.starts_with("gt.") {
                     let value = &pattern.replace("gt.", "");
-                    let value = value_as_type(&sql_type, &column, value);
+                    let value = value_as_type(&sql_type, &column_name, value);
                     filters.push(Filter::GreaterThan {
-                        table,
-                        column,
+                        table: table_name,
+                        column: column_name,
                         value,
                     })
                 } else if pattern.starts_with("gte.") {
                     let value = &pattern.replace("gte.", "");
-                    let value = value_as_type(&sql_type, &column, value);
+                    let value = value_as_type(&sql_type, &column_name, value);
                     filters.push(Filter::GreaterThanOrEqual {
-                        table,
-                        column,
+                        table: table_name,
+                        column: column_name,
                         value,
                     })
                 } else if pattern.starts_with("lt.") {
                     let value = &pattern.replace("lt.", "");
-                    let value = value_as_type(&sql_type, &column, value);
+                    let value = value_as_type(&sql_type, &column_name, value);
                     filters.push(Filter::LessThan {
-                        table,
-                        column,
+                        table: table_name,
+                        column: column_name,
                         value,
                     })
                 } else if pattern.starts_with("lte.") {
                     let value = &pattern.replace("lte.", "");
-                    let value = value_as_type(&sql_type, &column, value);
+                    let value = value_as_type(&sql_type, &column_name, value);
                     filters.push(Filter::LessThanOrEqual {
-                        table,
-                        column,
+                        table: table_name,
+                        column: column_name,
                         value,
                     })
                 } else if pattern.starts_with("is.") {
                     let value = pattern.replace("is.", "");
                     if value.to_lowercase() == "null" {
                         filters.push(Filter::Is {
-                            table,
-                            column,
+                            table: table_name,
+                            column: column_name,
                             value: JsonValue::Null,
                         })
                     } else {
-                        let value = value_as_type(&sql_type, &column, &value);
+                        let value = value_as_type(&sql_type, &column_name, &value);
                         filters.push(Filter::Is {
-                            table,
-                            column,
+                            table: table_name,
+                            column: column_name,
                             value,
                         })
                     }
@@ -245,15 +235,15 @@ impl Select {
                     let value = pattern.replace("is_not.", "");
                     if value.to_lowercase() == "null" {
                         filters.push(Filter::IsNot {
-                            table,
-                            column,
+                            table: table_name,
+                            column: column_name,
                             value: JsonValue::Null,
                         })
                     } else {
-                        let value = value_as_type(&sql_type, &column, &value);
+                        let value = value_as_type(&sql_type, &column_name, &value);
                         filters.push(Filter::IsNot {
-                            table,
-                            column,
+                            table: table_name,
+                            column: column_name,
                             value,
                         })
                     }
@@ -269,11 +259,11 @@ impl Select {
                     };
                     let values = separator
                         .split(values)
-                        .map(|v| value_as_type(&sql_type, &column, v))
+                        .map(|v| value_as_type(&sql_type, &column_name, v))
                         .collect::<Vec<_>>();
                     filters.push(Filter::In {
-                        table,
-                        column,
+                        table: table_name,
+                        column: column_name,
                         value: json!(values),
                     })
                 } else if pattern.starts_with("not_in.") {
@@ -288,11 +278,11 @@ impl Select {
                     };
                     let values = separator
                         .split(values)
-                        .map(|v| value_as_type(&sql_type, &column, v))
+                        .map(|v| value_as_type(&sql_type, &column_name, v))
                         .collect::<Vec<_>>();
                     filters.push(Filter::NotIn {
-                        table,
-                        column,
+                        table: table_name,
+                        column: column_name,
                         value: json!(values),
                     })
                 }
@@ -413,11 +403,11 @@ impl Select {
     }
 
     /// Add all of the given table's columns to the SELECT clause of this select
-    pub async fn select_all(&mut self, rltbl: &Relatable, table: &str) -> Result<&Self> {
-        for column in rltbl.fetch_all_columns(&table).await? {
+    pub async fn select_all(&mut self, rltbl: &Relatable, table_name: &str) -> Result<&Self> {
+        for column in rltbl.column_table().get(&[table_name]).await?.iter() {
             self.select.push(SelectField::Column {
                 table: String::new(),
-                column: column.column,
+                column: column.column.to_string(),
                 alias: String::new(),
             });
         }

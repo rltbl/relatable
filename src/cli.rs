@@ -702,10 +702,8 @@ pub async fn prompt_for_json_message(
     row: u64,
     column: &str,
 ) -> Result<JsonRow> {
-    tracing::trace!("prompt_for_json_message({rltbl:?}, {table}, {row}, {column})");
-    let columns = rltbl
-        .fetch_columns("message")
-        .await?
+    let columns: Vec<_> = rltbl.column_table().get(&["message"]).await?.into();
+    let columns = columns
         .iter()
         .filter(|c| !["message_id", "added_by"].contains(&c.column.as_str()))
         .map(|c| c.column.to_string())
@@ -734,14 +732,14 @@ pub async fn prompt_for_json_message(
 
 pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<JsonRow> {
     tracing::trace!("prompt_for_json_row({rltbl:?}, {table_name})");
-    let columns = rltbl
-        .fetch_columns(table_name)
+    let columns: Vec<String> = rltbl
+        .column_table()
+        .get(&[table_name])
         .await?
         .iter()
-        .map(|c| c.column.to_string())
-        .collect::<Vec<_>>();
-    let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<_>>();
-    let mut json_row = JsonRow::from_strings(&columns);
+        .map(|col| col.column.to_string())
+        .collect();
+    let mut json_row = JsonRow::from_strings(&columns.iter().map(|s| s.as_str()).collect());
 
     for column in &columns {
         json_row
@@ -877,24 +875,13 @@ pub async fn validate_table(cli: &Cli, table_name: &str) {
 
 /// Validate the given column
 pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
-    tracing::trace!("validate_column({cli:?}, {table_name}, {column_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .expect("Connect error");
-
-    let table = rltbl
-        .get_table(table_name)
-        .await
-        .expect("Error getting table");
-    let column = table.columns.get(column_name).expect(&format!(
-        "Column '{column_name}' not found in table '{table_name}'"
-    ));
-
     rltbl
-        .validate_column(column)
+        .validate_column(table_name, column_name)
         .await
         .expect("Error while validating column");
-    tracing::info!("Validated column '{column_name}' of table '{table_name}'");
 }
 
 /// Validate the value of the given column, row, and table
@@ -903,20 +890,10 @@ pub async fn validate_value(cli: &Cli, table_name: &str, row: &u64, column_name:
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .expect("Connect error");
-
-    let table = rltbl
-        .get_table(table_name)
-        .await
-        .expect("Error getting table");
-    let column = table.columns.get(column_name).expect(&format!(
-        "Column '{column_name}' not found in table '{table_name}'"
-    ));
-
     rltbl
-        .validate_value(column, row)
+        .validate_value(table_name, column_name, row)
         .await
         .expect("Error while validating value");
-    tracing::info!("Validated value of column '{column_name}' of table '{table_name}'");
 }
 
 /// Delete the given row in the given table

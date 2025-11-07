@@ -13,6 +13,7 @@ use rltbl::{
     column::Column,
     core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
     datatype::Datatypes,
+    schema::Schema,
     table::Table,
 };
 
@@ -802,15 +803,16 @@ fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
 /// Generate DDL to create the given table in the database. If `force` is set, drop the table
 /// first.
 pub fn generate_table_ddl(
-    datatypes: &Datatypes,
     table: &Table,
+    columns: &[&Column],
+    datatypes: &Datatypes,
     force: bool,
     db_kind: &DbKind,
     caching_strategy: &CachingStrategy,
 ) -> Result<Vec<String>> {
-    tracing::trace!("generate_table_ddl({table:?}, {force}, {db_kind:?}, {caching_strategy:?})");
     if table.has_meta {
-        for (cname, col) in table.columns.iter() {
+        for col in columns {
+            let cname = col.column.to_string();
             if cname == "_id" || cname == "_order" {
                 return Err(RelatableError::InputError(format!(
                     "column {cname} conflicts with has_meta == {has_meta}",
@@ -831,7 +833,8 @@ pub fn generate_table_ddl(
 
     let mut ddl = vec![];
     let mut column_clauses = vec![];
-    for (cname, col) in table.columns.iter() {
+    for col in columns {
+        let cname = col.column.to_string();
         if col.table != table.name {
             return Err(RelatableError::InputError(format!(
                 "Table name mismatch: '{}' != '{}'",
@@ -839,7 +842,7 @@ pub fn generate_table_ddl(
             ))
             .into());
         }
-        let sql_type = col.sql_type(datatypes);
+        let sql_type = col.sql_type(&datatypes);
         let clause = format!(
             r#""{cname}" {sql_type}{unique}"#,
             unique = match col.unique {
@@ -1661,14 +1664,12 @@ impl JsonRow {
     }
 
     /// Set any column values whose content matches that column's nulltype to [JsonValue::Null]
-    pub fn nullify(row: &Self, table: &Table) -> Self {
-        tracing::trace!("JsonRow::nullify({row:?}, {table:?})");
+    pub fn nullify(schema: &Schema, table_name: &str, row: &Self) -> Self {
         let mut nullified_row = JsonRow::new();
         let default_col = Column::default();
-        for (column, value) in row.content.iter() {
-            match table
-                .columns
-                .get(column)
+        for (column_name, value) in row.content.iter() {
+            match schema
+                .column(table_name, column_name)
                 .unwrap_or(&default_col)
                 .nulltype
                 .as_str()
@@ -1676,25 +1677,25 @@ impl JsonRow {
                 "" => {
                     nullified_row
                         .content
-                        .insert(column.to_string(), value.clone());
+                        .insert(column_name.to_string(), value.clone());
                 }
                 "empty" => match value {
                     JsonValue::String(s) if s == "" => {
                         nullified_row
                             .content
-                            .insert(column.to_string(), JsonValue::Null);
+                            .insert(column_name.to_string(), JsonValue::Null);
                     }
                     value => {
                         nullified_row
                             .content
-                            .insert(column.to_string(), value.clone());
+                            .insert(column_name.to_string(), value.clone());
                     }
                 },
                 nulltype => {
                     tracing::warn!("Unsupported nulltype: '{nulltype}'");
                     nullified_row
                         .content
-                        .insert(column.to_string(), value.clone());
+                        .insert(column_name.to_string(), value.clone());
                 }
             };
         }
@@ -1705,12 +1706,15 @@ impl JsonRow {
     /// Use the [columns configuration](Table::columns) for the given table to lookup the
     /// [nulltype](Column::nulltype) of the given column, and then if the given value matches the
     /// column's nulltype, set it to [Null](JsonValue::Null)
-    pub fn nullify_value(table: &Table, column: &str, value: &JsonValue) -> JsonValue {
-        tracing::trace!("JsonRow::nullify_value({table:?}, {column}, {value:?})");
+    pub fn nullify_value(
+        schema: &Schema,
+        table_name: &str,
+        column_name: &str,
+        value: &JsonValue,
+    ) -> JsonValue {
         let default_col = Column::default();
-        match table
-            .columns
-            .get(column)
+        match schema
+            .column(table_name, column_name)
             .unwrap_or(&default_col)
             .nulltype
             .as_str()

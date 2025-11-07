@@ -251,13 +251,13 @@ impl Relatable {
     /// - all of the columns in the "column" table
     /// - all of the datatypes from the "datatype" table
     pub async fn schema(&self) -> Result<Schema> {
-        // TODO: Move this. Make "table" name configurable?
-        let sql = r#"SELECT "_id", "_order", "table" AS "name", "path",
-             (SELECT MAX(change_id)
-              FROM "history"
-              WHERE "history"."table" = "table"."table"
-             ) AS "_change_id"
-           FROM "table""#;
+        // TODO: support Postgres
+        let sql = r#"SELECT
+               main.name,
+               tbl.path
+           FROM sqlite_master AS main
+           LEFT JOIN "table" AS tbl ON main.name = tbl."table"
+           WHERE main.type = 'table';"#;
         let rows = self.pool.query(&sql, ()).await?;
         let mut tables = rows
             .iter()
@@ -272,20 +272,30 @@ impl Relatable {
             .map(|table: Table| (table.name.clone(), table))
             .collect::<IndexMap<String, Table>>();
 
-        // Move columns into their tables.
+        // TODO: support Postgres
+        let sql = "SELECT name FROM sqlite_master WHERE type = 'view'";
+        let rows = self.pool.query(sql, ()).await?;
+        let views: HashSet<String> = rows
+            .iter()
+            .map(|row| row.get("name").unwrap().as_str().unwrap().to_string())
+            .collect();
+        for table in tables.values_mut() {
+            let view = format!("{}_default_view", table.name);
+            if views.contains(&view) {
+                table.view = view;
+            }
+        }
+
         let columns = self.column_table().get_all().await?;
-        // TODO: remove this -- use references instead
-        let columns_clone: Vec<Column> = columns.clone().into();
-        for column in columns_clone.into_iter() {
+        for column in columns.iter() {
             if let Some(table) = tables.get_mut(&column.table) {
                 if column.is_meta() {
                     table.has_meta = true;
                 }
-                table.columns.insert(column.column.clone(), column);
             }
         }
 
-        let datatypes = self.datatype_table().get().await;
+        let datatypes = self.datatypes().await;
 
         Ok(Schema {
             tables,
@@ -294,26 +304,33 @@ impl Relatable {
         })
     }
 
-    /// Drop the given table in the database
-    pub async fn drop(&self, table: &str) -> Result<()> {
-        // To avoid SQL injection, first check that the table exists using a binding.
-        match self
+    /// Check that a table exists in the database.
+    pub async fn table_exists(&self, table_name: &str) -> Result<bool> {
+        // TODO: support Postgres
+        let rows = self
             .pool
-            .query_string(r#"SELECT name FROM "table" WHERE "table" = $1"#, [table])
-            .await
-        {
-            Ok(name) => {
-                let sql = match self.pool.kind() {
-                    rltbl_db::core::DbKind::SQLite => format!(r#"DROP TABLE "{name}""#),
-                    rltbl_db::core::DbKind::PostgreSQL => {
-                        format!(r#"DROP TABLE "{name}" CASCADE"#)
-                    }
-                };
-                self.pool.execute(&sql, ()).await?;
-            }
-            Err(_) => (),
+            .query(
+                r#"SELECT name FROM sqlite_master WHERE name = $1"#,
+                [table_name],
+            )
+            .await?;
+        Ok(rows.len() > 0)
+    }
+
+    /// Drop the given table in the database
+    pub async fn drop_table(&self, table_name: &str) -> Result<bool> {
+        if self.table_exists(table_name).await? {
+            let sql = match self.pool.kind() {
+                rltbl_db::core::DbKind::SQLite => format!(r#"DROP TABLE "{table_name}""#),
+                rltbl_db::core::DbKind::PostgreSQL => {
+                    format!(r#"DROP TABLE "{table_name}" CASCADE"#)
+                }
+            };
+            self.pool.execute(&sql, ()).await?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(())
     }
 
     // Drop all of the tables in the table table
@@ -325,7 +342,7 @@ impl Relatable {
             // TODO: sort tables by dependency, drop in referse order
             let tables = self.get_tables().await?;
             for table in tables.keys() {
-                self.drop(table).await?;
+                self.drop_table(table).await?;
             }
         }
         Ok(())
@@ -394,10 +411,17 @@ impl Relatable {
 
     /// Use the given [Select] to fetch data from the database.
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
-        tracing::trace!("Relatable::fetch({select:?})");
+        let schema = self.schema().await?;
 
-        // Get the table and columns information and use the given select to set the table's view:
-        let mut table = self.get_table(select.table_name.as_str()).await?;
+        let table_name = &select.table_name;
+        let mut table = schema
+            .tables
+            .get(table_name)
+            .ok_or(RelatableError::MissingError(format!(
+                "Missing table {}",
+                select.table_name
+            )))?
+            .clone();
         if select.view_name == format!("{}_default_view", table.name) || select.view_name == "" {
             table.set_view(self, "default").await?;
         } else if select.view_name == format!("{}_text_view", table.name) {
@@ -409,7 +433,12 @@ impl Relatable {
             );
             table.set_view(self, "default").await?;
         }
-        let mut columns = table.columns.values().cloned().collect::<Vec<_>>();
+        let mut columns = schema
+            .columns(table_name)
+            .into_iter()
+            .map(|(_, v)| v.clone())
+            .filter(|col| col.is_data())
+            .collect::<Vec<Column>>();
 
         // Fetch the data
         let (statement, parameters) = select.to_sql(&self.connection.kind())?;
@@ -565,39 +594,42 @@ impl Relatable {
         tracing::debug!("Table {table_name} (path: {path}) added to table table");
 
         // Initialize a new table struct and collect its columns configuration:
-        let table = {
-            let configured_columns: Vec<Column> = self
-                .column_table()
-                .get_configured(&[table_name])
-                .await
-                .expect("get columns for this table")
-                .into();
-            let table_columns = headers
-                .iter()
-                .map(|header| {
-                    match configured_columns
-                        .iter()
-                        .filter(|col| header == &col.column || header == &col.label)
-                        .nth(0)
-                    {
-                        Some(col) => col.clone(),
-                        None => ColumnBuilder::new(table_name, header).build().unwrap(),
-                    }
-                })
-                .map(|col| (col.column.clone(), col))
-                .collect::<IndexMap<String, Column>>();
-            Table {
-                name: table_name.to_string(),
-                columns: table_columns,
-                ..Default::default()
-            }
+        let table = Table {
+            name: table_name.to_string(),
+            ..Default::default()
         };
+        let configured_columns: Vec<Column> = self
+            .column_table()
+            .get_configured(&[table_name])
+            .await
+            .expect("get columns for this table")
+            .into();
+        let table_columns = headers
+            .iter()
+            .map(|header| {
+                match configured_columns
+                    .iter()
+                    .filter(|col| header == &col.column || header == &col.label)
+                    .nth(0)
+                {
+                    Some(col) => col.clone(),
+                    None => ColumnBuilder::new(table_name, header).build().unwrap(),
+                }
+            })
+            .collect::<Vec<Column>>();
+        let table_column_refs: Vec<&Column> = table_columns.iter().collect();
 
         // Generate the SQL statements needed to create the table and execute them:
         let datatypes = self.datatypes().await;
-        for sql in
-            sql::generate_table_ddl(&datatypes, &table, force, &db_kind, &self.caching_strategy)
-                .expect("Error getting DDL")
+        for sql in sql::generate_table_ddl(
+            &table,
+            &table_column_refs,
+            &datatypes,
+            force,
+            &db_kind,
+            &self.caching_strategy,
+        )
+        .expect("Error getting DDL")
         {
             self.connection
                 .query(&sql, None)
@@ -606,6 +638,7 @@ impl Relatable {
         }
 
         // Insert the data into the table:
+        let schema = self.schema().await.expect("schema with new table");
         let mut columns = vec!["_id".to_string(), "_order".to_string()];
         columns.append(
             &mut headers
@@ -663,9 +696,8 @@ impl Relatable {
                             Some(column) => column,
                             None => panic!("Unable to retrieve column {}", i + 2),
                         };
-                        let nulltype = table
-                            .columns
-                            .get(column)
+                        let nulltype = schema
+                            .column(table_name, column)
                             .expect(&format!("Column '{column}' not found"))
                             .nulltype
                             .to_owned();
@@ -683,7 +715,7 @@ impl Relatable {
                                 Ok(JsonValue::Number(num)) => JsonValue::Number(num),
                                 _ => json!(value),
                             };
-                            let value = JsonRow::nullify_value(&table, column, &value);
+                            let value = JsonRow::nullify_value(&schema, table_name, column, &value);
                             Cell {
                                 text: sql::json_to_string(&value),
                                 value: value,
@@ -695,11 +727,9 @@ impl Relatable {
                         if self.validation_level != ValidationLevel::None {
                             cell.validate_sql_type(
                                 &datatypes,
-                                &table
-                                    .columns
-                                    .get(column.as_str())
-                                    .cloned()
-                                    .unwrap_or_default(),
+                                schema
+                                    .column(table_name, column)
+                                    .unwrap_or(&Column::default()),
                             )
                             .expect("Error validating cell");
                             for message in cell.messages.iter() {
@@ -756,11 +786,10 @@ impl Relatable {
             self.validate_table(&table_name)
                 .await
                 .expect("Error validating table");
-            let tables = self.get_tables().await.expect("all tables");
-            let dependent_tables = table.get_dependent_tables(&tables);
+            let dependent_tables = schema.dependent_tables(table_name);
             for table in &dependent_tables {
                 tracing::debug!("Validating dependent table '{}'", table.name);
-                self.validate_structure_for_table(&table)
+                self.validate_structure_for_table(&schema, table_name)
                     .await
                     .expect("Error validating table");
             }
@@ -781,27 +810,9 @@ impl Relatable {
             }
         };
 
-        // Get the last change for this table:
-        let statement = r#"SELECT MAX("change_id") FROM "history" WHERE "table" = $1"#;
-        let params = [table_name];
-        let change_id = self
-            .pool
-            .query_u64(&statement, params)
-            .await
-            .unwrap_or_default();
-
         Ok(Table {
             name: table_name.to_string(),
             view,
-            change_id,
-            columns: self
-                .column_table()
-                .get(&[table_name])
-                .await?
-                .data()
-                .into_iter()
-                .map(|col| (col.column.clone(), col.clone()))
-                .collect(),
             ..Default::default()
         })
     }
@@ -809,31 +820,29 @@ impl Relatable {
     /// Save all of the tables that have entries in the table table to the path indicated for each
     /// table there, unless `save_dir` has been given, in which case save them all there instead.
     pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
-        tracing::trace!("Relatable::save_all({save_dir:?})");
-        let sql = format!(
-            r#"SELECT "table", "path" FROM "table" WHERE "path" {is_not} NULL"#,
-            is_not = sql::is_not_clause(&self.connection.kind())
-        );
-        let table_rows = self.connection.query(&sql, None).await?;
-        for table_row in table_rows {
-            let table_name = table_row.get_string("table")?;
-            let mut table = self.get_table(&table_name).await?;
+        let schema = self.schema().await?;
+        let mut tables = schema.tables.clone();
+        for table in tables.values_mut() {
+            if table.path == "" {
+                continue;
+            }
+            let table_name = table.name.to_string();
             table.set_view(self, "text").await?;
 
             let path = match save_dir {
                 Some(save_dir) => format!("{save_dir}/{table_name}.tsv"),
-                None => table_row.get_string("path")?,
+                None => table.path.clone(),
             };
             let mut writer = WriterBuilder::new()
                 .delimiter(b'\t')
                 .quote_style(QuoteStyle::Never)
                 .from_path(path)?;
-            let header_row = self
-                .fetch_columns(&table_name)
-                .await?
-                .iter()
-                .map(|c| c.column.to_string())
-                .collect::<Vec<_>>();
+            let header_row = schema
+                .columns(&table_name)
+                .values()
+                .filter(|col| col.is_data())
+                .map(|col| &col.column) // TODO: handle labels
+                .collect::<Vec<&String>>();
             writer.write_record(header_row.clone())?;
 
             let sql = format!(
@@ -853,9 +862,8 @@ impl Relatable {
                             JsonValue::String(s) => str_values.push(s.to_string()),
                             JsonValue::Number(n) => str_values.push(n.to_string()),
                             JsonValue::Null => {
-                                match table
-                                    .columns
-                                    .get(column)
+                                match schema
+                                    .column(&table_name, column)
                                     .ok_or(RelatableError::InputError(format!(
                                         "Column '{column}' not found"
                                     )))?
@@ -1231,23 +1239,6 @@ impl Relatable {
         Ok(users)
     }
 
-    /// Returns a list of the given table's columns, not including metacolumns
-    pub async fn fetch_columns(&self, table_name: &str) -> Result<Vec<Column>> {
-        Ok(self
-            .column_table()
-            .get(&[table_name])
-            .await?
-            .data()
-            .into_iter()
-            .cloned()
-            .collect())
-    }
-
-    /// Returns a list of the given table's columns, including metacolumns
-    pub async fn fetch_all_columns(&self, table_name: &str) -> Result<Vec<Column>> {
-        Ok(self.column_table().get(&[table_name]).await?.into())
-    }
-
     /// Returns a vector of the names of the tables that have entries in the table table
     pub async fn list_tables(&self) -> Result<Vec<String>> {
         tracing::trace!("Relatable::list_tables({self:?})");
@@ -1277,17 +1268,6 @@ impl Relatable {
                 name.clone(),
                 Table {
                     name: name.clone(),
-                    change_id: row
-                        .content
-                        .get("_change_id")
-                        .and_then(|i| i.as_u64())
-                        .unwrap_or_default() as u64,
-                    columns: self
-                        .fetch_columns(&name)
-                        .await?
-                        .into_iter()
-                        .map(|column| (name.clone(), column))
-                        .collect::<IndexMap<_, _>>(),
                     ..Default::default()
                 },
             );
@@ -1908,8 +1888,8 @@ impl Relatable {
 
                     // Depending on whether this is an undo/redo or an original action, the
                     // new value will be taken from either `before` or `after`.
-                    let before = JsonRow::nullify_value(&table, column, before);
-                    let after = JsonRow::nullify_value(&table, column, after);
+                    let before = JsonRow::nullify_value(schema, &table.name, column, before);
+                    let after = JsonRow::nullify_value(schema, &table.name, column, after);
                     let mut cell = match &changeset.action {
                         ChangeAction::Undo | ChangeAction::Redo => Cell {
                             value: before.clone(),
@@ -1924,9 +1904,8 @@ impl Relatable {
                     };
 
                     // Validate the cell's SQL type and add any messages to the message table:
-                    let column_config = table
-                        .columns
-                        .get(column.as_str())
+                    let column_config = schema
+                        .column(&table.name, column)
                         .cloned()
                         .unwrap_or_default();
                     let mut sql_value = cell.value.clone();
@@ -2080,8 +2059,6 @@ impl Relatable {
         after_id: Option<u64>,
         row: &JsonRow,
     ) -> Result<Row> {
-        let datatypes = self.datatypes().await;
-
         // Get the current database information for the table:
         let table = self.get_table(table_name).await?;
         if !table.editable {
@@ -2092,10 +2069,10 @@ impl Relatable {
 
         // Nullify the JSON row by setting any column values whose content matches the column's
         // nulltype to Null:
-        let mut row = JsonRow::nullify(row, &table);
+        let mut row = JsonRow::nullify(schema, table_name, row);
 
         // Prepare a new row to be inserted using the JSON row as a base:
-        let mut new_row = Row::prepare_new(&table, Some(&row))?;
+        let mut new_row = Row::prepare_new(schema, table_name, Some(&row))?;
 
         // A new_row_id will have been passed if the row is being added as part of an undo/redo.
         // In that case an after_id must have been passed as well but we leave the row order as
@@ -2118,7 +2095,7 @@ impl Relatable {
 
         // Validate the row and add it to the table:
         if self.validation_level != ValidationLevel::None {
-            new_row.validate_sql_types(&datatypes, &table, self).await?;
+            new_row.validate_sql_types(schema, table_name, self).await?;
             for (_column, cell) in new_row.cells.iter_mut() {
                 if cell.has_sql_type_error() {
                     cell.value = JsonValue::Null;
@@ -2130,14 +2107,14 @@ impl Relatable {
 
         // Optionally do full validation on the row after it has been inserted:
         if self.validation_level == ValidationLevel::Full {
-            for (_, column) in table.columns.iter() {
+            for column in schema.columns(table_name).values() {
                 self._validate_column_optionally_for_row(&schema, column, &[&new_row_id])
                     .await?;
             }
-            let tables = self.get_tables().await?;
-            for table in &table.get_dependent_tables(&tables) {
+            for table in &schema.dependent_tables(table_name) {
                 tracing::debug!("Validating dependent table '{}'", table.name);
-                self.validate_structure_for_table(table).await?;
+                self.validate_structure_for_table(&schema, table_name)
+                    .await?;
             }
         }
 
@@ -2572,32 +2549,20 @@ impl Relatable {
     /// Validate all of the data in the given database table
     pub async fn validate_table(&self, table_name: &str) -> Result<()> {
         let schema = self.schema().await?;
-        let table = schema
-            .tables
-            .get(table_name)
-            .ok_or(RelatableError::MissingError(format!(
-                "Missing table {table_name}"
-            )))?;
-        for (_, column) in table.columns.iter() {
+        for column in schema.columns(table_name).values() {
             self._validate_column_optionally_for_row(&schema, column, &[])
                 .await?;
         }
         Ok(())
     }
 
-    /// Do datatype validation on all of the data in the given database table
-    pub async fn validate_datatype_for_table(&self, table: &Table) -> Result<()> {
-        let datatypes = self.datatypes().await;
-        for (_, column) in table.columns.iter() {
-            self._validate_datatype_for_column_and_optionally_for_row(&datatypes, column, &[])
-                .await?;
-        }
-        Ok(())
-    }
-
     /// Do structure validation on all of the data in the given database table
-    pub async fn validate_structure_for_table(&self, table: &Table) -> Result<()> {
-        for (_, column) in table.columns.iter() {
+    pub async fn validate_structure_for_table(
+        &self,
+        schema: &Schema,
+        table_name: &str,
+    ) -> Result<()> {
+        for column in schema.columns(table_name).values() {
             self._validate_structure_for_column_and_optionally_for_row(column, &[])
                 .await?;
         }
@@ -2605,8 +2570,13 @@ impl Relatable {
     }
 
     /// Validate the data in the given column associated with a table in the database
-    pub async fn validate_column(&self, column: &Column) -> Result<()> {
+    pub async fn validate_column(&self, table_name: &str, column_name: &str) -> Result<()> {
         let schema = self.schema().await?;
+        let column = schema
+            .column(table_name, column_name)
+            .ok_or(RelatableError::MissingError(format!(
+                "No such column '{column_name} in table '{table_name}'"
+            )))?;
         self._validate_column_optionally_for_row(&schema, column, &[])
             .await?;
         Ok(())
@@ -2614,8 +2584,18 @@ impl Relatable {
 
     /// Validate the value of the given column in the given row in the associated database
     /// table
-    pub async fn validate_value(&self, column: &Column, row: &u64) -> Result<()> {
+    pub async fn validate_value(
+        &self,
+        table_name: &str,
+        column_name: &str,
+        row: &u64,
+    ) -> Result<()> {
         let schema = self.schema().await?;
+        let column = schema
+            .column(table_name, column_name)
+            .ok_or(RelatableError::MissingError(format!(
+                "No such column '{column_name} in table '{table_name}'"
+            )))?;
         self._validate_column_optionally_for_row(&schema, column, &[row])
             .await?;
         Ok(())
@@ -2624,13 +2604,7 @@ impl Relatable {
     /// Validate the given row of the given table
     pub async fn validate_row(&self, table_name: &str, row: &u64) -> Result<()> {
         let schema = self.schema().await?;
-        let table = schema
-            .tables
-            .get(table_name)
-            .ok_or(RelatableError::MissingError(format!(
-                "Missing table {table_name}"
-            )))?;
-        for (_, column) in table.columns.iter() {
+        for column in schema.columns(table_name).values() {
             self._validate_column_optionally_for_row(&schema, column, &[row])
                 .await?;
         }
@@ -3335,10 +3309,10 @@ mod tests {
         .unwrap();
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
         let schema = rltbl.schema().await.expect("get schema");
-        println!("SCHEMA {schema:?}");
-        assert_eq!(schema.tables.len(), 2);
-        assert_eq!(schema.tables.get("penguin").unwrap().columns.len(), 10);
+        assert_eq!(schema.tables.len(), 11);
+        assert_eq!(schema.columns.len(), 68);
         assert_eq!(schema.datatypes.len(), 9);
+        assert_eq!(schema.columns("penguin").len(), 10);
     }
 
     #[tokio::test]

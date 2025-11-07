@@ -2,21 +2,16 @@
 //!
 //! This is [relatable](crate) (rltbl::[table](crate::table)).
 
-use std::collections::HashSet;
-
 use crate as rltbl;
 
 use rltbl::{
     column::Column,
     core::Relatable,
     sql::{self, JsonRow},
-    structure::Structure,
 };
 use rltbl_db::core::{DbKind, DbQuery};
 
 use anyhow::Result;
-use indexmap::IndexMap;
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -24,14 +19,11 @@ use serde::{Deserialize, Serialize};
 pub struct Table {
     /// The name of the table
     pub name: String,
+    /// The optional path for loading and saving the table
+    pub path: String,
     /// The name of the view (blank if there is none) to be used when querying the table
     pub view: String,
     /// The id of the most recent change to this table.
-    pub change_id: u64,
-    // We may eventually want to turn `columns` into a special-purpose struct, but for now a
-    // simple IndexMap suffices.
-    /// The table's column configuration, implemented as a map from column names to [Column]s.
-    pub columns: IndexMap<String, Column>,
     pub editable: bool,
     /// Indicates whether the table has the _id and _order meta columns enabled:
     pub has_meta: bool,
@@ -40,10 +32,9 @@ pub struct Table {
 impl Default for Table {
     fn default() -> Self {
         Self {
-            name: "".into(),
-            view: "".into(),
-            change_id: 0,
-            columns: IndexMap::new(),
+            name: Default::default(),
+            path: Default::default(),
+            view: Default::default(),
             editable: true,
             has_meta: true,
         }
@@ -126,43 +117,6 @@ impl Table {
             Ok(value) => Ok(value > 0),
             Err(_) => Ok(false),
         }
-    }
-
-    /// Given the full set of tables,
-    /// return a list of the tables that this table depends on,
-    /// because of `from()` structures in its columns.
-    pub fn depends_on(&self) -> HashSet<String> {
-        self.columns
-            .values()
-            .filter_map(|col| {
-                for structure in col.structure.iter() {
-                    #[allow(irrefutable_let_patterns)]
-                    if let Structure::From(t, _) = structure {
-                        return t.clone();
-                    }
-                }
-                None
-            })
-            .collect()
-    }
-
-    /// Given a map of all the tables in the database,
-    /// return a list of tables that depend on this table
-    /// because of `from()` structures on their columns.
-    /// Dependencies are recursive and in order, with no duplicates.
-    pub fn get_dependent_tables<'a>(&self, tables: &'a IndexMap<String, Table>) -> Vec<&'a Self> {
-        let mut dependent_tables = Vec::new();
-        for table in tables.values() {
-            if table.depends_on().contains(&self.name) {
-                dependent_tables.push(table);
-                // TODO: This is probably not correct.
-                dependent_tables.extend(self.get_dependent_tables(tables));
-            }
-        }
-        dependent_tables
-            .into_iter()
-            .unique_by(|table| table.name.clone())
-            .collect()
     }
 
     /// Set the view for the table to the given view type (accepted types are "default" and "text"),
