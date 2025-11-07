@@ -855,41 +855,24 @@ pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
 
 /// Validate the given row in the given table
 pub async fn validate_row(cli: &Cli, table_name: &str, row: &u64) {
-    tracing::trace!("validate_row({cli:?}, {table_name}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .expect("Connect error");
-
-    let table = rltbl
-        .get_table(table_name)
-        .await
-        .expect("Error getting table");
-    let datatypes = rltbl.datatypes().await;
-
     rltbl
-        .validate_row(&datatypes, &table, row)
+        .validate_row(table_name, row)
         .await
         .expect("Error while validating row");
-    tracing::info!("Validated row {row} of table '{table_name}'");
 }
 
 /// Validate the given table
 pub async fn validate_table(cli: &Cli, table_name: &str) {
-    tracing::trace!("validate_table({cli:?}, {table_name}, {table_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .expect("Connect error");
-
-    let table = rltbl
-        .get_table(table_name)
-        .await
-        .expect("Error getting table");
-
     rltbl
-        .validate_table(&table)
+        .validate_table(table_name)
         .await
         .expect("Error while validating table");
-    tracing::info!("Validated table '{table_name}'");
 }
 
 /// Validate the given column
@@ -970,8 +953,12 @@ pub async fn delete_message(
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .expect("Connectg error");
+    let rows = match &row {
+        Some(row) => vec![row],
+        None => Vec::new(),
+    };
     let num_deleted = rltbl
-        .delete_message(table, row, column, target_rule, target_user)
+        .delete_message(table, &rows, column, target_rule, target_user)
         .await
         .expect("Failed to delete message");
     if num_deleted > 0 {

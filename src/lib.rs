@@ -27,6 +27,9 @@ pub mod column;
 /// Structs for table rows
 pub mod row;
 
+/// Structs for the overall schema
+pub mod schema;
+
 /// Structs for representing tables, contents, changes, results
 pub mod table;
 

@@ -157,7 +157,7 @@ impl ColumnBuilder {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Columns {
     list: Vec<Column>,
 }

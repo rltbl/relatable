@@ -64,7 +64,7 @@ impl Datatype {
     pub async fn validate(
         &self,
         column: &Column,
-        row: Option<&u64>,
+        rows: &[&u64],
         rltbl: &Relatable,
     ) -> Result<bool> {
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
@@ -111,16 +111,13 @@ impl Datatype {
                     .iter()
                     .map(|v| v.into())
                     .collect();
-                    match row {
-                        Some(row) => {
-                            sql.push_str(&format!(
-                                r#" AND "_id" = {sql_param}"#,
-                                sql_param = sql_param_gen.next()
-                            ));
-                            params.push(ParamValue::from(*row));
-                        }
-                        None => (),
-                    };
+                    if rows.len() > 0 {
+                        sql.push_str(&format!(
+                            r#" AND "_id" IN({sql_params})"#,
+                            sql_params = sql_param_gen.get_as_list(rows.len()),
+                        ));
+                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
+                    }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     let rows = rltbl.pool.query_row(&sql, params).await?;
                     messages_were_added = rows.len() > 0;
@@ -172,12 +169,12 @@ impl Datatype {
                     for item in &condition_list {
                         params.push(item.to_string().into())
                     }
-                    if let Some(row) = row {
+                    if rows.len() > 0 {
                         sql.push_str(&format!(
-                            r#" AND "_id" = {sql_param}"#,
-                            sql_param = sql_param_gen.next()
+                            r#" AND "_id" IN({sql_params})"#,
+                            sql_params = sql_param_gen.get_as_list(rows.len()),
                         ));
-                        params.push(ParamValue::from(*row));
+                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     let rows = rltbl.pool.query(&sql, params).await?;
@@ -224,16 +221,13 @@ impl Datatype {
                     .iter()
                     .map(|v| v.into())
                     .collect();
-                    match row {
-                        Some(row) => {
-                            sql.push_str(&format!(
-                                r#" AND "_id" = {sql_param}"#,
-                                sql_param = sql_param_gen.next()
-                            ));
-                            params.push(ParamValue::from(*row));
-                        }
-                        None => (),
-                    };
+                    if rows.len() > 0 {
+                        sql.push_str(&format!(
+                            r#" AND "_id" IN({sql_params})"#,
+                            sql_params = sql_param_gen.get_as_list(rows.len()),
+                        ));
+                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
+                    }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     // TODO: re-enable this!
                     // let rows = rltbl.pool.query(&sql, params).await?;
@@ -243,21 +237,11 @@ impl Datatype {
             invalid => tracing::warn!("Unrecognized datatype condition '{invalid}'"),
         };
 
-        tracing::debug!(
-            "Validated datatype '{}' for column '{}.{}' (row: {:?}) {}",
-            self.datatype,
-            column.table,
-            column.column,
-            row,
-            match messages_were_added {
-                false => "with messages added.",
-                true => "with no messages added.",
-            }
-        );
         Ok(messages_were_added)
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Datatypes {
     map: IndexMap<String, Datatype>,
 }

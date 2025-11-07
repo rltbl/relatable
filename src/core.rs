@@ -4,10 +4,11 @@
 
 use crate as rltbl;
 use rltbl::{
-    column::{Column, ColumnTable, Columns},
+    column::{Column, ColumnBuilder, ColumnTable},
     datatype::{Datatype, DatatypeTable, Datatypes},
     git,
     row::{Cell, Message, Row},
+    schema::Schema,
     select::{Select, SelectField},
     sql::{
         self, CachingStrategy, DbConnection, DbKind, JsonRow, MemoryCacheKey, SqlParam,
@@ -245,6 +246,54 @@ impl Relatable {
         self.datatype_table().get().await
     }
 
+    /// Get the full schema:
+    /// - all the tables in the "table" table
+    /// - all of the columns in the "column" table
+    /// - all of the datatypes from the "datatype" table
+    pub async fn schema(&self) -> Result<Schema> {
+        // TODO: Move this. Make "table" name configurable?
+        let sql = r#"SELECT "_id", "_order", "table" AS "name", "path",
+             (SELECT MAX(change_id)
+              FROM "history"
+              WHERE "history"."table" = "table"."table"
+             ) AS "_change_id"
+           FROM "table""#;
+        let rows = self.pool.query(&sql, ()).await?;
+        let mut tables = rows
+            .iter()
+            .filter_map(|row: &rltbl_db::core::JsonRow| {
+                let row: rltbl_db::core::JsonRow = row
+                    .iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
+                serde_json::from_value(json!(row)).ok()
+            })
+            .map(|table: Table| (table.name.clone(), table))
+            .collect::<IndexMap<String, Table>>();
+
+        // Move columns into their tables.
+        let columns = self.column_table().get_all().await?;
+        // TODO: remove this -- use references instead
+        let columns_clone: Vec<Column> = columns.clone().into();
+        for column in columns_clone.into_iter() {
+            if let Some(table) = tables.get_mut(&column.table) {
+                if column.is_meta() {
+                    table.has_meta = true;
+                }
+                table.columns.insert(column.column.clone(), column);
+            }
+        }
+
+        let datatypes = self.datatype_table().get().await;
+
+        Ok(Schema {
+            tables,
+            columns,
+            datatypes,
+        })
+    }
+
     /// Drop the given table in the database
     pub async fn drop(&self, table: &str) -> Result<()> {
         // To avoid SQL injection, first check that the table exists using a binding.
@@ -454,6 +503,7 @@ impl Relatable {
         }
     }
 
+    // TODO: Carefully review this function.
     /// Loads the given table from the given path. When `force` is set to true, deletes any
     /// existing table of the same name in the database first. When `validate` is set to true,
     /// Validates each row before loading it. Note that this function may panic.
@@ -489,7 +539,7 @@ impl Relatable {
         // Add an entry corresponding to the table being loaded to the table table:
         if force {
             // Delete any messages associated with the table and then delete the table:
-            self.delete_message(table_name, None, None, None, None)
+            self.delete_message(table_name, &[], None, None, None)
                 .await
                 .expect("Error deleting messages");
 
@@ -516,40 +566,31 @@ impl Relatable {
 
         // Initialize a new table struct and collect its columns configuration:
         let table = {
-            let mut table = Table {
-                name: table_name.to_string(),
-                ..Default::default()
-            };
-            let table_columns = self
+            let configured_columns: Vec<Column> = self
                 .column_table()
                 .get_configured(&[table_name])
                 .await
-                .expect("get columns for this table");
-            let table_columns = table_columns
+                .expect("get columns for this table")
+                .into();
+            let table_columns = headers
                 .iter()
+                .map(|header| {
+                    match configured_columns
+                        .iter()
+                        .filter(|col| header == &col.column || header == &col.label)
+                        .nth(0)
+                    {
+                        Some(col) => col.clone(),
+                        None => ColumnBuilder::new(table_name, header).build().unwrap(),
+                    }
+                })
                 .map(|col| (col.column.clone(), col))
-                .collect::<IndexMap<String, &Column>>();
-            for column_name in headers.iter() {
-                let column = Column {
-                    column: column_name.to_string(),
-                    table: table_name.to_string(),
-                    nulltype: table_columns
-                        .get(column_name)
-                        .and_then(|col| Some(col.nulltype.clone()))
-                        .unwrap_or_default(),
-                    datatype: table_columns
-                        .get(column_name)
-                        .and_then(|col| Some(col.datatype.clone()))
-                        .unwrap_or("text".to_owned()),
-                    structure: table_columns
-                        .get(column_name)
-                        .and_then(|col| Some(col.structure.clone()))
-                        .unwrap_or_default(),
-                    ..Default::default()
-                };
-                table.columns.insert(column_name.to_string(), column);
+                .collect::<IndexMap<String, Column>>();
+            Table {
+                name: table_name.to_string(),
+                columns: table_columns,
+                ..Default::default()
             }
-            table
         };
 
         // Generate the SQL statements needed to create the table and execute them:
@@ -712,7 +753,7 @@ impl Relatable {
         }
 
         if self.validation_level == ValidationLevel::Full {
-            self.validate_table(&table)
+            self.validate_table(&table_name)
                 .await
                 .expect("Error validating table");
             let tables = self.get_tables().await.expect("all tables");
@@ -1700,13 +1741,12 @@ impl Relatable {
     /// Reverse the given changeset in the database
     async fn _revert(&self, change_id: u64, changeset: &ChangeSet) -> Result<Option<ChangeSet>> {
         tracing::trace!("Relatable::_revert({change_id}, {changeset:?})");
+        let schema = self.schema().await?;
         match changeset.changes.first() {
             None => Ok(None),
             Some(change) => {
                 if let Change::Update { .. } = change {
-                    let columns = self.column_table().get_all().await?;
-                    let datatypes = self.datatypes().await;
-                    let actual_changes = self._set_values(&columns, &datatypes, &changeset).await?;
+                    let actual_changes = self._set_values(&schema, &changeset).await?;
                     Ok(Some(actual_changes))
                 } else {
                     let mut actual_changes = vec![];
@@ -1777,6 +1817,7 @@ impl Relatable {
                                     changeset.table
                                 );
                                 self._add_row(
+                                    &schema,
                                     &changeset.action,
                                     &changeset.table,
                                     &changeset.user,
@@ -1841,12 +1882,7 @@ impl Relatable {
     }
 
     /// Update the database using the given [ChangeSet]
-    async fn _set_values(
-        &self,
-        columns: &Columns,
-        datatypes: &Datatypes,
-        changeset: &ChangeSet,
-    ) -> Result<ChangeSet> {
+    async fn _set_values(&self, schema: &Schema, changeset: &ChangeSet) -> Result<ChangeSet> {
         // Update the user cursor
         self.prepare_user_cursor(changeset).await?;
 
@@ -1867,7 +1903,7 @@ impl Relatable {
                         table.name,
                         column
                     );
-                    self.delete_message(&table.name, Some(*row), Some(column), None, None)
+                    self.delete_message(&table.name, &[row], Some(column), None, None)
                         .await?;
 
                     // Depending on whether this is an undo/redo or an original action, the
@@ -1895,7 +1931,7 @@ impl Relatable {
                         .unwrap_or_default();
                     let mut sql_value = cell.value.clone();
                     if self.validation_level != ValidationLevel::None {
-                        cell.validate_sql_type(&datatypes, &column_config)
+                        cell.validate_sql_type(&schema.datatypes, &column_config)
                             .expect("Error validating cell");
                         for message in cell.messages.iter() {
                             let (msg_id, msg) = self
@@ -1951,19 +1987,13 @@ impl Relatable {
                     // Optionally do full validation on the newly updated cell and add further
                     // messages to the message table:
                     if self.validation_level == ValidationLevel::Full {
-                        self._validate_column_optionally_for_row(
-                            &datatypes,
-                            &column_config,
-                            Some(row),
-                        )
-                        .await?;
-
-                        for column in &columns.dependents(&column_config) {
-                            tracing::debug!("Validating dependent column '{}'", column.column);
-                            self._validate_structure_for_column_and_optionally_for_row(
-                                column, None,
-                            )
+                        self._validate_column_optionally_for_row(&schema, &column_config, &[row])
                             .await?;
+
+                        for column in &schema.columns.dependents(&column_config) {
+                            tracing::debug!("Validating dependent column '{}'", column.column);
+                            self._validate_structure_for_column_and_optionally_for_row(column, &[])
+                                .await?;
                         }
                     }
                 }
@@ -1995,9 +2025,8 @@ impl Relatable {
     /// Update the database using the given [ChangeSet]
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<ChangeSet> {
         tracing::trace!("Relatable::set_values({changeset:?})");
-        let columns = self.column_table().get_all().await?;
-        let datatypes = self.datatypes().await;
-        let changeset = self._set_values(&columns, &datatypes, changeset).await?;
+        let schema = self.schema().await?;
+        let changeset = self._set_values(&schema, changeset).await?;
         if changeset.changes.len() > 0 {
             self.commit_to_git().await?;
         }
@@ -2043,6 +2072,7 @@ impl Relatable {
     /// Add a row to the given table
     async fn _add_row(
         &self,
+        schema: &Schema,
         action: &ChangeAction,
         table_name: &str,
         user: &str,
@@ -2100,7 +2130,10 @@ impl Relatable {
 
         // Optionally do full validation on the row after it has been inserted:
         if self.validation_level == ValidationLevel::Full {
-            self.validate_row(&datatypes, &table, &new_row.id).await?;
+            for (_, column) in table.columns.iter() {
+                self._validate_column_optionally_for_row(&schema, column, &[&new_row_id])
+                    .await?;
+            }
             let tables = self.get_tables().await?;
             for table in &table.get_dependent_tables(&tables) {
                 tracing::debug!("Validating dependent table '{}'", table.name);
@@ -2159,9 +2192,17 @@ impl Relatable {
         after_id: Option<u64>,
         row: &JsonRow,
     ) -> Result<Row> {
-        tracing::trace!("Relatable::add_row({table_name:?}, {user:?}, {after_id:?}, {row:?})");
+        let schema = self.schema().await?;
         let new_row = self
-            ._add_row(&ChangeAction::Do, table_name, user, None, after_id, row)
+            ._add_row(
+                &schema,
+                &ChangeAction::Do,
+                table_name,
+                user,
+                None,
+                after_id,
+                row,
+            )
             .await?;
         self.commit_to_git().await?;
         Ok(new_row)
@@ -2207,7 +2248,7 @@ impl Relatable {
         );
 
         // Delete any messages associated with the row
-        self.delete_message(table_name, Some(row), None, None, None)
+        self.delete_message(table_name, &[&row], None, None, None)
             .await?;
 
         // Record the change to the history table:
@@ -2234,13 +2275,13 @@ impl Relatable {
     pub async fn delete_message(
         &self,
         table: &str,
-        row: Option<u64>,
+        rows: &[&u64],
         column: Option<&str>,
         target_rule: Option<&str>,
         target_user: Option<&str>,
     ) -> Result<usize> {
         tracing::trace!(
-            "Relatable::delete_message({self:?}, {table:?}, {row:?}, {column:?}, \
+            "Relatable::delete_message({self:?}, {table:?}, {rows:?}, {column:?}, \
              {target_rule:?}, {target_user:?})"
         );
         let mut sql_param = SqlParam::new(&self.connection.kind());
@@ -2250,12 +2291,12 @@ impl Relatable {
         );
         let mut params: Vec<ParamValue> = vec![table.into()];
 
-        if let Some(row) = row {
+        if rows.len() > 0 {
             sql.push_str(&format!(
-                r#" AND "row" = {sql_param}"#,
-                sql_param = sql_param.next(),
+                r#" AND "row" IN({sql_params})"#,
+                sql_params = sql_param.get_as_list(rows.len()),
             ));
-            params.push(row.into());
+            params.extend(rows.iter().map(|row| ParamValue::from(**row)));
         }
         if let Some(column) = column {
             sql.push_str(&format!(
@@ -2529,10 +2570,16 @@ impl Relatable {
     }
 
     /// Validate all of the data in the given database table
-    pub async fn validate_table(&self, table: &Table) -> Result<()> {
-        let datatypes = self.datatypes().await;
+    pub async fn validate_table(&self, table_name: &str) -> Result<()> {
+        let schema = self.schema().await?;
+        let table = schema
+            .tables
+            .get(table_name)
+            .ok_or(RelatableError::MissingError(format!(
+                "Missing table {table_name}"
+            )))?;
         for (_, column) in table.columns.iter() {
-            self._validate_column_optionally_for_row(&datatypes, column, None)
+            self._validate_column_optionally_for_row(&schema, column, &[])
                 .await?;
         }
         Ok(())
@@ -2542,7 +2589,7 @@ impl Relatable {
     pub async fn validate_datatype_for_table(&self, table: &Table) -> Result<()> {
         let datatypes = self.datatypes().await;
         for (_, column) in table.columns.iter() {
-            self._validate_datatype_for_column_and_optionally_for_row(&datatypes, column, None)
+            self._validate_datatype_for_column_and_optionally_for_row(&datatypes, column, &[])
                 .await?;
         }
         Ok(())
@@ -2551,7 +2598,7 @@ impl Relatable {
     /// Do structure validation on all of the data in the given database table
     pub async fn validate_structure_for_table(&self, table: &Table) -> Result<()> {
         for (_, column) in table.columns.iter() {
-            self._validate_structure_for_column_and_optionally_for_row(column, None)
+            self._validate_structure_for_column_and_optionally_for_row(column, &[])
                 .await?;
         }
         Ok(())
@@ -2559,8 +2606,8 @@ impl Relatable {
 
     /// Validate the data in the given column associated with a table in the database
     pub async fn validate_column(&self, column: &Column) -> Result<()> {
-        let datatypes = self.datatypes().await;
-        self._validate_column_optionally_for_row(&datatypes, column, None)
+        let schema = self.schema().await?;
+        self._validate_column_optionally_for_row(&schema, column, &[])
             .await?;
         Ok(())
     }
@@ -2568,21 +2615,23 @@ impl Relatable {
     /// Validate the value of the given column in the given row in the associated database
     /// table
     pub async fn validate_value(&self, column: &Column, row: &u64) -> Result<()> {
-        let datatypes = self.datatypes().await;
-        self._validate_column_optionally_for_row(&datatypes, column, Some(row))
+        let schema = self.schema().await?;
+        self._validate_column_optionally_for_row(&schema, column, &[row])
             .await?;
         Ok(())
     }
 
     /// Validate the given row of the given table
-    pub async fn validate_row(
-        &self,
-        datatypes: &Datatypes,
-        table: &Table,
-        row: &u64,
-    ) -> Result<()> {
+    pub async fn validate_row(&self, table_name: &str, row: &u64) -> Result<()> {
+        let schema = self.schema().await?;
+        let table = schema
+            .tables
+            .get(table_name)
+            .ok_or(RelatableError::MissingError(format!(
+                "Missing table {table_name}"
+            )))?;
         for (_, column) in table.columns.iter() {
-            self._validate_column_optionally_for_row(datatypes, column, Some(row))
+            self._validate_column_optionally_for_row(&schema, column, &[row])
                 .await?;
         }
         Ok(())
@@ -2594,7 +2643,7 @@ impl Relatable {
         &self,
         datatypes: &Datatypes,
         column: &Column,
-        row: Option<&u64>,
+        rows: &[&u64],
     ) -> Result<()> {
         let table_name = column.table.as_str();
 
@@ -2602,7 +2651,7 @@ impl Relatable {
         // validate the datatype conditions for each datatype in the column's datatype hierarchy.
         self.delete_message(
             table_name,
-            row.copied(),
+            rows,
             Some(&column.column),
             Some("datatype:%"),
             Some("rltbl"),
@@ -2617,21 +2666,11 @@ impl Relatable {
 
         // Validate the column against each datatype in the hierarchy:
         for datatype in datatypes_to_check {
-            let inserted = datatype.validate(column, row, self).await?;
+            let inserted = datatype.validate(column, rows, self).await?;
             if !inserted {
                 break;
             }
         }
-
-        tracing::debug!(
-            "Validated datatype for column: '{}.{}'{}",
-            column.table,
-            column.column,
-            match row {
-                None => "".to_string(),
-                Some(row) => format!(", row: {row}"),
-            }
-        );
         Ok(())
     }
 
@@ -2640,7 +2679,7 @@ impl Relatable {
     async fn _validate_structure_for_column_and_optionally_for_row(
         &self,
         column: &Column,
-        row: Option<&u64>,
+        rows: &[&u64],
     ) -> Result<()> {
         let table_name = column.table.as_str();
 
@@ -2648,7 +2687,7 @@ impl Relatable {
         // the structure condition for this column and (optionally) row:
         self.delete_message(
             table_name,
-            row.copied(),
+            rows,
             Some(&column.column),
             Some("key:%"),
             Some("rltbl"),
@@ -2658,19 +2697,10 @@ impl Relatable {
         // Validate the cell's structure condition:
         if column.structure.len() > 0 {
             for structure in column.structure.iter() {
-                structure.validate(column, row, self).await?;
+                structure.validate(column, rows, self).await?;
             }
         }
 
-        tracing::debug!(
-            "Validated structure for column: '{}.{}'{}",
-            column.table,
-            column.column,
-            match row {
-                None => "".to_string(),
-                Some(row) => format!(", row: {row}"),
-            }
-        );
         Ok(())
     }
 
@@ -2678,13 +2708,13 @@ impl Relatable {
     /// If `row` is given, only validate the column for that row.
     async fn _validate_column_optionally_for_row(
         &self,
-        datatypes: &Datatypes,
+        schema: &Schema,
         column: &Column,
-        row: Option<&u64>,
+        rows: &[&u64],
     ) -> Result<()> {
-        self._validate_datatype_for_column_and_optionally_for_row(datatypes, column, row)
+        self._validate_datatype_for_column_and_optionally_for_row(&schema.datatypes, column, rows)
             .await?;
-        self._validate_structure_for_column_and_optionally_for_row(column, row)
+        self._validate_structure_for_column_and_optionally_for_row(column, rows)
             .await?;
         Ok(())
     }
@@ -3293,6 +3323,23 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use serde_json::from_value;
+
+    #[tokio::test]
+    async fn test_schema() {
+        let rltbl = Relatable::init(
+            &true,
+            Some("build/test_schema.db"),
+            &CachingStrategy::Trigger,
+        )
+        .await
+        .unwrap();
+        crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
+        let schema = rltbl.schema().await.expect("get schema");
+        println!("SCHEMA {schema:?}");
+        assert_eq!(schema.tables.len(), 2);
+        assert_eq!(schema.tables.get("penguin").unwrap().columns.len(), 10);
+        assert_eq!(schema.datatypes.len(), 9);
+    }
 
     #[tokio::test]
     async fn test_result_set() {
