@@ -6,6 +6,7 @@ use crate::{
     core::{Page, Relatable, RelatableError, Tab, DEFAULT_LIMIT},
     sql::{self, DbKind, SqlParam},
 };
+
 use anyhow::Result;
 use enquote::unquote;
 use indexmap::IndexMap;
@@ -1977,6 +1978,8 @@ pub async fn joined_query(
 #[cfg(test)]
 mod tests {
     use crate::sql::{is_clause, is_not_clause, CachingStrategy};
+    use rltbl_db::core::DbQuery;
+
     use pretty_assertions::assert_eq;
     use serde_json::from_value;
 
@@ -2724,8 +2727,8 @@ FROM "penguin""#
     bill_depth NUMERIC,
     body_mass BIGINT
 )"#;
-        rltbl.connection.query(drop_sql, None).await.unwrap();
-        rltbl.connection.query(create_sql, None).await.unwrap();
+        rltbl.pool.execute(drop_sql, ()).await.unwrap();
+        rltbl.pool.execute(create_sql, ()).await.unwrap();
         let empty: Vec<JsonValue> = vec![];
 
         // select_columns
@@ -2832,7 +2835,7 @@ FROM "penguin_test""#
         );
         assert_eq!(params, empty);
 
-        rltbl.connection.query(drop_sql, None).await.unwrap();
+        rltbl.pool.execute(drop_sql, ()).await.unwrap();
     }
 
     #[tokio::test]
@@ -3119,7 +3122,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         //   \ C /
         let insert_sql = r#"INSERT INTO "table"("table") VALUES
 ('A'), ('B'), ('C'), ('B2C'), ('D')"#;
-        rltbl.connection.query(insert_sql, None).await.unwrap();
+        rltbl.pool.execute(insert_sql, ()).await.unwrap();
 
         let drop_sql = r#"DROP TABLE IF EXISTS "A""#;
         let create_sql = r#"CREATE TABLE "A" (
@@ -3131,9 +3134,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 (1, 1000, '1'),
 (2, 2000, '2'),
 (3, 3000, '3')"#;
-        rltbl.connection.query(drop_sql, None).await.unwrap();
-        rltbl.connection.query(create_sql, None).await.unwrap();
-        rltbl.connection.query(insert_sql, None).await.unwrap();
+        rltbl.pool.execute(drop_sql, ()).await.unwrap();
+        rltbl.pool.execute(create_sql, ()).await.unwrap();
+        rltbl.pool.execute(insert_sql, ()).await.unwrap();
 
         let mut table_a = rltbl.get_table("A").await.unwrap();
         table_a.ensure_default_view_created(&rltbl).await.unwrap();
@@ -3149,9 +3152,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 (1, 1000, '1', 'i'),
 (2, 2000, '2', 'ii'),
 (3, 3000, '3', 'iii')"#;
-        rltbl.connection.query(drop_sql, None).await.unwrap();
-        rltbl.connection.query(create_sql, None).await.unwrap();
-        rltbl.connection.query(insert_sql, None).await.unwrap();
+        rltbl.pool.execute(drop_sql, ()).await.unwrap();
+        rltbl.pool.execute(create_sql, ()).await.unwrap();
+        rltbl.pool.execute(insert_sql, ()).await.unwrap();
 
         let drop_sql = r#"DROP TABLE IF EXISTS "C""#;
         let create_sql = r#"CREATE TABLE "C" (
@@ -3164,9 +3167,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 (1, 1000, '1', 'x'),
 (2, 2000, '2', 'y'),
 (3, 3000, '3', 'z')"#;
-        rltbl.connection.query(drop_sql, None).await.unwrap();
-        rltbl.connection.query(create_sql, None).await.unwrap();
-        rltbl.connection.query(insert_sql, None).await.unwrap();
+        rltbl.pool.execute(drop_sql, ()).await.unwrap();
+        rltbl.pool.execute(create_sql, ()).await.unwrap();
+        rltbl.pool.execute(insert_sql, ()).await.unwrap();
 
         let drop_sql = r#"DROP TABLE IF EXISTS "B2C""#;
         let create_sql = r#"CREATE TABLE "B2C" (
@@ -3179,9 +3182,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 (1, 1000, 'i', 'x'),
 (2, 2000, 'ii', 'y'),
 (3, 3000, 'iii', 'z')"#;
-        rltbl.connection.query(drop_sql, None).await.unwrap();
-        rltbl.connection.query(create_sql, None).await.unwrap();
-        rltbl.connection.query(insert_sql, None).await.unwrap();
+        rltbl.pool.execute(drop_sql, ()).await.unwrap();
+        rltbl.pool.execute(create_sql, ()).await.unwrap();
+        rltbl.pool.execute(insert_sql, ()).await.unwrap();
 
         let drop_sql = r#"DROP TABLE IF EXISTS "D""#;
         let create_sql = r#"CREATE TABLE "D" (
@@ -3194,9 +3197,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 (1, 1000, 'i', 'a'),
 (2, 2000, 'ii', 'b'),
 (3, 3000, 'iii', 'c')"#;
-        rltbl.connection.query(drop_sql, None).await.unwrap();
-        rltbl.connection.query(create_sql, None).await.unwrap();
-        rltbl.connection.query(insert_sql, None).await.unwrap();
+        rltbl.pool.execute(drop_sql, ()).await.unwrap();
+        rltbl.pool.execute(create_sql, ()).await.unwrap();
+        rltbl.pool.execute(insert_sql, ()).await.unwrap();
 
         // Create the tablset table.
         let drop_sql = r#"DROP TABLE IF EXISTS "tableset""#;
@@ -3217,9 +3220,9 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
               (5, 5000, 'combined', 'C', 'c', 'B2C', 'c'),
               (7, 7000, 'combined', 'B', 'b', 'D', 'b')
             "#;
-        rltbl.connection.query(drop_sql, None).await.unwrap();
-        rltbl.connection.query(create_sql, None).await.unwrap();
-        rltbl.connection.query(insert_sql, None).await.unwrap();
+        rltbl.pool.execute(drop_sql, ()).await.unwrap();
+        rltbl.pool.execute(create_sql, ()).await.unwrap();
+        rltbl.pool.execute(insert_sql, ()).await.unwrap();
 
         // Just query for the B table.
         let url = "http://example.com/combined/B";

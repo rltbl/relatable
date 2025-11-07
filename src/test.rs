@@ -3,8 +3,9 @@
 use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Relatable, RLTBL_DEFAULT_DB},
     select::Select,
-    sql::{CachingStrategy, JsonRow},
+    sql::CachingStrategy,
 };
+use rltbl_db::core::JsonRow;
 
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;

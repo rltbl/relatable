@@ -8,9 +8,9 @@ use rltbl::{
     core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet},
     row::Row,
     select::{joined_query, Format, QueryParams, Select},
-    sql::{CachingStrategy, JsonRow},
+    sql::CachingStrategy,
 };
-use rltbl_db::core::DbQuery;
+use rltbl_db::core::{DbQuery, JsonRow};
 
 use std::io::Write;
 

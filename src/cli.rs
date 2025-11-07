@@ -6,10 +6,10 @@ use crate as rltbl;
 use rltbl::{
     core::{Change, ChangeAction, ChangeSet, Relatable, ValidationLevel},
     select::{Format, Select},
-    sql::{CachingStrategy, JsonRow, VecInto},
+    sql::CachingStrategy,
     web::{serve, serve_cgi},
 };
-use rltbl_db::core::DbQuery;
+use rltbl_db::core::{DbQuery, JsonRow};
 
 use ansi_term::Style;
 use anyhow::Result;
@@ -506,12 +506,20 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
         .await
         .expect("Connect error");
     let select = Select::from(table_name).limit(limit).offset(offset);
-    let rows = rltbl
-        .fetch_rows(&select)
-        .await
-        .expect("Fetch error")
-        .vec_into();
-    print_text(&rows);
+    let rows = rltbl.fetch_rows(&select).await.expect("Fetch error");
+    let lines: Vec<Vec<String>> = rows
+        .into_iter()
+        .map(|row| {
+            row.values()
+                .map(|value| match value {
+                    JsonValue::String(string) => string.to_string(),
+                    JsonValue::Null => String::new(),
+                    _ => value.to_string(),
+                })
+                .collect::<Vec<String>>()
+        })
+        .collect();
+    print_text(&lines);
 }
 
 /// Print the value of the given column of the given row of the given table
@@ -533,7 +541,11 @@ pub async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
 pub async fn print_history(cli: &Cli, context: usize) {
     tracing::trace!("print_history({cli:?}, {context})");
     fn get_content_as_string(change_json: &JsonRow) -> String {
-        let content = change_json.get_string("content").expect("No content found");
+        let content = change_json
+            .get("content")
+            .expect("No content found")
+            .as_str()
+            .expect("Content not a string");
         let content = Change::many_from_str(&content).expect("Could not parse content");
         content
             .iter()
@@ -565,7 +577,8 @@ pub async fn print_history(cli: &Cli, context: usize) {
     let next_redo = match redoable_changes.len() {
         0 => 0,
         _ => redoable_changes[0]
-            .get_unsigned("change_id")
+            .get("change_id")
+            .and_then(|v| v.as_u64())
             .expect("No change_id found"),
     };
     redoable_changes.reverse();
@@ -574,9 +587,14 @@ pub async fn print_history(cli: &Cli, context: usize) {
             break;
         }
         let change_id = change
-            .get_unsigned("change_id")
+            .get("change_id")
+            .and_then(|v| v.as_u64())
             .expect("No change_id found");
-        let action = change.get_string("action").expect("No action found");
+        let action = change
+            .get("action")
+            .expect("No action found")
+            .as_str()
+            .expect("Action is not a string");
         if change_id == next_redo {
             let change_content = get_content_as_string(change);
             println!("▲ {change_content} (action #{change_id}, {action})");
@@ -588,7 +606,8 @@ pub async fn print_history(cli: &Cli, context: usize) {
     let next_undo = match undoable_changes.len() {
         0 => 0,
         _ => undoable_changes[0]
-            .get_unsigned("change_id")
+            .get("change_id")
+            .and_then(|v| v.as_u64())
             .expect("No change_id found"),
     };
     for (i, change) in undoable_changes.iter().enumerate() {
@@ -596,9 +615,14 @@ pub async fn print_history(cli: &Cli, context: usize) {
             break;
         }
         let change_id = change
-            .get_unsigned("change_id")
+            .get("change_id")
+            .and_then(|v| v.as_u64())
             .expect("No change_id found");
-        let action = change.get_string("action").expect("No action found");
+        let action = change
+            .get("action")
+            .expect("No action found")
+            .as_str()
+            .expect("Action not a string");
         if change_id == next_undo {
             let change_content = get_content_as_string(change);
             let line = format!("▼ {change_content} (action #{change_id}, {action})");
@@ -676,12 +700,11 @@ pub fn input_json_row() -> JsonRow {
     io::stdin()
         .read_line(&mut json_row)
         .expect("Error reading from STDIN");
-    let json_row = serde_json::from_str::<JsonValue>(&json_row)
+    serde_json::from_str::<JsonValue>(&json_row)
         .expect(&format!("Invalid JSON: {json_row}"))
         .as_object()
         .expect(&format!("{json_row} is not a JSON object"))
-        .clone();
-    JsonRow { content: json_row }
+        .clone()
 }
 
 /// Prompt the user for a value of the given column
@@ -709,19 +732,20 @@ pub async fn prompt_for_json_message(
         .map(|c| c.column.to_string())
         .collect::<Vec<_>>();
     let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<&str>>();
-    let mut json_row = JsonRow::from_strings(&columns);
+    let mut json_row = JsonRow::new();
+    for column in &columns {
+        json_row.insert(column.to_string(), json!(r#""""#));
+    }
 
-    json_row.content.insert("table".to_string(), json!(table));
-    json_row.content.insert("row".to_string(), json!(row));
-    json_row.content.insert("column".to_string(), json!(column));
+    json_row.insert("table".to_string(), json!(table));
+    json_row.insert("row".to_string(), json!(row));
+    json_row.insert("column".to_string(), json!(column));
     tracing::debug!("Received json row from user input: {json_row:?}");
 
     for column in columns {
-        match json_row.get_value(column)? {
+        match json_row.get(column).unwrap() {
             JsonValue::Null => {
-                json_row
-                    .content
-                    .insert(column.to_string(), prompt_for_column_value(&column));
+                json_row.insert(column.to_string(), prompt_for_column_value(&column));
             }
             _ => (),
         }
@@ -739,12 +763,13 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
         .iter()
         .map(|col| col.column.to_string())
         .collect();
-    let mut json_row = JsonRow::from_strings(&columns.iter().map(|s| s.as_str()).collect());
+    let mut json_row = JsonRow::new();
+    for column in &columns {
+        json_row.insert(column.to_string(), json!(r#""""#));
+    }
 
     for column in &columns {
-        json_row
-            .content
-            .insert(column.to_string(), prompt_for_column_value(&column));
+        json_row.insert(column.to_string(), prompt_for_column_value(&column));
     }
 
     Ok(json_row)
@@ -766,27 +791,23 @@ pub async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
             .expect("Error getting user input"),
     };
 
-    if json_message.content.is_empty() {
+    if json_message.is_empty() {
         panic!("Refusing to insert an empty message to the database");
     }
 
     let value = json!(json_message
-        .content
         .get("value")
         .and_then(|m| m.as_str())
         .expect("The field 'value' (type: string) is required."));
     let level = json_message
-        .content
         .get("level")
         .and_then(|l| l.as_str())
         .expect("The field 'level' (type: string) is required.");
     let rule = json_message
-        .content
         .get("rule")
         .and_then(|r| r.as_str())
         .expect("The field 'rule' (type: string) is required.");
     let message = json_message
-        .content
         .get("message")
         .and_then(|m| m.as_str())
         .expect("The field 'message' (type: string) is required.");
@@ -821,7 +842,7 @@ pub async fn add_row(
             .expect("Error getting user input"),
     };
 
-    if json_row.content.is_empty() {
+    if json_row.is_empty() {
         panic!("Cannot insert an empty row to the database");
     }
 

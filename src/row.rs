@@ -27,11 +27,7 @@ pub struct Row {
 impl Row {
     /// Prepares a new [Row] for insertion to the given [Table], with its [id](Row::id) and
     /// [order](Row::order) fields pre-assigned with their correct next values for this table
-    pub fn prepare_new(
-        schema: &Schema,
-        table_name: &str,
-        json_row: Option<&JsonRow>,
-    ) -> Result<Self> {
+    pub fn prepare_new(schema: &Schema, table_name: &str, json_row: Option<&JRow>) -> Result<Self> {
         let json_row = match json_row {
             None => {
                 let column_names = schema
@@ -41,7 +37,9 @@ impl Row {
                     .collect::<Vec<&str>>();
                 JsonRow::from_strings(&column_names)
             }
-            Some(json_row) => json_row.clone(),
+            Some(json_row) => JsonRow {
+                content: json_row.clone(),
+            },
         };
         Ok(Row::from(json_row))
     }

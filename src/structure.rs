@@ -161,9 +161,9 @@ impl TryFrom<String> for Structure {
     }
 }
 
-impl From<Structure> for String {
-    fn from(value: Structure) -> Self {
-        value.to_string()
+impl Into<String> for Structure {
+    fn into(self) -> String {
+        self.to_string()
     }
 }
 

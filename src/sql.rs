@@ -11,7 +11,7 @@
 use crate as rltbl;
 use rltbl::{
     column::Column,
-    core::{self, RelatableError, NEW_ORDER_MULTIPLIER},
+    core::{RelatableError, NEW_ORDER_MULTIPLIER},
     datatype::Datatypes,
     schema::Schema,
     table::Table,
@@ -21,12 +21,11 @@ use rltbl::{
 // External imports
 //////////////////////////////////////////
 use anyhow::Result;
-use futures::executor::block_on;
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::{fmt::Display, str::FromStr};
 
 //////////////////////////////////////////
@@ -368,174 +367,6 @@ impl DbConnection {
         tracing::trace!("DbConnection::query_value({statement}, {params:?})");
         let rows = self.query(statement, params).await?;
         Ok(extract_value(&rows))
-    }
-
-    /// Attempt to use the cache to query
-    pub async fn cache(
-        &self,
-        sql: &str,
-        params: Option<&JsonValue>,
-        tables: &Vec<String>,
-        strategy: &CachingStrategy,
-    ) -> Result<Vec<JsonRow>> {
-        tracing::trace!("cache({sql}, {params:?}, {strategy:?})");
-
-        // Do not cache queries to these special tables,
-        // because change to them are not recorded in the usual way.
-        for table in vec!["message", "history", "change", "user"] {
-            if tables.contains(&table.to_string()) {
-                return self.query(&sql, params).await;
-            }
-        }
-
-        async fn _cache(
-            conn: &DbConnection,
-            tables: &Vec<String>,
-            sql: &str,
-            params: Option<&JsonValue>,
-        ) -> Result<Vec<JsonRow>> {
-            let tables = tables
-                .iter()
-                .map(|t| json!(t).to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let (cache_sql, tables) = {
-                let mut sql_param = SqlParam::new(&conn.kind());
-                match conn.kind() {
-                    DbKind::Postgres => {
-                        let sql = format!(
-                            r#"SELECT {}||rtrim(ltrim("value", '['), ']')||{} AS "value"
-                               FROM "cache"
-                               WHERE "tables"::TEXT = {}
-                               AND "statement" = {}
-                               AND "parameters" = {}
-                               LIMIT 1"#,
-                            sql_param.next(),
-                            sql_param.next(),
-                            sql_param.next(),
-                            sql_param.next(),
-                            sql_param.next()
-                        );
-                        (sql, format!("[{tables}]"))
-                    }
-                    DbKind::Sqlite => {
-                        let sql = format!(
-                            r#"SELECT {}||rtrim(ltrim("value", '['), ']')||{} AS "value"
-                               FROM "cache"
-                               WHERE CAST("tables" AS TEXT) = {}
-                               AND "statement" = {}
-                               AND "parameters" = {}
-                               LIMIT 1"#,
-                            sql_param.next(),
-                            sql_param.next(),
-                            sql_param.next(),
-                            sql_param.next(),
-                            sql_param.next()
-                        );
-                        (sql, format!("[{tables}]"))
-                    }
-                }
-            };
-            let empty = json!("[]");
-            let json_params = params.unwrap_or(&empty);
-            let cache_params = json!([r#"[{"content": "#, "}]", tables, sql, json_params]);
-            match conn.query_one(&cache_sql, Some(&cache_params)).await? {
-                Some(json_row) => {
-                    tracing::debug!("Cache hit for tables {tables}");
-                    let value = json_row.get_string("value")?;
-                    let json_rows: Vec<JsonRow> = serde_json::from_str(&value)?;
-                    Ok(json_rows)
-                }
-                None => {
-                    tracing::debug!("Cache miss for tables {tables}");
-                    let json_rows = conn.query(sql, params).await?;
-                    let json_rows_content = json_rows
-                        .iter()
-                        .map(|r| r.content.clone())
-                        .collect::<Vec<_>>();
-                    let mut sql_param = SqlParam::new(&conn.kind());
-                    let update_cache_sql = match conn.kind() {
-                        DbKind::Postgres => {
-                            format!(
-                                r#"INSERT INTO "cache"
-                                   ("tables", "statement", "parameters", "value")
-                                   VALUES ({}::JSONB, {}, {}, {})"#,
-                                sql_param.next(),
-                                sql_param.next(),
-                                sql_param.next(),
-                                sql_param.next(),
-                            )
-                        }
-                        DbKind::Sqlite => {
-                            format!(
-                                r#"INSERT INTO "cache"
-                                   ("tables", "statement", "parameters", "value")
-                                   VALUES ({}, {}, {}, {})"#,
-                                sql_param.next(),
-                                sql_param.next(),
-                                sql_param.next(),
-                                sql_param.next(),
-                            )
-                        }
-                    };
-                    let update_cache_params = json!([tables, sql, json_params, json_rows_content]);
-                    conn.query(&update_cache_sql, Some(&update_cache_params))
-                        .await?;
-                    Ok(json_rows)
-                }
-            }
-        }
-
-        match strategy {
-            CachingStrategy::None => self.query(sql, params).await,
-            CachingStrategy::TruncateAll | CachingStrategy::Truncate | CachingStrategy::Trigger => {
-                _cache(self, tables, sql, params).await
-            }
-            CachingStrategy::Memory(cache_size) => {
-                let mut cache = core::CACHE.lock().expect("Could not lock cache");
-                let keys = cache.keys().map(|key| key.clone()).collect::<Vec<_>>();
-
-                for (i, key) in keys.iter().enumerate().rev() {
-                    if i >= *cache_size {
-                        tracing::debug!("Removing {key:?} ({i}th entry) from cache");
-                        cache.remove(&key);
-                    } else {
-                        break;
-                    }
-                }
-
-                let tables = tables
-                    .iter()
-                    .map(|t| json!(t).to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let mem_key = MemoryCacheKey {
-                    tables: tables.to_string(),
-                    statement: sql.to_string(),
-                    parameters: format!("{params:?}"),
-                };
-                match cache.get(&mem_key) {
-                    Some(json_rows) => {
-                        tracing::debug!("Cache hit for tables {tables}");
-                        Ok(json_rows.to_vec())
-                    }
-                    None => {
-                        tracing::debug!("Cache miss for tables {tables}");
-                        // Why is a block_on() call needed here but not above?
-                        let json_rows = block_on(self.query(sql, params))?;
-                        cache.insert(
-                            MemoryCacheKey {
-                                tables: tables.to_string(),
-                                statement: sql.to_string(),
-                                parameters: format!("{params:?}"),
-                            },
-                            json_rows.to_vec(),
-                        );
-                        Ok(json_rows)
-                    }
-                }
-            }
-        }
     }
 }
 
