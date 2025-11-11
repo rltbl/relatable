@@ -1813,7 +1813,7 @@ pub async fn joined_query(
     params.extend(value_list.clone());
     params.extend(value_list.clone());
     tracing::info!("PARAMS {params:?}");
-    let json_rows = rltbl.pool.query_string_maps(&sql, params).await?;
+    let json_rows = rltbl.pool.query_string_rows(&sql, params).await?;
     tracing::info!(
         "TABLESET {} {json_rows:?}",
         select.to_url("", &Format::Default)?
@@ -3185,11 +3185,7 @@ ORDER BY "B"._order ASC
 LIMIT 100"#
         );
         assert_eq!(params, vec!["i".into()]);
-        rltbl
-            .connection
-            .query(&sql, Some(&json!(params)))
-            .await
-            .unwrap();
+        rltbl.pool.execute(&sql, params).await.unwrap();
         let (sql, params) = select.to_sql_count(&rltbl.connection.kind()).unwrap();
         assert_eq!(
             sql,

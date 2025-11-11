@@ -5,7 +5,7 @@ use rltbl::{
     select::Select,
     sql::CachingStrategy,
 };
-use rltbl_db::core::JsonRow;
+use rltbl_db::core::{DbQuery, JsonRow};
 
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
@@ -153,16 +153,10 @@ async fn generate_operation_sequence(
     let list_len = random_between(min_length, max_length + 1, &mut seed);
 
     let mut num_rows_in_table = rltbl
-        .connection
-        .query_one(
-            &format!(r#"SELECT COUNT(1) AS "count" FROM "{table}""#),
-            None,
-        )
+        .pool
+        .query_u64(&format!(r#"SELECT COUNT(1) AS "count" FROM "{table}""#), ())
         .await
-        .expect("Error querying database")
-        .unwrap()
-        .get_unsigned("count")
-        .expect("No count found");
+        .expect("Error querying database");
 
     let mut operations = vec![];
     let mut undo_stack = vec![];

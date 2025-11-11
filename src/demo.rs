@@ -277,16 +277,16 @@ pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) 
     if *force {
         if let DbKind::Postgres = rltbl.connection.kind() {
             rltbl
-                .connection
-                .query(&format!(r#"DROP TABLE IF EXISTS "study" CASCADE"#), None)
+                .pool
+                .execute(&format!(r#"DROP TABLE IF EXISTS "study" CASCADE"#), ())
                 .await?;
             rltbl
-                .connection
-                .query(&format!(r#"DROP TABLE IF EXISTS "penguin" CASCADE"#), None)
+                .pool
+                .execute(&format!(r#"DROP TABLE IF EXISTS "penguin" CASCADE"#), ())
                 .await?;
             rltbl
-                .connection
-                .query(&format!(r#"DROP TABLE IF EXISTS "egg" CASCADE"#), None)
+                .pool
+                .execute(&format!(r#"DROP TABLE IF EXISTS "egg" CASCADE"#), ())
                 .await?;
         }
     }

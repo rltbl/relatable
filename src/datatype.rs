@@ -436,7 +436,10 @@ impl<'a> DatatypeTable<'a> {
             .map(|dt| json!(dt).as_object().unwrap().clone())
             .collect();
         let refs: Vec<&JsonRow> = rows.iter().collect();
-        let rows = self.pool.insert(&self.table_name, &refs).await?;
+        let rows = self
+            .pool
+            .insert_returning(&self.table_name, &refs, &[])
+            .await?;
         let dts: Vec<Datatype> = rows
             .into_iter()
             // WARN: This silently ignores invalid datatypes.

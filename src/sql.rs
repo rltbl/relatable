@@ -35,7 +35,7 @@ use std::{fmt::Display, str::FromStr};
 use rusqlite::{
     functions::FunctionFlags as RusqliteFunctionFlags, types::ValueRef as RusqliteValueRef,
     Connection as RusqliteConnection, Error as RusqliteError, Result as RusqliteResult,
-    Row as RusqliteRow, Statement as RusqliteStatement,
+    Row as RusqliteRow,
 };
 
 #[cfg(feature = "rusqlite")]
@@ -290,91 +290,6 @@ impl DbConnection {
             }
         }
     }
-
-    /// Reconnect to the current database
-    pub fn reconnect(&self) -> Result<Option<DbActiveConnection>> {
-        tracing::trace!("DbConnection::reconnect()");
-        match self {
-            #[cfg(feature = "sqlx")]
-            DbConnection::Sqlx(_, _) => Ok(None),
-            #[cfg(feature = "rusqlite")]
-            DbConnection::Rusqlite(path) => {
-                let active_conn = RusqliteConnection::open(path)?;
-                add_rusqlite_regexp_function(&active_conn)?;
-                Ok(Some(DbActiveConnection::Rusqlite(active_conn)))
-            }
-        }
-    }
-
-    /// Given a generic SQL string with placeholders and a list of parameters to interpolate into
-    /// the string, return a vector of [JsonRow]s. Note that since this returns a vector,
-    /// statements should be limited to those that will return a sane number of rows.
-    pub async fn query(&self, statement: &str, params: Option<&JsonValue>) -> Result<Vec<JsonRow>> {
-        tracing::trace!("DbConnection::query({self:?}, {statement}, {params:?})");
-        if !valid_params(params) {
-            tracing::warn!("Invalid parameter argument");
-            return Ok(vec![]);
-        }
-        match self {
-            #[cfg(feature = "sqlx")]
-            DbConnection::Sqlx(db_pool, _) => match db_pool {
-                DbPool::Postgres(pool) => {
-                    let query = prepare_sqlx_pg_query(&statement, params)?;
-                    let mut rows = vec![];
-                    for row in query.fetch_all(pool).await? {
-                        rows.push(JsonRow::try_from(row)?);
-                    }
-                    Ok(rows)
-                }
-            },
-            #[cfg(feature = "rusqlite")]
-            DbConnection::Rusqlite(path) => {
-                let conn = self.reconnect()?;
-                match conn {
-                    Some(DbActiveConnection::Rusqlite(conn)) => {
-                        let mut stmt = conn.prepare(&statement)?;
-                        submit_rusqlite_statement(&mut stmt, params)
-                    }
-                    None => Err(RelatableError::DataError(format!(
-                        "Unable to connect to the db at '{path}'"
-                    ))
-                    .into()),
-                }
-            }
-        }
-    }
-
-    /// Query for a single row
-    pub async fn query_one(
-        &self,
-        statement: &str,
-        params: Option<&JsonValue>,
-    ) -> Result<Option<JsonRow>> {
-        tracing::trace!("DbConnection::query_one({statement}, {params:?})");
-        let rows = self.query(&statement, params).await?;
-        match rows.iter().next() {
-            Some(row) => Ok(Some(row.clone())),
-            None => Ok(None),
-        }
-    }
-
-    /// Query for a single value
-    pub async fn query_value(
-        &self,
-        statement: &str,
-        params: Option<&JsonValue>,
-    ) -> Result<Option<JsonValue>> {
-        tracing::trace!("DbConnection::query_value({statement}, {params:?})");
-        let rows = self.query(statement, params).await?;
-        Ok(extract_value(&rows))
-    }
-}
-
-/// A database transaction as defined specifically for the sqlx driver
-#[cfg(feature = "sqlx")]
-#[derive(Debug)]
-pub enum SqlxDbTransaction<'a> {
-    Postgres(Transaction<'a, Postgres>),
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -533,39 +448,6 @@ pub fn prepare_sqlx_pg_query<'a>(
     Ok(query)
 }
 
-/// Execute the given rusqlite statement
-#[cfg(feature = "rusqlite")]
-fn submit_rusqlite_statement(
-    stmt: &mut RusqliteStatement<'_>,
-    params: Option<&JsonValue>,
-) -> Result<Vec<JsonRow>> {
-    tracing::trace!("submit_rusqlite_statement({stmt:?}, {params:?})");
-    let column_names = stmt
-        .column_names()
-        .iter()
-        .map(|c| c.to_string())
-        .collect::<Vec<_>>();
-    let column_names = column_names.iter().map(|c| c.as_str()).collect::<Vec<_>>();
-
-    if let Some(params) = params {
-        for (i, param) in params.as_array().unwrap().iter().enumerate() {
-            let param = match param {
-                JsonValue::String(s) => s,
-                _ => &param.to_string(),
-            };
-            // Binding must begin with 1 rather than 0:
-            stmt.raw_bind_parameter(i + 1, param)?;
-        }
-    }
-    let mut rows = stmt.raw_query();
-
-    let mut result = Vec::new();
-    while let Some(row) = rows.next()? {
-        result.push(JsonRow::from_rusqlite(&column_names, row));
-    }
-    Ok(result)
-}
-
 /// Create an application-defined function (<https://sqlite.org/appfunc.html>) called 'regexp' and
 /// add it to the sqlite session using the given rusqlite connection.
 #[cfg(feature = "rusqlite")]
@@ -600,31 +482,6 @@ fn add_rusqlite_regexp_function(db: &RusqliteConnection) -> RusqliteResult<()> {
             }
         },
     )
-}
-
-/// Validate that the given parameters are in the form of a JSON Array.
-fn valid_params(params: Option<&JsonValue>) -> bool {
-    tracing::trace!("valid_params({params:?})");
-    if let Some(params) = params {
-        match params {
-            JsonValue::Array(_) => true,
-            _ => false,
-        }
-    } else {
-        true
-    }
-}
-
-/// Extract the first value of the first row in `rows`.
-fn extract_value(rows: &Vec<JsonRow>) -> Option<JsonValue> {
-    tracing::trace!("extract_value({rows:?})");
-    match rows.iter().next() {
-        Some(row) => match row.content.values().next() {
-            Some(value) => Some(value.clone()),
-            None => None,
-        },
-        None => None,
-    }
 }
 
 /////////////////

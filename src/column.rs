@@ -393,13 +393,16 @@ impl<'a> ColumnTable<'a> {
             .map(|dt| json!(dt).as_object().unwrap().clone())
             .collect();
         let refs: Vec<&JsonRow> = rows.iter().collect();
-        let rows = self.pool.insert(&self.table_name, &refs).await?;
-        let dts: Vec<Column> = rows
+        let rows = self
+            .pool
+            .insert_returning(&self.table_name, &refs, &[])
+            .await?;
+        let cols: Vec<Column> = rows
             .into_iter()
             // WARN: This silently ignores invalid columns.
             .filter_map(|row| serde_json::from_value::<Column>(json!(row)).ok())
             .collect();
-        Ok(dts)
+        Ok(cols)
     }
 
     /// Get a SQL string for a query over actual columns,
