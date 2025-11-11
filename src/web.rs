@@ -431,14 +431,16 @@ async fn get_column_menu(
     let username = get_username(session);
     let select = Select::from_path_and_query(&table_name, &query_params, &rltbl).await;
     let mut operator = String::new();
-    let mut value = json!("");
+    let mut value = String::new();
     let mut order = String::new();
     for filter in select.filters {
-        let (_t, c, o, v) = filter.parts();
-        tracing::warn!("FILTER {filter:?} {o}");
+        let c = filter.get_column();
         if c == column {
-            operator = o;
-            value = v;
+            operator = filter.get_operator();
+            value = match filter.get_value() {
+                Ok(value) => value,
+                Err(error) => return get_500(&error),
+            }
         }
     }
     for (c, o) in select.order_by {

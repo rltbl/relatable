@@ -437,11 +437,7 @@ impl Relatable {
 
         // Fetch the data
         let (statement, parameters) = select.to_sql(&self.connection.kind())?;
-        let params: Vec<ParamValue> = parameters
-            .clone()
-            .into_iter()
-            .map(|v| ParamValue::from_json(v))
-            .collect();
+        let params = parameters.clone();
         let json_rows = self.pool.query(&statement, params).await?;
         let count = json_rows.len();
         tracing::info!("Fetched {count} rows");
@@ -504,10 +500,6 @@ impl Relatable {
     pub async fn fetch_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
         tracing::trace!("Relatable::fetch_rows({select:?})");
         let (statement, params) = select.to_sql(&self.connection.kind())?;
-        let params: Vec<ParamValue> = params
-            .into_iter()
-            .map(|v| ParamValue::from_json(v))
-            .collect();
         let rows = self.pool.query(&statement, params).await?;
         Ok(rows)
     }
@@ -516,10 +508,6 @@ impl Relatable {
     pub async fn count(&self, select: &Select) -> Result<u64> {
         tracing::trace!("Relatable::count({select:?})");
         let (statement, params) = select.to_sql_count(&self.connection.kind())?;
-        let params: Vec<ParamValue> = params
-            .into_iter()
-            .map(|v| ParamValue::from_json(v))
-            .collect();
         let count = self.pool.query_u64(&statement, params).await?;
         Ok(count)
     }
@@ -1176,19 +1164,12 @@ impl Relatable {
     /// there is no user with the given username, return a default Account.
     pub async fn get_user(&self, username: &str) -> Account {
         tracing::trace!("Relatable::get_user({username:?})");
-        let statement = format!(
-            r#"SELECT "name", "color", "cursor", "datetime"
-               FROM "user" WHERE name = '{username}' LIMIT 1"#
-        );
-        let user = self.pool.query_row(&statement, ()).await;
-        match user {
-            Ok(user) => Account {
+        let statement = format!(r#"SELECT "color" FROM "user" WHERE name = '{username}' LIMIT 1"#);
+        let color = self.pool.query_string(&statement, ()).await;
+        match color {
+            Ok(color) => Account {
                 name: username.to_string(),
-                color: user
-                    .get("color")
-                    .and_then(|v| v.as_str())
-                    .and_then(|v| Some(v.to_string()))
-                    .unwrap_or_default(),
+                color,
             },
             Err(err) => {
                 tracing::warn!("Error while querying user table: '{err}'");
@@ -1226,16 +1207,8 @@ impl Relatable {
     pub async fn list_tables(&self) -> Result<Vec<String>> {
         tracing::trace!("Relatable::list_tables({self:?})");
         let statement = format!(r#"SELECT "table" FROM "table" ORDER BY _order"#);
-        let rows = self.pool.query(&statement, ()).await?;
-        Ok(rows
-            .iter()
-            .map(|row| {
-                row.get("table")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string()
-            })
-            .collect())
+        let rows = self.pool.query_strings(&statement, ()).await?;
+        Ok(rows)
     }
 
     /// Returns all of the tables that have entries in the table table as a map from table names
@@ -1245,12 +1218,8 @@ impl Relatable {
         let mut tables = IndexMap::new();
         let statement = format!(r#"SELECT "_id", "_order", "table", "path" FROM "table""#);
 
-        let rows = self.pool.query(&statement, ()).await?;
-        for row in rows {
-            let name = row
-                .get("table")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
+        let names = self.pool.query_strings(&statement, ()).await?;
+        for name in names {
             if !name.trim().is_empty() {
                 tables.insert(
                     name.to_string(),
@@ -3113,7 +3082,7 @@ impl std::fmt::Display for Range {
 pub struct ResultSet {
     pub select: Select,
     pub statement: String,
-    pub parameters: Vec<JsonValue>,
+    pub parameters: Vec<ParamValue>,
     pub range: Range,
     pub table: Table,
     /// The columns (and only the columns) used in the Select statement
