@@ -44,8 +44,6 @@ rusqlite = { version = "0.37", features = ["bundled", "functions", "serde_json"]
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = { version = "1.0.133", features = ["preserve_order"] }
 sprintf = "0.4"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-async-std", "postgres", "bigdecimal"], optional = true }
-sqlx-core = { version = "0.8", optional = true }
 tabwriter = "1.4.0"
 tokio = { version = "1.42.0", features = ["full"] }
 tower-service = "0.3.3"
@@ -62,7 +60,7 @@ pretty_assertions = "1.4.1"
 [features]
 default = ["rusqlite"]
 rusqlite = ["dep:rusqlite", "rltbl_db/rusqlite"]
-sqlx = ["dep:sqlx", "dep:sqlx-core", "rltbl_db/tokio-postgres"]
+tokio-postgres = ["rltbl_db/tokio-postgres"]
 
 # The profile that 'dist' will build with
 [profile.dist]

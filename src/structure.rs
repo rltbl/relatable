@@ -52,7 +52,7 @@ impl Structure {
                 };
                 let s_table = unquoted_re.replace(&s_table, "$unquoted").to_string();
                 let s_column = unquoted_re.replace(&s_column, "$unquoted").to_string();
-                let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
+                let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind());
                 let mut sql = format!(
                     r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",

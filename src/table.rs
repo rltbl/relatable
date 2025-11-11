@@ -169,7 +169,7 @@ impl Table {
             id_col,
             order_col,
             &columns.data(),
-            &rltbl.connection.kind(),
+            &rltbl.pool.kind(),
         ) {
             rltbl.pool.execute(&sql, ()).await?;
         }
@@ -201,7 +201,7 @@ impl Table {
             id_col,
             order_col,
             &columns.data(),
-            &rltbl.connection.kind(),
+            &rltbl.pool.kind(),
         ) {
             rltbl.pool.execute(&sql, ()).await?;
         }

@@ -4,11 +4,14 @@ use crate::{
     column::ColumnBuilder,
     core::{Relatable, NEW_ORDER_MULTIPLIER},
     datatype::DatatypeBuilder,
-    sql::{self, CachingStrategy, DbKind, SqlParam},
+    sql::{self, CachingStrategy, SqlParam},
 };
 
 use anyhow::Result;
-use rltbl_db::{core::DbQuery, params};
+use rltbl_db::{
+    core::{DbKind, DbQuery},
+    params,
+};
 
 /// Build a demonstration database. Based on <https://github.com/allisonhorst/palmerpenguins>.
 pub async fn build_demo(rltbl: &Relatable, force: &bool, size: usize) -> Result<()> {
@@ -33,9 +36,9 @@ pub async fn create_penguin_table(
         None => "penguin",
     };
     if *force {
-        let sql = match rltbl.connection.kind() {
-            DbKind::Postgres => format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#),
-            DbKind::Sqlite => format!(r#"DROP TABLE IF EXISTS "{table}""#),
+        let sql = match rltbl.pool.kind() {
+            DbKind::PostgreSQL => format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#),
+            DbKind::SQLite => format!(r#"DROP TABLE IF EXISTS "{table}""#),
         };
         rltbl.pool.execute(&sql, ()).await?;
     }
@@ -43,9 +46,9 @@ pub async fn create_penguin_table(
     let sql = format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
     rltbl.pool.execute(&sql, ()).await?;
 
-    let pkey_clause = match rltbl.connection.kind() {
-        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        DbKind::Postgres => "SERIAL PRIMARY KEY",
+    let pkey_clause = match rltbl.pool.kind() {
+        DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
     };
 
     // Create the demo table:
@@ -66,9 +69,9 @@ pub async fn create_penguin_table(
     rltbl.pool.execute(&sql, ()).await?;
 
     let mut ddl = vec![];
-    sql::add_metacolumn_trigger_ddl(&mut ddl, table, &rltbl.connection.kind());
+    sql::add_metacolumn_trigger_ddl(&mut ddl, table, &rltbl.pool.kind());
     if let CachingStrategy::Trigger = rltbl.caching_strategy {
-        sql::add_caching_trigger_ddl(&mut ddl, table, &rltbl.connection.kind());
+        sql::add_caching_trigger_ddl(&mut ddl, table, &rltbl.pool.kind());
     }
     for sql in ddl {
         rltbl.pool.execute(&sql, ()).await?;
@@ -78,11 +81,11 @@ pub async fn create_penguin_table(
     let mut rng = StdRng::seed_from_u64(0);
     let sql_first_part = format!(r#"INSERT INTO "{table}" VALUES "#);
     let mut sql_value_parts = vec![];
-    let mut sql_param = SqlParam::new(&rltbl.connection.kind());
+    let mut sql_param = SqlParam::new(&rltbl.pool.kind());
     let mut param_values = vec![];
-    let max_params = match rltbl.connection.kind() {
-        DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
-        DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
+    let max_params = match rltbl.pool.kind() {
+        DbKind::SQLite => sql::MAX_PARAMS_SQLITE,
+        DbKind::PostgreSQL => sql::MAX_PARAMS_POSTGRES,
     };
     for i in 0..size {
         if (param_values.len() + 8) >= max_params {
@@ -148,7 +151,7 @@ pub async fn create_island_table(
         None => "island",
     };
     if *force {
-        if let DbKind::Postgres = rltbl.connection.kind() {
+        if let DbKind::PostgreSQL = rltbl.pool.kind() {
             rltbl
                 .pool
                 .execute(&format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#), ())
@@ -159,9 +162,9 @@ pub async fn create_island_table(
     let sql = format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
     rltbl.pool.execute(&sql, ()).await?;
 
-    let pkey_clause = match rltbl.connection.kind() {
-        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        DbKind::Postgres => "SERIAL PRIMARY KEY",
+    let pkey_clause = match rltbl.pool.kind() {
+        DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
     };
 
     // Create the demo table:
@@ -176,9 +179,9 @@ pub async fn create_island_table(
     rltbl.pool.query(&sql, ()).await?;
 
     let mut ddl = vec![];
-    sql::add_metacolumn_trigger_ddl(&mut ddl, table, &rltbl.connection.kind());
+    sql::add_metacolumn_trigger_ddl(&mut ddl, table, &rltbl.pool.kind());
     if let CachingStrategy::Trigger = rltbl.caching_strategy {
-        sql::add_caching_trigger_ddl(&mut ddl, table, &rltbl.connection.kind());
+        sql::add_caching_trigger_ddl(&mut ddl, table, &rltbl.pool.kind());
     }
     for sql in ddl {
         rltbl.pool.execute(&sql, ()).await?;
@@ -275,7 +278,7 @@ pub async fn create_demo_column_table(rltbl: &Relatable, force: &bool) -> Result
 pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) -> Result<()> {
     tracing::trace!("create_demo_tableset({rltbl:?}, {force}, {size})");
     if *force {
-        if let DbKind::Postgres = rltbl.connection.kind() {
+        if let DbKind::PostgreSQL = rltbl.pool.kind() {
             rltbl
                 .pool
                 .execute(&format!(r#"DROP TABLE IF EXISTS "study" CASCADE"#), ())

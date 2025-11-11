@@ -76,7 +76,7 @@ impl Datatype {
                 if let Some(captures) = re.captures(condition) {
                     let condition = &captures[1];
                     let condition = unquoted_re.replace(&condition, "$unquoted");
-                    let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
+                    let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",
@@ -94,7 +94,7 @@ impl Datatype {
                            WHERE {casted_column} != {sql_param_5}"#,
                         table_name = column.table,
                         casted_column =
-                            sql::cast_column_as_text(&column.column, &rltbl.connection.kind()),
+                            sql::cast_column_as_text(&column.column, &rltbl.pool.kind()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
@@ -132,7 +132,7 @@ impl Datatype {
                         .split(condition_list_str)
                         .map(|item| unquoted_re.replace(item, "$unquoted"))
                         .collect::<Vec<_>>();
-                    let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
+                    let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",
@@ -150,7 +150,7 @@ impl Datatype {
                            WHERE {casted_column} NOT IN ({sql_param_5})"#,
                         table_name = column.table,
                         casted_column =
-                            sql::cast_column_as_text(&column.column, &rltbl.connection.kind()),
+                            sql::cast_column_as_text(&column.column, &rltbl.pool.kind()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
@@ -186,7 +186,7 @@ impl Datatype {
                 if let Some(captures) = re.captures(condition) {
                     let condition = &captures[1];
                     let condition = unquoted_re.replace(&condition, "$unquoted");
-                    let mut sql_param_gen = SqlParam::new(&rltbl.connection.kind());
+                    let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",
@@ -204,7 +204,7 @@ impl Datatype {
                            WHERE {match_condition}"#,
                         table_name = column.table,
                         casted_column =
-                            sql::cast_column_as_text(&column.column, &rltbl.connection.kind()),
+                            sql::cast_column_as_text(&column.column, &rltbl.pool.kind()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),

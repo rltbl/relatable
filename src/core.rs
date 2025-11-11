@@ -10,12 +10,12 @@ use rltbl::{
     row::{Cell, Message, Row},
     schema::Schema,
     select::{Select, SelectField},
-    sql::{self, CachingStrategy, DbConnection, DbKind, MemoryCacheKey, SqlParam, VecInto as _},
+    sql::{self, CachingStrategy, MemoryCacheKey, SqlParam, VecInto as _},
     table::Table,
 };
 use rltbl_db::{
     any::AnyPool,
-    core::{DbQuery, JsonRow, ParamValue},
+    core::{DbKind, DbQuery, JsonRow, ParamValue},
     params,
 };
 
@@ -106,7 +106,6 @@ impl std::error::Error for RelatableError {}
 pub struct Relatable {
     pub root: String,
     pub readonly: bool,
-    pub connection: DbConnection,
     pub pool: AnyPool,
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
@@ -152,12 +151,10 @@ impl Relatable {
                 .into());
             }
         }
-        let (connection, _) = DbConnection::connect(&path).await?;
         let pool = AnyPool::connect(&path).await?;
         Ok(Self {
             root,
             readonly,
-            connection,
             pool,
             // minijinja: env,
             default_limit: DEFAULT_LIMIT,
@@ -216,7 +213,7 @@ impl Relatable {
 
         // Create the meta tables:
         let rltbl = Relatable::connect(Some(&path), caching_strategy).await?;
-        let ddl = sql::generate_meta_tables_ddl(*force, &rltbl.connection.kind());
+        let ddl = sql::generate_meta_tables_ddl(*force, &rltbl.pool.kind());
         for sql in ddl {
             rltbl.pool.execute(&sql, ()).await?;
         }
@@ -436,7 +433,7 @@ impl Relatable {
             .collect::<Vec<Column>>();
 
         // Fetch the data
-        let (statement, parameters) = select.to_sql(&self.connection.kind())?;
+        let (statement, parameters) = select.to_sql(&self.pool.kind())?;
         let params = parameters.clone();
         let json_rows = self.pool.query(&statement, params).await?;
         let count = json_rows.len();
@@ -499,7 +496,7 @@ impl Relatable {
     /// Use the given [Select] to fetch data from the database.
     pub async fn fetch_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
         tracing::trace!("Relatable::fetch_rows({select:?})");
-        let (statement, params) = select.to_sql(&self.connection.kind())?;
+        let (statement, params) = select.to_sql(&self.pool.kind())?;
         let rows = self.pool.query(&statement, params).await?;
         Ok(rows)
     }
@@ -507,7 +504,7 @@ impl Relatable {
     /// Get the number of rows returned by this [Select] using the given caching strategy.
     pub async fn count(&self, select: &Select) -> Result<u64> {
         tracing::trace!("Relatable::count({select:?})");
-        let (statement, params) = select.to_sql_count(&self.connection.kind())?;
+        let (statement, params) = select.to_sql_count(&self.pool.kind())?;
         let count = self.pool.query_u64(&statement, params).await?;
         Ok(count)
     }
@@ -543,7 +540,7 @@ impl Relatable {
             headers
         };
 
-        let db_kind = self.connection.kind();
+        let db_kind = self.pool.kind();
 
         // Add an entry corresponding to the table being loaded to the table table:
         if force {
@@ -633,11 +630,11 @@ impl Relatable {
         let mut order = id * NEW_ORDER_MULTIPLIER as u64;
         let sql_first_part = format!(r#"INSERT INTO "{table_name}" ({columns_line}) VALUES "#);
         let mut sql_value_parts = vec![];
-        let mut sql_param_gen = SqlParam::new(&self.connection.kind());
+        let mut sql_param_gen = SqlParam::new(&self.pool.kind());
         let mut param_values: Vec<ParamValue> = Vec::new();
         let max_params = match db_kind {
-            DbKind::Sqlite => sql::MAX_PARAMS_SQLITE,
-            DbKind::Postgres => sql::MAX_PARAMS_POSTGRES,
+            DbKind::SQLite => sql::MAX_PARAMS_SQLITE,
+            DbKind::PostgreSQL => sql::MAX_PARAMS_POSTGRES,
         };
         while let Some(row) = records.next() {
             let row = row.expect("Error processing row");
@@ -919,7 +916,7 @@ impl Relatable {
         // Stage any modified table files that have a path in the table table:
         let sql = format!(
             r#"SELECT "path" FROM "table" WHERE "path" {is_not} NULL"#,
-            is_not = sql::is_not_clause(&self.connection.kind()),
+            is_not = sql::is_not_clause(&self.pool.kind()),
         );
         let paths = self
             .pool
@@ -947,7 +944,7 @@ impl Relatable {
         user: &str,
         action: &ChangeAction,
     ) -> Result<Option<(u64, ChangeSet)>> {
-        let mut sql_param = SqlParam::new(&self.connection.kind());
+        let mut sql_param = SqlParam::new(&self.pool.kind());
         let sql = format!(
             r#"SELECT "change_id", "user", "table", "description", "content"
                FROM "change"
@@ -1035,7 +1032,7 @@ impl Relatable {
             r#"INSERT INTO change("user", "action", "table", "description", "content")
                VALUES ({sql_params})
                RETURNING change_id"#,
-            sql_params = SqlParam::new(&self.connection.kind()).get_as_list(5)
+            sql_params = SqlParam::new(&self.pool.kind()).get_as_list(5)
         );
         let content = to_value(&changeset.changes).unwrap_or_default();
         let params = params![user, action, &table, description, content.to_string()];
@@ -1054,7 +1051,7 @@ impl Relatable {
                            ("change_id", "table", "row", "before", "after")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = SqlParam::new(&self.connection.kind()).get_as_list(5)
+                        sql_params = SqlParam::new(&self.pool.kind()).get_as_list(5)
                     );
                     let before = json!({column: before}).to_string();
                     let after = json!({column: after}).to_string();
@@ -1073,7 +1070,7 @@ impl Relatable {
                                     r#"SELECT "before"
                                          FROM "history"
                                         WHERE "change_id" = {sql_param}"#,
-                                    sql_param = SqlParam::new(&self.connection.kind()).next()
+                                    sql_param = SqlParam::new(&self.pool.kind()).next()
                                 );
                                 let before = self.pool.query_string(&sql, [change_id]).await?;
                                 let before = match serde_json::from_str::<JsonValue>(&before) {
@@ -1101,7 +1098,7 @@ impl Relatable {
                            ("change_id", "table", "row", "after")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = SqlParam::new(&self.connection.kind()).get_as_list(4)
+                        sql_params = SqlParam::new(&self.pool.kind()).get_as_list(4)
                     );
                     let json_row_str = json!(json_row.content).to_string();
                     let params = params![change_id, &table, row, json_row_str];
@@ -1117,7 +1114,7 @@ impl Relatable {
                            ("change_id", "table", "row")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = SqlParam::new(&self.connection.kind()).get_as_list(3)
+                        sql_params = SqlParam::new(&self.pool.kind()).get_as_list(3)
                     );
                     let params = params![change_id, &table, row];
                     self.pool.execute(&sql, params).await?;
@@ -1138,7 +1135,7 @@ impl Relatable {
                            ("change_id", "table", "row", "before")
                            VALUES ({sql_params})
                            RETURNING "history_id""#,
-                        sql_params = SqlParam::new(&self.connection.kind()).get_as_list(4)
+                        sql_params = SqlParam::new(&self.pool.kind()).get_as_list(4)
                     );
                     let json_row_str = json!(json_row.content).to_string();
                     let params = params![change_id, &table, row, json_row_str];
@@ -1193,7 +1190,7 @@ impl Relatable {
             r#"SELECT "name", "color", "cursor", "datetime"
                FROM "user"
                WHERE cursor {is_not} NULL"#,
-            is_not = sql::is_not_clause(&self.connection.kind()),
+            is_not = sql::is_not_clause(&self.pool.kind()),
         );
         let rows = self.pool.query(&statement, ()).await?;
         for row in rows {
@@ -1492,7 +1489,7 @@ impl Relatable {
                  FROM "change"
                 WHERE "user" = {sql_param}
                 ORDER BY "change_id" DESC"#,
-            sql_param = SqlParam::new(&self.connection.kind()).next()
+            sql_param = SqlParam::new(&self.pool.kind()).next()
         );
         let history = self.pool.query(&sql, [user]).await?;
 
@@ -1767,7 +1764,7 @@ impl Relatable {
                                 let sql = format!(
                                     r#"SELECT "before" FROM "history"
                                        WHERE "change_id" = {sql_param}"#,
-                                    sql_param = SqlParam::new(&self.connection.kind()).next()
+                                    sql_param = SqlParam::new(&self.pool.kind()).next()
                                 );
                                 let before_row = self.pool.query_row(&sql, [change_id]).await?;
                                 let before = before_row
@@ -2021,7 +2018,7 @@ impl Relatable {
                VALUES
                ({sql_params})
                RETURNING "message_id""#,
-            sql_params = SqlParam::new(&self.connection.kind()).get_as_list(8)
+            sql_params = SqlParam::new(&self.pool.kind()).get_as_list(8)
         );
         let param = ParamValue::from_json(value.clone());
         let params = params![user, table_name, row, column, param, level, rule, message];
@@ -2242,7 +2239,7 @@ impl Relatable {
         let sql = format!(
             r#"DELETE FROM "{}" WHERE "_id" = {sql_param} RETURNING 1 AS "deleted""#,
             table.name,
-            sql_param = SqlParam::new(&self.connection.kind()).next()
+            sql_param = SqlParam::new(&self.pool.kind()).next()
         );
 
         // Delete any messages associated with the row
@@ -2282,7 +2279,7 @@ impl Relatable {
             "Relatable::delete_message({self:?}, {table:?}, {rows:?}, {column:?}, \
              {target_rule:?}, {target_user:?})"
         );
-        let mut sql_param = SqlParam::new(&self.connection.kind());
+        let mut sql_param = SqlParam::new(&self.pool.kind());
         let mut sql = format!(
             r#"DELETE FROM "message" WHERE "table" = {sql_param}"#,
             sql_param = sql_param.next()
@@ -2391,7 +2388,7 @@ impl Relatable {
             let sql = format!(
                 r#"SELECT "_order" FROM "{}" WHERE "_id" = {sql_param}"#,
                 table.name,
-                sql_param = SqlParam::new(&rltbl.connection.kind()).next()
+                sql_param = SqlParam::new(&rltbl.pool.kind()).next()
             );
             let rows = rltbl.pool.query(&sql, [row_id]).await?;
             if rows.is_empty() {
@@ -2441,7 +2438,7 @@ impl Relatable {
             let sql = format!(
                 r#"SELECT MIN("_order") AS "_order" FROM "{}" WHERE "_order" > {sql_param}"#,
                 table.name,
-                sql_param = SqlParam::new(&self.connection.kind()).next()
+                sql_param = SqlParam::new(&self.pool.kind()).next()
             );
             let rows = self.pool.query(&sql, [order_prev]).await?;
             if rows.is_empty() {
@@ -2484,7 +2481,7 @@ impl Relatable {
                 // violations will ensue:
                 let upper_bound = (order_next as f32 / NEW_ORDER_MULTIPLIER as f32).ceil() as u64
                     * NEW_ORDER_MULTIPLIER as u64;
-                let mut sql_param = SqlParam::new(&self.connection.kind());
+                let mut sql_param = SqlParam::new(&self.pool.kind());
                 let sql = format!(
                     r#"SELECT "_order"
                          FROM "{}"
@@ -2534,7 +2531,7 @@ impl Relatable {
                               SET "_order" = "_order" + 1
                             WHERE "_order" = {sql_param}"#,
                         table.name,
-                        sql_param = SqlParam::new(&self.connection.kind()).next()
+                        sql_param = SqlParam::new(&self.pool.kind()).next()
                     );
                     self.pool.query(&sql, [current_order]).await?;
                 }
@@ -2549,7 +2546,7 @@ impl Relatable {
             table = table.name
         );
 
-        let mut sql_param = SqlParam::new(&self.connection.kind());
+        let mut sql_param = SqlParam::new(&self.pool.kind());
         let sql = format!(
             r#"UPDATE "{}" SET "_order" = {sql_param_1}
                WHERE "_id" = {sql_param_2}
@@ -2721,19 +2718,19 @@ impl Relatable {
         if let Some(table) = table {
             let mut table = table.to_string();
             tracing::debug!("Deleting entries for table '{table}' from cache");
-            match self.connection.kind() {
-                DbKind::Postgres => {
+            match self.pool.kind() {
+                DbKind::PostgreSQL => {
                     // Note that the '?' is *not* being used as a parameter placeholder here
                     // but a JSONB operator.
                     sql.push_str(&format!(
                         r#" WHERE "tables" ? {}"#,
-                        SqlParam::new(&self.connection.kind()).next()
+                        SqlParam::new(&self.pool.kind()).next()
                     ));
                 }
-                DbKind::Sqlite => {
+                DbKind::SQLite => {
                     sql.push_str(&format!(
                         r#" WHERE "tables" LIKE {}"#,
-                        SqlParam::new(&self.connection.kind()).next()
+                        SqlParam::new(&self.pool.kind()).next()
                     ));
                     table = format!(r#"%"{table}"%"#);
                 }

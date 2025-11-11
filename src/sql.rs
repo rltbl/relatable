@@ -16,6 +16,7 @@ use rltbl::{
     schema::Schema,
     table::Table,
 };
+use rltbl_db::core::DbKind;
 
 //////////////////////////////////////////
 // External imports
@@ -27,35 +28,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::{fmt::Display, str::FromStr};
-
-//////////////////////////////////////////
-// External imports required for rusqlite
-//////////////////////////////////////////
-#[cfg(feature = "rusqlite")]
-use rusqlite::{
-    functions::FunctionFlags as RusqliteFunctionFlags, types::ValueRef as RusqliteValueRef,
-    Connection as RusqliteConnection, Error as RusqliteError, Result as RusqliteResult,
-    Row as RusqliteRow,
-};
-
-#[cfg(feature = "rusqlite")]
-use std::sync::Arc;
-
-#[cfg(feature = "rusqlite")]
-type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
-
-//////////////////////////////////////////
-// External imports required for sqlx
-//////////////////////////////////////////
-#[cfg(feature = "sqlx")]
-use bigdecimal::{BigDecimal, ToPrimitive};
-
-#[cfg(feature = "sqlx")]
-use sqlx::{
-    postgres::{PgArguments, PgConnectOptions, PgPool, PgPoolOptions, PgRow, Postgres},
-    query::Query,
-    Acquire as _, Column as _, Row as _, Transaction, TypeInfo as _,
-};
 
 //////////////////////////////////////////
 // The rest of the code
@@ -150,13 +122,6 @@ impl Display for CachingStrategy {
     }
 }
 
-/// Represents the kind of database being managed
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DbKind {
-    Postgres,
-    Sqlite,
-}
-
 /// Used to generate database-specific parameter placeholder strings for binding to SQL statements
 #[derive(Clone, Copy, Debug)]
 pub struct SqlParam {
@@ -179,11 +144,11 @@ impl SqlParam {
     /// automatically.
     pub fn next(&mut self) -> String {
         match self.kind {
-            DbKind::Postgres => {
+            DbKind::PostgreSQL => {
                 self.index += 1;
                 format!("${}", self.index)
             }
-            DbKind::Sqlite => "?".to_string(),
+            DbKind::SQLite => "?".to_string(),
         }
     }
 
@@ -207,88 +172,6 @@ impl SqlParam {
     /// Resets the index
     pub fn reset(&mut self) {
         self.index = 0;
-    }
-}
-
-/// Represents a database connection pool
-#[cfg(feature = "sqlx")]
-#[derive(Debug)]
-pub enum DbPool {
-    Postgres(PgPool),
-}
-
-/// Represents an active database connection
-#[derive(Debug)]
-pub enum DbActiveConnection {
-    #[cfg(feature = "rusqlite")]
-    Rusqlite(RusqliteConnection),
-}
-
-/// Represents a database connection
-#[derive(Debug)]
-pub enum DbConnection {
-    #[cfg(feature = "sqlx")]
-    Sqlx(DbPool, DbKind),
-
-    #[cfg(feature = "rusqlite")]
-    Rusqlite(String),
-}
-
-impl DbConnection {
-    /// Returns the kind of database that this connection is associated with
-    pub fn kind(&self) -> DbKind {
-        tracing::trace!("DbConnection::kind()");
-        match self {
-            #[cfg(feature = "sqlx")]
-            DbConnection::Sqlx(_, kind) => *kind,
-            #[cfg(feature = "rusqlite")]
-            DbConnection::Rusqlite(_) => DbKind::Sqlite,
-        }
-    }
-
-    /// Connects to the given database
-    pub async fn connect(database: &str) -> Result<(Self, Option<DbActiveConnection>)> {
-        tracing::trace!("DbConnection::connect({database})");
-        let is_postgresql = database.starts_with("postgresql://");
-        match is_postgresql {
-            true => {
-                #[cfg(not(feature = "sqlx"))]
-                return Err(RelatableError::InputError(
-                    "rltbl was built without the sqlx feature, which is required for PostgreSQL \
-                     support. To build rltbl with sqlx enabled, run \
-                     `cargo build --features sqlx`"
-                        .to_string(),
-                )
-                .into());
-
-                #[cfg(feature = "sqlx")]
-                {
-                    let connection_options = PgConnectOptions::from_str(database)?;
-                    let db_kind = DbKind::Postgres;
-                    let pool = PgPoolOptions::new()
-                        .max_connections(MAX_DB_CONNECTIONS)
-                        .connect_with(connection_options)
-                        .await?;
-                    let connection = DbConnection::Sqlx(DbPool::Postgres(pool), db_kind);
-                    Ok((connection, None))
-                }
-            }
-            false => {
-                #[cfg(feature = "rusqlite")]
-                {
-                    let conn = DbConnection::Rusqlite(database.to_string());
-                    let active_conn = RusqliteConnection::open(database)?;
-                    add_rusqlite_regexp_function(&active_conn)?;
-                    return Ok((conn, Some(DbActiveConnection::Rusqlite(active_conn))));
-                }
-
-                #[allow(unreachable_code)]
-                return Err(RelatableError::InputError(format!(
-                    "Invalid database path: '{database}'"
-                ))
-                .into());
-            }
-        }
     }
 }
 
@@ -316,8 +199,8 @@ pub fn interpolate_sql(sql: &str, params: Option<&JsonValue>, kind: &DbKind) -> 
 
     let quotes = r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")"#;
     let rx = match kind {
-        DbKind::Sqlite => Regex::new(&format!(r#"{}|\B[?]\B"#, quotes))?,
-        DbKind::Postgres => Regex::new(&format!(r#"{}|\B[$]\d+\b"#, quotes))?,
+        DbKind::SQLite => Regex::new(&format!(r#"{}|\B[?]\B"#, quotes))?,
+        DbKind::PostgreSQL => Regex::new(&format!(r#"{}|\B[$]\d+\b"#, quotes))?,
     };
 
     let mut param_index = 0;
@@ -377,8 +260,8 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 pub fn is_clause(db_kind: &DbKind) -> String {
     tracing::trace!("is_clause({db_kind:?})");
     match db_kind {
-        DbKind::Sqlite => "IS".into(),
-        DbKind::Postgres => "IS NOT DISTINCT FROM".into(),
+        DbKind::SQLite => "IS".into(),
+        DbKind::PostgreSQL => "IS NOT DISTINCT FROM".into(),
     }
 }
 
@@ -386,8 +269,8 @@ pub fn is_clause(db_kind: &DbKind) -> String {
 pub fn is_not_clause(db_kind: &DbKind) -> String {
     tracing::trace!("is_not_clause({db_kind:?})");
     match db_kind {
-        DbKind::Sqlite => "IS NOT".into(),
-        DbKind::Postgres => "IS DISTINCT FROM".into(),
+        DbKind::SQLite => "IS NOT".into(),
+        DbKind::PostgreSQL => "IS DISTINCT FROM".into(),
     }
 }
 
@@ -396,8 +279,8 @@ pub fn is_not_clause(db_kind: &DbKind) -> String {
 pub fn cast_column_as_text(column: &str, db_kind: &DbKind) -> String {
     tracing::trace!("cast_column_as_text({column}, {db_kind:?})");
     match db_kind {
-        DbKind::Sqlite => format!(r#"CAST("{column}" AS TEXT)"#),
-        DbKind::Postgres => format!(r#""{column}"::TEXT"#),
+        DbKind::SQLite => format!(r#"CAST("{column}" AS TEXT)"#),
+        DbKind::PostgreSQL => format!(r#""{column}"::TEXT"#),
     }
 }
 
@@ -406,8 +289,8 @@ pub fn regexp_match(column: &str, sql_param: &mut SqlParam) -> String {
     tracing::trace!("regexp_match({column}, {sql_param:?})");
     let casted_column = cast_column_as_text(column, &sql_param.kind);
     match &sql_param.kind {
-        DbKind::Sqlite => format!(r#"regexp({}, {}) = 1"#, sql_param.next(), casted_column),
-        DbKind::Postgres => format!(r#"{} ~ {}"#, casted_column, sql_param.next()),
+        DbKind::SQLite => format!(r#"regexp({}, {}) = 1"#, sql_param.next(), casted_column),
+        DbKind::PostgreSQL => format!(r#"{} ~ {}"#, casted_column, sql_param.next()),
     }
 }
 
@@ -416,72 +299,9 @@ pub fn regexp_mismatch(column: &str, sql_param: &mut SqlParam) -> String {
     tracing::trace!("regexp_mismatch({column}, {sql_param:?})");
     let casted_column = cast_column_as_text(column, &sql_param.kind);
     match &sql_param.kind {
-        DbKind::Sqlite => format!(r#"regexp({}, {}) = 0"#, sql_param.next(), casted_column),
-        DbKind::Postgres => format!(r#"{} !~ {}"#, casted_column, sql_param.next()),
+        DbKind::SQLite => format!(r#"regexp({}, {}) = 0"#, sql_param.next(), casted_column),
+        DbKind::PostgreSQL => format!(r#"{} !~ {}"#, casted_column, sql_param.next()),
     }
-}
-
-/// Given an SQL string that has been bound to the given parameter vector, construct a database
-/// query and return it.
-#[cfg(feature = "sqlx")]
-pub fn prepare_sqlx_pg_query<'a>(
-    statement: &'a str,
-    params: Option<&'a JsonValue>,
-) -> Result<Query<'a, Postgres, PgArguments>> {
-    tracing::trace!("prepare_sqlx_query({statement}, {params:?})");
-    let mut query = sqlx::query::<Postgres>(&statement);
-    if let Some(params) = params {
-        for param in params.as_array().unwrap() {
-            match param {
-                JsonValue::Number(n) => match n.as_i64() {
-                    Some(p) => query = query.bind(p),
-                    None => match n.as_f64() {
-                        Some(p) => query = query.bind(p),
-                        None => panic!(),
-                    },
-                },
-                JsonValue::String(s) => query = query.bind(s),
-                _ => query = query.bind(param.to_string()),
-            };
-        }
-    }
-    Ok(query)
-}
-
-/// Create an application-defined function (<https://sqlite.org/appfunc.html>) called 'regexp' and
-/// add it to the sqlite session using the given rusqlite connection.
-#[cfg(feature = "rusqlite")]
-fn add_rusqlite_regexp_function(db: &RusqliteConnection) -> RusqliteResult<()> {
-    tracing::trace!("add_rusqlite_regexp_function({db:?})");
-    // This function has been adapted from:
-    // https://docs.rs/rusqlite/0.32.1/rusqlite/functions/index.html
-    db.create_scalar_function(
-        "regexp",
-        2,
-        RusqliteFunctionFlags::SQLITE_UTF8 | RusqliteFunctionFlags::SQLITE_DETERMINISTIC,
-        move |ctx| {
-            let num_args = ctx.len();
-            if num_args != 2 {
-                return Err(RusqliteError::UserFunctionError(
-                    format!("Expected 2 arguments but got {num_args}").into(),
-                ));
-            }
-            let regexp: Arc<Regex> = ctx.get_or_create_aux(0, |vr| -> Result<_, BoxError> {
-                Ok(Regex::new(vr.as_str()?)?)
-            })?;
-            let text = ctx.get_raw(1);
-            match text {
-                // If the text to match is NULL then the condition is vacuously true:
-                RusqliteValueRef::Null => Ok(true),
-                _ => {
-                    let text = text
-                        .as_str()
-                        .map_err(|e| RusqliteError::UserFunctionError(e.into()))?;
-                    Ok(regexp.is_match(text))
-                }
-            }
-        },
-    )
 }
 
 /////////////////
@@ -543,21 +363,21 @@ pub fn generate_table_ddl(
 
     if force {
         match db_kind {
-            DbKind::Postgres => {
+            DbKind::PostgreSQL => {
                 ddl.push(format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, table.name))
             }
-            DbKind::Sqlite => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}""#, table.name)),
+            DbKind::SQLite => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}""#, table.name)),
         }
     }
 
     let mut sql = format!(r#"CREATE TABLE "{}" ( "#, table.name);
     if table.has_meta {
         sql.push_str(match db_kind {
-            DbKind::Sqlite => {
+            DbKind::SQLite => {
                 "_id INTEGER PRIMARY KEY AUTOINCREMENT, \
                  _order INTEGER UNIQUE, "
             }
-            DbKind::Postgres => {
+            DbKind::PostgreSQL => {
                 "_id SERIAL PRIMARY KEY, \
                  _order BIGINT UNIQUE, "
             }
@@ -587,7 +407,7 @@ pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &
            WHERE _id = NEW._id;"#
     );
     match db_kind {
-        DbKind::Sqlite => {
+        DbKind::SQLite => {
             ddl.push(format!(
                 r#"CREATE TRIGGER "{table}_order"
                    AFTER INSERT ON "{table}"
@@ -597,7 +417,7 @@ pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &
                      END"#
             ));
         }
-        DbKind::Postgres => {
+        DbKind::PostgreSQL => {
             // This is required, because in PostgreSQL, assigning SERIAL PRIMARY KEY to a column is
             // equivalent to:
             //   CREATE SEQUENCE table_name_id_seq;
@@ -640,7 +460,7 @@ pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &
 /// Add a trigger to update the query cache for the given table.
 pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
     match db_kind {
-        DbKind::Sqlite => {
+        DbKind::SQLite => {
             ddl.push(format!(
                 r#"CREATE TRIGGER "{table}_cache_after_insert"
                    AFTER INSERT ON "{table}"
@@ -663,7 +483,7 @@ pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbK
                    END"#
             ));
         }
-        DbKind::Postgres => {
+        DbKind::PostgreSQL => {
             // Note that the '?' is *not* being used as a parameter placeholder here
             // but a JSONB operator.
             ddl.push(format!(
@@ -708,7 +528,7 @@ pub(crate) fn generate_default_view_ddl(
     let view_name = format!("{table_name}_default_view");
     // Note that '?' parameters are not allowed in views so we must hard code them:
     match kind {
-        DbKind::Sqlite => vec![
+        DbKind::SQLite => vec![
             format!(r#"DROP VIEW IF EXISTS "{}""#, view_name),
             format!(
                 r#"CREATE VIEW "{view}" AS
@@ -760,7 +580,7 @@ pub(crate) fn generate_default_view_ddl(
                     .join(", "),
             ),
         ],
-        DbKind::Postgres => vec![format!(
+        DbKind::PostgreSQL => vec![format!(
             r#"CREATE OR REPLACE VIEW "{view}" AS
                  SELECT
                    "{id_col}" AS _id,
@@ -975,7 +795,7 @@ pub(crate) fn generate_text_view_ddl(
             let column_cast = {
                 let (flag_opt, width_opt, precision_opt, format_type) =
                     split_sprintf_format(&format);
-                if *kind == DbKind::Sqlite {
+                if *kind == DbKind::SQLite {
                     let dt_format = format!(
                         "%{flag_opt}{width_opt}{precision_opt}{format_type}",
                         precision_opt = match precision_opt.as_str() {
@@ -1063,13 +883,13 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_table_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
     if force {
-        if let DbKind::Postgres = db_kind {
+        if let DbKind::PostgreSQL = db_kind {
             ddl.push(format!(r#"DROP TABLE IF EXISTS "table" CASCADE"#));
         }
     }
     let pkey_clause = match db_kind {
-        DbKind::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        DbKind::Postgres => "SERIAL PRIMARY KEY",
+        DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
     };
 
     ddl.push(format!(
@@ -1091,14 +911,14 @@ pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_cache_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
     if force {
-        if let DbKind::Postgres = db_kind {
+        if let DbKind::PostgreSQL = db_kind {
             ddl.push(format!(r#"DROP TABLE IF EXISTS "cache" CASCADE"#));
         }
     }
 
     let json_type = match db_kind {
-        DbKind::Postgres => "JSONB",
-        DbKind::Sqlite => "JSON",
+        DbKind::PostgreSQL => "JSONB",
+        DbKind::SQLite => "JSON",
     };
 
     ddl.push(format!(
@@ -1121,7 +941,7 @@ pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_user_table_ddl({force}, {db_kind:?})");
     let mut ddl = vec![];
     if force {
-        if let DbKind::Postgres = db_kind {
+        if let DbKind::PostgreSQL = db_kind {
             ddl.push(format!(r#"DROP TABLE IF EXISTS "user" CASCADE"#));
         }
     }
@@ -1141,7 +961,7 @@ pub fn generate_user_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_change_table_ddl({force}, {db_kind:?})");
     match db_kind {
-        DbKind::Sqlite => {
+        DbKind::SQLite => {
             vec![r#"CREATE TABLE "change" (
                       change_id INTEGER PRIMARY KEY AUTOINCREMENT,
                       "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1154,10 +974,10 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
                     )"#
             .to_string()]
         }
-        DbKind::Postgres => {
+        DbKind::PostgreSQL => {
             let mut ddl = vec![];
             if force {
-                if let DbKind::Postgres = db_kind {
+                if let DbKind::PostgreSQL = db_kind {
                     ddl.push(format!(r#"DROP TABLE IF EXISTS "change" CASCADE"#));
                 }
             }
@@ -1182,7 +1002,7 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
 pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_history_table_ddl({force}, {db_kind:?})");
     match db_kind {
-        DbKind::Sqlite => {
+        DbKind::SQLite => {
             vec![r#"CREATE TABLE "history" (
                       history_id INTEGER PRIMARY KEY AUTOINCREMENT,
                       change_id INTEGER NOT NULL,
@@ -1195,10 +1015,10 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
                     )"#
             .to_string()]
         }
-        DbKind::Postgres => {
+        DbKind::PostgreSQL => {
             let mut ddl = vec![];
             if force {
-                if let DbKind::Postgres = db_kind {
+                if let DbKind::PostgreSQL = db_kind {
                     ddl.push(format!(r#"DROP TABLE IF EXISTS "history" CASCADE"#));
                 }
             }
@@ -1223,7 +1043,7 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
 pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_message_table_ddl({force}, {db_kind:?})");
     match db_kind {
-        DbKind::Sqlite => {
+        DbKind::SQLite => {
             vec![r#"CREATE TABLE "message" (
                       "message_id" INTEGER PRIMARY KEY AUTOINCREMENT,
                       "added_by" TEXT,
@@ -1238,10 +1058,10 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
                     )"#
             .to_string()]
         }
-        DbKind::Postgres => {
+        DbKind::PostgreSQL => {
             let mut ddl = vec![];
             if force {
-                if let DbKind::Postgres = db_kind {
+                if let DbKind::PostgreSQL = db_kind {
                     ddl.push(format!(r#"DROP TABLE IF EXISTS "message" CASCADE"#));
                 }
             }
@@ -1485,110 +1305,6 @@ impl JsonRow {
             );
         }
         result
-    }
-
-    /// Initialize a [JsonRow] from the given [RusqliteRow]
-    #[cfg(feature = "rusqlite")]
-    pub fn from_rusqlite(column_names: &Vec<&str>, row: &RusqliteRow) -> Self {
-        tracing::trace!("JsonRow::from_rusqlite({column_names:?}, {row:?})");
-        let mut content = JsonMap::new();
-        for column_name in column_names {
-            let value = match row.get_ref(*column_name) {
-                Ok(value) => match value {
-                    RusqliteValueRef::Null => JsonValue::Null,
-                    RusqliteValueRef::Integer(value) => JsonValue::from(value),
-                    RusqliteValueRef::Real(value) => JsonValue::from(value),
-                    RusqliteValueRef::Text(value) | RusqliteValueRef::Blob(value) => {
-                        let value = std::str::from_utf8(value).unwrap_or_default();
-                        JsonValue::from(value)
-                    }
-                },
-                Err(_) => JsonValue::Null,
-            };
-            content.insert(column_name.to_string(), value);
-        }
-        Self { content }
-    }
-}
-
-#[cfg(feature = "sqlx")]
-impl TryFrom<PgRow> for JsonRow {
-    type Error = anyhow::Error;
-
-    fn try_from(row: PgRow) -> Result<Self> {
-        tracing::trace!("JsonRow::try_from::<PgRow>(row)");
-        let mut content = JsonMap::new();
-        for column in row.columns() {
-            let column_type = column.type_info().name();
-            let value = match column_type {
-                "INT4" => {
-                    let value: Result<i32, sqlx::Error> = row.try_get(column.ordinal());
-                    match value {
-                        Ok(value) => JsonValue::from(value),
-                        Err(_) => JsonValue::Null,
-                    }
-                }
-                "INT8" => {
-                    let value: Result<i64, sqlx::Error> = row.try_get(column.ordinal());
-                    match value {
-                        Ok(value) => JsonValue::from(value),
-                        Err(_) => JsonValue::Null,
-                    }
-                }
-                "FLOAT4" => {
-                    let value: Result<f32, sqlx::Error> = row.try_get(column.ordinal());
-                    match value {
-                        Ok(value) => JsonValue::from(value),
-                        Err(_) => JsonValue::Null,
-                    }
-                }
-                "FLOAT8" => {
-                    let value: Result<f64, sqlx::Error> = row.try_get(column.ordinal());
-                    match value {
-                        Ok(value) => JsonValue::from(value),
-                        Err(_) => JsonValue::Null,
-                    }
-                }
-                "NUMERIC" => {
-                    let value: Result<BigDecimal, sqlx::Error> = row.try_get(column.ordinal());
-                    match value {
-                        Ok(value) => {
-                            let value = value.to_f64();
-                            JsonValue::from(value)
-                        }
-                        Err(_) => JsonValue::Null,
-                    }
-                }
-                "TEXT" => {
-                    let value: Result<String, sqlx::Error> = row.try_get(column.ordinal());
-                    match value {
-                        Ok(value) => JsonValue::from(value),
-                        Err(_) => JsonValue::Null,
-                    }
-                }
-                "BOOL" => {
-                    let value: Result<bool, sqlx::Error> = row.try_get(column.ordinal());
-                    match value {
-                        Ok(value) => JsonValue::from(value),
-                        Err(_) => JsonValue::Null,
-                    }
-                }
-                unsupported => {
-                    tracing::warn!(
-                        "Got unsupported column '{}' with type '{}'",
-                        column.name(),
-                        unsupported
-                    );
-                    let value: Result<String, sqlx::Error> = row.try_get(column.ordinal());
-                    match value {
-                        Ok(value) => JsonValue::from(value),
-                        Err(_) => JsonValue::Null,
-                    }
-                }
-            };
-            content.insert(column.name().into(), value);
-        }
-        Ok(Self { content })
     }
 }
 
