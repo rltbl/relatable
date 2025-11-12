@@ -7,7 +7,7 @@ use crate as rltbl;
 use rltbl::{
     column::Column,
     core::Relatable,
-    sql::{self, JsonRow},
+    sql::{self},
 };
 use rltbl_db::core::{DbKind, DbQuery};
 
@@ -210,16 +210,6 @@ impl Table {
         self.view = view_name;
 
         Ok(())
-    }
-
-    /// Return a [JsonRow] representing the given row of the given table, using the
-    /// given transaction.
-    pub async fn get_row(table: &str, row: u64, rltbl: &Relatable) -> Result<Option<JsonRow>> {
-        let sql = format!(r#"SELECT * FROM "{table}" WHERE "_id" = $1"#);
-        match rltbl.pool.query_row(&sql, [row as i32]).await {
-            Ok(row) => Ok(Some(JsonRow { content: row })),
-            Err(_) => Ok(None),
-        }
     }
 
     /// Returns the row id that comes before the given row in the given table, using the given

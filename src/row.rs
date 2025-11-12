@@ -2,13 +2,14 @@
 //!
 //! This is [relatable](crate) (rltbl::[row](crate::row)).
 
-use crate::{
+use crate as rltbl;
+use rltbl::{
     column::Column,
     core::{Relatable, RelatableError},
     datatype::Datatypes,
     schema::Schema,
-    sql::{self, JsonRow},
 };
+use rltbl_db::core::JsonRow;
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 /// Represents a row from some table
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Row {
     pub id: u64,
     pub order: u64,
@@ -25,25 +26,6 @@ pub struct Row {
 }
 
 impl Row {
-    /// Prepares a new [Row] for insertion to the given [Table], with its [id](Row::id) and
-    /// [order](Row::order) fields pre-assigned with their correct next values for this table
-    pub fn prepare_new(schema: &Schema, table_name: &str, json_row: Option<&JRow>) -> Result<Self> {
-        let json_row = match json_row {
-            None => {
-                let column_names = schema
-                    .columns(table_name)
-                    .keys()
-                    .map(|key| key.as_str())
-                    .collect::<Vec<&str>>();
-                JsonRow::from_strings(&column_names)
-            }
-            Some(json_row) => JsonRow {
-                content: json_row.clone(),
-            },
-        };
-        Ok(Row::from(json_row))
-    }
-
     /// Convert the [text](Cell::text) values of all of the row's [cells](Row::cells) to
     /// strings and return them to the caller as a vector
     pub fn to_strings(&self) -> Vec<String> {
@@ -96,14 +78,6 @@ impl From<Row> for Vec<String> {
 
 impl From<JsonRow> for Row {
     fn from(row: JsonRow) -> Self {
-        row.content.into()
-    }
-}
-
-pub type JRow = serde_json::Map<String, serde_json::Value>;
-
-impl From<JRow> for Row {
-    fn from(row: JRow) -> Self {
         let id = row.get("_id").and_then(|i| i.as_u64()).unwrap_or_default() as u64;
         let order = row
             .get("_order")
@@ -148,7 +122,7 @@ impl From<JRow> for Row {
                     if let Some(cell) = cells.get(column) {
                         let mut new_cell = cell.clone();
                         new_cell.value = message.value.clone();
-                        new_cell.text = sql::json_to_string(&new_cell.value);
+                        new_cell.text = rltbl_db::core::json_value_to_string(&new_cell.value);
                         new_cell.messages.push(message);
                         cells.insert(column.to_string(), new_cell);
                     }
@@ -297,12 +271,10 @@ mod tests {
     #[test]
     fn test_json_to_row() {
         let json_blob = json!({
-            "content": {
-                "_id": 1,
-                "_order": 1000,
-                "_change_id": 0,
-                "foo": "FOO",
-            }
+            "_id": 1,
+            "_order": 1000,
+            "_change_id": 0,
+            "foo": "FOO",
         });
         let json_row: JsonRow = serde_json::from_value(json_blob).unwrap();
         let row: Row = json_row.into();
@@ -329,19 +301,17 @@ mod tests {
     #[test]
     fn test_json_to_row_messages() {
         let json_blob = json!({
-            "content": {
-                "_id": 1,
-                "_order": 1000,
-                "_change_id": 0,
-                "_message": [{
-                    "column": "foo",
-                    "value": "FOO",
-                    "level": "error",
-                    "rule": "test rule",
-                    "message": "Test message 'FOO'"
-                }],
-                "foo": "FOO",
-            }
+            "_id": 1,
+            "_order": 1000,
+            "_change_id": 0,
+            "_message": [{
+                "column": "foo",
+                "value": "FOO",
+                "level": "error",
+                "rule": "test rule",
+                "message": "Test message 'FOO'"
+            }],
+            "foo": "FOO",
         });
         let json_row: JsonRow = serde_json::from_value(json_blob).unwrap();
         let row: Row = json_row.into();

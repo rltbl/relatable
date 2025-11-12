@@ -546,7 +546,7 @@ pub async fn print_history(cli: &Cli, context: usize) {
             .expect("No content found")
             .as_str()
             .expect("Content not a string");
-        let content = Change::many_from_str(&content).expect("Could not parse content");
+        let content: Vec<Change> = serde_json::from_str(&content).expect("Could not parse content");
         content
             .iter()
             .map(|c| c.to_string())

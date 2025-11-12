@@ -972,7 +972,7 @@ impl Relatable {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                let changes = Change::many_from_str(&content)?;
+                let changes: Vec<Change> = serde_json::from_str(&content)?;
                 Ok(Some((
                     change_id,
                     ChangeSet {
@@ -1053,9 +1053,10 @@ impl Relatable {
                     // If the row has just been newly added, it will be found in the table,
                     // otherwise we will use the old_change_id to look for it in the history
                     // table:
-                    let json_row = match Table::get_row(&table, *row, &self).await? {
-                        Some(json_row) => json_row,
-                        None => match old_change_id {
+                    let sql = format!(r#"SELECT * FROM {table} WHERE _id = $1"#);
+                    let json_row = match self.pool.query_row(&sql, [*row as i32]).await {
+                        Ok(json_row) => json_row,
+                        Err(_) => match old_change_id {
                             Some(change_id) => {
                                 let sql = format!(
                                     r#"SELECT "before"
@@ -1074,7 +1075,7 @@ impl Relatable {
                                         .into());
                                     }
                                 };
-                                sql::JsonRow { content: before }
+                                before
                             }
                             None => {
                                 return Err(RelatableError::DataError(format!(
@@ -1091,7 +1092,7 @@ impl Relatable {
                            RETURNING "history_id""#,
                         sql_params = SqlParam::new(&self.pool.kind()).get_as_list(4)
                     );
-                    let json_row_str = json!(json_row.content).to_string();
+                    let json_row_str = json!(json_row).to_string();
                     let params = params![change_id as i32, &table, *row as i64, json_row_str];
                     self.pool.execute(&sql, params).await?;
                 }
@@ -1111,16 +1112,8 @@ impl Relatable {
                     self.pool.execute(&sql, params).await?;
                 }
                 Change::Delete { row, after: _ } => {
-                    let json_row = match Table::get_row(&table, *row, self).await? {
-                        Some(json_row) => json_row,
-                        None => {
-                            // It must be there since we supposedly just added it, so if it is
-                            // not found return an error.
-                            return Err(
-                                RelatableError::DataError(format!("Row {row} not found")).into()
-                            );
-                        }
-                    };
+                    let sql = format!(r#"SELECT * FROM {table} WHERE _id = $1"#);
+                    let json_row = self.pool.query_row(&sql, [*row as i32]).await?;
                     let sql = format!(
                         r#"INSERT INTO "history"
                            ("change_id", "table", "row", "before")
@@ -1128,7 +1121,7 @@ impl Relatable {
                            RETURNING "history_id""#,
                         sql_params = SqlParam::new(&self.pool.kind()).get_as_list(4)
                     );
-                    let json_row_str = json!(json_row.content).to_string();
+                    let json_row_str = json!(json_row).to_string();
                     let params = params![change_id as i32, &table, *row as i64, json_row_str];
                     self.pool.query_value(&sql, params).await?;
                 }
@@ -1289,7 +1282,7 @@ impl Relatable {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                let changes = Change::many_from_str(content)?;
+                let changes: Vec<Change> = serde_json::from_str(&content)?;
                 Ok(Some((
                     change_id,
                     ChangeSet {
@@ -1339,7 +1332,7 @@ impl Relatable {
                     .get("content")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
-                let changes = Change::many_from_str(content)?;
+                let changes: Vec<Change> = serde_json::from_str(&content)?;
                 Ok(Some((
                     change_id,
                     ChangeSet {
@@ -1867,8 +1860,8 @@ impl Relatable {
 
                     // Depending on whether this is an undo/redo or an original action, the
                     // new value will be taken from either `before` or `after`.
-                    let before = sql::JsonRow::nullify_value(schema, &table.name, column, before);
-                    let after = sql::JsonRow::nullify_value(schema, &table.name, column, after);
+                    let before = schema.nullify_value(&table.name, column, before);
+                    let after = schema.nullify_value(&table.name, column, after);
                     let mut cell = match &changeset.action {
                         ChangeAction::Undo | ChangeAction::Redo => Cell {
                             value: before.clone(),
@@ -2048,43 +2041,12 @@ impl Relatable {
             );
         }
 
-        fn nullify(schema: &Schema, table_name: &str, row: &JsonRow) -> JsonRow {
-            let mut nullified_row = JsonRow::new();
-            let default_col = Column::default();
-            for (column_name, value) in row.iter() {
-                match schema
-                    .column(table_name, column_name)
-                    .unwrap_or(&default_col)
-                    .nulltype
-                    .as_str()
-                {
-                    "" => {
-                        nullified_row.insert(column_name.to_string(), value.clone());
-                    }
-                    "empty" => match value {
-                        JsonValue::String(s) if s == "" => {
-                            nullified_row.insert(column_name.to_string(), JsonValue::Null);
-                        }
-                        value => {
-                            nullified_row.insert(column_name.to_string(), value.clone());
-                        }
-                    },
-                    nulltype => {
-                        tracing::warn!("Unsupported nulltype: '{nulltype}'");
-                        nullified_row.insert(column_name.to_string(), value.clone());
-                    }
-                };
-            }
-            tracing::debug!("Nullified row: {row:?} to: {nullified_row:?}");
-            nullified_row
-        }
-
         // Nullify the JSON row by setting any column values whose content matches the column's
         // nulltype to Null:
-        let mut row = nullify(schema, table_name, row);
+        let mut row = schema.nullify_row(table_name, row);
 
         // Prepare a new row to be inserted using the JSON row as a base:
-        let mut new_row = Row::prepare_new(schema, table_name, Some(&row))?;
+        let mut new_row = Row::from(row.clone());
 
         // A new_row_id will have been passed if the row is being added as part of an undo/redo.
         // In that case an after_id must have been passed as well but we leave the row order as
@@ -2930,101 +2892,6 @@ pub enum Change {
         /// being deleted.
         after: u64,
     },
-}
-
-impl Change {
-    /// Converts a JSON string representing an array of changes to an array of [Change] structs.
-    pub fn many_from_str(content: &str) -> Result<Vec<Self>> {
-        tracing::trace!("Change::many_from_str({content:?})");
-        let json_content = match serde_json::from_str::<JsonValue>(content) {
-            Err(err) => return Err(err.into()),
-            Ok(JsonValue::Array(v)) => v,
-            Ok(_) => {
-                return Err(RelatableError::InputError(
-                    "The content parameter is not an array".to_string(),
-                )
-                .into());
-            }
-        };
-
-        let mut changes = vec![];
-        for change_json in json_content.iter() {
-            let change_json = match change_json.as_object() {
-                Some(change_object) => sql::JsonRow {
-                    content: change_object.clone(),
-                },
-                None => {
-                    return Err(RelatableError::InputError(format!(
-                        "Not an object: {change_json}"
-                    ))
-                    .into());
-                }
-            };
-
-            let change_type = change_json.get_string("type")?;
-            let row = change_json.get_unsigned("row")?;
-            match change_type.as_str() {
-                "Update" => changes.push(Change::Update {
-                    row: row,
-                    column: change_json.get_string("column")?,
-                    before: change_json.get_value("before")?,
-                    after: change_json.get_value("after")?,
-                }),
-                "Add" => changes.push(Change::Add {
-                    row: row,
-                    after: change_json.get_unsigned("after")?,
-                }),
-                "Delete" => changes.push(Change::Delete {
-                    row: row,
-                    after: change_json.get_unsigned("after")?,
-                }),
-                "Move" => changes.push(Change::Move {
-                    row: row,
-                    from_after: change_json.get_unsigned("from_after")?,
-                    to_after: change_json.get_unsigned("to_after")?,
-                }),
-                _ => {
-                    return Err(RelatableError::InputError(format!(
-                        "Unrecognized change type for change: {change_json}"
-                    ))
-                    .into());
-                }
-            };
-        }
-        Ok(changes)
-    }
-
-    /// Convers a [JsonRow] to a [Change]
-    pub fn from_json_row(json_row: &sql::JsonRow) -> Result<Self> {
-        tracing::trace!("Change::from_json_row({json_row:?})");
-        match json_row.get_string("type")?.as_str() {
-            "Update" => Ok(Change::Update {
-                row: json_row.get_unsigned("row")?,
-                column: json_row.get_string("column")?,
-                before: json_row.get_value("before")?,
-                after: json_row.get_value("after")?,
-            }),
-            "Add" => Ok(Change::Add {
-                row: json_row.get_unsigned("row")?,
-                after: json_row.get_unsigned("after")?,
-            }),
-            "Move" => Ok(Change::Move {
-                row: json_row.get_unsigned("row")?,
-                from_after: json_row.get_unsigned("from_after")?,
-                to_after: json_row.get_unsigned("to_after")?,
-            }),
-            "Delete" => Ok(Change::Delete {
-                row: json_row.get_unsigned("row")?,
-                after: json_row.get_unsigned("after")?,
-            }),
-            _ => {
-                return Err(RelatableError::InputError(format!(
-                    "Unrecognized action type for change {json_row}"
-                ))
-                .into());
-            }
-        }
-    }
 }
 
 /// Describes a history of changes that have been done and undone.

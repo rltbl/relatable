@@ -16,7 +16,9 @@ use rltbl::{
 use anyhow::Result;
 use indexmap::IndexMap;
 use itertools::Itertools;
+use rltbl_db::core::JsonRow;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Schema {
@@ -49,6 +51,45 @@ impl Schema {
             .filter(|col| &col.table == table_name)
             .map(|col| (&col.column, col))
             .collect()
+    }
+
+    /// Use the columns configuration for the given table to lookup the
+    /// nulltype of the given column, and then if the given value matches the
+    /// column's nulltype, set it to [Null](JsonValue::Null)
+    pub fn nullify_value(
+        &self,
+        table_name: &str,
+        column_name: &str,
+        value: &JsonValue,
+    ) -> JsonValue {
+        match self
+            .column(table_name, column_name)
+            .and_then(|c| Some(c.nulltype.to_owned()))
+            .unwrap_or_default()
+            .as_str()
+        {
+            "" => value.clone(),
+            "empty" => match value {
+                JsonValue::String(s) if s == "" => JsonValue::Null,
+                value => value.clone(),
+            },
+            nulltype => {
+                tracing::warn!("Unsupported nulltype: '{nulltype}'");
+                value.clone()
+            }
+        }
+    }
+
+    pub fn nullify_row(&self, table_name: &str, row: &JsonRow) -> JsonRow {
+        let mut nullified_row = JsonRow::new();
+        for (column_name, value) in row.iter() {
+            nullified_row.insert(
+                column_name.to_owned(),
+                self.nullify_value(table_name, column_name, value),
+            );
+        }
+        tracing::debug!("Nullified row: {row:?} to: {nullified_row:?}");
+        nullified_row
     }
 
     /// Given the full set of tables,

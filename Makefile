@@ -234,6 +234,7 @@ test_rusqlite: src/resources/main.js src/resources/main.css test_fmt_and_unittes
 test_tokio_postgres: src/resources/main.js src/resources/main.css test_round_trip_tokio_postgres test_tesh_tokio_postgres_common_as_postgres test_tesh_tokio_postgres_only test_random_tokio_postgres test_perf_tokio_postgres test_caching_postgres
 
 # test: test_rusqlite
-test: test_fmt_and_unittest test_tesh_doc test_tesh_doc_postgres
+# test: test_fmt_and_unittest test_tesh_doc test_tesh_doc_postgres
+test: test_rusqlite test_tokio_postgres
 
 test_all: test_rusqlite test_tokio_postgres

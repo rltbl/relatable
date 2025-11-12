@@ -13,7 +13,6 @@ use rltbl::{
     column::Column,
     core::{RelatableError, NEW_ORDER_MULTIPLIER},
     datatype::Datatypes,
-    schema::Schema,
     table::Table,
 };
 use rltbl_db::core::DbKind;
@@ -22,11 +21,9 @@ use rltbl_db::core::DbKind;
 // External imports
 //////////////////////////////////////////
 use anyhow::Result;
-use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_json::Value as JsonValue;
 use std::{fmt::Display, str::FromStr};
 
 //////////////////////////////////////////
@@ -50,7 +47,10 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 
 /// The [maximum number of parameters](https://www.postgresql.org/docs/current/limits.html)
 /// that can be bound to a Postgres query
-pub static MAX_PARAMS_POSTGRES: usize = 65535;
+// pub static MAX_PARAMS_POSTGRES: usize = 65535;
+// WARN: tokio-postgres seems to have a much lower limit than Postgres itself,
+// but this is already big enough.
+pub static MAX_PARAMS_POSTGRES: usize = 32766;
 
 /// Default size for the in-memory cache
 pub static DEFAULT_MEMORY_CACHE_SIZE: usize = 1000;
@@ -1154,175 +1154,6 @@ where
 {
     fn vec_into(self) -> Vec<D> {
         self.into_iter().map(std::convert::Into::into).collect()
-    }
-}
-
-/// A JSON representation of a database row
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct JsonRow {
-    pub content: JsonMap<String, JsonValue>,
-}
-
-impl JsonRow {
-    /// Initialize an empty [JsonRow]
-    pub fn new() -> Self {
-        Self {
-            content: JsonMap::new(),
-        }
-    }
-
-    /// Set any column values whose content matches that column's nulltype to [JsonValue::Null]
-    pub fn nullify(schema: &Schema, table_name: &str, row: &Self) -> Self {
-        let mut nullified_row = JsonRow::new();
-        let default_col = Column::default();
-        for (column_name, value) in row.content.iter() {
-            match schema
-                .column(table_name, column_name)
-                .unwrap_or(&default_col)
-                .nulltype
-                .as_str()
-            {
-                "" => {
-                    nullified_row
-                        .content
-                        .insert(column_name.to_string(), value.clone());
-                }
-                "empty" => match value {
-                    JsonValue::String(s) if s == "" => {
-                        nullified_row
-                            .content
-                            .insert(column_name.to_string(), JsonValue::Null);
-                    }
-                    value => {
-                        nullified_row
-                            .content
-                            .insert(column_name.to_string(), value.clone());
-                    }
-                },
-                nulltype => {
-                    tracing::warn!("Unsupported nulltype: '{nulltype}'");
-                    nullified_row
-                        .content
-                        .insert(column_name.to_string(), value.clone());
-                }
-            };
-        }
-        tracing::debug!("Nullified row: {row:?} to: {nullified_row:?}");
-        nullified_row
-    }
-
-    /// Use the [columns configuration](Table::columns) for the given table to lookup the
-    /// [nulltype](Column::nulltype) of the given column, and then if the given value matches the
-    /// column's nulltype, set it to [Null](JsonValue::Null)
-    pub fn nullify_value(
-        schema: &Schema,
-        table_name: &str,
-        column_name: &str,
-        value: &JsonValue,
-    ) -> JsonValue {
-        let default_col = Column::default();
-        match schema
-            .column(table_name, column_name)
-            .unwrap_or(&default_col)
-            .nulltype
-            .as_str()
-        {
-            "" => value.clone(),
-            "empty" => match value {
-                JsonValue::String(s) if s == "" => JsonValue::Null,
-                _ => value.clone(),
-            },
-            nulltype => {
-                tracing::warn!("Unsupported nulltype: '{nulltype}'");
-                value.clone()
-            }
-        }
-    }
-
-    /// Get the value of the given column from the row
-    pub fn get_value(&self, column_name: &str) -> Result<JsonValue> {
-        tracing::trace!("JsonRow::get_value({self:?}, {column_name})");
-        let value = self.content.get(column_name);
-        match value {
-            Some(value) => Ok(value.clone()),
-            None => Err(RelatableError::DataError("missing value".to_string()).into()),
-        }
-    }
-
-    /// Get the value of the given column fromt he row and convert it to a string before returning
-    /// it
-    pub fn get_string(&self, column_name: &str) -> Result<String> {
-        tracing::trace!("JsonRow::get_string({self:?}, {column_name})");
-        let value = self.content.get(column_name);
-        match value {
-            Some(value) => Ok(json_to_string(&value)),
-            None => Err(RelatableError::DataError("missing value".to_string()).into()),
-        }
-    }
-
-    /// Get the value of the given column from the row and convert it to an unsigned integer
-    /// before returning it
-    pub fn get_unsigned(&self, column_name: &str) -> Result<u64> {
-        tracing::trace!("JsonRow::get_unsigned({self:?}, {column_name})");
-        let value = self.content.get(column_name);
-        match value {
-            Some(value) => json_to_unsigned(&value),
-            None => Err(RelatableError::DataError("missing value".to_string()).into()),
-        }
-    }
-
-    /// Initialize a new row from the given list of column names and set all values to
-    /// [JsonValue::Null]
-    pub fn from_strings(strings: &Vec<&str>) -> Self {
-        tracing::trace!("JsonRow::from_strings({strings:?})");
-        let mut json_row = JsonRow::new();
-        for string in strings {
-            json_row.content.insert(string.to_string(), JsonValue::Null);
-        }
-        json_row
-    }
-
-    /// Return all of the values in this row to a vector of strings and return it
-    pub fn to_strings(&self) -> Vec<String> {
-        tracing::trace!("JsonRow::to_strings({self:?})");
-        let mut result = vec![];
-        for column_name in self.content.keys() {
-            // The logic of this implies that this should not fail, so an expect() is
-            // appropriate here.
-            result.push(self.get_string(column_name).expect("Column not found"));
-        }
-        result
-    }
-
-    /// Generate a map from the column names of the row to their values and return it
-    pub fn to_string_map(&self) -> IndexMap<String, String> {
-        tracing::trace!("JsonRow::to_string_map({self:?})");
-        let mut result = IndexMap::new();
-        for column_name in self.content.keys() {
-            result.insert(
-                column_name.clone(),
-                self.get_string(column_name).expect("Column not found"),
-            );
-        }
-        result
-    }
-}
-
-impl std::fmt::Display for JsonRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.to_strings().join("\t"))
-    }
-}
-
-impl std::fmt::Debug for JsonRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.to_string_map())
-    }
-}
-
-impl From<JsonRow> for Vec<String> {
-    fn from(row: JsonRow) -> Self {
-        row.to_strings()
     }
 }
 
