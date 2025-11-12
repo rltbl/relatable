@@ -229,7 +229,7 @@ impl Table {
             r#"SELECT "_id" FROM "{table}" WHERE "_order" < (SELECT _order FROM "{table}" WHERE _id = $1)
                ORDER BY "_order" DESC LIMIT 1"#,
         );
-        match rltbl.pool.query_u64(&sql, [row]).await {
+        match rltbl.pool.query_u64(&sql, [row as i32]).await {
             Ok(id) => Ok(id),
             Err(_) => Ok(0),
         }

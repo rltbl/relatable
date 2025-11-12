@@ -2120,7 +2120,7 @@ impl Relatable {
         // TODO: this is a hack to make sure sql_type error messages point to the right place
         let sql = r#"UPDATE message SET row = $1 WHERE "table" = $2 AND row = 0"#;
         self.pool
-            .execute(sql, params![new_row_id as i32, table_name])
+            .execute(sql, params![new_row_id as i64, table_name])
             .await?;
 
         // Optionally do full validation on the row after it has been inserted:

@@ -33,13 +33,18 @@ NOTICE:  drop cascades to 2 other objects
 DETAIL:  drop cascades to view penguin_default_view
 drop cascades to view penguin_text_view
 DROP TABLE
-$ rltbl init --force
-Initialized a relatable database in 'postgresql:///rltbl_db'
+$ echo "truncate table change cascade" | psql rltbl_db
+NOTICE:  truncate cascades to table "history"
+TRUNCATE TABLE
+$ echo "truncate table message cascade" | psql rltbl_db
+TRUNCATE TABLE
+$ echo "delete from \"table\" where \"table\" = 'penguin'" | psql rltbl_db
+DELETE 1
 $ rltbl load table penguin.tsv
 $ echo "select * from penguin where species is null and island = '' order by _order" | psql rltbl_db
  _id | _order | study_name | sample_number | species | island | individual_id | bill_length | bill_depth | body_mass
 -----+--------+------------+---------------+---------+--------+---------------+-------------+------------+-----------
-  10 |  10000 | FAKE123    |            10 |         |        | N5A2          |        31.5 |         30 |      4521
+  10 |  10000 | FAKE123    |            10 |         |        | N5A2          |        31.5 |       30.0 |      4521
   11 |  11000 |            |            20 |         |        |               |             |            |
 (2 rows)
 
