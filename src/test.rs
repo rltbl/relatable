@@ -5,7 +5,7 @@ use rltbl::{
     select::Select,
     sql::CachingStrategy,
 };
-use rltbl_db::core::{DbQuery, JsonRow};
+use rltbl_db::core::DbQuery;
 
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
@@ -356,7 +356,12 @@ async fn main() {
                         "add" => {
                             let after_id = random_between(1, *table_size, &mut -1) as u64;
                             let row = rltbl
-                                .add_row(table, &user, Some(after_id), &JsonRow::new())
+                                .add_row(
+                                    table,
+                                    &user,
+                                    Some(after_id),
+                                    &json!({"study_name": "FAKE123"}).as_object().unwrap(),
+                                )
                                 .await
                                 .unwrap();
                             tracing::info!("Added row {} (order {}) to {table}", row.id, row.order);

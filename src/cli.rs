@@ -664,7 +664,7 @@ pub async fn set_value(
     let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#,);
     let before = rltbl
         .pool
-        .query_value(&sql, [row])
+        .query_value(&sql, [row as i32])
         .await
         .expect("Error getting value");
     let after = serde_json::from_str::<JsonValue>(value).unwrap_or(json!(value));

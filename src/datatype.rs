@@ -22,6 +22,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::ops::{Deref, DerefMut};
 
+pub static COLUMNS: [&str; 6] = [
+    "datatype",
+    "description",
+    "parent",
+    "condition",
+    "sql_type",
+    "format",
+];
+
 /// Represents a column's datatype
 #[derive(Builder, Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Ord, Eq)]
 #[builder(default, setter(into))]
@@ -116,7 +125,7 @@ impl Datatype {
                             r#" AND "_id" IN({sql_params})"#,
                             sql_params = sql_param_gen.get_as_list(rows.len()),
                         ));
-                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
+                        params.extend(rows.iter().map(|row| ParamValue::from(**row as i32)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     let rows = rltbl.pool.query_row(&sql, params).await?;
@@ -174,7 +183,7 @@ impl Datatype {
                             r#" AND "_id" IN({sql_params})"#,
                             sql_params = sql_param_gen.get_as_list(rows.len()),
                         ));
-                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
+                        params.extend(rows.iter().map(|row| ParamValue::from(**row as i32)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     let rows = rltbl.pool.query(&sql, params).await?;
@@ -226,7 +235,7 @@ impl Datatype {
                             r#" AND "_id" IN({sql_params})"#,
                             sql_params = sql_param_gen.get_as_list(rows.len()),
                         ));
-                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
+                        params.extend(rows.iter().map(|row| ParamValue::from(**row as i32)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     // TODO: re-enable this!
@@ -424,7 +433,7 @@ impl<'a> DatatypeTable<'a> {
             .map(|dt| json!(dt).as_object().unwrap().clone())
             .collect();
         let refs: Vec<&JsonRow> = rows.iter().collect();
-        self.pool.insert(&self.table_name, &refs).await?;
+        self.pool.insert(&self.table_name, &COLUMNS, &refs).await?;
         Ok(())
     }
 
@@ -438,7 +447,7 @@ impl<'a> DatatypeTable<'a> {
         let refs: Vec<&JsonRow> = rows.iter().collect();
         let rows = self
             .pool
-            .insert_returning(&self.table_name, &refs, &[])
+            .insert_returning(&self.table_name, &COLUMNS, &refs, &[])
             .await?;
         let dts: Vec<Datatype> = rows
             .into_iter()

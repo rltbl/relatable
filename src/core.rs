@@ -218,6 +218,7 @@ impl Relatable {
             rltbl.pool.execute(&sql, ()).await?;
         }
 
+        rltbl.column_table().drop().await?;
         rltbl.column_table().create().await?;
 
         Ok(rltbl)
@@ -243,13 +244,28 @@ impl Relatable {
     /// - all of the columns in the "column" table
     /// - all of the datatypes from the "datatype" table
     pub async fn schema(&self) -> Result<Schema> {
-        // TODO: support Postgres
-        let sql = r#"SELECT
-               main.name,
-               tbl.path
-           FROM sqlite_master AS main
-           LEFT JOIN "table" AS tbl ON main.name = tbl."table"
-           WHERE main.type = 'table';"#;
+        let sql = match self.pool.kind() {
+            DbKind::SQLite => {
+                r#"SELECT
+                       main.name,
+                       tbl.path
+                   FROM sqlite_master AS main
+                   LEFT JOIN "table" AS tbl ON main.name = tbl."table"
+                   WHERE main.type = 'table';"#
+            }
+            DbKind::PostgreSQL => {
+                r#"SELECT
+                       main.table_name AS name,
+                       tbl.path
+                   FROM information_schema.tables AS main
+                   LEFT JOIN "table" AS tbl ON main.table_name = tbl."table"
+                   WHERE main.table_schema IN (
+                       SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
+                       FROM "pg_settings"
+                       WHERE "name" = 'search_path'
+                   );"#
+            }
+        };
         let rows = self.pool.query(&sql, ()).await?;
         let mut tables = rows
             .iter()
@@ -264,13 +280,11 @@ impl Relatable {
             .map(|table: Table| (table.name.clone(), table))
             .collect::<IndexMap<String, Table>>();
 
-        // TODO: support Postgres
-        let sql = "SELECT name FROM sqlite_master WHERE type = 'view'";
-        let rows = self.pool.query(sql, ()).await?;
-        let views: HashSet<String> = rows
-            .iter()
-            .map(|row| row.get("name").unwrap().as_str().unwrap().to_string())
-            .collect();
+        let sql = match self.pool.kind() {
+            DbKind::SQLite => "SELECT name FROM sqlite_master WHERE type = 'view'",
+            DbKind::PostgreSQL => r#"SELECT table_name FROM information_schema.views;"#,
+        };
+        let views = self.pool.query_strings(sql, ()).await?;
         for table in tables.values_mut() {
             let view = format!("{}_default_view", table.name);
             if views.contains(&view) {
@@ -298,14 +312,14 @@ impl Relatable {
 
     /// Check that a table exists in the database.
     pub async fn table_exists(&self, table_name: &str) -> Result<bool> {
+        let sql = match self.pool.kind() {
+            DbKind::SQLite => "SELECT name FROM sqlite_master WHERE name = $1",
+            DbKind::PostgreSQL => {
+                r#"SELECT table_name FROM information_schema.tables WHERE table_name = $1;"#
+            }
+        };
         // TODO: support Postgres
-        let rows = self
-            .pool
-            .query(
-                r#"SELECT name FROM sqlite_master WHERE name = $1"#,
-                [table_name],
-            )
-            .await?;
+        let rows = self.pool.query(sql, [table_name]).await?;
         Ok(rows.len() > 0)
     }
 
@@ -313,8 +327,8 @@ impl Relatable {
     pub async fn drop_table(&self, table_name: &str) -> Result<bool> {
         if self.table_exists(table_name).await? {
             let sql = match self.pool.kind() {
-                rltbl_db::core::DbKind::SQLite => format!(r#"DROP TABLE "{table_name}""#),
-                rltbl_db::core::DbKind::PostgreSQL => {
+                DbKind::SQLite => format!(r#"DROP TABLE "{table_name}""#),
+                DbKind::PostgreSQL => {
                     format!(r#"DROP TABLE "{table_name}" CASCADE"#)
                 }
             };
@@ -410,7 +424,7 @@ impl Relatable {
             .tables
             .get(table_name)
             .ok_or(RelatableError::MissingError(format!(
-                "Missing table {}",
+                "Missing table {} {schema:?}",
                 select.table_name
             )))?
             .clone();
@@ -626,8 +640,8 @@ impl Relatable {
             .map(|k| format!(r#""{k}""#))
             .collect::<Vec<_>>()
             .join(", ");
-        let mut id: u64 = 1;
-        let mut order = id * NEW_ORDER_MULTIPLIER as u64;
+        let mut id: i32 = 1;
+        let mut order = id as u64 * NEW_ORDER_MULTIPLIER as u64;
         let sql_first_part = format!(r#"INSERT INTO "{table_name}" ({columns_line}) VALUES "#);
         let mut sql_value_parts = vec![];
         let mut sql_param_gen = SqlParam::new(&self.pool.kind());
@@ -683,55 +697,32 @@ impl Relatable {
                         if nulltype != "" && nulltype != "empty" {
                             tracing::warn!("Nulltype '{nulltype}' not supported",);
                         }
-                        // Use the value to create a cell:
-                        let mut cell = {
-                            let value = match serde_json::from_str::<JsonValue>(value) {
-                                Ok(JsonValue::Number(num)) => JsonValue::Number(num),
-                                _ => json!(value),
-                            };
-                            let value =
-                                sql::JsonRow::nullify_value(&schema, table_name, column, &value);
-                            Cell {
-                                text: sql::json_to_string(&value),
-                                value: value,
-                                ..Default::default()
+
+                        let sql_type = schema
+                            .column(table_name, column)
+                            .expect(&format!("Column '{column}' not found"))
+                            .sql_type
+                            .clone();
+                        let param_value = match self.pool.parse(&sql_type, value) {
+                            Ok(param_value) => param_value,
+                            Err(_) => {
+                                self.add_message(
+                                    "rltbl",
+                                    &table.name,
+                                    id as u64,
+                                    column,
+                                    &serde_json::Value::String(value.to_string()),
+                                    "error",
+                                    "parse",
+                                    &format!("Could not parse {sql_type} from '{value}'"),
+                                )
+                                .await
+                                .expect("Error adding message");
+                                ParamValue::Null
                             }
                         };
-
-                        // Validate the cell and add any messages to the message table:
-                        if self.validation_level != ValidationLevel::None {
-                            cell.validate_sql_type(
-                                &datatypes,
-                                schema
-                                    .column(table_name, column)
-                                    .unwrap_or(&Column::default()),
-                            )
-                            .expect("Error validating cell");
-                            for message in cell.messages.iter() {
-                                let (msg_id, msg) = self
-                                    .add_message(
-                                        "rltbl",
-                                        &table.name,
-                                        id,
-                                        column,
-                                        &cell.value,
-                                        &message.level,
-                                        &message.rule,
-                                        &message.message,
-                                    )
-                                    .await
-                                    .expect("Error adding message");
-                                tracing::debug!("Added message (ID {msg_id}): {msg:?}");
-                            }
-                        }
-
-                        // Add the parameter for the value to the SQL insert statement:
-                        if cell.has_sql_type_error() || cell.value == JsonValue::Null {
-                            sql_params.push("NULL".to_string());
-                        } else {
-                            sql_params.push(sql_param_gen.next());
-                            param_values.push(ParamValue::from_json(cell.value));
-                        }
+                        sql_params.push(sql_param_gen.next());
+                        param_values.push(param_value);
                     };
                 }
                 sql_params.join(", ")
@@ -1055,7 +1046,7 @@ impl Relatable {
                     );
                     let before = json!({column: before}).to_string();
                     let after = json!({column: after}).to_string();
-                    let params = params![change_id, &table, row, before, after];
+                    let params = params![change_id as i32, &table, row, before, after];
                     self.pool.execute(&sql, params).await?;
                 }
                 Change::Add { row, after: _ } => {
@@ -1087,7 +1078,7 @@ impl Relatable {
                             }
                             None => {
                                 return Err(RelatableError::DataError(format!(
-                                    "Row {row} not found"
+                                    "Row {row} of 'history' table not found"
                                 ))
                                 .into())
                             }
@@ -1101,7 +1092,7 @@ impl Relatable {
                         sql_params = SqlParam::new(&self.pool.kind()).get_as_list(4)
                     );
                     let json_row_str = json!(json_row.content).to_string();
-                    let params = params![change_id, &table, row, json_row_str];
+                    let params = params![change_id as i32, &table, *row as i64, json_row_str];
                     self.pool.execute(&sql, params).await?;
                 }
                 Change::Move {
@@ -1116,7 +1107,7 @@ impl Relatable {
                            RETURNING "history_id""#,
                         sql_params = SqlParam::new(&self.pool.kind()).get_as_list(3)
                     );
-                    let params = params![change_id, &table, row];
+                    let params = params![change_id as i32, &table, row];
                     self.pool.execute(&sql, params).await?;
                 }
                 Change::Delete { row, after: _ } => {
@@ -1138,7 +1129,7 @@ impl Relatable {
                         sql_params = SqlParam::new(&self.pool.kind()).get_as_list(4)
                     );
                     let json_row_str = json!(json_row.content).to_string();
-                    let params = params![change_id, &table, row, json_row_str];
+                    let params = params![change_id as i32, &table, *row as i64, json_row_str];
                     self.pool.query_value(&sql, params).await?;
                 }
             };
@@ -1766,7 +1757,8 @@ impl Relatable {
                                        WHERE "change_id" = {sql_param}"#,
                                     sql_param = SqlParam::new(&self.pool.kind()).next()
                                 );
-                                let before_row = self.pool.query_row(&sql, [change_id]).await?;
+                                let before_row =
+                                    self.pool.query_row(&sql, [change_id as i32]).await?;
                                 let before = before_row
                                     .get("before")
                                     .and_then(|v| v.as_str())
@@ -1929,8 +1921,10 @@ impl Relatable {
                                RETURNING 1 AS "updated""#,
                         table = changeset.table,
                     );
-                    let param = ParamValue::from_json(sql_value);
-                    let params = params![param, row];
+                    let param = self
+                        .pool
+                        .convert_json(&column_config.sql_type, &sql_value)?;
+                    let params = params![param, *row as i32];
 
                     // Execute the UPDATE statement.
                     if self.pool.query(&sql, params).await?.len() < 1 {
@@ -2020,7 +2014,7 @@ impl Relatable {
                RETURNING "message_id""#,
             sql_params = SqlParam::new(&self.pool.kind()).get_as_list(8)
         );
-        let param = ParamValue::from_json(value.clone());
+        let param = rltbl_db::core::json_value_to_string(value);
         let params = params![user, table_name, row, column, param, level, rule, message];
         let message_id = self.pool.query_u64(&sql, params).await?;
 
@@ -2097,31 +2091,37 @@ impl Relatable {
         // is for now, since we are not assured that the old row order is actually still free in
         // the table (recall that there is a unique constraint on _order). However the row_order
         // currently assigned is at the end of the table so there should not be any conflicts.
-        let new_row_id = match new_row_id {
-            Some(new_row_id) => new_row_id,
-            None => {
-                self.pool
-                    .query_u64(
-                        r"SELECT seq + 1 FROM sqlite_sequence WHERE name = $1",
-                        [table_name],
-                    )
-                    .await?
-            }
-        };
-        new_row.id = new_row_id;
-        row.insert("_id".to_owned(), json!(new_row_id));
+        if let Some(new_row_id) = new_row_id {
+            row.insert("_id".to_owned(), json!(new_row_id));
+        }
 
         // Validate the row and add it to the table:
         if self.validation_level != ValidationLevel::None {
             new_row.validate_sql_types(schema, table_name, self).await?;
-            for (_column, cell) in new_row.cells.iter_mut() {
+            for (column, cell) in new_row.cells.iter_mut() {
                 if cell.has_sql_type_error() {
                     cell.value = JsonValue::Null;
                     cell.text = "".to_string(); // Should it be "null" instead of blank?
+                    row.insert(column.to_string(), JsonValue::Null);
                 }
             }
         }
-        self.pool.insert(&table.name, &[&row]).await?;
+        let columns: Vec<&str> = row.keys().map(|s| s.as_str()).collect();
+        let rows = self
+            .pool
+            .insert_returning(&table.name, &columns, &[&row], &["_id"])
+            .await?;
+        let new_row_id = rows
+            .first()
+            .and_then(|row| row.get("_id"))
+            .and_then(|v| v.as_u64())
+            .unwrap();
+        new_row.id = new_row_id;
+        // TODO: this is a hack to make sure sql_type error messages point to the right place
+        let sql = r#"UPDATE message SET row = $1 WHERE "table" = $2 AND row = 0"#;
+        self.pool
+            .execute(sql, params![new_row_id as i32, table_name])
+            .await?;
 
         // Optionally do full validation on the row after it has been inserted:
         if self.validation_level == ValidationLevel::Full {
@@ -2249,7 +2249,7 @@ impl Relatable {
         // Record the change to the history table:
         self.record_changeset(&changeset).await?;
 
-        let num_deleted = self.pool.query(&sql, [row]).await?.len();
+        let num_deleted = self.pool.query(&sql, [row as i32]).await?.len();
 
         Ok(num_deleted)
     }
@@ -2390,7 +2390,7 @@ impl Relatable {
                 table.name,
                 sql_param = SqlParam::new(&rltbl.pool.kind()).next()
             );
-            let rows = rltbl.pool.query(&sql, [row_id]).await?;
+            let rows = rltbl.pool.query(&sql, [row_id as i32]).await?;
             if rows.is_empty() {
                 return Err(RelatableError::DataError(format!(
                     "Unable to fetch _order for row {row_id} of table '{table}'",
@@ -2440,7 +2440,7 @@ impl Relatable {
                 table.name,
                 sql_param = SqlParam::new(&self.pool.kind()).next()
             );
-            let rows = self.pool.query(&sql, [order_prev]).await?;
+            let rows = self.pool.query(&sql, [order_prev as i32]).await?;
             if rows.is_empty() {
                 return Err(RelatableError::DataError(format!(
                     "Could not determine the minimum row order greater than {order_prev}"
@@ -2491,7 +2491,10 @@ impl Relatable {
                     sql_param_1 = sql_param.next(),
                     sql_param_2 = sql_param.next()
                 );
-                let rows = self.pool.query(&sql, [order_next, upper_bound]).await?;
+                let rows = self
+                    .pool
+                    .query(&sql, [order_next as i32, upper_bound as i32])
+                    .await?;
                 if rows.is_empty() {
                     return Err(RelatableError::DataError(
                         "Could not determine the highest row order".to_string(),
@@ -2533,7 +2536,7 @@ impl Relatable {
                         table.name,
                         sql_param = SqlParam::new(&self.pool.kind()).next()
                     );
-                    self.pool.query(&sql, [current_order]).await?;
+                    self.pool.query(&sql, [current_order as i32]).await?;
                 }
                 // Now that we have made some room, we can use order_prev + 1,
                 // which should no longer be occupied:
@@ -2555,7 +2558,13 @@ impl Relatable {
             sql_param_1 = sql_param.next(),
             sql_param_2 = sql_param.next(),
         );
-        if self.pool.query(&sql, [new_order, id]).await?.len() < 1 {
+        if self
+            .pool
+            .query(&sql, [new_order as i32, id as i32])
+            .await?
+            .len()
+            < 1
+        {
             tracing::warn!("Now row with _id {id} found to move");
             // It is not possible for a row to have an order of zero. It is used here to
             // represent the case where no row was actually moved to the caller.
@@ -3348,6 +3357,7 @@ mod tests {
         let rltbl = Relatable::init(
             &true,
             Some("build/test_schema.db"),
+            // Some("postgresql:///rltbl_db"),
             &CachingStrategy::Trigger,
         )
         .await

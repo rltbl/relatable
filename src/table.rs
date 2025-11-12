@@ -216,7 +216,7 @@ impl Table {
     /// given transaction.
     pub async fn get_row(table: &str, row: u64, rltbl: &Relatable) -> Result<Option<JsonRow>> {
         let sql = format!(r#"SELECT * FROM "{table}" WHERE "_id" = $1"#);
-        match rltbl.pool.query_row(&sql, [row]).await {
+        match rltbl.pool.query_row(&sql, [row as i32]).await {
             Ok(row) => Ok(Some(JsonRow { content: row })),
             Err(_) => Ok(None),
         }

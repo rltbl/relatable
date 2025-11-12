@@ -1,17 +1,18 @@
-use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
-
-use crate::{
+use crate as rltbl;
+use rltbl::{
     column::ColumnBuilder,
     core::{Relatable, NEW_ORDER_MULTIPLIER},
     datatype::DatatypeBuilder,
     sql::{self, CachingStrategy, SqlParam},
 };
-
-use anyhow::Result;
 use rltbl_db::{
     core::{DbKind, DbQuery},
     params,
 };
+
+use anyhow::Result;
+use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
+use rust_decimal::Decimal;
 
 /// Build a demonstration database. Based on <https://github.com/allisonhorst/palmerpenguins>.
 pub async fn build_demo(rltbl: &Relatable, force: &bool, size: usize) -> Result<()> {
@@ -103,12 +104,16 @@ pub async fn create_penguin_table(
             sql_param.reset();
         }
 
-        let id = i + 1;
-        let order = id * NEW_ORDER_MULTIPLIER;
+        let id = i as i32 + 1;
+        let order = id * NEW_ORDER_MULTIPLIER as i32;
         let island = islands.iter().choose(&mut rng).unwrap().to_string();
         let bill_length = rng.gen_range(300..500) as f64 / 10.0;
         let bill_depth = rng.gen_range(200..400) as f64 / 10.0;
         let body_mass = rng.gen_range(1000..5000);
+        let bill_depth = Decimal::try_from(bill_depth).unwrap();
+        let bill_length = bill_length as f32;
+        let body_mass = body_mass as i64;
+
         sql_value_parts.push(format!(
             "({sql_param_list_1}, 'FAKE123', {lone_sql_param}, 'Pygoscelis adeliae', \
                  {sql_param_list_2})",

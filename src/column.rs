@@ -29,6 +29,16 @@ use serde::{
 };
 use serde_json::json;
 
+pub static COLUMNS: [&str; 7] = [
+    "table",
+    "column",
+    "label",
+    "description",
+    "nulltype",
+    "datatype",
+    "structure",
+];
+
 /// Represents a column from some table
 #[derive(
     Builder, Clone, Debug, Default, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord,
@@ -81,6 +91,34 @@ where
         }
 
         fn visit_i8<E>(self, v: i8) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v != 0)
+        }
+
+        fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v != 0)
+        }
+
+        fn visit_i16<E>(self, v: i16) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v != 0)
+        }
+
+        fn visit_u32<E>(self, v: u32) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v != 0)
+        }
+
+        fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
         where
             E: de::Error,
         {
@@ -381,7 +419,7 @@ impl<'a> ColumnTable<'a> {
             .map(|col| json!(col).as_object().unwrap().clone())
             .collect();
         let refs: Vec<&JsonRow> = rows.iter().collect();
-        self.pool.insert(&self.table_name, &refs).await?;
+        self.pool.insert(&self.table_name, &COLUMNS, &refs).await?;
         Ok(())
     }
 
@@ -395,7 +433,7 @@ impl<'a> ColumnTable<'a> {
         let refs: Vec<&JsonRow> = rows.iter().collect();
         let rows = self
             .pool
-            .insert_returning(&self.table_name, &refs, &[])
+            .insert_returning(&self.table_name, &COLUMNS, &refs, &[])
             .await?;
         let cols: Vec<Column> = rows
             .into_iter()
@@ -427,16 +465,16 @@ impl<'a> ColumnTable<'a> {
                 Ok(format!(
                     r#"
                     SELECT DISTINCT
-                      main.name AS 'table',
-                      pti.name AS 'column',
-                      col.label AS 'label',
-                      col.description AS 'description',
-                      pti.type AS 'sql_type',
-                      col.nulltype AS 'nulltype',
-                      col.datatype AS 'datatype',
-                      col.structure AS 'structure',
-                      pti.pk AS 'primary_key',
-                      (SELECT name = pti.name FROM pragma_index_info(pil.name)) AS 'unique'
+                      main.name AS "table",
+                      pti.name AS "column",
+                      col.label AS "label",
+                      col.description AS "description",
+                      pti.type AS "sql_type",
+                      col.nulltype AS "nulltype",
+                      col.datatype AS "datatype",
+                      col.structure AS "structure",
+                      pti.pk AS "primary_key",
+                      (SELECT name = pti.name FROM pragma_index_info(pil.name)) AS "unique"
                     FROM sqlite_master AS main
                     JOIN pragma_table_info(main.name) AS pti
                     LEFT JOIN pragma_index_list(main.name) AS pil
@@ -448,7 +486,41 @@ impl<'a> ColumnTable<'a> {
                 ))
             }
             rltbl_db::core::DbKind::PostgreSQL => {
-                todo!()
+                // TODO: Improve this
+                let filter = if tables.len() > 0 {
+                    format!(
+                        "\n  AND main.table_name IN({})",
+                        tables
+                            .iter()
+                            .map(|t| format!("'{t}'"))
+                            .collect::<Vec<String>>()
+                            .join(", ")
+                    )
+                } else {
+                    String::new()
+                };
+                // TODO: finish primary_key and unique
+                Ok(format!(
+                    r#"SELECT
+                         main.table_name::TEXT AS "table",
+                         main.column_name::TEXT AS "column",
+                         col.label AS "label",
+                         col.description AS "description",
+                         main.data_type::TEXT AS "sql_type",
+                         col.nulltype AS "nulltype",
+                         col.datatype AS "datatype",
+                         col.structure AS "structure"
+                       FROM "information_schema"."columns" AS main
+                       LEFT JOIN "{}" AS col ON col."table" = main.table_name AND col."column" = main.column_name
+                       WHERE
+                         main.table_schema IN (
+                           SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
+                           FROM "pg_settings"
+                           WHERE "name" = 'search_path'
+                         ){filter}
+                       ORDER BY main.ordinal_position;"#,
+                    self.table_name
+                ))
             }
         }
     }

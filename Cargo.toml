@@ -22,7 +22,6 @@ ansi_term = "0.12"
 anyhow = "1.0.94"
 axum = { version = "0.8.1", features = ["macros"] }
 axum_session = "0.16.0"
-bigdecimal = { version = "0.4", features = ["serde"] }
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 clap-verbosity-flag = { version = "3.0.2", features = ["tracing"] }
@@ -41,6 +40,7 @@ rand = "0.8.5"
 random_color = "1.0.0"
 regex = "1.11.1"
 rusqlite = { version = "0.37", features = ["bundled", "functions", "serde_json"], optional = true }
+rust_decimal = { version = "1.39.0", features = ["macros"] }
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = { version = "1.0.133", features = ["preserve_order"] }
 sprintf = "0.4"
@@ -58,7 +58,7 @@ rltbl_db = { path = "../rltbl_db", default-features = false, optional= true}
 pretty_assertions = "1.4.1"
 
 [features]
-default = ["rusqlite"]
+default = ["rusqlite", "tokio-postgres"]
 rusqlite = ["dep:rusqlite", "rltbl_db/rusqlite"]
 tokio-postgres = ["rltbl_db/tokio-postgres"]
 
