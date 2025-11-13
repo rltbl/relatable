@@ -2,14 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[column](crate::column)).
 
-use std::{
-    collections::HashSet,
-    fmt,
-    ops::{Deref, DerefMut},
-};
-
 use crate as rltbl;
-use indexmap::IndexMap;
 use rltbl::{
     core::RelatableError,
     datatype::Datatypes,
@@ -22,12 +15,18 @@ use rltbl_db::{
 
 use anyhow::Result;
 use derive_builder::Builder;
+use indexmap::IndexMap;
 use regex::Regex;
 use serde::{
     de::{self, Visitor},
     Deserialize, Serialize,
 };
 use serde_json::json;
+use std::{
+    collections::HashSet,
+    fmt,
+    ops::{Deref, DerefMut},
+};
 
 pub static COLUMNS: [&str; 7] = [
     "table",
@@ -170,7 +169,7 @@ impl Column {
 
     /// Get the SQL type for this column according to its datatype,
     /// or the first column ancestor with a sql_type,
-    /// or just "TEXT".
+    /// or just "text".
     pub fn sql_type(&self, datatypes: &Datatypes) -> String {
         if self.sql_type != "" {
             return self.sql_type.clone();
@@ -181,7 +180,7 @@ impl Column {
         let ancestors = datatypes.ancestors(datatype);
         match ancestors.iter().filter(|dt| dt.sql_type != "").nth(0) {
             Some(dt) => dt.sql_type.to_owned(),
-            None => "TEXT".to_owned(),
+            None => "text".to_owned(),
         }
     }
 }
@@ -239,43 +238,43 @@ impl Columns {
                     .column("table")
                     .description("the table for this column")
                     .datatype("word")
-                    .sql_type("TEXT")
+                    .sql_type("text")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "column")
                     .description("the name of this column")
                     .datatype("word")
-                    .sql_type("TEXT")
+                    .sql_type("text")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "label")
                     .description("the label of this column")
                     .datatype("trimmed_line")
-                    .sql_type("TEXT")
+                    .sql_type("text")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "description")
                     .description("the description of this column")
                     .datatype("trimmed_line")
-                    .sql_type("TEXT")
+                    .sql_type("text")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "nulltype")
                     .description("the null type of this column")
                     .datatype("word")
-                    .sql_type("TEXT")
+                    .sql_type("text")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "datatype")
                     .description("the datatype of this column")
                     .datatype("word")
-                    .sql_type("TEXT")
+                    .sql_type("text")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "structure")
                     .description("the structure of this column")
                     .datatype("trimmed_line")
-                    .sql_type("TEXT")
+                    .sql_type("text")
                     .build()
                     .unwrap(),
             ],
@@ -462,6 +461,7 @@ impl<'a> ColumnTable<'a> {
                 } else {
                     String::new()
                 };
+                // TODO: fix primary_key and unique
                 Ok(format!(
                     r#"
                     SELECT DISTINCT
@@ -469,12 +469,12 @@ impl<'a> ColumnTable<'a> {
                       pti.name AS "column",
                       col.label AS "label",
                       col.description AS "description",
-                      pti.type AS "sql_type",
+                      LOWER(pti.type) AS "sql_type",
                       col.nulltype AS "nulltype",
                       col.datatype AS "datatype",
-                      col.structure AS "structure",
-                      pti.pk AS "primary_key",
-                      (SELECT name = pti.name FROM pragma_index_info(pil.name)) AS "unique"
+                      col.structure AS "structure"
+                      --pti.pk AS "primary_key",
+                      --(SELECT name = pti.name FROM pragma_index_info(pil.name)) AS "unique"
                     FROM sqlite_master AS main
                     JOIN pragma_table_info(main.name) AS pti
                     LEFT JOIN pragma_index_list(main.name) AS pil
@@ -506,7 +506,7 @@ impl<'a> ColumnTable<'a> {
                          main.column_name::TEXT AS "column",
                          col.label AS "label",
                          col.description AS "description",
-                         main.data_type::TEXT AS "sql_type",
+                         LOWER(main.data_type::TEXT) AS "sql_type",
                          col.nulltype AS "nulltype",
                          col.datatype AS "datatype",
                          col.structure AS "structure"
@@ -592,15 +592,15 @@ impl<'a> ColumnTable<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Relatable;
     use pretty_assertions::assert_eq;
-    use rltbl_db::any::AnyPool;
 
     #[tokio::test]
     async fn test_sql_type() {
         let datatypes = Datatypes::builtins();
 
         let column = ColumnBuilder::new("foo", "bar").build().unwrap();
-        assert_eq!(column.sql_type(&datatypes), "TEXT");
+        assert_eq!(column.sql_type(&datatypes), "text");
 
         let column = ColumnBuilder::new("foo", "bar")
             .datatype("integer")
@@ -611,17 +611,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_create() {
-        let pool = AnyPool::connect("build/test_column_create.db")
+        let rltbl = Relatable::test("test_column_create")
             .await
-            .expect("connect to SQLite");
-        let table = ColumnTable::connect(&pool);
+            .expect("initialize Relatable");
+
+        let table = ColumnTable::connect(&rltbl.pool);
         table.drop().await.expect("delete column table");
         table.create().await.expect("create column table");
         let columns = table.get_all().await.expect("get columns");
+        // TODO: Extend builtins to cover all tables.
+        // assert_eq!(
+        //     columns.data(),
+        //     Columns::builtins().iter().collect::<Vec<_>>()
+        // );
         assert_eq!(
-            columns.data(),
-            Columns::builtins().iter().collect::<Vec<_>>()
+            columns
+                .data()
+                .iter()
+                .cloned()
+                .filter(|c| &c.table == "column")
+                .collect::<Vec<_>>(),
+            Columns::builtins()
+                .iter()
+                .filter(|c| &c.table == "column")
+                .collect::<Vec<_>>(),
         );
+        assert_eq!(columns.len(), 43);
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 
     #[tokio::test]

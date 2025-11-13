@@ -1789,13 +1789,12 @@ pub async fn joined_query(
 
     let tables: Vec<ParamValue> = tables.into_iter().map(|x| ParamValue::from(x)).collect();
     let mut sql_param = sql::SqlParam::new(&rltbl.pool.kind());
-    let (value_string, value_list) = render_values(&tables, &mut sql_param).unwrap();
 
     let sql = format!(
         r#"WITH RECURSIVE ancestors(_order, left_table, left_column, right_table, right_column) AS (
       SELECT _order, left_table, left_column, right_table, right_column
       FROM tableset
-      WHERE right_table IN {value_string}
+      WHERE right_table IN ({bindings_1})
       UNION
       SELECT t._order, t.left_table, t.left_column, t.right_table, t.right_column
       FROM ancestors AS a
@@ -1804,14 +1803,17 @@ pub async fn joined_query(
     )
     SELECT *
     FROM ancestors
-    WHERE _order >= (SELECT MIN(_order) FROM ancestors WHERE left_table IN {value_string})
-      AND _order <= (SELECT MAX(_order) FROM ancestors WHERE right_table IN {value_string})
-    ORDER BY _order"#
+    WHERE _order >= (SELECT MIN(_order) FROM ancestors WHERE left_table IN ({bindings_2}))
+      AND _order <= (SELECT MAX(_order) FROM ancestors WHERE right_table IN ({bindings_3}))
+    ORDER BY _order"#,
+        bindings_1 = sql_param.get_as_list(tables.len()),
+        bindings_2 = sql_param.get_as_list(tables.len()),
+        bindings_3 = sql_param.get_as_list(tables.len()),
     );
     tracing::info!("SQL {sql}");
-    let mut params = value_list.clone();
-    params.extend(value_list.clone());
-    params.extend(value_list.clone());
+    let mut params = tables.clone();
+    params.extend(tables.clone());
+    params.extend(tables.clone());
     tracing::info!("PARAMS {params:?}");
     let json_rows = rltbl.pool.query_string_rows(&sql, params).await?;
     tracing::info!(
@@ -1892,7 +1894,7 @@ pub async fn joined_query(
 
 #[cfg(test)]
 mod tests {
-    use crate::sql::{is_clause, is_not_clause, CachingStrategy};
+    use crate::sql::{is_clause, is_not_clause};
     use rltbl_db::core::DbQuery;
 
     use pretty_assertions::assert_eq;
@@ -1902,13 +1904,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_select_from_path_and_query() {
-        let rltbl = Relatable::init(
-            &true,
-            Some("build/test_select_from_path_and_query.db"),
-            &CachingStrategy::Trigger,
-        )
-        .await
-        .unwrap();
+        let rltbl = Relatable::test("test_select_from_path_and_query")
+            .await
+            .expect("initialize Relatable");
         crate::demo::build_demo(&rltbl, &true, 0).await.unwrap();
         let sql_param = SqlParam::new(&rltbl.pool.kind()).next();
         let base = "http://example.com";
@@ -2552,6 +2550,10 @@ WHERE "penguin"."study_name" NOT IN ({sql_param_1}, {sql_param_2})"#
         assert_eq!(params, vec!["123".into(), "456".into()]);
 
         // A URL with a filter on the change ID
+        let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind());
+        let sql_param_1 = sql_param_gen.next();
+        let sql_param_2 = sql_param_gen.next();
+        let sql_param_3 = sql_param_gen.next();
         let url = "http://example.com/penguin?_change_id=gt.5";
         let query_params = from_value(json!({
            "_change_id": "gt.5",
@@ -2565,14 +2567,14 @@ WHERE "penguin"."study_name" NOT IN ({sql_param_1}, {sql_param_2})"#
             format!(
                 r#"SELECT *
 , (SELECT MAX(change_id) FROM history
-                    WHERE "table" = {sql_param}
+                    WHERE "table" = {sql_param_1}
                       AND "row" = "penguin"._id
                    ) AS _change_id
 FROM "penguin"
 WHERE (SELECT MAX(change_id) FROM history
-                    WHERE "table" = {sql_param}
+                    WHERE "table" = {sql_param_3}
                       AND "row" = "penguin"._id
-                   ) > {sql_param}
+                   ) > {sql_param_2}
 ORDER BY "penguin"._order ASC
 LIMIT 100"#
             ),
@@ -2588,9 +2590,9 @@ LIMIT 100"#
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
 WHERE (SELECT MAX(change_id) FROM history
-                    WHERE "table" = {sql_param}
+                    WHERE "table" = {sql_param_2}
                       AND "row" = "penguin"._id
-                   ) > {sql_param}"#
+                   ) > {sql_param_1}"#
             ),
         );
         assert_eq!(params, vec![5i64.into(), "penguin".into()]);
@@ -2621,17 +2623,15 @@ LIMIT 100"#
 FROM "penguin""#
         );
         assert_eq!(params, empty);
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 
     #[tokio::test]
     async fn test_select_methods() {
-        let rltbl = Relatable::init(
-            &true,
-            Some("build/test_select_methods.db"),
-            &CachingStrategy::Trigger,
-        )
-        .await
-        .unwrap();
+        let rltbl = Relatable::test("test_select_methods")
+            .await
+            .expect("initialize Relatable");
         let drop_sql = r#"DROP TABLE IF EXISTS "penguin_test""#;
         let create_sql = r#"CREATE TABLE "penguin_test" (
     _id INTEGER,
@@ -2754,17 +2754,15 @@ FROM "penguin_test""#
         assert_eq!(params, empty);
 
         rltbl.pool.execute(drop_sql, ()).await.unwrap();
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 
     #[tokio::test]
     async fn test_subquery() {
-        let rltbl = Relatable::init(
-            &true,
-            Some("build/test_subquery.db"),
-            &CachingStrategy::Trigger,
-        )
-        .await
-        .unwrap();
+        let rltbl = Relatable::test("test_subquery")
+            .await
+            .expect("initialize Relatable");
         let sql_param = SqlParam::new(&rltbl.pool.kind()).next();
 
         // Subquery select, filtered on a string:
@@ -2862,17 +2860,15 @@ WHERE "penguin"."sample_number" IN (
             )
         );
         assert_eq!(params, vec![27.into()]);
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 
     #[tokio::test]
     async fn test_filters() {
-        let rltbl = Relatable::init(
-            &true,
-            Some("build/test_filters.db"),
-            &CachingStrategy::Trigger,
-        )
-        .await
-        .unwrap();
+        let rltbl = Relatable::test("test_filters")
+            .await
+            .expect("initialize Relatable");
         let mut sql_param_generator = SqlParam::new(&rltbl.pool.kind());
         let sql_param_1 = sql_param_generator.next();
         let sql_param_2 = sql_param_generator.next();
@@ -3020,17 +3016,15 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
             );
             assert_eq!(params, vec![1i64.into(), 2i64.into()]);
         }
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 
     #[tokio::test]
     async fn test_tablesets() {
-        let rltbl = Relatable::init(
-            &true,
-            Some("build/test_tablesets.db"),
-            &CachingStrategy::None,
-        )
-        .await
-        .unwrap();
+        let rltbl = Relatable::test("test_tablesets")
+            .await
+            .expect("initialize Relatable");
         let sql_param = SqlParam::new(&rltbl.pool.kind()).next();
         let base = "http://example.com/combined";
         let empty: Vec<ParamValue> = vec![];
@@ -3122,15 +3116,21 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 
         // Create the tablset table.
         let drop_sql = r#"DROP TABLE IF EXISTS "tableset""#;
-        let create_sql = r#"CREATE TABLE tableset (
-              _id INTEGER PRIMARY KEY AUTOINCREMENT,
+        let pkey_clause = match rltbl.pool.kind() {
+            DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+            DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
+        };
+        let create_sql = format!(
+            r#"CREATE TABLE tableset (
+              _id {pkey_clause},
               _order INTEGER UNIQUE,
               tableset TEXT,
               left_table TEXT,
               left_column TEXT,
               right_table TEXT,
               right_column TEXT
-            )"#;
+            )"#
+        );
         let insert_sql = r#"INSERT INTO "tableset" VALUES
               (1, 1000, 'combined', NULL, NULL, 'A', 'a'),
               (2, 2000, 'combined', 'A', 'a', 'B', 'a'),
@@ -3140,7 +3140,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
               (7, 7000, 'combined', 'B', 'b', 'D', 'b')
             "#;
         rltbl.pool.execute(drop_sql, ()).await.unwrap();
-        rltbl.pool.execute(create_sql, ()).await.unwrap();
+        rltbl.pool.execute(&create_sql, ()).await.unwrap();
         rltbl.pool.execute(insert_sql, ()).await.unwrap();
 
         // Just query for the B table.
@@ -3178,20 +3178,24 @@ FROM "B""#
         let (sql, params) = select.to_sql(&rltbl.pool.kind()).unwrap();
         assert_eq!(
             sql,
-            r#"SELECT *
+            format!(
+                r#"SELECT *
 FROM "B"
-WHERE "B"."b" = ?
+WHERE "B"."b" = {sql_param}
 ORDER BY "B"._order ASC
 LIMIT 100"#
+            )
         );
         assert_eq!(params, vec!["i".into()]);
         rltbl.pool.execute(&sql, params).await.unwrap();
         let (sql, params) = select.to_sql_count(&rltbl.pool.kind()).unwrap();
         assert_eq!(
             sql,
-            r#"SELECT COUNT(1) AS "count"
+            format!(
+                r#"SELECT COUNT(1) AS "count"
 FROM "B"
-WHERE "B"."b" = ?"#
+WHERE "B"."b" = {sql_param}"#
+            )
         );
         assert_eq!(params, vec!["i".into()]);
         rltbl.pool.query(&sql, params).await.unwrap();
@@ -3332,5 +3336,7 @@ WHERE "_id" IN (
         let inner = Select::from_path_and_query("C", &query_params, &rltbl).await;
         let select = joined_query(&rltbl, "combined", &inner).await;
         assert_eq!(select.is_err(), true);
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 }

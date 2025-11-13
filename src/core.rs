@@ -106,6 +106,8 @@ impl std::error::Error for RelatableError {}
 pub struct Relatable {
     pub root: String,
     pub readonly: bool,
+    pub connection: String,
+    pub test_database: Option<String>,
     pub pool: AnyPool,
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
@@ -155,6 +157,8 @@ impl Relatable {
         Ok(Self {
             root,
             readonly,
+            connection: path,
+            test_database: None,
             pool,
             // minijinja: env,
             default_limit: DEFAULT_LIMIT,
@@ -224,6 +228,77 @@ impl Relatable {
         Ok(rltbl)
     }
 
+    /// Get the connection URL for a test database.
+    pub fn test_url(name: &str) -> Result<String> {
+        match std::env::var_os("RLTBL_TEST_CONNECTION").and_then(|p| Some(p.into_string())) {
+            Some(Ok(url)) if !url.is_empty() => Ok(url),
+            _ => Ok(format!("build/{name}.db")),
+        }
+    }
+
+    /// Create a test database using the RLTBL_TEST_CONNECTION environment variable.
+    /// Run `drop_test()` when finished.
+    /// Use a distinct `name` to keep this database separate from all others.
+    /// If RLTBL_TEST_CONNECTION is not set, use a SQLite database in `build/`.
+    /// If RLTBL_TEST_CONNECTION is a PostgreSQL database,
+    /// use that connection to create a new database with `name`.
+    pub async fn test(name: &str) -> Result<Relatable> {
+        let url = Self::test_url(name)?;
+        let pool = AnyPool::connect(&url).await?;
+        let url = match pool.kind() {
+            DbKind::SQLite => {
+                let dir: &std::path::Path =
+                    FilePath::new("build")
+                        .parent()
+                        .ok_or(RelatableError::InputError(format!(
+                            "Path 'build' has no parent",
+                        )))?;
+                if !dir.exists() {
+                    std::fs::create_dir_all(&dir)?;
+                    tracing::info!("Created '{dir:?}' directory");
+                }
+                url
+            }
+            DbKind::PostgreSQL => {
+                pool.execute(&format!(r#"DROP DATABASE IF EXISTS "{name}""#), ())
+                    .await?;
+                pool.execute(&format!(r#"CREATE DATABASE "{name}""#), ())
+                    .await?;
+                format!("postgresql:///{name}")
+            }
+        };
+        let mut rltbl = Self::init(&true, Some(&url), &CachingStrategy::Trigger).await?;
+        rltbl.test_database = Some(name.to_owned());
+        Ok(rltbl)
+    }
+
+    /// Drop this test database and delete any files.
+    /// Consumes this Relatable instance.
+    // NOTE: This might be better using the upcoming AsyncDrop trait.
+    pub async fn drop_test(self) -> Result<()> {
+        let name = self
+            .test_database
+            .clone()
+            .ok_or(RelatableError::InitError(format!(
+                "No test database configured"
+            )))?;
+        let url = Self::test_url(&name)?;
+        match AnyPool::connection_kind(&url)? {
+            DbKind::SQLite => {
+                let file = FilePath::new(&url);
+                if file.exists() {
+                    std::fs::remove_file(&file)?;
+                }
+            }
+            DbKind::PostgreSQL => {
+                let pool = AnyPool::connect(&url).await?;
+                pool.execute(&format!(r#"DROP DATABASE "{name}" WITH (FORCE)"#), ())
+                    .await?;
+            }
+        };
+        Ok(())
+    }
+
     /// Get the column table for this Relatable instance.
     pub fn column_table(&self) -> ColumnTable<'_> {
         ColumnTable::connect(&self.pool)
@@ -251,7 +326,8 @@ impl Relatable {
                        tbl.path
                    FROM sqlite_master AS main
                    LEFT JOIN "table" AS tbl ON main.name = tbl."table"
-                   WHERE main.type = 'table';"#
+                   WHERE main.type = 'table'
+                     AND main.name != 'sqlite_sequence';"#
             }
             DbKind::PostgreSQL => {
                 r#"SELECT
@@ -369,7 +445,7 @@ impl Relatable {
         Ok(())
     }
 
-    // Drop all of the data tables and metatables in the database
+    /// Drop all of the data tables and metatables in the database
     pub async fn drop_database(&self) -> Result<()> {
         tracing::trace!("Relatable::drop_database({self:?})");
         self.drop_data_tables().await?;
@@ -3221,20 +3297,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_schema() {
-        let rltbl = Relatable::init(
-            &true,
-            Some("build/test_schema.db"),
-            // Some("postgresql:///rltbl_db"),
-            &CachingStrategy::Trigger,
-        )
-        .await
-        .unwrap();
+        let rltbl = Relatable::test("test_schema")
+            .await
+            .expect("initialize Relatable");
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
         let schema = rltbl.schema().await.expect("get schema");
-        assert_eq!(schema.tables.len(), 11);
-        assert_eq!(schema.columns.len(), 68);
+        assert_eq!(schema.tables.len(), 10);
+        assert_eq!(schema.columns.len(), 65);
         assert_eq!(schema.datatypes.len(), 9);
         assert_eq!(schema.columns("penguin").len(), 10);
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 
     // Test inner JSON string.
@@ -3263,13 +3336,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_result_set() {
-        let rltbl = Relatable::init(
-            &true,
-            Some("build/test_result_set.db"),
-            &CachingStrategy::Trigger,
-        )
-        .await
-        .unwrap();
+        let rltbl = Relatable::test("test_result_set")
+            .await
+            .expect("initialize Relatable");
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
 
         // A basic URL
@@ -3285,5 +3354,7 @@ study_name  sample_number  species             island     individual_id  bill_le
 FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5         30.0        4521
 ";
         assert_eq!(result_set.to_console(), expected);
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 }

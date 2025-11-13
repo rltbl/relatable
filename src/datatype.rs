@@ -277,7 +277,7 @@ impl Datatypes {
                 DatatypeBuilder::new("text")
                     .description("any text")
                     .parent("")
-                    .sql_type("TEXT")
+                    .sql_type("text")
                     .build()
                     .unwrap(),
                 DatatypeBuilder::new("empty")
@@ -325,12 +325,12 @@ impl Datatypes {
     }
 
     /// Get the sql_type of the given datatype, or its closest ancestor.
-    /// The default sql_type is "TEXT".
+    /// The default sql_type is "text".
     pub fn sql_type(&self, datatype: &Datatype) -> String {
         match datatype.sql_type.as_str() {
             "" => match self.parent(datatype) {
                 Some(parent) => self.sql_type(&parent),
-                None => "TEXT".to_owned(),
+                None => "text".to_owned(),
             },
             sql_type => sql_type.to_owned(),
         }
@@ -491,60 +491,69 @@ impl<'a> DatatypeTable<'a> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use rltbl_db::any::AnyPool;
 
     #[tokio::test]
     async fn test_create() {
-        let pool = AnyPool::connect(":memory:")
+        let rltbl = Relatable::test("test_datatype_create")
             .await
-            .expect("connect to SQLite");
-        let table = DatatypeTable::connect(&pool);
+            .expect("initialize Relatable");
+        let table = DatatypeTable::connect(&rltbl.pool);
         table.create().await.expect("create datatype table");
-        let count = pool
-            .query_u64("SELECT count() FROM datatype", ())
+        let count = rltbl
+            .pool
+            .query_u64("SELECT count(1) FROM datatype", ())
             .await
             .expect("count rows");
         assert_eq!(count, Datatypes::builtins().len() as u64);
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 
     #[tokio::test]
     async fn test_add() {
-        let pool = AnyPool::connect(":memory:")
+        let rltbl = Relatable::test("test_datatype_add")
             .await
-            .expect("connect to SQLite");
-        let table = DatatypeTable::connect(&pool);
+            .expect("initialize Relatable");
+        let table = DatatypeTable::connect(&rltbl.pool);
         table.create().await.expect("create datatype table");
         let test = DatatypeBuilder::new("test")
             .description("test datatype")
             .build()
             .unwrap();
         table.add(&[&test]).await.expect("add test datatype");
-        let count = pool
-            .query_u64("SELECT count() FROM datatype", ())
+        let count = rltbl
+            .pool
+            .query_u64("SELECT count(1) FROM datatype", ())
             .await
             .expect("count rows");
         assert_eq!(count as usize, Datatypes::builtins().len() + 1);
         assert_eq!(&test, table.get().await.get("test").unwrap());
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 
     #[tokio::test]
     async fn test_priority() {
         // built-ins take priority over rows from the table
-        let pool = AnyPool::connect(":memory:")
+        let rltbl = Relatable::test("test_datatype_priority")
             .await
-            .expect("connect to SQLite");
-        let table = DatatypeTable::connect(&pool);
+            .expect("initialize Relatable");
+        let table = DatatypeTable::connect(&rltbl.pool);
         table.create().await.expect("create datatype table");
-        pool.execute(
-            "UPDATE datatype SET description = 'FOO' WHERE datatype = 'text'",
-            (),
-        )
-        .await
-        .expect("update datatype table");
+        rltbl
+            .pool
+            .execute(
+                "UPDATE datatype SET description = 'FOO' WHERE datatype = 'text'",
+                (),
+            )
+            .await
+            .expect("update datatype table");
         assert_eq!(
             Datatypes::builtins().get("text").unwrap(),
             table.get().await.get("text").unwrap()
         );
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 
     #[tokio::test]

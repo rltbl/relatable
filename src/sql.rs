@@ -1161,18 +1161,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{core::Relatable, select::Select, sql::CachingStrategy};
+    use crate::{core::Relatable, select::Select};
     use pretty_assertions::assert_eq;
 
     #[tokio::test]
     async fn test_cache() {
-        let rltbl = Relatable::init(
-            &true,
-            Some("build/test_cache.db"),
-            &CachingStrategy::Trigger,
-        )
-        .await
-        .unwrap();
+        let rltbl = Relatable::test("test_cache")
+            .await
+            .expect("initialize Relatable");
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
 
         let select = Select::from("penguin")
@@ -1186,5 +1182,7 @@ mod tests {
             .unwrap();
         let count = rltbl.count(&select).await.unwrap();
         assert_eq!(count, 5);
+
+        rltbl.drop_test().await.expect("drop test database");
     }
 }

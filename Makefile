@@ -99,6 +99,7 @@ clean_test: clean_postgres_test clean_sqlite_test
 test_fmt_and_unittest:
 	cargo fmt --check
 	cargo test
+	RLTBL_TEST_CONNECTION=$(PG_DB) cargo test
 
 ### Documentation tests
 .PHONY: crate_docs crate_docs_tokio_postgres test_tesh_doc test_tesh_doc_postgres
