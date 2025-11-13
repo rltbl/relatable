@@ -5,12 +5,12 @@
 use crate as rltbl;
 use rltbl::{
     column::Column,
-    core::{Relatable, RelatableError},
+    core::{meta_column_ddl, Relatable, RelatableError, RowID},
     sql::{self, SqlParam},
 };
 use rltbl_db::{
     any::AnyPool,
-    core::{DbKind, DbQuery, JsonRow, ParamValue},
+    core::{DbQuery, JsonRow, ParamValue},
 };
 
 use indexmap::IndexMap;
@@ -73,7 +73,7 @@ impl Datatype {
     pub async fn validate(
         &self,
         column: &Column,
-        rows: &[&u64],
+        rows: &[&RowID],
         rltbl: &Relatable,
     ) -> Result<bool> {
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
@@ -125,7 +125,7 @@ impl Datatype {
                             r#" AND "_id" IN({sql_params})"#,
                             sql_params = sql_param_gen.get_as_list(rows.len()),
                         ));
-                        params.extend(rows.iter().map(|row| ParamValue::from(**row as i32)));
+                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     let rows = rltbl.pool.query_row(&sql, params).await?;
@@ -183,7 +183,7 @@ impl Datatype {
                             r#" AND "_id" IN({sql_params})"#,
                             sql_params = sql_param_gen.get_as_list(rows.len()),
                         ));
-                        params.extend(rows.iter().map(|row| ParamValue::from(**row as i32)));
+                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     let rows = rltbl.pool.query(&sql, params).await?;
@@ -235,7 +235,7 @@ impl Datatype {
                             r#" AND "_id" IN({sql_params})"#,
                             sql_params = sql_param_gen.get_as_list(rows.len()),
                         ));
-                        params.extend(rows.iter().map(|row| ParamValue::from(**row as i32)));
+                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     // TODO: re-enable this!
@@ -389,15 +389,9 @@ impl<'a> DatatypeTable<'a> {
     /// Get the SQL DDL as a string.
     /// Requires the db only to know the SQL flavour to use.
     pub fn ddl(&self) -> String {
-        let pkey_clause = match self.pool.kind() {
-            DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-            DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
-        };
-
         format!(
-            r#"CREATE TABLE "{}" (
-              _id {pkey_clause},
-              _order INTEGER UNIQUE,
+            r#"CREATE TABLE "{table_name}" (
+              {meta_columns},
               "datatype" TEXT,
               "description" TEXT,
               "parent" TEXT,
@@ -405,7 +399,8 @@ impl<'a> DatatypeTable<'a> {
               "sql_type" TEXT,
               "format" TEXT
             )"#,
-            self.table_name
+            table_name = self.table_name,
+            meta_columns = meta_column_ddl(&self.pool.kind()),
         )
     }
 

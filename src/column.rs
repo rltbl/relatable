@@ -4,13 +4,13 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::RelatableError,
+    core::{meta_column_ddl, RelatableError},
     datatype::Datatypes,
     structure::{Structure, Structures},
 };
 use rltbl_db::{
     any::AnyPool,
-    core::{DbKind, DbQuery, JsonRow},
+    core::{DbQuery, JsonRow},
 };
 
 use anyhow::Result;
@@ -373,15 +373,9 @@ impl<'a> ColumnTable<'a> {
     /// Get the SQL DDL as a string.
     /// Requires the db only to know the SQL flavour to use.
     pub fn ddl(&self) -> String {
-        let pkey_clause = match self.pool.kind() {
-            DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-            DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
-        };
-
         format!(
-            r#"CREATE TABLE "{}" (
-              _id {pkey_clause},
-              _order INTEGER UNIQUE,
+            r#"CREATE TABLE "{table_name}" (
+              {meta_columns},
               "table" TEXT,
               "column" TEXT,
               "label" TEXT,
@@ -390,7 +384,8 @@ impl<'a> ColumnTable<'a> {
               "datatype" TEXT,
               "structure" TEXT
             )"#,
-            self.table_name
+            table_name = self.table_name,
+            meta_columns = meta_column_ddl(&self.pool.kind()),
         )
     }
 

@@ -5,7 +5,7 @@
 use crate as rltbl;
 use rltbl::{
     column::Column,
-    core::{Relatable, RelatableError},
+    core::{Relatable, RelatableError, RowID, RowOrder},
     datatype::Datatypes,
     schema::Schema,
 };
@@ -19,9 +19,9 @@ use serde_json::Value as JsonValue;
 /// Represents a row from some table
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Row {
-    pub id: u64,
-    pub order: u64,
-    pub change_id: u64,
+    pub id: RowID,
+    pub order: RowOrder,
+    pub change_id: RowID,
     pub cells: IndexMap<String, Cell>,
 }
 
@@ -78,15 +78,15 @@ impl From<Row> for Vec<String> {
 
 impl From<JsonRow> for Row {
     fn from(row: JsonRow) -> Self {
-        let id = row.get("_id").and_then(|i| i.as_u64()).unwrap_or_default() as u64;
+        let id = row.get("_id").and_then(|i| i.as_u64()).unwrap_or_default() as RowID;
         let order = row
             .get("_order")
             .and_then(|i| i.as_u64())
-            .unwrap_or_default() as u64;
+            .unwrap_or_default() as RowOrder;
         let change_id = row
             .get("_change_id")
             .and_then(|i| i.as_u64())
-            .unwrap_or_default() as u64;
+            .unwrap_or_default() as RowID;
         let mut cells: IndexMap<String, Cell> = row
             .iter()
             // Ignore columns that start with "_"

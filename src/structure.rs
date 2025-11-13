@@ -5,7 +5,7 @@
 use crate as rltbl;
 use rltbl::{
     column::Column,
-    core::{Relatable, RelatableError},
+    core::{Relatable, RelatableError, RowID},
     sql::SqlParam,
 };
 use rltbl_db::core::{DbQuery, ParamValue};
@@ -37,7 +37,7 @@ impl Structure {
     pub async fn validate(
         &self,
         column: &Column,
-        rows: &[&u64],
+        rows: &[&RowID],
         rltbl: &Relatable,
     ) -> Result<bool> {
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
@@ -89,7 +89,7 @@ impl Structure {
                         r#" AND "_id" IN({sql_params})"#,
                         sql_params = sql_param_gen.get_as_list(rows.len()),
                     ));
-                    params.extend(rows.iter().map(|row| ParamValue::from(**row as i32)));
+                    params.extend(rows.iter().map(|row| ParamValue::from(**row)));
                 }
                 sql.push_str(r#" RETURNING 1 AS "inserted""#);
                 let rows = rltbl.pool.query(&sql, params).await?;

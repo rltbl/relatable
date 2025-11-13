@@ -5,7 +5,7 @@
 use crate as rltbl;
 use rltbl::{
     cli::Cli,
-    core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet},
+    core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet, RowID},
     row::Row,
     select::{joined_query, Format, QueryParams, Select},
     sql::CachingStrategy,
@@ -395,7 +395,7 @@ async fn post_cursor(
 async fn get_row_menu(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table_name, row_id)): Path<(String, u64)>,
+    Path((table_name, row_id)): Path<(String, RowID)>,
 ) -> Response<Body> {
     tracing::info!("get_row_menu({table_name}, {row_id})");
     let username = get_username(session);
@@ -463,7 +463,7 @@ async fn get_column_menu(
 async fn get_cell_menu(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table_name, row_id, column)): Path<(String, u64, String)>,
+    Path((table_name, row_id, column)): Path<(String, RowID, String)>,
 ) -> Response<Body> {
     tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
     let username = get_username(session);
@@ -495,7 +495,7 @@ async fn get_cell_menu(
 
 async fn get_cell_options(
     State(rltbl): State<Arc<Relatable>>,
-    Path((table, row_id, column)): Path<(String, u64, String)>,
+    Path((table, row_id, column)): Path<(String, RowID, String)>,
     Query(query_params): Query<QueryParams>,
 ) -> Response<Body> {
     tracing::info!("get_cell_option({table}, {row_id}, {column}, {query_params:?})");
@@ -529,7 +529,7 @@ async fn get_cell_options(
     Json(json!(values)).into_response()
 }
 
-async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &u64) -> u64 {
+async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &RowID) -> RowID {
     let sql = format!(
         r#"SELECT "_id", MAX("_order") FROM "{table}"
         WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = $1)"#,
@@ -538,13 +538,13 @@ async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &u64) -> u64 {
         .pool
         .query_u64(&sql, [*row_id])
         .await
-        .unwrap_or_default()
+        .unwrap_or_default() as RowID
 }
 
 async fn add_row_before(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table, row_id)): Path<(String, u64)>,
+    Path((table, row_id)): Path<(String, RowID)>,
 ) -> Response<Body> {
     tracing::info!("add_row_before({table}, {row_id})");
     let username = get_username(session);
@@ -555,7 +555,7 @@ async fn add_row_before(
 async fn add_row_after(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table, row_id)): Path<(String, u64)>,
+    Path((table, row_id)): Path<(String, RowID)>,
 ) -> Response<Body> {
     tracing::info!("add_row_after({table}, {row_id})");
     let username = get_username(session);
@@ -576,7 +576,7 @@ async fn add_row(
     rltbl: &Relatable,
     username: &str,
     table: &str,
-    after_id: Option<u64>,
+    after_id: Option<RowID>,
 ) -> Response<Body> {
     if rltbl.readonly {
         return forbid().into();
@@ -603,7 +603,7 @@ async fn add_row(
 async fn delete_row(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
-    Path((table, row_id)): Path<(String, u64)>,
+    Path((table, row_id)): Path<(String, RowID)>,
 ) -> Response<Body> {
     tracing::info!("add_row_after({table}, {row_id})");
     if rltbl.readonly {

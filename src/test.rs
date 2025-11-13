@@ -1,7 +1,7 @@
 //! API tests
 
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Relatable, RLTBL_DEFAULT_DB},
+    core::{Change, ChangeAction, ChangeSet, Relatable, RowID, RLTBL_DEFAULT_DB},
     select::Select,
     sql::CachingStrategy,
 };
@@ -354,7 +354,7 @@ async fn main() {
                     let table = table_to_edit;
                     match random_op() {
                         "add" => {
-                            let after_id = random_between(1, *table_size, &mut -1) as u64;
+                            let after_id = random_between(1, *table_size, &mut -1) as RowID;
                             let row = rltbl
                                 .add_row(
                                     table,
@@ -367,7 +367,7 @@ async fn main() {
                             tracing::info!("Added row {} (order {}) to {table}", row.id, row.order);
                         }
                         "update" => {
-                            let row_to_update = random_between(1, *table_size, &mut -1) as u64;
+                            let row_to_update = random_between(1, *table_size, &mut -1) as RowID;
                             let num_changes = rltbl
                                 .set_values(&ChangeSet {
                                     user,
@@ -391,8 +391,8 @@ async fn main() {
                             tracing::info!("Updated row {row_to_update} in {table}");
                         }
                         "move" => {
-                            let after_id = random_between(1, *table_size, &mut -1) as u64;
-                            let row = random_between(1, *table_size, &mut -1) as u64;
+                            let after_id = random_between(1, *table_size, &mut -1) as RowID;
+                            let row = random_between(1, *table_size, &mut -1) as RowID;
                             let new_order = rltbl
                                 .move_row(table, &user, row, after_id)
                                 .await

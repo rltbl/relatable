@@ -4,7 +4,7 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Relatable, ValidationLevel},
+    core::{Change, ChangeAction, ChangeSet, Relatable, RowID, ValidationLevel},
     select::{Format, Select},
     sql::CachingStrategy,
     web::{serve, serve_cgi},
@@ -214,7 +214,7 @@ pub enum GetSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: u64,
+        row: RowID,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: String,
@@ -229,7 +229,7 @@ pub enum SetSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: u64,
+        row: RowID,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: String,
@@ -250,7 +250,7 @@ pub enum SetSubcommand {
 pub enum AddSubcommand {
     Row {
         #[arg(long, action = ArgAction::Set)]
-        after_id: Option<u64>,
+        after_id: Option<RowID>,
 
         #[arg(value_name = "TABLE", action = ArgAction::Set, help = TABLE_HELP)]
         table: String,
@@ -270,7 +270,7 @@ pub enum AddSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: u64,
+        row: RowID,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: String,
@@ -284,11 +284,11 @@ pub enum MoveSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: u64,
+        row: RowID,
 
         #[arg(value_name = "AFTER", action = ArgAction::Set,
               help = "The ID of the row after which this one is to be moved")]
-        after: u64,
+        after: RowID,
     },
 }
 
@@ -306,7 +306,7 @@ pub enum ValidateSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: u64,
+        row: RowID,
     },
 
     /// Validate the data in the given column of the given table
@@ -324,7 +324,7 @@ pub enum ValidateSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: u64,
+        row: RowID,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: String,
@@ -338,7 +338,7 @@ pub enum DeleteSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: u64,
+        row: RowID,
     },
 
     Message {
@@ -359,7 +359,7 @@ pub enum DeleteSubcommand {
         table: String,
 
         #[arg(value_name = "ROW", action = ArgAction::Set, help = ROW_HELP)]
-        row: Option<u64>,
+        row: Option<RowID>,
 
         #[arg(value_name = "COLUMN", action = ArgAction::Set, help = COLUMN_HELP)]
         column: Option<String>,
@@ -523,7 +523,7 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
 }
 
 /// Print the value of the given column of the given row of the given table
-pub async fn print_value(cli: &Cli, table: &str, row: u64, column: &str) {
+pub async fn print_value(cli: &Cli, table: &str, row: RowID, column: &str) {
     tracing::trace!("print_value({cli:?}, {table}, {row}, {column})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -579,7 +579,7 @@ pub async fn print_history(cli: &Cli, context: usize) {
         _ => redoable_changes[0]
             .get("change_id")
             .and_then(|v| v.as_u64())
-            .expect("No change_id found"),
+            .expect("No change_id found") as RowID,
     };
     redoable_changes.reverse();
     for (i, change) in redoable_changes.iter().enumerate() {
@@ -589,7 +589,7 @@ pub async fn print_history(cli: &Cli, context: usize) {
         let change_id = change
             .get("change_id")
             .and_then(|v| v.as_u64())
-            .expect("No change_id found");
+            .expect("No change_id found") as RowID;
         let action = change
             .get("action")
             .expect("No action found")
@@ -608,7 +608,7 @@ pub async fn print_history(cli: &Cli, context: usize) {
         _ => undoable_changes[0]
             .get("change_id")
             .and_then(|v| v.as_u64())
-            .expect("No change_id found"),
+            .expect("No change_id found") as RowID,
     };
     for (i, change) in undoable_changes.iter().enumerate() {
         if i > context {
@@ -617,7 +617,7 @@ pub async fn print_history(cli: &Cli, context: usize) {
         let change_id = change
             .get("change_id")
             .and_then(|v| v.as_u64())
-            .expect("No change_id found");
+            .expect("No change_id found") as RowID;
         let action = change
             .get("action")
             .expect("No action found")
@@ -649,7 +649,7 @@ pub fn get_username(cli: &Cli) -> String {
 pub async fn set_value(
     cli: &Cli,
     table: &str,
-    row: u64,
+    row: RowID,
     column: &str,
     value: &str,
     validation_level: &ValidationLevel,
@@ -664,7 +664,7 @@ pub async fn set_value(
     let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#,);
     let before = rltbl
         .pool
-        .query_value(&sql, [row as i32])
+        .query_value(&sql, [row])
         .await
         .expect("Error getting value");
     let after = serde_json::from_str::<JsonValue>(value).unwrap_or(json!(value));
@@ -722,7 +722,7 @@ pub fn prompt_for_column_value(column: &str) -> JsonValue {
 pub async fn prompt_for_json_message(
     rltbl: &Relatable,
     table: &str,
-    row: u64,
+    row: RowID,
     column: &str,
 ) -> Result<JsonRow> {
     let columns: Vec<_> = rltbl.column_table().get(&["message"]).await?.into();
@@ -778,7 +778,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
 /// Use Relatable, in conformity with the given command-line parameters, to add a row representing
 /// a [Message](rltbl::table::Message) to the message table. The details of the message are read
 /// from STDIN, either interactively or in JSON format.
-pub async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
+pub async fn add_message(cli: &Cli, table: &str, row: RowID, column: &str) {
     tracing::trace!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -825,7 +825,7 @@ pub async fn add_message(cli: &Cli, table: &str, row: u64, column: &str) {
 pub async fn add_row(
     cli: &Cli,
     table: &str,
-    after_id: Option<u64>,
+    after_id: Option<RowID>,
     validation_level: &ValidationLevel,
 ) {
     tracing::trace!("add_row({cli:?}, {table}, {after_id:?}, {validation_level:?})");
@@ -855,7 +855,7 @@ pub async fn add_row(
 }
 
 /// Move the given row after the row whose id is `after_id`.
-pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
+pub async fn move_row(cli: &Cli, table: &str, row: RowID, after_id: RowID) {
     tracing::trace!("move_row({cli:?}, {table}, {row}, {after_id})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -873,7 +873,7 @@ pub async fn move_row(cli: &Cli, table: &str, row: u64, after_id: u64) {
 }
 
 /// Validate the given row in the given table
-pub async fn validate_row(cli: &Cli, table_name: &str, row: &u64) {
+pub async fn validate_row(cli: &Cli, table_name: &str, row: &RowID) {
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .expect("Connect error");
@@ -906,7 +906,7 @@ pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
 }
 
 /// Validate the value of the given column, row, and table
-pub async fn validate_value(cli: &Cli, table_name: &str, row: &u64, column_name: &str) {
+pub async fn validate_value(cli: &Cli, table_name: &str, row: &RowID, column_name: &str) {
     tracing::trace!("validate_value({cli:?}, {table_name}, {row}, {column_name})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -918,7 +918,7 @@ pub async fn validate_value(cli: &Cli, table_name: &str, row: &u64, column_name:
 }
 
 /// Delete the given row in the given table
-pub async fn delete_row(cli: &Cli, table: &str, row: u64) {
+pub async fn delete_row(cli: &Cli, table: &str, row: RowID) {
     tracing::trace!("delete_row({cli:?}, {table}, {row})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
@@ -942,7 +942,7 @@ pub async fn delete_message(
     target_rule: Option<&str>,
     target_user: Option<&str>,
     table: &str,
-    row: Option<u64>,
+    row: Option<RowID>,
     column: Option<&str>,
 ) {
     tracing::trace!(

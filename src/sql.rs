@@ -11,7 +11,7 @@
 use crate as rltbl;
 use rltbl::{
     column::Column,
-    core::{RelatableError, NEW_ORDER_MULTIPLIER},
+    core::{id_ddl, meta_column_ddl, RelatableError, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER},
     datatype::Datatypes,
     table::Table,
 };
@@ -372,17 +372,9 @@ pub fn generate_table_ddl(
 
     let mut sql = format!(r#"CREATE TABLE "{}" ( "#, table.name);
     if table.has_meta {
-        sql.push_str(match db_kind {
-            DbKind::SQLite => {
-                "_id INTEGER PRIMARY KEY AUTOINCREMENT, \
-                 _order INTEGER UNIQUE, "
-            }
-            DbKind::PostgreSQL => {
-                "_id SERIAL PRIMARY KEY, \
-                 _order BIGINT UNIQUE, "
-            }
-        });
-    }
+        sql.push_str(&meta_column_ddl(db_kind));
+        sql.push_str(",");
+    };
     sql.push_str(&format!(" {})", column_clauses.join(", ")));
     ddl.push(sql);
 
@@ -887,18 +879,13 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
             ddl.push(format!(r#"DROP TABLE IF EXISTS "table" CASCADE"#));
         }
     }
-    let pkey_clause = match db_kind {
-        DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
-    };
-
     ddl.push(format!(
         r#"CREATE TABLE "table" (
-             "_id" {pkey_clause},
-             "_order" BIGINT UNIQUE,
+             {meta_columns},
              "table" TEXT UNIQUE,
              "path" TEXT UNIQUE
-           )"#
+           )"#,
+        meta_columns = meta_column_ddl(db_kind)
     ));
 
     // Add metacolumn triggers before returning the DDL:
@@ -962,17 +949,19 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_change_table_ddl({force}, {db_kind:?})");
     match db_kind {
         DbKind::SQLite => {
-            vec![r#"CREATE TABLE "change" (
-                      change_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                      "user" TEXT NOT NULL,
-                      "action" TEXT NOT NULL,
-                      "table" TEXT NOT NULL,
-                      "description" TEXT,
-                      "content" TEXT,
-                      FOREIGN KEY ("user") REFERENCES "user"("name")
-                    )"#
-            .to_string()]
+            vec![format!(
+                r#"CREATE TABLE "change" (
+                     change_id {id},
+                     "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                     "user" TEXT NOT NULL,
+                     "action" TEXT NOT NULL,
+                     "table" TEXT NOT NULL,
+                     "description" TEXT,
+                     "content" TEXT,
+                     FOREIGN KEY ("user") REFERENCES "user"("name")
+                   )"#,
+                id = id_ddl(db_kind)
+            )]
         }
         DbKind::PostgreSQL => {
             let mut ddl = vec![];
@@ -983,7 +972,7 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
             }
             ddl.push(format!(
                 r#"CREATE TABLE "change" (
-                     change_id SERIAL PRIMARY KEY,
+                     change_id {id},
                      "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                      "user" TEXT NOT NULL,
                      "action" TEXT NOT NULL,
@@ -991,7 +980,8 @@ pub fn generate_change_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
                      "description" TEXT,
                      "content" TEXT,
                      FOREIGN KEY ("user") REFERENCES "user"("name")
-                   )"#
+                   )"#,
+                id = id_ddl(db_kind)
             ));
             ddl
         }
@@ -1003,17 +993,19 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     tracing::trace!("generate_history_table_ddl({force}, {db_kind:?})");
     match db_kind {
         DbKind::SQLite => {
-            vec![r#"CREATE TABLE "history" (
-                      history_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      change_id INTEGER NOT NULL,
-                      "table" TEXT NOT NULL,
-                      "row" BIGINT NOT NULL,
-                      "before" TEXT,
-                      "after" TEXT,
-                      FOREIGN KEY ("change_id") REFERENCES "change"("change_id"),
-                      FOREIGN KEY ("table") REFERENCES "table"("table")
-                    )"#
-            .to_string()]
+            vec![format!(
+                r#"CREATE TABLE "history" (
+                     history_id {id},
+                     change_id {ID_SQL_TYPE} NOT NULL,
+                     "table" TEXT NOT NULL,
+                     "row" {ID_SQL_TYPE} NOT NULL,
+                     "before" TEXT,
+                     "after" TEXT,
+                     FOREIGN KEY ("change_id") REFERENCES "change"("change_id"),
+                     FOREIGN KEY ("table") REFERENCES "table"("table")
+                   )"#,
+                id = id_ddl(db_kind),
+            )]
         }
         DbKind::PostgreSQL => {
             let mut ddl = vec![];
@@ -1024,15 +1016,16 @@ pub fn generate_history_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
             }
             ddl.push(format!(
                 r#"CREATE TABLE "history" (
-                     history_id SERIAL PRIMARY KEY,
-                     change_id INTEGER NOT NULL,
+                     history_id {id},
+                     change_id {ID_SQL_TYPE} NOT NULL,
                      "table" TEXT NOT NULL,
-                     "row" BIGINT NOT NULL,
+                     "row" {ID_SQL_TYPE} NOT NULL,
                      "before" TEXT,
                      "after" TEXT,
                      FOREIGN KEY ("change_id") REFERENCES "change"("change_id"),
                      FOREIGN KEY ("table") REFERENCES "table"("table")
-                   )"#
+                   )"#,
+                id = id_ddl(db_kind),
             ));
             ddl
         }
@@ -1044,19 +1037,21 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
     tracing::trace!("generate_message_table_ddl({force}, {db_kind:?})");
     match db_kind {
         DbKind::SQLite => {
-            vec![r#"CREATE TABLE "message" (
-                      "message_id" INTEGER PRIMARY KEY AUTOINCREMENT,
-                      "added_by" TEXT,
-                      "table" TEXT NOT NULL,
-                      "row" BIGINT NOT NULL,
-                      "column" TEXT NOT NULL,
-                      "value" TEXT,
-                      "level" TEXT,
-                      "rule" TEXT,
-                      "message" TEXT,
-                      FOREIGN KEY ("table") REFERENCES "table"("table")
-                    )"#
-            .to_string()]
+            vec![format!(
+                r#"CREATE TABLE "message" (
+                     "message_id" {id},
+                     "added_by" TEXT,
+                     "table" TEXT NOT NULL,
+                     "row" {ID_SQL_TYPE} NOT NULL,
+                     "column" TEXT NOT NULL,
+                     "value" TEXT,
+                     "level" TEXT,
+                     "rule" TEXT,
+                     "message" TEXT,
+                     FOREIGN KEY ("table") REFERENCES "table"("table")
+                   )"#,
+                id = id_ddl(db_kind),
+            )]
         }
         DbKind::PostgreSQL => {
             let mut ddl = vec![];
@@ -1067,17 +1062,18 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
             }
             ddl.push(format!(
                 r#"CREATE TABLE "message" (
-                     "message_id" SERIAL PRIMARY KEY,
+                     "message_id" {id},
                      "added_by" TEXT,
                      "table" TEXT NOT NULL,
-                     "row" BIGINT NOT NULL,
+                     "row" {ID_SQL_TYPE} NOT NULL,
                      "column" TEXT NOT NULL,
                      "value" TEXT,
                      "level" TEXT,
                      "rule" TEXT,
                      "message" TEXT,
                      FOREIGN KEY ("table") REFERENCES "table"("table")
-                   )"#
+                   )"#,
+                id = id_ddl(db_kind),
             ));
             ddl
         }
@@ -1154,35 +1150,5 @@ where
 {
     fn vec_into(self) -> Vec<D> {
         self.into_iter().map(std::convert::Into::into).collect()
-    }
-}
-
-// Tests
-
-#[cfg(test)]
-mod tests {
-    use crate::{core::Relatable, select::Select};
-    use pretty_assertions::assert_eq;
-
-    #[tokio::test]
-    async fn test_cache() {
-        let rltbl = Relatable::test("test_cache")
-            .await
-            .expect("initialize Relatable");
-        crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
-
-        let select = Select::from("penguin")
-            .filters(&vec![format!("island = Dream")])
-            .unwrap();
-        let count = rltbl.count(&select).await.unwrap();
-        assert_eq!(count, 2);
-
-        let select = Select::from("penguin")
-            .filters(&vec![format!("island = Torgersen")])
-            .unwrap();
-        let count = rltbl.count(&select).await.unwrap();
-        assert_eq!(count, 5);
-
-        rltbl.drop_test().await.expect("drop test database");
     }
 }

@@ -1,7 +1,7 @@
-use crate as rltbl;
+use crate::{self as rltbl, core::meta_column_ddl};
 use rltbl::{
     column::ColumnBuilder,
-    core::{Relatable, NEW_ORDER_MULTIPLIER},
+    core::{Relatable, RowID, RowOrder, NEW_ORDER_MULTIPLIER},
     datatype::DatatypeBuilder,
     sql::{self, CachingStrategy, SqlParam},
 };
@@ -47,16 +47,10 @@ pub async fn create_penguin_table(
     let sql = format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
     rltbl.pool.execute(&sql, ()).await?;
 
-    let pkey_clause = match rltbl.pool.kind() {
-        DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
-    };
-
     // Create the demo table:
     let sql = format!(
         r#"CREATE TABLE "{table}" (
-             _id {pkey_clause},
-             _order INTEGER UNIQUE,
+             {meta_columns},
              study_name TEXT,
              sample_number INTEGER,
              species TEXT,
@@ -66,6 +60,7 @@ pub async fn create_penguin_table(
              bill_depth NUMERIC,
              body_mass BIGINT
            )"#,
+        meta_columns = meta_column_ddl(&rltbl.pool.kind())
     );
     rltbl.pool.execute(&sql, ()).await?;
 
@@ -104,8 +99,8 @@ pub async fn create_penguin_table(
             sql_param.reset();
         }
 
-        let id = i as i32 + 1;
-        let order = id * NEW_ORDER_MULTIPLIER as i32;
+        let id = i as RowID + 1;
+        let order = id as RowOrder * NEW_ORDER_MULTIPLIER;
         let island = islands.iter().choose(&mut rng).unwrap().to_string();
         let bill_length = rng.gen_range(300..500) as f64 / 10.0;
         let bill_depth = rng.gen_range(200..400) as f64 / 10.0;

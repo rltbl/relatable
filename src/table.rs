@@ -6,7 +6,7 @@ use crate as rltbl;
 
 use rltbl::{
     column::Column,
-    core::Relatable,
+    core::{Relatable, RowID},
     sql::{self},
 };
 use rltbl_db::core::{DbKind, DbQuery};
@@ -214,13 +214,17 @@ impl Table {
 
     /// Returns the row id that comes before the given row in the given table, using the given
     /// transaction.
-    pub async fn get_previous_row_id(table: &str, row: u64, rltbl: &Relatable) -> Result<u64> {
+    pub async fn get_previous_row_id(
+        table: &str,
+        row_id: RowID,
+        rltbl: &Relatable,
+    ) -> Result<RowID> {
         let sql = format!(
             r#"SELECT "_id" FROM "{table}" WHERE "_order" < (SELECT _order FROM "{table}" WHERE _id = $1)
                ORDER BY "_order" DESC LIMIT 1"#,
         );
-        match rltbl.pool.query_u64(&sql, [row as i32]).await {
-            Ok(id) => Ok(id),
+        match rltbl.pool.query_i64(&sql, [row_id]).await {
+            Ok(id) => Ok(id as RowID),
             Err(_) => Ok(0),
         }
     }
