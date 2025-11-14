@@ -4,7 +4,7 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Relatable, RowID, ValidationLevel},
+    core::{Change, Relatable, RowID, ValidationLevel},
     select::{Format, Select},
     sql::CachingStrategy,
     web::{serve, serve_cgi},
@@ -388,7 +388,7 @@ pub enum LoadSubcommand {
 
 #[derive(Subcommand, Debug)]
 pub enum DropSubcommand {
-    Database {},
+    Tables {},
 }
 
 pub async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
@@ -660,29 +660,9 @@ pub async fn set_value(
         .expect("Connect error");
     rltbl.validation_level = *validation_level;
 
-    // Fetch the current value from the db:
-    let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#,);
-    let before = rltbl
-        .pool
-        .query_value(&sql, [row])
-        .await
-        .expect("Error getting value");
     let after = serde_json::from_str::<JsonValue>(value).unwrap_or(json!(value));
-
-    // Apply the change to the new value:
     let num_changes = rltbl
-        .set_values(&ChangeSet {
-            user: get_username(&cli),
-            action: ChangeAction::Do,
-            table: table.to_string(),
-            description: "Set one value".to_string(),
-            changes: vec![Change::Update {
-                row,
-                column: column.to_string(),
-                before: before,
-                after: after,
-            }],
-        })
+        .set_value(&get_username(&cli), table, row, column, &after)
         .await
         .expect("Error setting values")
         .changes
@@ -1042,15 +1022,12 @@ pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
 }
 
 /// Drop all of the data tables and meta tables from the database
-pub async fn drop_database(cli: &Cli) {
-    tracing::trace!("drop_database({cli:?})");
+pub async fn drop_tables(cli: &Cli) {
+    tracing::trace!("drop_tables({cli:?})");
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .expect("Connect error");
-    rltbl
-        .drop_database()
-        .await
-        .expect("Error dropping database");
+    rltbl.drop_tables().await.expect("Error dropping tables");
 }
 
 /// Build a demonstration database
@@ -1172,7 +1149,7 @@ pub async fn process_command() {
         },
         Command::Save { save_dir } => save_all(&cli, save_dir.as_deref()).await,
         Command::Drop { subcommand } => match subcommand {
-            DropSubcommand::Database {} => drop_database(&cli).await,
+            DropSubcommand::Tables {} => drop_tables(&cli).await,
         },
         Command::Serve {
             host,

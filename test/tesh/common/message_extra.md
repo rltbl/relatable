@@ -13,7 +13,7 @@ Rows 1-0 of 0
 message_id  added_by  table  row  column  value  level  rule  message
 $ rltbl set value island 3 island Montreal
 $ rltbl save
-$ rltbl drop database
+$ rltbl drop tables
 $ rltbl demo --size 0 --force
 Created a demonstration database in '...'
 $ rltbl load table island.tsv --force

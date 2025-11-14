@@ -80,6 +80,7 @@ impl Schema {
         }
     }
 
+    /// Nullify each of the values in the given row.
     pub fn nullify_row(&self, table_name: &str, row: &JsonRow) -> JsonRow {
         let mut nullified_row = JsonRow::new();
         for (column_name, value) in row.iter() {
@@ -88,7 +89,6 @@ impl Schema {
                 self.nullify_value(table_name, column_name, value),
             );
         }
-        tracing::debug!("Nullified row: {row:?} to: {nullified_row:?}");
         nullified_row
     }
 

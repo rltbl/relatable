@@ -432,6 +432,9 @@ impl Relatable {
     /// Drop the given table in the database
     pub async fn drop_table(&self, table_name: &str) -> Result<bool> {
         if self.table_exists(table_name).await? {
+            self.delete_message(table_name, &[], None, None, None)
+                .await?;
+            // TODO: delete history and changes
             let sql = match self.pool.kind() {
                 DbKind::SQLite => format!(r#"DROP TABLE "{table_name}""#),
                 DbKind::PostgreSQL => {
@@ -476,8 +479,8 @@ impl Relatable {
     }
 
     /// Drop all of the data tables and metatables in the database
-    pub async fn drop_database(&self) -> Result<()> {
-        tracing::trace!("Relatable::drop_database({self:?})");
+    pub async fn drop_tables(&self) -> Result<()> {
+        tracing::trace!("Relatable::drop_tables({self:?})");
         self.drop_data_tables().await?;
         self.drop_meta_tables().await?;
         Ok(())
@@ -867,6 +870,73 @@ impl Relatable {
         }
 
         self.commit_to_git().await.expect("Error committing to git");
+    }
+
+    async fn create_table(&self, schema: &Schema, table_name: &str) -> Result<()> {
+        // Generate the SQL statements needed to create the table and execute them:
+        let column_refs: Vec<&Column> = schema
+            .columns(table_name)
+            .values()
+            .cloned()
+            .filter(|c| !c.column.starts_with("_"))
+            .collect();
+        for sql in sql::generate_table_ddl(
+            schema.table(table_name)?,
+            &column_refs,
+            &schema.datatypes,
+            true,
+            &self.pool.kind(),
+            &self.caching_strategy,
+        )? {
+            self.pool.execute(&sql, ()).await?;
+        }
+        Ok(())
+    }
+
+    /// Reload a table from a TSV file at a path.
+    /// This requires dropping the table (to reset counters)
+    /// and recreating it from the schema,
+    /// then reading rows from the TSV.
+    pub async fn reload_table(&self, table_name: &str, path: &str) -> Result<()> {
+        let schema = self.schema().await?;
+
+        self.drop_table(table_name).await?;
+        self.create_table(&schema, table_name).await?;
+
+        // Read the records from the given TSV file:
+        let mut rdr = ReaderBuilder::new()
+            .has_headers(true)
+            .delimiter(b'\t')
+            .from_reader(File::open(path).expect(&format!("Unable to open '{path}'")));
+
+        let headers = rdr.headers()?.clone();
+        let header_refs: Vec<&str> = headers.deserialize(None)?;
+
+        let records = rdr.records();
+        let rows: Vec<JsonRow> = records
+            .into_iter()
+            .map(|record| {
+                let row: JsonRow = record?.deserialize(Some(&headers))?;
+                let row = schema.nullify_row(table_name, &row);
+                Ok(row)
+            })
+            .collect::<Result<Vec<JsonRow>>>()?;
+        let row_refs: Vec<&JsonRow> = rows.iter().collect();
+        self.pool
+            .insert(table_name, &header_refs, &row_refs)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn truncate_table(&self, table_name: &str) -> Result<()> {
+        self.delete_message(table_name, &[], None, None, None)
+            .await?;
+        let sql = match self.pool.kind() {
+            DbKind::SQLite => format!(r#"DELETE FROM "{table_name}""#),
+            DbKind::PostgreSQL => format!(r#"TRUNCATE TABLE "{table_name}""#),
+        };
+        self.pool.execute(&sql, ()).await?;
+        Ok(())
     }
 
     /// Returns a [Table] corresponding to the given table name.
@@ -2078,6 +2148,33 @@ impl Relatable {
         }
 
         Ok(actual_changeset)
+    }
+
+    /// Set one cell value.
+    pub async fn set_value(
+        &self,
+        user: &str,
+        table: &str,
+        row: RowID,
+        column: &str,
+        value: &JsonValue,
+    ) -> Result<ChangeSet> {
+        let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#);
+        let before = self.pool.query_value(&sql, [row]).await?;
+
+        self.set_values(&ChangeSet {
+            user: user.to_string(),
+            action: ChangeAction::Do,
+            table: table.to_string(),
+            description: "Set one value".to_string(),
+            changes: vec![Change::Update {
+                row,
+                column: column.to_string(),
+                before: before,
+                after: value.clone(),
+            }],
+        })
+        .await
     }
 
     /// Update the database using the given [ChangeSet]
@@ -3381,6 +3478,39 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
 ";
         assert_eq!(result_set.to_console(), expected);
 
+        rltbl.drop_test().await.expect("drop test database");
+    }
+
+    #[tokio::test]
+    async fn test_roundtrip() {
+        let rltbl = Relatable::test("test_roundtrip")
+            .await
+            .expect("initialize Relatable");
+
+        let dir = FilePath::new("build/test_roundtrip/");
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).expect("remove build/test_roundtrip/");
+        }
+        std::fs::create_dir_all(&dir).expect("create build/test_roundtrip/");
+
+        let select = Select::from("penguin");
+
+        crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
+        let before = rltbl.fetch(&select).await.expect("fetch before");
+        rltbl
+            .save_all(Some(dir.to_str().unwrap()))
+            .await
+            .expect("save all tables");
+
+        rltbl
+            .reload_table("penguin", "build/test_roundtrip/penguin.tsv")
+            .await
+            .expect("reload from build/test_roundtrip/penguin.tsv");
+        let after = rltbl.fetch(&select).await.expect("fetch after");
+
+        assert_eq!(before, after);
+
+        std::fs::remove_dir_all(&dir).expect("remove build/test_roundtrip/");
         rltbl.drop_test().await.expect("drop test database");
     }
 }
