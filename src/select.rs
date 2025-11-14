@@ -646,7 +646,7 @@ impl Select {
     }
 
     /// Add an equals filter on the given column and value.
-    pub fn eq(&mut self, column: &str, value: impl IntoParamValue) -> Result<&Self> {
+    pub fn where_eq(&mut self, column: &str, value: impl IntoParamValue) -> Result<&Self> {
         tracing::trace!("Select::eq({column:?}, value)");
         self.filters.push(Filter::Equal {
             table: "".to_string(),

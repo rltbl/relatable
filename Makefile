@@ -16,38 +16,18 @@ usage:
 FORCE:
 
 ### Rusqlite debuggable binary
-.PHONY: debug rusqlite rusqlite_debug
+.PHONY: debug
 
-debug: rusqlite_debug
-
-rusqlite: rusqlite_debug
-
-rusqlite_debug: target/debug/rltbl
+debug: target/debug/rltbl
 
 target/debug/rltbl: src/resources/main.js src/resources/main.css FORCE
 	cargo build
 
-### Tokio-Postgres debuggable binary
-.PHONY: tokio_postgres tokio_postgres_debug
-
-tokio_postgres: tokio_postgres_debug
-
-tokio_postgres_debug:
-	cargo build --features tokio-postgres
-
 ### Rusqlite release binary
-.PHONY: release rusqlite_release
+.PHONY: release
 
-release: rusqlite_release
-
-rusqlite_release:
+release:
 	cargo build --release
-
-### Tokio-Postgres release binary
-.PHONY: tokio_postgres_release
-
-tokio_postgres_release:
-	cargo build --release --features tokio-postgres
 
 ### To start the server
 .PHONY: debug-serve
@@ -101,20 +81,15 @@ cargo_test:
 	RLTBL_TEST_CONNECTION=$(PG_DB) cargo test
 
 ### Documentation tests
-.PHONY: crate_docs crate_docs_tokio_postgres test_tesh_doc test_tesh_doc_postgres
+.PHONY: crate_docs test_tesh_doc test_tesh_doc_postgres
 crate_docs:
 	RUSTDOCFLAGS="-D warnings" cargo doc
 
-crate_docs_tokio_postgres:
-	RUSTDOCFLAGS="-D warnings" cargo doc --features tokio-postgres
-
-test_tesh_doc:
-	cargo build --release --features rusqlite
+test_tesh_doc: release
 	echo 'export RLTBL_CONNECTION=$(SQLITE_DB)' > doc/setup.sh
 	PATH="$$(pwd)/target/release:$${PATH}"; tesh --debug false ./doc
 
-test_tesh_doc_postgres:
-	cargo build --release --features tokio-postgres
+test_tesh_doc_postgres: release
 	echo 'export RLTBL_CONNECTION=$(PG_DB)' > doc/setup.sh
 	PATH="$$(pwd)/target/release::$${PATH}"; tesh --debug false ./doc
 
@@ -149,13 +124,13 @@ prepare_postgres: | test/tesh/common/as_postgres
 	echo "$$(echo 'export RLTBL_CONNECTION=postgresql:///rltbl_db'; cat test/random.sh)" \
 		> test/random-postgres.sh
 
-test_tesh_tokio_postgres_common_as_postgres: tokio_postgres_debug prepare_postgres
+test_tesh_tokio_postgres_common_as_postgres: debug prepare_postgres
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/common/as_postgres
 
-test_tesh_tokio_postgres_only: tokio_postgres_debug
+test_tesh_tokio_postgres_only: debug
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/postgres_only
 
-test_random_tokio_postgres: tokio_postgres_debug prepare_postgres
+test_random_tokio_postgres: debug prepare_postgres
 	bash test/random-postgres.sh --varying-rate
 
 ### Performance tests
@@ -174,7 +149,7 @@ test_caching_sqlite: debug
 	target/debug/rltbl_test --database $(SQLITE_DB) --caching truncate -vv test-read-perf 100 100 10 5 --force
 	target/debug/rltbl_test --database $(SQLITE_DB) --caching truncate_all -vv test-read-perf 100 100 10 5 --force
 
-test_caching_postgres: tokio_postgres_debug
+test_caching_postgres: debug
 	target/debug/rltbl_test --database $(PG_DB) --caching trigger -vv test-read-perf 100 100 10 5 --force
 	target/debug/rltbl_test --database $(PG_DB) --caching truncate -vv test-read-perf 100 100 10 5 --force
 	target/debug/rltbl_test --database $(PG_DB) --caching truncate_all -vv test-read-perf 100 100 10 5 --force
@@ -194,7 +169,7 @@ test_perf_sqlite: debug | test/perf/tsv
 
 ### Postgres performance (rusqlite and sqlx)
 
-test_perf_tokio_postgres: tokio_postgres_debug | test/perf/tsv
+test_perf_tokio_postgres: debug | test/perf/tsv
 	target/debug/rltbl --database $(PG_DB) demo --size $(perf_test_size) --force
 	target/debug/rltbl --database $(PG_DB) save $|
 	target/debug/rltbl --database $(PG_DB) init --force

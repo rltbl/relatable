@@ -75,7 +75,9 @@ pub async fn create_penguin_table(
     // Populate the demo table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
     let mut rng = StdRng::seed_from_u64(0);
-    let sql_first_part = format!(r#"INSERT INTO "{table}" VALUES "#);
+    let sql_first_part = format!(
+        r#"INSERT INTO "{table}" (_order, study_name, sample_number, species, island, individual_id, bill_length, bill_depth, body_mass) VALUES "#
+    );
     let mut sql_value_parts = vec![];
     let mut sql_param = SqlParam::new(&rltbl.pool.kind());
     let mut param_values = vec![];
@@ -84,7 +86,7 @@ pub async fn create_penguin_table(
         DbKind::PostgreSQL => sql::MAX_PARAMS_POSTGRES,
     };
     for i in 0..size {
-        if (param_values.len() + 8) >= max_params {
+        if (param_values.len() + 7) >= max_params {
             let sql = format!(
                 "{sql_first_part} {sql_value_part}",
                 sql_value_part = sql_value_parts.join(", ")
@@ -110,14 +112,13 @@ pub async fn create_penguin_table(
         let body_mass = body_mass as i64;
 
         sql_value_parts.push(format!(
-            "({sql_param_list_1}, 'FAKE123', {lone_sql_param}, 'Pygoscelis adeliae', \
-                 {sql_param_list_2})",
-            sql_param_list_1 = sql_param.get_as_list(2),
-            lone_sql_param = sql_param.next(),
-            sql_param_list_2 = sql_param.get_as_list(5),
+            "({sql_param_1}, 'FAKE123', {sql_param_2}, 'Pygoscelis adeliae', \
+                 {sql_param_list})",
+            sql_param_1 = sql_param.next(),
+            sql_param_2 = sql_param.next(),
+            sql_param_list = sql_param.get_as_list(5),
         ));
         param_values.extend(params![
-            id,
             order,
             id,
             island,

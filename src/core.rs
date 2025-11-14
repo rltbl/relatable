@@ -441,7 +441,7 @@ impl Relatable {
                     format!(r#"DROP TABLE "{table_name}" CASCADE"#)
                 }
             };
-            self.pool.execute(&sql, ()).await?;
+            self.pool.execute_batch(&sql).await?;
             Ok(true)
         } else {
             Ok(false)
@@ -893,6 +893,49 @@ impl Relatable {
         Ok(())
     }
 
+    /// Prepare this row for insertion into the database.
+    /// Return the row and any messages to insert.
+    pub fn prepare_row(
+        &self,
+        schema: &Schema,
+        table_name: &str,
+        row: &JsonRow,
+    ) -> (JsonRow, Vec<JsonRow>) {
+        let id = row.get("_id").unwrap_or(&json!(0)).clone();
+        let mut messages = Vec::new();
+        let mut json_row = JsonRow::new();
+        for (column_name, value) in row.iter() {
+            let value = schema.nullify_value(table_name, column_name, value);
+            let sql_type = schema
+                .column(table_name, &column_name)
+                .and_then(|c| Some(c.sql_type.as_str()))
+                .unwrap_or("text");
+            let value = match self.pool.convert_json(sql_type, &value) {
+                Ok(_) => value,
+                Err(_) => {
+                    messages.push(
+                        json!({
+                            "added_by": "rltbl".to_string(),
+                            "table": table_name.to_string(),
+                            "row": id,
+                            "column": column_name.to_string(),
+                            "value": value.clone(),
+                            "level": "error".to_string(),
+                            "rule": format!("sql_type:{sql_type}"),
+                            "message": format!("{column_name} must be of type {sql_type}"),
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    );
+                    JsonValue::Null
+                }
+            };
+            json_row.insert(column_name.to_owned(), value);
+        }
+        (json_row, messages)
+    }
+
     /// Reload a table from a TSV file at a path.
     /// This requires dropping the table (to reset counters)
     /// and recreating it from the schema,
@@ -910,22 +953,60 @@ impl Relatable {
             .from_reader(File::open(path).expect(&format!("Unable to open '{path}'")));
 
         let headers = rdr.headers()?.clone();
-        let header_refs: Vec<&str> = headers.deserialize(None)?;
+        let column_refs: Vec<&str> = headers.deserialize(None)?;
 
         let records = rdr.records();
         let rows: Vec<JsonRow> = records
             .into_iter()
-            .map(|record| {
-                let row: JsonRow = record?.deserialize(Some(&headers))?;
-                let row = schema.nullify_row(table_name, &row);
+            .enumerate()
+            .map(|(id, record)| {
+                let mut row: JsonRow = record?.deserialize(Some(&headers))?;
+                row.insert("_id".to_string(), json!(id));
                 Ok(row)
             })
             .collect::<Result<Vec<JsonRow>>>()?;
         let row_refs: Vec<&JsonRow> = rows.iter().collect();
-        self.pool
-            .insert(table_name, &header_refs, &row_refs)
+        self.insert_rows(&schema, table_name, &column_refs, &row_refs)
             .await?;
         Ok(())
+    }
+
+    pub async fn insert_rows(
+        &self,
+        schema: &Schema,
+        table_name: &str,
+        columns: &[&str],
+        rows: &[&JsonRow],
+    ) -> Result<Vec<RowID>> {
+        let rows_and_messages: Vec<(JsonRow, Vec<JsonRow>)> = rows
+            .iter()
+            .map(|row| self.prepare_row(schema, table_name, row))
+            .collect();
+        let row_refs: Vec<&JsonRow> = rows_and_messages.iter().map(|(row, _)| row).collect();
+        let result_rows = self
+            .pool
+            .insert_returning(table_name, columns, &row_refs, &["_id"])
+            .await?;
+        let row_ids: Vec<RowID> = result_rows
+            .into_iter()
+            .map(|row| row.get("_id").unwrap().as_i64().unwrap() as RowID)
+            .collect();
+
+        let messsage_refs: Vec<&JsonRow> = rows_and_messages
+            .iter()
+            .map(|(_, message)| message)
+            .flatten()
+            .collect();
+        self.pool
+            .insert(
+                "message",
+                &[
+                    "added_by", "table", "row", "column", "value", "level", "rule", "message",
+                ],
+                &messsage_refs,
+            )
+            .await?;
+        Ok(row_ids)
     }
 
     pub async fn truncate_table(&self, table_name: &str) -> Result<()> {
@@ -2150,6 +2231,13 @@ impl Relatable {
         Ok(actual_changeset)
     }
 
+    /// Get one cell value.
+    pub async fn get_value(&self, table: &str, row: RowID, column: &str) -> Result<JsonValue> {
+        let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#);
+        let value = self.pool.query_value(&sql, [row]).await?;
+        Ok(value)
+    }
+
     /// Set one cell value.
     pub async fn set_value(
         &self,
@@ -2243,55 +2331,28 @@ impl Relatable {
             );
         }
 
-        // Nullify the JSON row by setting any column values whose content matches the column's
-        // nulltype to Null:
-        let mut row = schema.nullify_row(table_name, row);
-
-        // Prepare a new row to be inserted using the JSON row as a base:
-        let mut new_row = Row::from(row.clone());
-
-        // A new_row_id will have been passed if the row is being added as part of an undo/redo.
-        // In that case an after_id must have been passed as well but we leave the row order as
-        // is for now, since we are not assured that the old row order is actually still free in
-        // the table (recall that there is a unique constraint on _order). However the row_order
-        // currently assigned is at the end of the table so there should not be any conflicts.
-        if let Some(new_row_id) = new_row_id {
-            row.insert("_id".to_owned(), json!(new_row_id));
-        }
-
-        // Validate the row and add it to the table:
-        if self.validation_level != ValidationLevel::None {
-            new_row.validate_sql_types(schema, table_name, self).await?;
-            for (column, cell) in new_row.cells.iter_mut() {
-                if cell.has_sql_type_error() {
-                    cell.value = JsonValue::Null;
-                    cell.text = "".to_string(); // Should it be "null" instead of blank?
-                    row.insert(column.to_string(), JsonValue::Null);
-                }
-            }
+        let mut row = row.clone();
+        if let Some(row_id) = new_row_id {
+            row.insert("_id".to_string(), json!(row_id));
         }
         let columns: Vec<&str> = row.keys().map(|s| s.as_str()).collect();
-        let rows = self
-            .pool
-            .insert_returning(&table.name, &columns, &[&row], &["_id"])
+        let row_ids = self
+            .insert_rows(schema, table_name, &columns, &[&row])
             .await?;
-        let new_row_id: RowID = rows
-            .first()
-            .and_then(|row| row.get("_id"))
-            .and_then(|v| v.as_i64())
-            .ok_or(RelatableError::DataError(format!("Invalid Row ID")))?
-            .try_into()?;
-        new_row.id = new_row_id;
+        let row_id = row_ids.first().expect("at least one _id");
+
         // TODO: this is a hack to make sure sql_type error messages point to the right place
-        let sql = r#"UPDATE message SET row = $1 WHERE "table" = $2 AND row = 0"#;
-        self.pool
-            .execute(sql, params![new_row_id, table_name])
-            .await?;
+        if new_row_id.is_none() {
+            let sql = r#"UPDATE message SET row = $1 WHERE "table" = $2 AND row = 0"#;
+            self.pool
+                .execute(sql, params![row_ids.first().unwrap(), table_name])
+                .await?;
+        }
 
         // Optionally do full validation on the row after it has been inserted:
         if self.validation_level == ValidationLevel::Full {
             for column in schema.columns(table_name).values() {
-                self._validate_column_optionally_for_row(&schema, column, &[&new_row_id])
+                self._validate_column_optionally_for_row(&schema, column, &[&row_id])
                     .await?;
             }
             for table in &schema.dependent_tables(table_name) {
@@ -2302,25 +2363,18 @@ impl Relatable {
         }
 
         let after_id = match after_id {
-            None => Table::get_previous_row_id(&table.name, new_row.id, &self).await?,
+            None => Table::get_previous_row_id(&table.name, *row_id, &self).await?,
             Some(after_id) => {
                 // Move the row to its assigned spot within the table:
                 tracing::debug!(
                     "Moving new row {id} to after row {after_id} in '{table}'",
-                    id = new_row.id,
+                    id = row_id,
                     table = table.name
                 );
-                let new_order = self._move_row(&table, new_row.id, after_id).await?;
-                new_row.order = new_order;
+                self._move_row(&table, *row_id, after_id).await?;
                 after_id
             }
         };
-
-        tracing::debug!(
-            "Added new row {id} to table '{table}' after row {after_id}",
-            id = new_row.id,
-            table = table.name
-        );
 
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with the new_row's id and position in the table:
@@ -2330,7 +2384,7 @@ impl Relatable {
             user: user.to_string(),
             description: "Add one row".to_string(),
             changes: vec![Change::Add {
-                row: new_row.id,
+                row: *row_id,
                 after: after_id,
             }],
         };
@@ -2341,7 +2395,18 @@ impl Relatable {
         // Record the changes to the history table:
         self.record_changeset(&changeset).await?;
 
-        Ok(new_row)
+        // This seems like a waste, but it keeps the old signature.
+        let mut select = Select::from(table_name).limit(&1);
+        select.where_eq("_id", *row_id)?;
+        let row = self
+            .fetch(&select)
+            .await?
+            .rows
+            .first()
+            .expect("at least one row")
+            .clone();
+
+        Ok(row)
     }
 
     /// Add a row to the given table
@@ -3511,6 +3576,86 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         assert_eq!(before, after);
 
         std::fs::remove_dir_all(&dir).expect("remove build/test_roundtrip/");
+        rltbl.drop_test().await.expect("drop test database");
+    }
+
+    #[tokio::test]
+    async fn test_roundtrip_nulltype() {
+        let rltbl = Relatable::test("test_roundtrip_nulltype")
+            .await
+            .expect("initialize Relatable");
+
+        let dir = FilePath::new("build/test_roundtrip_nulltype/");
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).expect("remove build/test_roundtrip_nulltype/");
+        }
+        std::fs::create_dir_all(&dir).expect("create build/test_roundtrip_nulltype/");
+
+        let select = Select::from("penguin");
+
+        crate::demo::build_demo(&rltbl, &true, 1)
+            .await
+            .expect("build demo");
+        rltbl
+            .set_value("test", "penguin", 1, "species", &json!(""))
+            .await
+            .expect("set species");
+        assert_eq!(
+            rltbl
+                .get_value("penguin", 1, "species")
+                .await
+                .expect("get species"),
+            JsonValue::Null
+        );
+
+        rltbl
+            .set_value("test", "penguin", 1, "island", &json!(""))
+            .await
+            .expect("set island");
+        assert_eq!(
+            rltbl
+                .get_value("penguin", 1, "island")
+                .await
+                .expect("get island"),
+            JsonValue::String(String::new())
+        );
+
+        // Note that TEXT cells will NULL values will be reloaded as empty strings.
+        rltbl
+            .add_row(
+                "penguin",
+                "test",
+                None,
+                &json!({"study_name": "", "sample_number": 20, "island": ""})
+                    .as_object()
+                    .unwrap(),
+            )
+            .await
+            .expect("set island");
+
+        assert_eq!(
+            rltbl
+                .get_value("penguin", 2, "island")
+                .await
+                .expect("get island"),
+            JsonValue::String(String::new())
+        );
+
+        let before = rltbl.fetch(&select).await.expect("fetch before");
+        rltbl
+            .save_all(Some(dir.to_str().unwrap()))
+            .await
+            .expect("save all tables");
+
+        rltbl
+            .reload_table("penguin", "build/test_roundtrip_nulltype/penguin.tsv")
+            .await
+            .expect("reload from build/test_roundtrip_nulltype/penguin.tsv");
+        let after = rltbl.fetch(&select).await.expect("fetch after");
+
+        assert_eq!(before, after);
+
+        std::fs::remove_dir_all(&dir).expect("remove build/test_roundtrip_nulltype/");
         rltbl.drop_test().await.expect("drop test database");
     }
 }
