@@ -968,6 +968,20 @@ impl Relatable {
         let row_refs: Vec<&JsonRow> = rows.iter().collect();
         self.insert_rows(&schema, table_name, &column_refs, &row_refs)
             .await?;
+
+        if self.validation_level == ValidationLevel::Full {
+            self.validate_table(&table_name)
+                .await
+                .expect("Error validating table");
+            let dependent_tables = schema.dependent_tables(table_name);
+            for table in &dependent_tables {
+                tracing::debug!("Validating dependent table '{}'", table.name);
+                self.validate_structure_for_table(&schema, table_name)
+                    .await
+                    .expect("Error validating table");
+            }
+        }
+
         Ok(())
     }
 
@@ -3656,6 +3670,71 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         assert_eq!(before, after);
 
         std::fs::remove_dir_all(&dir).expect("remove build/test_roundtrip_nulltype/");
+        rltbl.drop_test().await.expect("drop test database");
+    }
+
+    #[tokio::test]
+    async fn test_message() {
+        let rltbl = Relatable::test("test_message")
+            .await
+            .expect("initialize Relatable");
+
+        let dir = FilePath::new("build/test_message/");
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).expect("remove dir");
+        }
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        crate::demo::build_demo(&rltbl, &true, 10)
+            .await
+            .expect("build demo");
+
+        // Changing the island table should cause messages for the penguin table,
+        // because penguin.island is from(island.island).
+        rltbl
+            .set_value("test", "island", 3, "island", &json!("Montreal"))
+            .await
+            .expect("set island");
+
+        // TODO: This is ugly
+        let mut message_table = rltbl.get_table("message").await.expect("get message table");
+        message_table
+            .ensure_default_view_created(&rltbl)
+            .await
+            .expect("create default view");
+
+        let mut select = Select::from("message");
+        select.view_name = "message_default_view".to_string();
+        let before = rltbl.fetch(&select).await.expect("fetch before");
+        rltbl
+            .save_all(Some(dir.to_str().unwrap()))
+            .await
+            .expect("save all tables");
+        assert_eq!(before.rows.len(), 2);
+
+        // Reload and check that messages are re-created.
+        rltbl
+            .reload_table("penguin", "build/test_message/penguin.tsv")
+            .await
+            .expect("reload from build/test_message/penguin.tsv");
+        rltbl
+            .pool
+            .execute("UPDATE message SET message_id = message_id - 2", ())
+            .await
+            .expect("tweak message_ids");
+        let after = rltbl.fetch(&select).await.expect("fetch after");
+
+        assert_eq!(before, after);
+
+        // Fix the problem.
+        rltbl
+            .set_value("test", "island", 3, "island", &json!("Dream"))
+            .await
+            .expect("set island");
+        let fixed = rltbl.fetch(&select).await.expect("fetch after");
+        assert_eq!(fixed.rows.len(), 0);
+
+        std::fs::remove_dir_all(&dir).expect("remove build/test_message/");
         rltbl.drop_test().await.expect("drop test database");
     }
 }

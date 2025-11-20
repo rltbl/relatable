@@ -114,7 +114,7 @@ test_random_sqlite: debug prepare_sqlite
 	bash test/random-sqlite.sh --varying-rate
 
 ### Postgres tesh tests
-.PHONY: prepare_postgres test_tesh_tokio_postgres_common_as_postgres test_tesh_tokio_postgres_only test_random_tokio_postgres
+.PHONY: prepare_postgres test_tesh_tokio_postgres_common_as_postgres test_random_tokio_postgres
 
 test/tesh/common/as_postgres:
 	mkdir -p $@
@@ -126,9 +126,6 @@ prepare_postgres: | test/tesh/common/as_postgres
 
 test_tesh_tokio_postgres_common_as_postgres: debug prepare_postgres
 	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/common/as_postgres
-
-test_tesh_tokio_postgres_only: debug
-	PATH="$${PATH}:$$(pwd)/target/debug"; tesh --debug false ./test/tesh/postgres_only
 
 test_random_tokio_postgres: debug prepare_postgres
 	bash test/random-postgres.sh --varying-rate
@@ -182,7 +179,7 @@ test_perf_tokio_postgres: debug | test/perf/tsv
 
 test_rusqlite: src/resources/main.js src/resources/main.css cargo_test test_tesh_doc test_tesh_common_as_sqlite test_tesh_sqlite_only test_random_sqlite test_perf_sqlite test_caching_sqlite
 
-test_tokio_postgres: src/resources/main.js src/resources/main.css test_tesh_tokio_postgres_common_as_postgres test_tesh_tokio_postgres_only test_random_tokio_postgres test_perf_tokio_postgres test_caching_postgres
+test_tokio_postgres: src/resources/main.js src/resources/main.css test_tesh_tokio_postgres_common_as_postgres test_random_tokio_postgres test_perf_tokio_postgres test_caching_postgres
 
 # test: test_rusqlite
 # test: cargo_test test_tesh_doc test_tesh_doc_postgres
