@@ -4,7 +4,7 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Change, Relatable, RowID, ValidationLevel},
+    core::{Relatable, RowID, ValidationLevel},
     select::{Format, Select},
     sql::CachingStrategy,
     web::{serve, serve_cgi},
@@ -540,96 +540,20 @@ pub async fn print_value(cli: &Cli, table: &str, row: RowID, column: &str) {
 /// Print the change history for the user associated with the given context
 pub async fn print_history(cli: &Cli, context: usize) {
     tracing::trace!("print_history({cli:?}, {context})");
-    fn get_content_as_string(change_json: &JsonRow) -> String {
-        let content = change_json
-            .get("content")
-            .expect("No content found")
-            .as_str()
-            .expect("Content not a string");
-        let content: Vec<Change> = serde_json::from_str(&content).expect("Could not parse content");
-        content
-            .iter()
-            .map(|c| c.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-
     let user = get_username(&cli);
     let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
         .await
         .expect("Connect error");
-    let history = rltbl
-        .get_user_history(
-            &user,
-            match context {
-                0 => None,
-                _ => Some(context),
-            },
-        )
+
+    let lines = rltbl
+        .get_user_history_strings(&user, context)
         .await
         .expect("Could not get history");
-
-    let (undoable_changes, mut redoable_changes) = (
-        history.changes_done_stack.clone(),
-        history.changes_undone_stack.clone(),
-    );
-
-    let next_redo = match redoable_changes.len() {
-        0 => 0,
-        _ => redoable_changes[0]
-            .get("change_id")
-            .and_then(|v| v.as_u64())
-            .expect("No change_id found") as RowID,
-    };
-    redoable_changes.reverse();
-    for (i, change) in redoable_changes.iter().enumerate() {
-        if i > context {
-            break;
-        }
-        let change_id = change
-            .get("change_id")
-            .and_then(|v| v.as_u64())
-            .expect("No change_id found") as RowID;
-        let action = change
-            .get("action")
-            .expect("No action found")
-            .as_str()
-            .expect("Action is not a string");
-        if change_id == next_redo {
-            let change_content = get_content_as_string(change);
-            println!("▲ {change_content} (action #{change_id}, {action})");
+    for line in lines {
+        if line.starts_with(" ") {
+            println!("{}", line);
         } else {
-            let change_content = get_content_as_string(change);
-            println!("  {change_content} (action #{change_id}, {action})");
-        }
-    }
-    let next_undo = match undoable_changes.len() {
-        0 => 0,
-        _ => undoable_changes[0]
-            .get("change_id")
-            .and_then(|v| v.as_u64())
-            .expect("No change_id found") as RowID,
-    };
-    for (i, change) in undoable_changes.iter().enumerate() {
-        if i > context {
-            break;
-        }
-        let change_id = change
-            .get("change_id")
-            .and_then(|v| v.as_u64())
-            .expect("No change_id found") as RowID;
-        let action = change
-            .get("action")
-            .expect("No action found")
-            .as_str()
-            .expect("Action not a string");
-        if change_id == next_undo {
-            let change_content = get_content_as_string(change);
-            let line = format!("▼ {change_content} (action #{change_id}, {action})");
             println!("{}", Style::new().bold().paint(line));
-        } else {
-            let change_content = get_content_as_string(change);
-            println!("  {change_content} (action #{change_id}, {action})");
         }
     }
 }

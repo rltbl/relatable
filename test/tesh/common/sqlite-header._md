@@ -1,3 +1,0 @@
-```console tesh-session="test"
-$ export RLTBL_CONNECTION=.relatable/relatable.db
-```
