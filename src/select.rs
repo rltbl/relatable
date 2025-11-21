@@ -2561,6 +2561,7 @@ WHERE "penguin"."study_name" NOT IN ({sql_param_1}, {sql_param_2})"#
         .unwrap();
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
+        // WARN: SQLite does not handle $VVV queries in the order we expect.
         let (sql, params) = select.to_sql(&rltbl.pool.kind()).unwrap();
         assert_eq!(
             sql,

@@ -2362,6 +2362,24 @@ impl Relatable {
         column: &str,
         value: &JsonValue,
     ) -> Result<ChangeSet> {
+        let schema = self.schema().await?;
+        if !schema.tables.contains_key(table) {
+            return Err(RelatableError::DataError(format!("No such table: {table}")).into());
+        }
+        if schema.column(table, column).is_none() {
+            return Err(RelatableError::DataError(format!("No such column: {column}")).into());
+        }
+        let count = self
+            .pool
+            .query_u64(
+                &format!(r#"SELECT COUNT(1) FROM "{table}" WHERE _id = $1"#),
+                [row],
+            )
+            .await?;
+        if count == 0 {
+            return Err(RelatableError::DataError(format!("No such row: {row}")).into());
+        }
+
         let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#);
         let before = self.pool.query_value(&sql, [row]).await?;
 
@@ -2602,6 +2620,20 @@ impl Relatable {
     /// Delete a row from a given table
     pub async fn delete_row(&self, table_name: &str, user: &str, row_id: RowID) -> Result<usize> {
         tracing::trace!("Relatable::delete_row({table_name:?}, {user:?}, {row_id})");
+        let schema = self.schema().await?;
+        if !schema.tables.contains_key(table_name) {
+            return Err(RelatableError::DataError(format!("No such table: {table_name}")).into());
+        }
+        let count = self
+            .pool
+            .query_u64(
+                &format!(r#"SELECT COUNT(1) FROM "{table_name}" WHERE _id = $1"#),
+                [row_id],
+            )
+            .await?;
+        if count == 0 {
+            return Ok(count as usize);
+        }
         let num_deleted = self
             ._delete_row(&ChangeAction::Do, table_name, user, row_id)
             .await?;
@@ -3596,6 +3628,7 @@ pub struct Tab {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use rand::{rngs::ThreadRng, seq::SliceRandom, Rng};
     use serde_json::from_value;
 
     #[tokio::test]
@@ -3654,7 +3687,7 @@ mod tests {
         let result_set = rltbl.fetch(&select).await.expect("select one row");
         let expected = r"Rows 10-10 of 10
 study_name  sample_number  species             island     individual_id  bill_length  bill_depth  body_mass
-FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5         30.0        4521
+FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5         27.9        3237
 ";
         assert_eq!(result_set.to_console(), expected);
 
@@ -3839,30 +3872,70 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         rltbl.drop_test().await.expect("drop test database");
     }
 
-    enum Act<'a> {
+    #[derive(Debug)]
+    enum Act {
         // user, table, after_id, row
-        Add(&'a str, &'a str, RowID, JsonValue),
+        Add(String, String, RowID, JsonValue),
         // user, table, row_id
-        Delete(&'a str, &'a str, RowID),
+        Delete(String, String, RowID),
         // user, table, row_id, column, row
-        Set(&'a str, &'a str, RowID, &'a str, JsonValue),
+        Set(String, String, RowID, String, JsonValue),
         // user, table, row_id, after_id
-        Move(&'a str, &'a str, RowID, RowID),
+        Move(String, String, RowID, RowID),
         // user
-        Undo(&'a str),
+        Undo(String),
         // user
-        Redo(&'a str),
+        Redo(String),
     }
 
-    async fn run(rltbl: &Relatable, actions: Vec<Act<'_>>) -> Result<()> {
+    impl Act {
+        fn add(user: &str, table: &str, row: RowID, value: JsonValue) -> Self {
+            Self::Add(user.to_string(), table.to_string(), row, value)
+        }
+        fn delete(user: &str, table: &str, row: RowID) -> Self {
+            Self::Delete(user.to_string(), table.to_string(), row)
+        }
+        fn set(user: &str, table: &str, row: RowID, column: &str, value: JsonValue) -> Self {
+            Self::Set(
+                user.to_string(),
+                table.to_string(),
+                row,
+                column.to_string(),
+                value,
+            )
+        }
+        fn r#move(user: &str, table: &str, row: RowID, after_id: RowID) -> Self {
+            Self::Move(user.to_string(), table.to_string(), row, after_id)
+        }
+        fn undo(user: &str) -> Self {
+            Self::Undo(user.to_string())
+        }
+        fn redo(user: &str) -> Self {
+            Self::Redo(user.to_string())
+        }
+        fn user(&self) -> String {
+            let user = match self {
+                Act::Add(user, _, _, _) => user,
+                Act::Delete(user, _, _) => user,
+                Act::Set(user, _, _, _, _) => user,
+                Act::Move(user, _, _, _) => user,
+                Act::Undo(user) => user,
+                Act::Redo(user) => user,
+            };
+            user.to_string()
+        }
+    }
+
+    async fn run(rltbl: &Relatable, actions: &[Act]) -> Result<()> {
         for action in actions {
+            println!("{action:?}");
             match action {
                 Act::Add(user, table, row, value) => {
                     rltbl
                         .add_row(
-                            table,
-                            user,
-                            if row < 1 { None } else { Some(row) },
+                            &table,
+                            &user,
+                            if *row < 1 { None } else { Some(*row) },
                             value.as_object().expect("valid JSON"),
                         )
                         .await
@@ -3870,27 +3943,27 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
                 }
                 Act::Delete(user, table, row) => {
                     rltbl
-                        .delete_row(table, user, row)
+                        .delete_row(&table, &user, *row)
                         .await
                         .expect("delete row");
                 }
                 Act::Set(user, table, row, column, value) => {
                     rltbl
-                        .set_value(user, table, row, column, &value)
+                        .set_value(&user, &table, *row, &column, &value)
                         .await
                         .expect("set value");
                 }
                 Act::Move(user, table, before, after) => {
                     rltbl
-                        .move_row(table, user, before, after)
+                        .move_row(&table, &user, *before, *after)
                         .await
                         .expect("move row");
                 }
                 Act::Undo(user) => {
-                    rltbl.undo(user).await.expect("undo");
+                    rltbl.undo(&user).await.expect("undo");
                 }
                 Act::Redo(user) => {
-                    rltbl.redo(user).await.expect("redo");
+                    rltbl.redo(&user).await.expect("redo");
                 }
             }
         }
@@ -3898,7 +3971,7 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         Ok(())
     }
 
-    async fn test_history(name: &str, actions: Vec<Act<'_>>, history: Vec<&str>) {
+    async fn test_history(name: &str, actions: Vec<Act>, history: Vec<&str>) {
         let rltbl = Relatable::test(name).await.expect("initialize Relatable");
         crate::demo::build_demo(&rltbl, &true, 10)
             .await
@@ -3907,7 +3980,7 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let select = Select::from("penguin");
         let before = rltbl.fetch(&select).await.expect("fetch before");
 
-        run(&rltbl, actions).await.expect("all actions to succeed");
+        run(&rltbl, &actions).await.expect("all actions to succeed");
 
         let after = rltbl.fetch(&select).await.expect("fetch after");
         // TODO: better to compare result sets
@@ -3930,16 +4003,16 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Add(u, t, -1, json!({"species": "FOO", "sample_number": 25})),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Delete(u, t, 6),
-            Act::Set(u, t, 4, "sample_number", json!(26)),
-            Act::Move(u, t, 1, 8),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::add(u, t, -1, json!({"species": "FOO", "sample_number": 25})),
+            Act::undo(u),
+            Act::redo(u),
+            Act::delete(u, t, 6),
+            Act::set(u, t, 4, "sample_number", json!(26)),
+            Act::r#move(u, t, 1, 8),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Move row 1 from after row 8 to after row 0 (action #7, undo)",
@@ -3956,16 +4029,16 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Add(u, t, -1, json!({"species": "FOO"})),
-            Act::Add(u, t, -1, json!({"species": "BAR"})),
-            Act::Add(u, t, -1, json!({"species": "KEW"})),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::add(u, t, -1, json!({"species": "FOO"})),
+            Act::add(u, t, -1, json!({"species": "BAR"})),
+            Act::add(u, t, -1, json!({"species": "KEW"})),
+            Act::undo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Delete row 13 (action #8, undo)",
@@ -3981,16 +4054,16 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Add(u, t, -1, json!({"species": "FOO"})),
-            Act::Add(u, t, -1, json!({"species": "BAR"})),
-            Act::Add(u, t, -1, json!({"species": "KEW"})),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Move(u, t, 12, 1),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::add(u, t, -1, json!({"species": "FOO"})),
+            Act::add(u, t, -1, json!({"species": "BAR"})),
+            Act::add(u, t, -1, json!({"species": "KEW"})),
+            Act::undo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::r#move(u, t, 12, 1),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Delete row 12 (action #9, undo)",
@@ -4005,16 +4078,16 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Add(u, t, -1, json!({"species": "FOO"})),
-            Act::Undo(u),
-            Act::Move(u, t, 4, 9),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Move(u, t, 3, 1),
-            Act::Move(u, t, 4, 2),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::add(u, t, -1, json!({"species": "FOO"})),
+            Act::undo(u),
+            Act::r#move(u, t, 4, 9),
+            Act::undo(u),
+            Act::redo(u),
+            Act::r#move(u, t, 3, 1),
+            Act::r#move(u, t, 4, 2),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Move row 3 from after row 1 to after row 2 (action #9, undo)",
@@ -4029,32 +4102,32 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Add(u, t, -1, json!({"species": "FOO"})),
-            Act::Add(u, t, -1, json!({"species": "BAR"})),
-            Act::Add(u, t, -1, json!({"species": "KEW"})),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::add(u, t, -1, json!({"species": "FOO"})),
+            Act::add(u, t, -1, json!({"species": "BAR"})),
+            Act::add(u, t, -1, json!({"species": "KEW"})),
+            Act::undo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::redo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Delete row 13 (action #24, undo)",
@@ -4070,14 +4143,14 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Add(u, t, -1, json!({"species": "FOO"})),
-            Act::Move(u, t, 9, 7),
-            Act::Undo(u),
-            Act::Set(u, t, 4, "island", json!("Enderby")),
-            Act::Delete(u, t, 9),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::add(u, t, -1, json!({"species": "FOO"})),
+            Act::r#move(u, t, 9, 7),
+            Act::undo(u),
+            Act::set(u, t, 4, "island", json!("Enderby")),
+            Act::delete(u, t, 9),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Add row 9 after row 8 (action #6, undo)",
@@ -4093,18 +4166,18 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Set(u, t, 4, "island", json!("Enderby")),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Delete(u, t, 9),
-            Act::Set(u, t, 3, "species", json!("Godzilla")),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Move(u, t, 3, 5),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::set(u, t, 4, "island", json!("Enderby")),
+            Act::undo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::delete(u, t, 9),
+            Act::set(u, t, 3, "species", json!("Godzilla")),
+            Act::undo(u),
+            Act::redo(u),
+            Act::r#move(u, t, 3, 5),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Update 'species' in row 3 from Godzilla to Pygoscelis adeliae (action #11, undo)",
@@ -4119,22 +4192,22 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Delete(u, t, 5),
-            Act::Undo(u),
-            Act::Delete(u, t, 10),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Move(u, t, 9, 7),
-            Act::Move(u, t, 4, 8),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::delete(u, t, 5),
+            Act::undo(u),
+            Act::delete(u, t, 10),
+            Act::undo(u),
+            Act::redo(u),
+            Act::r#move(u, t, 9, 7),
+            Act::r#move(u, t, 4, 8),
+            Act::undo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Move row 4 from after row 8 to after row 3 (action #14, undo)",
@@ -4150,24 +4223,24 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Delete(u, t, 1),
-            Act::Undo(u),
-            Act::Delete(u, t, 3),
-            Act::Delete(u, t, 7),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::delete(u, t, 1),
+            Act::undo(u),
+            Act::delete(u, t, 3),
+            Act::delete(u, t, 7),
+            Act::undo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Add row 7 after row 6 (action #17, undo)",
@@ -4182,24 +4255,24 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Add(u, t, -1, json!({"species": "FOO"})),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Delete(u, t, 6),
-            Act::Set(u, t, 4, "island", json!("Enderby")),
-            Act::Move(u, t, 1, 8),
-            Act::Undo(u), // Undo move row
-            Act::Undo(u), // Undo set value
-            Act::Undo(u), // Undo delete row
-            Act::Undo(u), // Undo add row
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::add(u, t, -1, json!({"species": "FOO"})),
+            Act::undo(u),
+            Act::redo(u),
+            Act::delete(u, t, 6),
+            Act::set(u, t, 4, "island", json!("Enderby")),
+            Act::r#move(u, t, 1, 8),
+            Act::undo(u), // Undo move row
+            Act::undo(u), // Undo set value
+            Act::undo(u), // Undo delete row
+            Act::undo(u), // Undo add row
+            Act::redo(u),
+            Act::redo(u),
+            Act::redo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Move row 1 from after row 8 to after row 0 (action #15, undo)",
@@ -4216,16 +4289,16 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Add(u, t, -1, json!({"species": "FOO"})),
-            Act::Add(u, t, -1, json!({"species": "BAR"})),
-            Act::Add(u, t, -1, json!({"species": "KEW"})),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Move(u, t, 12, 1),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::add(u, t, -1, json!({"species": "FOO"})),
+            Act::add(u, t, -1, json!({"species": "BAR"})),
+            Act::add(u, t, -1, json!({"species": "KEW"})),
+            Act::undo(u),
+            Act::undo(u),
+            Act::redo(u),
+            Act::r#move(u, t, 12, 1),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Delete row 12 (action #9, undo)",
@@ -4240,16 +4313,16 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Add(u, t, -1, json!({"species": "FOO"})),
-            Act::Undo(u),
-            Act::Move(u, t, 4, 9),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Move(u, t, 3, 1),
-            Act::Move(u, t, 4, 2),
-            Act::Undo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::add(u, t, -1, json!({"species": "FOO"})),
+            Act::undo(u),
+            Act::r#move(u, t, 4, 9),
+            Act::undo(u),
+            Act::redo(u),
+            Act::r#move(u, t, 3, 1),
+            Act::r#move(u, t, 4, 2),
+            Act::undo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Move row 3 from after row 1 to after row 2 (action #9, undo)",
@@ -4264,19 +4337,161 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5   
         let u = "test";
         let t = "penguin";
         let actions = vec![
-            Act::Delete(u, t, 6),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Delete(u, t, 9),
-            Act::Undo(u),
-            Act::Redo(u),
-            Act::Undo(u),
-            Act::Undo(u),
+            Act::delete(u, t, 6),
+            Act::undo(u),
+            Act::redo(u),
+            Act::delete(u, t, 9),
+            Act::undo(u),
+            Act::redo(u),
+            Act::undo(u),
+            Act::undo(u),
         ];
         let history = vec![
             "  Add row 9 after row 8 (action #7, undo)",
             "▲ Add row 6 after row 5 (action #8, undo)",
         ];
         test_history(name, actions, history).await;
+    }
+
+    /// Generate a vector of random API calls.
+    /// We filter out two cases:
+    /// 1. different users cannot update the same row
+    /// 2. different users cannot move the same row
+    /// These exceptions allow us to undo all changes
+    /// and get back the original values.
+    /// Some sequences may not make sense in context.
+    /// For example, we allow redo before an undo.
+    /// The implementation will end up ignoring these cases.
+    fn random_actions(
+        rltbl: &Relatable,
+        rng: &mut ThreadRng,
+        users: &[&str],
+        quantity: usize,
+    ) -> Vec<Act> {
+        let mut calls = Vec::new();
+        while calls.len() < quantity {
+            let new_call = random_action(rltbl, rng, users);
+            let mut add_call = true;
+            match &new_call {
+                // Do not allow different users to update the same value.
+                Act::Set(u1, t1, r1, c1, _) => {
+                    for old_call in &calls {
+                        match old_call {
+                            Act::Set(u2, t2, r2, c2, _) => {
+                                if u1 != u2 && t1 == t2 && r1 == r2 && c1 == c2 {
+                                    add_call = false;
+                                }
+                            }
+                            // Do not edit deleted rows, even if delete was undone.
+                            Act::Delete(_, t2, r2) => {
+                                if t1 == t2 && r1 == r2 {
+                                    add_call = false;
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+                }
+                // Do not allow different users to move the same row.
+                Act::Move(u1, t1, r1, _) => {
+                    for old_call in &calls {
+                        match old_call {
+                            Act::Move(u2, t2, r2, _) => {
+                                if u1 != u2 && t1 == t2 && r1 == r2 {
+                                    add_call = false;
+                                }
+                            }
+                            // Do not edit deleted rows, even if delete was undone.
+                            Act::Delete(_, t2, r2) => {
+                                if t1 == t2 && r1 == r2 {
+                                    add_call = false;
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+                }
+                _ => (),
+            }
+
+            if add_call {
+                calls.push(new_call);
+            }
+        }
+        calls
+    }
+
+    /// Generate a random, valid API call.
+    /// WARN: This is deliberately limited to avoid current limitations.
+    fn random_action(_rltbl: &Relatable, rng: &mut ThreadRng, users: &[&str]) -> Act {
+        // Each user operates in a partition of five rows.
+        fn random_id(rng: &mut ThreadRng, index: RowID, _not_id: RowID) -> RowID {
+            let min = index * 5 + 1;
+            let max = min + 5;
+            rng.random_range(min..max)
+        }
+
+        let index = rng.random_range(0..users.len()) as RowID;
+        let user = users.get(index as usize).unwrap();
+        let table = "penguin";
+        let value = String::from_utf8(vec![rng.sample(rand::distr::Alphabetic)]).unwrap();
+        let value = json!(value);
+        let row = json!({"species": value});
+        match rand::random_range(0..6) {
+            0 => Act::add(
+                user, table, -1, // only append rows
+                row,
+            ),
+            1 => Act::set(user, table, random_id(rng, index, 0), "species", value),
+            2 => {
+                // Only move to end of table
+                let row_id = random_id(rng, index, 0);
+                Act::r#move(user, table, row_id, -1)
+            }
+            3 => Act::delete(user, table, random_id(rng, index, 0)),
+            4 => Act::undo(user),
+            5 => Act::redo(user),
+            _ => unreachable!(),
+        }
+    }
+
+    async fn test_random_editing(name: &str) {
+        println!("{name}");
+        let rltbl = Relatable::test(name).await.expect("initialize Relatable");
+
+        let table_size = 20;
+        crate::demo::build_demo(&rltbl, &true, table_size)
+            .await
+            .expect("build demo");
+
+        let users = ["mike", "barbara", "ahmed", "afreen"];
+
+        let select = Select::from("penguin");
+        let before = rltbl.fetch(&select).await.expect("fetch before");
+
+        let mut rng = rand::rng();
+        let mut actions = random_actions(&rltbl, &mut rng, &users, 10);
+        assert_eq!(actions.len(), 10);
+
+        run(&rltbl, &actions).await.expect("all actions to succeed");
+        // TODO: Undo order should be shuffled.
+        actions.shuffle(&mut rng);
+        for action in &actions {
+            rltbl.undo(&action.user()).await.expect("undo each action");
+        }
+
+        let after = rltbl.fetch(&select).await.expect("fetch after");
+        // TODO: better to compare result sets
+        assert_eq!(before.to_console(), after.to_console());
+
+        rltbl.drop_test().await.expect("drop test database");
+        println!("");
+    }
+
+    #[tokio::test]
+    async fn test_random_editing_loop() {
+        for i in 1..2 {
+            test_random_editing(&format!("test_random_editing_{i}")).await;
+        }
     }
 }

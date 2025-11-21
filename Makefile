@@ -58,13 +58,7 @@ clean: clean_test
 cleanall: clean
 	cargo clean
 
-clean_postgres_test:
-	rm -f test/random-postgres.sh
-
-clean_sqlite_test:
-	rm -f test/random-sqlite.sh
-
-clean_test: clean_postgres_test clean_sqlite_test
+clean_test:
 	rm -Rf test/perf
 	rm -Rf build/
 
@@ -88,12 +82,6 @@ test_tesh_doc: release
 test_tesh_doc_postgres: release
 	echo 'export RLTBL_CONNECTION=$(PG_DB)' > doc/setup.sh
 	PATH="$$(pwd)/target/release::$${PATH}"; tesh --debug false ./doc
-
-test_random_sqlite: debug
-	bash test/random-sqlite.sh --varying-rate
-
-test_random_tokio_postgres: debug
-	bash test/random-postgres.sh --varying-rate
 
 ### Performance tests
 
@@ -121,30 +109,30 @@ test_caching_memory: debug
 
 test_caching: test_caching_sqlite test_caching_postgres test_caching_memory
 
-test_perf_sqlite: debug | test/perf/tsv
-	target/debug/rltbl --database $(SQLITE_DB) demo --size $(perf_test_size) --force
-	target/debug/rltbl --database $(SQLITE_DB) save $|
-	target/debug/rltbl --database $(SQLITE_DB) init --force
-	@echo "target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $|/penguin.tsv"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(SQLITE_DB) -vv load table --force $|/penguin.tsv || \
+test_perf_sqlite: release | test/perf/tsv
+	target/release/rltbl --database $(SQLITE_DB) demo --size $(perf_test_size) --force
+	target/release/rltbl --database $(SQLITE_DB) save $|
+	target/release/rltbl --database $(SQLITE_DB) init --force
+	@echo "target/release/rltbl --database $(SQLITE_DB) -vv load table --force $|/penguin.tsv"
+	@timeout $(perf_test_timeout) time -p target/release/rltbl --database $(SQLITE_DB) -vv load table --force $|/penguin.tsv || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 ### Postgres performance (rusqlite and sqlx)
 
-test_perf_tokio_postgres: debug | test/perf/tsv
-	target/debug/rltbl --database $(PG_DB) demo --size $(perf_test_size) --force
-	target/debug/rltbl --database $(PG_DB) save $|
-	target/debug/rltbl --database $(PG_DB) init --force
-	@echo "target/debug/rltbl --database $(PG_DB) -vv load table --force $|/penguin.tsv"
-	@timeout $(perf_test_timeout) time -p target/debug/rltbl --database $(PG_DB) -vv load table --force $|/penguin.tsv || \
+test_perf_tokio_postgres: release | test/perf/tsv
+	target/release/rltbl --database $(PG_DB) demo --size $(perf_test_size) --force
+	target/release/rltbl --database $(PG_DB) save $|
+	target/release/rltbl --database $(PG_DB) init --force
+	@echo "target/release/rltbl --database $(PG_DB) -vv load table --force $|/penguin.tsv"
+	@timeout $(perf_test_timeout) time -p target/release/rltbl --database $(PG_DB) -vv load table --force $|/penguin.tsv || \
 		(echo "Performance test took longer than $(perf_test_timeout) seconds." && false)
 
 ### Combined tests
 .PHONY: test test_all test_rusqlite test_tokio_postgres
 
-test_rusqlite: src/resources/main.js src/resources/main.css test_tesh_doc test_random_sqlite test_perf_sqlite test_caching_sqlite
+test_rusqlite: src/resources/main.js src/resources/main.css test_tesh_doc test_perf_sqlite test_caching_sqlite
 
-test_tokio_postgres: src/resources/main.js src/resources/main.css test_tesh_doc_postgres test_random_tokio_postgres test_perf_tokio_postgres test_caching_postgres
+test_tokio_postgres: src/resources/main.js src/resources/main.css test_tesh_doc_postgres test_perf_tokio_postgres test_caching_postgres
 
 # test: test_rusqlite
 # test: cargo_test test_tesh_doc test_tesh_doc_postgres

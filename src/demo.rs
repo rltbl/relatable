@@ -104,9 +104,9 @@ pub async fn create_penguin_table(
         let id = i as RowID + 1;
         let order = id as RowOrder * NEW_ORDER_MULTIPLIER;
         let island = islands.iter().choose(&mut rng).unwrap().to_string();
-        let bill_length = rng.gen_range(300..500) as f64 / 10.0;
-        let bill_depth = rng.gen_range(200..400) as f64 / 10.0;
-        let body_mass = rng.gen_range(1000..5000);
+        let bill_length = rng.random_range(300..500) as f64 / 10.0;
+        let bill_depth = rng.random_range(200..400) as f64 / 10.0;
+        let body_mass = rng.random_range(1000..5000);
         let bill_depth = Decimal::try_from(bill_depth).unwrap();
         let bill_length = bill_length as f32;
         let body_mass = body_mass as i64;

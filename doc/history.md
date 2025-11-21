@@ -29,13 +29,13 @@ study_name  sample_number  species             island     individual_id  bill_le
 FAKE123     1              Pygoscelis adeliae  Torgersen  N1A1           44.6         31.1        4093
 FAKE123     2              Pygoscelis adeliae  Torgersen  N1A2           30.5         33.4        3336
 FAKE123     3              Pygoscelis adeliae  Torgersen  N2A1           35.2         22.4        4087
-FAKE123     4              Pygoscelis adeliae  Enderby    N2A2           34.3         35.8        3469
-FAKE123     5              Pygoscelis adeliae  Torgersen  N3A1           40.6         39.9        2129
-FAKE123     7              Pygoscelis adeliae  Biscoe     N4A1           38.6         28.5        3607
-FAKE123     8              Pygoscelis adeliae  Dream      N4A2           33.8         39.9        1908
-FAKE123     9              Pygoscelis adeliae  Dream      N5A1           43.7         23.1        3883
-FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5         30.0        4521
-                           FOO
+FAKE123     4              Pygoscelis adeliae  Enderby    N2A2           34.3         35.7        4174
+FAKE123     5              Pygoscelis adeliae  Dream      N3A1           44.9         30.6        4875
+FAKE123     7              Pygoscelis adeliae  Biscoe     N4A1           32.2         39.8        4859
+FAKE123     8              Pygoscelis adeliae  Biscoe     N4A2           30.9         28.6        2702
+FAKE123     9              Pygoscelis adeliae  Dream      N5A1           39.2         23.8        4697
+FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5         27.9        3237
+                           FOO                                                                    
 ```
 
 We use the **history** subcommand to get information about the last few commands that can be undone or redone.
@@ -62,13 +62,13 @@ study_name  sample_number  species             island     individual_id  bill_le
 FAKE123     1              Pygoscelis adeliae  Torgersen  N1A1           44.6         31.1        4093
 FAKE123     2              Pygoscelis adeliae  Torgersen  N1A2           30.5         33.4        3336
 FAKE123     3              Pygoscelis adeliae  Torgersen  N2A1           35.2         22.4        4087
-FAKE123     4              Pygoscelis adeliae  Biscoe     N2A2           34.3         35.8        3469
-FAKE123     5              Pygoscelis adeliae  Torgersen  N3A1           40.6         39.9        2129
-FAKE123     6              Pygoscelis adeliae  Biscoe     N3A2           30.9         22.2        4962
-FAKE123     7              Pygoscelis adeliae  Biscoe     N4A1           38.6         28.5        3607
-FAKE123     8              Pygoscelis adeliae  Dream      N4A2           33.8         39.9        1908
-FAKE123     9              Pygoscelis adeliae  Dream      N5A1           43.7         23.1        3883
-FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           31.5         30.0        4521
+FAKE123     4              Pygoscelis adeliae  Biscoe     N2A2           34.3         35.7        4174
+FAKE123     5              Pygoscelis adeliae  Dream      N3A1           44.9         30.6        4875
+FAKE123     6              Pygoscelis adeliae  Torgersen  N3A2           49.9         25.6        1557
+FAKE123     7              Pygoscelis adeliae  Biscoe     N4A1           32.2         39.8        4859
+FAKE123     8              Pygoscelis adeliae  Biscoe     N4A2           30.9         28.6        2702
+FAKE123     9              Pygoscelis adeliae  Dream      N5A1           39.2         23.8        4697
+FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5         27.9        3237
 ```
 
 As already mentioned, **rltbl** supports multiple users. It also supports and keeps track of multiple user histories. Although **mike**'s history currently looks like the following:

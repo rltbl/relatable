@@ -36,7 +36,7 @@ itertools = "0.14.0"
 lazy_static = "1.4"
 minijinja = { version = "2.5.0", features = ["preserve_order", "json", "urlencode", "loader"] }
 promptly = "0.3"
-rand = "0.8.5"
+rand = "0.9.2"
 random_color = "1.0.0"
 regex = "1.11.1"
 rusqlite = { version = "0.37", features = ["bundled", "functions", "serde_json"], optional = true }
