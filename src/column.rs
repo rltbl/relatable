@@ -591,29 +591,28 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[tokio::test]
-    async fn test_sql_type() {
+    async fn test_sql_type() -> Result<()> {
         let datatypes = Datatypes::builtins();
 
-        let column = ColumnBuilder::new("foo", "bar").build().unwrap();
+        let column = ColumnBuilder::new("foo", "bar").build()?;
         assert_eq!(column.sql_type(&datatypes), "text");
 
         let column = ColumnBuilder::new("foo", "bar")
             .datatype("integer")
-            .build()
-            .unwrap();
+            .build()?;
         assert_eq!(column.sql_type(&datatypes), "INTEGER");
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create() {
-        let rltbl = Relatable::test("test_column_create")
-            .await
-            .expect("initialize Relatable");
+    async fn test_create() -> Result<()> {
+        let rltbl = Relatable::test("test_column_create", false).await?;
 
         let table = ColumnTable::connect(&rltbl.pool);
-        table.drop().await.expect("delete column table");
-        table.create().await.expect("create column table");
-        let columns = table.get_all().await.expect("get columns");
+        table.drop().await?;
+        table.create().await?;
+        let columns = table.get_all().await?;
         // TODO: Extend builtins to cover all tables.
         // assert_eq!(
         //     columns.data(),
@@ -633,22 +632,20 @@ mod tests {
         );
         assert_eq!(columns.len(), 43);
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_dependent() {
-        let a = ColumnBuilder::new("foo", "a").build().unwrap();
+    async fn test_dependent() -> Result<()> {
+        let a = ColumnBuilder::new("foo", "a").build()?;
         // column b depends on column a from the same "foo" table.
         let b = ColumnBuilder::new("foo", "b")
             .structure("from(a)")
-            .build()
-            .unwrap();
+            .build()?;
         // column c depends on column a from the "bar" table.
         let c = ColumnBuilder::new("bar", "c")
             .structure("from(foo.b)")
-            .build()
-            .unwrap();
+            .build()?;
         let columns = Columns {
             list: vec![a.clone(), b.clone(), c.clone()],
         };
@@ -658,5 +655,7 @@ mod tests {
         assert_eq!(columns.dependents(&b), HashSet::from([&c]));
         assert_eq!(columns.direct_dependents(&c), Vec::<&Column>::new());
         assert_eq!(columns.dependents(&c), HashSet::<&Column>::new());
+
+        Ok(())
     }
 }

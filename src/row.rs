@@ -269,14 +269,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_json_to_row() {
+    fn test_json_to_row() -> Result<()> {
         let json_blob = json!({
             "_id": 1,
             "_order": 1000,
             "_change_id": 0,
             "foo": "FOO",
         });
-        let json_row: JsonRow = serde_json::from_value(json_blob).unwrap();
+        let json_row: JsonRow = serde_json::from_value(json_blob)?;
         let row: Row = json_row.into();
         let mut cells = IndexMap::new();
         cells.insert(
@@ -295,7 +295,8 @@ mod tests {
                 change_id: 0,
                 cells
             }
-        )
+        );
+        Ok(())
     }
 
     #[test]

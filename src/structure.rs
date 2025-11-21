@@ -252,9 +252,9 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_structure() {
+    fn test_structure() -> Result<()> {
         let string = "from(tbl.col)";
-        let structure = Structure::from_str(&string).expect("get structure");
+        let structure = Structure::from_str(&string)?;
         assert_eq!(
             structure,
             Structure::From(Some("tbl".to_owned()), "col".to_owned())
@@ -262,23 +262,25 @@ mod tests {
         assert_eq!(structure.to_string(), string);
         assert_eq!(json!(structure), json!(string));
 
-        let structure: Structure = string.try_into().expect("valid structure");
+        let structure: Structure = string.try_into()?;
         assert_eq!(
             structure,
             Structure::From(Some("tbl".to_owned()), "col".to_owned())
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_structures() {
+    fn test_structures() -> Result<()> {
         let string = "";
-        let structures = Structures::from_str(&string).expect("get structure");
+        let structures = Structures::from_str(&string)?;
         assert_eq!(structures, Structures { list: vec![] });
         assert_eq!(structures.to_string(), string);
         assert_eq!(json!(structures), json!(string));
 
         let string = "from(tbl.col)";
-        let structures = Structures::from_str(&string).expect("get structure");
+        let structures = Structures::from_str(&string)?;
         assert_eq!(
             structures,
             Structures {
@@ -295,6 +297,8 @@ mod tests {
                 list: vec![Structure::From(Some("tbl".to_owned()), "col".to_owned())]
             }
         );
+
+        Ok(())
     }
 
     #[derive(Builder, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -304,11 +308,11 @@ mod tests {
     }
 
     #[test]
-    fn test_column() {
+    fn test_column() -> Result<()> {
         let column = ColumnBuilder::default()
             .structure("from(tbl.col)")
-            .build()
-            .unwrap();
+            .build()?;
         assert_eq!(json!(column), json!({"structure": "from(tbl.col)"}));
+        Ok(())
     }
 }

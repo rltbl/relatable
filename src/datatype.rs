@@ -488,74 +488,69 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[tokio::test]
-    async fn test_create() {
-        let rltbl = Relatable::test("test_datatype_create")
-            .await
-            .expect("initialize Relatable");
+    async fn test_create() -> Result<()> {
+        let rltbl = Relatable::test("test_datatype_create", false).await?;
+
         let table = DatatypeTable::connect(&rltbl.pool);
-        table.create().await.expect("create datatype table");
+        table.create().await?;
         let count = rltbl
             .pool
             .query_u64("SELECT count(1) FROM datatype", ())
-            .await
-            .expect("count rows");
+            .await?;
         assert_eq!(count, Datatypes::builtins().len() as u64);
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_add() {
-        let rltbl = Relatable::test("test_datatype_add")
-            .await
-            .expect("initialize Relatable");
+    async fn test_add() -> Result<()> {
+        let rltbl = Relatable::test("test_datatype_add", false).await?;
+
         let table = DatatypeTable::connect(&rltbl.pool);
-        table.create().await.expect("create datatype table");
+        table.create().await?;
         let test = DatatypeBuilder::new("test")
             .description("test datatype")
             .build()
             .unwrap();
-        table.add(&[&test]).await.expect("add test datatype");
+        table.add(&[&test]).await?;
+
         let count = rltbl
             .pool
             .query_u64("SELECT count(1) FROM datatype", ())
-            .await
-            .expect("count rows");
+            .await?;
         assert_eq!(count as usize, Datatypes::builtins().len() + 1);
         assert_eq!(&test, table.get().await.get("test").unwrap());
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_priority() {
+    async fn test_priority() -> Result<()> {
         // built-ins take priority over rows from the table
-        let rltbl = Relatable::test("test_datatype_priority")
-            .await
-            .expect("initialize Relatable");
+        let rltbl = Relatable::test("test_datatype_priority", false).await?;
+
         let table = DatatypeTable::connect(&rltbl.pool);
-        table.create().await.expect("create datatype table");
+        table.create().await?;
         rltbl
             .pool
             .execute(
                 "UPDATE datatype SET description = 'FOO' WHERE datatype = 'text'",
                 (),
             )
-            .await
-            .expect("update datatype table");
+            .await?;
         assert_eq!(
             Datatypes::builtins().get("text").unwrap(),
             table.get().await.get("text").unwrap()
         );
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_ancestors() {
+    async fn test_ancestors() -> Result<()> {
         // built-ins take priority over rows from the table
         let datatypes = Datatypes::builtins();
-        let integer = datatypes.get("integer").expect("integer datatype");
+        let integer = datatypes.get("integer").unwrap();
         let ancestors = datatypes.ancestors(integer);
         assert_eq!(
             ancestors,
@@ -567,5 +562,6 @@ mod tests {
                 datatypes.get("text").unwrap(),
             ]
         );
+        Ok(())
     }
 }

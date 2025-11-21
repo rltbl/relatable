@@ -1903,10 +1903,8 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_select_from_path_and_query() {
-        let rltbl = Relatable::test("test_select_from_path_and_query")
-            .await
-            .expect("initialize Relatable");
+    async fn test_select_from_path_and_query() -> Result<()> {
+        let rltbl = Relatable::test("test_select_from_path_and_query", false).await?;
         crate::demo::build_demo(&rltbl, &true, 0).await.unwrap();
         let sql_param = SqlParam::new(&rltbl.pool.kind()).next();
         let base = "http://example.com";
@@ -2625,14 +2623,12 @@ FROM "penguin""#
         );
         assert_eq!(params, empty);
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_select_methods() {
-        let rltbl = Relatable::test("test_select_methods")
-            .await
-            .expect("initialize Relatable");
+    async fn test_select_methods() -> Result<()> {
+        let rltbl = Relatable::test("test_select_methods", false).await?;
         let drop_sql = r#"DROP TABLE IF EXISTS "penguin_test""#;
         let create_sql = r#"CREATE TABLE "penguin_test" (
     _id INTEGER,
@@ -2756,14 +2752,12 @@ FROM "penguin_test""#
 
         rltbl.pool.execute(drop_sql, ()).await.unwrap();
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_subquery() {
-        let rltbl = Relatable::test("test_subquery")
-            .await
-            .expect("initialize Relatable");
+    async fn test_subquery() -> Result<()> {
+        let rltbl = Relatable::test("test_subquery", false).await?;
         let sql_param = SqlParam::new(&rltbl.pool.kind()).next();
 
         // Subquery select, filtered on a string:
@@ -2862,14 +2856,12 @@ WHERE "penguin"."sample_number" IN (
         );
         assert_eq!(params, vec![27.into()]);
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_filters() {
-        let rltbl = Relatable::test("test_filters")
-            .await
-            .expect("initialize Relatable");
+    async fn test_filters() -> Result<()> {
+        let rltbl = Relatable::test("test_filters", false).await?;
         let mut sql_param_generator = SqlParam::new(&rltbl.pool.kind());
         let sql_param_1 = sql_param_generator.next();
         let sql_param_2 = sql_param_generator.next();
@@ -3018,14 +3010,12 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
             assert_eq!(params, vec![1i64.into(), 2i64.into()]);
         }
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_tablesets() {
-        let rltbl = Relatable::test("test_tablesets")
-            .await
-            .expect("initialize Relatable");
+    async fn test_tablesets() -> Result<()> {
+        let rltbl = Relatable::test("test_tablesets", false).await?;
         let sql_param = SqlParam::new(&rltbl.pool.kind()).next();
         let base = "http://example.com/combined";
         let empty: Vec<ParamValue> = vec![];
@@ -3338,6 +3328,6 @@ WHERE "_id" IN (
         let select = joined_query(&rltbl, "combined", &inner).await;
         assert_eq!(select.is_err(), true);
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 }

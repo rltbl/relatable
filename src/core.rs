@@ -137,8 +137,9 @@ pub struct Relatable {
     pub root: String,
     pub readonly: bool,
     pub connection: String,
-    pub test_database: Option<String>,
     pub pool: AnyPool,
+    pub test_database: Option<String>,
+    pub test_dir: Option<String>,
     // pub minijinja: Environment<'static>,
     pub default_limit: usize,
     pub max_limit: usize,
@@ -188,8 +189,9 @@ impl Relatable {
             root,
             readonly,
             connection: path,
-            test_database: None,
             pool,
+            test_database: None,
+            test_dir: None,
             // minijinja: env,
             default_limit: DEFAULT_LIMIT,
             max_limit: MAX_LIMIT,
@@ -272,7 +274,7 @@ impl Relatable {
     /// If RLTBL_TEST_CONNECTION is not set, use a SQLite database in `build/`.
     /// If RLTBL_TEST_CONNECTION is a PostgreSQL database,
     /// use that connection to create a new database with `name`.
-    pub async fn test(name: &str) -> Result<Relatable> {
+    pub async fn test(name: &str, create_dir: bool) -> Result<Relatable> {
         let url = Self::test_url(name)?;
         let pool = AnyPool::connect(&url).await?;
         let url = match pool.kind() {
@@ -299,6 +301,16 @@ impl Relatable {
         };
         let mut rltbl = Self::init(&true, Some(&url), &CachingStrategy::Trigger).await?;
         rltbl.test_database = Some(name.to_owned());
+
+        if create_dir {
+            let dir = FilePath::new("build").join(name);
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir)?;
+            }
+            std::fs::create_dir_all(&dir)?;
+            rltbl.test_dir = Some(dir.to_str().unwrap().to_string());
+        }
+
         Ok(rltbl)
     }
 
@@ -326,6 +338,14 @@ impl Relatable {
                     .await?;
             }
         };
+
+        if let Some(path) = self.test_dir {
+            let dir = FilePath::new(&path);
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -3632,23 +3652,22 @@ mod tests {
     use serde_json::from_value;
 
     #[tokio::test]
-    async fn test_schema() {
-        let rltbl = Relatable::test("test_schema")
-            .await
-            .expect("initialize Relatable");
+    async fn test_schema() -> Result<()> {
+        let rltbl = Relatable::test("test_schema", false).await?;
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
-        let schema = rltbl.schema().await.expect("get schema");
+
+        let schema = rltbl.schema().await?;
         assert_eq!(schema.tables.len(), 10);
         assert_eq!(schema.columns.len(), 65);
         assert_eq!(schema.datatypes.len(), 9);
         assert_eq!(schema.columns("penguin").len(), 10);
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     // Test inner JSON string.
     #[tokio::test]
-    async fn test_user() {
+    async fn test_user() -> Result<()> {
         let user_cursor = UserCursor {
             name: "john".to_owned(),
             color: "#000000".to_owned(),
@@ -3660,21 +3679,14 @@ mod tests {
             datetime: "2025-01-01T00:00:00".to_owned(),
         };
         let string = r##"{"name":"john","color":"#000000","cursor":"{\"table\":\"foo\",\"row\":1,\"column\":\"bar\"}","datetime":"2025-01-01T00:00:00"}"##;
-        assert_eq!(
-            serde_json::from_str::<UserCursor>(&string).expect("valid UserCursor"),
-            user_cursor,
-        );
-        assert_eq!(
-            serde_json::to_string(&user_cursor).expect("valid JSON"),
-            string,
-        );
+        assert_eq!(serde_json::from_str::<UserCursor>(&string)?, user_cursor,);
+        assert_eq!(serde_json::to_string(&user_cursor)?, string,);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_result_set() {
-        let rltbl = Relatable::test("test_result_set")
-            .await
-            .expect("initialize Relatable");
+    async fn test_result_set() -> Result<()> {
+        let rltbl = Relatable::test("test_result_set", false).await?;
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
 
         // A basic URL
@@ -3684,192 +3696,117 @@ mod tests {
             .limit(&1)
             .offset(&9);
 
-        let result_set = rltbl.fetch(&select).await.expect("select one row");
+        let result_set = rltbl.fetch(&select).await?;
         let expected = r"Rows 10-10 of 10
 study_name  sample_number  species             island     individual_id  bill_length  bill_depth  body_mass
 FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5         27.9        3237
 ";
         assert_eq!(result_set.to_console(), expected);
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_roundtrip() {
-        let rltbl = Relatable::test("test_roundtrip")
-            .await
-            .expect("initialize Relatable");
-
-        let dir = FilePath::new("build/test_roundtrip/");
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).expect("remove build/test_roundtrip/");
-        }
-        std::fs::create_dir_all(&dir).expect("create build/test_roundtrip/");
+    async fn test_roundtrip() -> Result<()> {
+        let rltbl = Relatable::test("test_roundtrip", true).await?;
+        crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
 
         let select = Select::from("penguin");
 
-        crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
-        let before = rltbl.fetch(&select).await.expect("fetch before");
-        rltbl
-            .save_all(Some(dir.to_str().unwrap()))
-            .await
-            .expect("save all tables");
+        let before = rltbl.fetch(&select).await?;
+        rltbl.save_all(rltbl.test_dir.as_deref()).await?;
 
         rltbl
             .reload_table("penguin", "build/test_roundtrip/penguin.tsv")
-            .await
-            .expect("reload from build/test_roundtrip/penguin.tsv");
-        let after = rltbl.fetch(&select).await.expect("fetch after");
+            .await?;
+        let after = rltbl.fetch(&select).await?;
 
         assert_eq!(before, after);
 
-        std::fs::remove_dir_all(&dir).expect("remove build/test_roundtrip/");
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_roundtrip_nulltype() {
-        let rltbl = Relatable::test("test_roundtrip_nulltype")
-            .await
-            .expect("initialize Relatable");
-
-        let dir = FilePath::new("build/test_roundtrip_nulltype/");
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).expect("remove build/test_roundtrip_nulltype/");
-        }
-        std::fs::create_dir_all(&dir).expect("create build/test_roundtrip_nulltype/");
+    async fn test_roundtrip_nulltype() -> Result<()> {
+        let rltbl = Relatable::test("test_roundtrip_nulltype", true).await?;
+        crate::demo::build_demo(&rltbl, &true, 1).await?;
 
         let select = Select::from("penguin");
+        let u = "test";
+        let t = "penguin";
 
-        crate::demo::build_demo(&rltbl, &true, 1)
-            .await
-            .expect("build demo");
-        rltbl
-            .set_value("test", "penguin", 1, "species", &json!(""))
-            .await
-            .expect("set species");
-        assert_eq!(
-            rltbl
-                .get_value("penguin", 1, "species")
-                .await
-                .expect("get species"),
-            JsonValue::Null
-        );
+        rltbl.set_value(u, t, 1, "species", &json!("")).await?;
+        assert_eq!(rltbl.get_value(t, 1, "species").await?, JsonValue::Null);
 
-        rltbl
-            .set_value("test", "penguin", 1, "island", &json!(""))
-            .await
-            .expect("set island");
+        rltbl.set_value(u, t, 1, "island", &json!("")).await?;
         assert_eq!(
-            rltbl
-                .get_value("penguin", 1, "island")
-                .await
-                .expect("get island"),
+            rltbl.get_value(t, 1, "island").await?,
             JsonValue::String(String::new())
         );
 
         // Note that TEXT cells will NULL values will be reloaded as empty strings.
-        rltbl
-            .add_row(
-                "penguin",
-                "test",
-                None,
-                &json!({"study_name": "", "sample_number": 20, "island": ""})
-                    .as_object()
-                    .unwrap(),
-            )
-            .await
-            .expect("set island");
+        let row = json!({"study_name": "", "sample_number": 20, "island": ""});
+        rltbl.add_row(t, u, None, &row.as_object().unwrap()).await?;
 
         assert_eq!(
-            rltbl
-                .get_value("penguin", 2, "island")
-                .await
-                .expect("get island"),
+            rltbl.get_value(t, 2, "island").await?,
             JsonValue::String(String::new())
         );
 
-        let before = rltbl.fetch(&select).await.expect("fetch before");
-        rltbl
-            .save_all(Some(dir.to_str().unwrap()))
-            .await
-            .expect("save all tables");
+        let before = rltbl.fetch(&select).await?;
+        rltbl.save_all(rltbl.test_dir.as_deref()).await?;
 
         rltbl
-            .reload_table("penguin", "build/test_roundtrip_nulltype/penguin.tsv")
-            .await
-            .expect("reload from build/test_roundtrip_nulltype/penguin.tsv");
-        let after = rltbl.fetch(&select).await.expect("fetch after");
+            .reload_table(t, "build/test_roundtrip_nulltype/penguin.tsv")
+            .await?;
+        let after = rltbl.fetch(&select).await?;
 
         assert_eq!(before, after);
 
-        std::fs::remove_dir_all(&dir).expect("remove build/test_roundtrip_nulltype/");
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_message() {
-        let rltbl = Relatable::test("test_message")
-            .await
-            .expect("initialize Relatable");
-
-        let dir = FilePath::new("build/test_message/");
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).expect("remove dir");
-        }
-        std::fs::create_dir_all(&dir).expect("create dir");
-
-        crate::demo::build_demo(&rltbl, &true, 10)
-            .await
-            .expect("build demo");
+    async fn test_message() -> Result<()> {
+        let rltbl = Relatable::test("test_message", true).await?;
+        crate::demo::build_demo(&rltbl, &true, 10).await?;
 
         // Changing the island table should cause messages for the penguin table,
         // because penguin.island is from(island.island).
         rltbl
             .set_value("test", "island", 3, "island", &json!("Montreal"))
-            .await
-            .expect("set island");
+            .await?;
 
         // TODO: This is ugly
-        let mut message_table = rltbl.get_table("message").await.expect("get message table");
-        message_table
-            .ensure_default_view_created(&rltbl)
-            .await
-            .expect("create default view");
+        let mut message_table = rltbl.get_table("message").await?;
+        message_table.ensure_default_view_created(&rltbl).await?;
 
         let mut select = Select::from("message");
         select.view_name = "message_default_view".to_string();
-        let before = rltbl.fetch(&select).await.expect("fetch before");
-        rltbl
-            .save_all(Some(dir.to_str().unwrap()))
-            .await
-            .expect("save all tables");
+        let before = rltbl.fetch(&select).await?;
+        rltbl.save_all(rltbl.test_dir.as_deref()).await?;
         assert_eq!(before.rows.len(), 2);
 
         // Reload and check that messages are re-created.
         rltbl
             .reload_table("penguin", "build/test_message/penguin.tsv")
-            .await
-            .expect("reload from build/test_message/penguin.tsv");
+            .await?;
         rltbl
             .pool
             .execute("UPDATE message SET message_id = message_id - 2", ())
-            .await
-            .expect("tweak message_ids");
-        let after = rltbl.fetch(&select).await.expect("fetch after");
+            .await?;
+        let after = rltbl.fetch(&select).await?;
 
         assert_eq!(before, after);
 
         // Fix the problem.
         rltbl
             .set_value("test", "island", 3, "island", &json!("Dream"))
-            .await
-            .expect("set island");
-        let fixed = rltbl.fetch(&select).await.expect("fetch after");
+            .await?;
+        let fixed = rltbl.fetch(&select).await?;
         assert_eq!(fixed.rows.len(), 0);
 
-        std::fs::remove_dir_all(&dir).expect("remove build/test_message/");
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[derive(Debug)]
@@ -3971,34 +3908,26 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
         Ok(())
     }
 
-    async fn test_history(name: &str, actions: Vec<Act>, history: Vec<&str>) {
-        let rltbl = Relatable::test(name).await.expect("initialize Relatable");
-        crate::demo::build_demo(&rltbl, &true, 10)
-            .await
-            .expect("build demo");
+    async fn test_history(name: &str, actions: Vec<Act>, history: Vec<&str>) -> Result<()> {
+        let rltbl = Relatable::test(name, false).await?;
+        crate::demo::build_demo(&rltbl, &true, 10).await?;
 
         let select = Select::from("penguin");
-        let before = rltbl.fetch(&select).await.expect("fetch before");
+        let before = rltbl.fetch(&select).await?;
 
-        run(&rltbl, &actions).await.expect("all actions to succeed");
+        run(&rltbl, &actions).await?;
 
-        let after = rltbl.fetch(&select).await.expect("fetch after");
+        let after = rltbl.fetch(&select).await?;
         // TODO: better to compare result sets
         assert_eq!(before.to_tsv(), after.to_tsv());
 
-        assert_eq!(
-            rltbl
-                .get_user_history_strings("test", 5)
-                .await
-                .expect("get user history"),
-            history
-        );
+        assert_eq!(rltbl.get_user_history_strings("test", 5).await?, history);
 
-        rltbl.drop_test().await.expect("drop test database");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_history_1() {
+    async fn test_history_1() -> Result<()> {
         let name = "test_history_1";
         let u = "test";
         let t = "penguin";
@@ -4020,11 +3949,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Add row 6 after row 5 (action #9, undo)",
             "▲ Delete row 11 (action #10, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_2() {
+    async fn test_history_2() -> Result<()> {
         let name = "test_history_2";
         let u = "test";
         let t = "penguin";
@@ -4045,11 +3974,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Delete row 12 (action #9, undo)",
             "▲ Delete row 11 (action #10, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_3() {
+    async fn test_history_3() -> Result<()> {
         let name = "test_history_3";
         let u = "test";
         let t = "penguin";
@@ -4069,11 +3998,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Delete row 12 (action #9, undo)",
             "▲ Delete row 11 (action #10, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_4() {
+    async fn test_history_4() -> Result<()> {
         let name = "test_history_4";
         let u = "test";
         let t = "penguin";
@@ -4093,11 +4022,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Move row 3 from after row 1 to after row 2 (action #9, undo)",
             "▲ Move row 4 from after row 9 to after row 3 (action #10, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_5() {
+    async fn test_history_5() -> Result<()> {
         let name = "test_history_5";
         let u = "test";
         let t = "penguin";
@@ -4134,11 +4063,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Delete row 12 (action #25, undo)",
             "▲ Delete row 11 (action #26, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_6() {
+    async fn test_history_6() -> Result<()> {
         let name = "test_history_6";
         let u = "test";
         let t = "penguin";
@@ -4157,11 +4086,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Update 'island' in row 4 from Enderby to Biscoe (action #7, undo)",
             "▲ Delete row 11 (action #8, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_7() {
+    async fn test_history_7() -> Result<()> {
         let name = "test_history_7";
         let u = "test";
         let t = "penguin";
@@ -4183,11 +4112,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Update 'species' in row 3 from Godzilla to Pygoscelis adeliae (action #11, undo)",
             "▲ Add row 9 after row 8 (action #12, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_8() {
+    async fn test_history_8() -> Result<()> {
         let name = "test_history_8";
         let u = "test";
         let t = "penguin";
@@ -4214,11 +4143,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Move row 9 from after row 7 to after row 8 (action #15, undo)",
             "▲ Add row 10 after row 9 (action #16, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_9() {
+    async fn test_history_9() -> Result<()> {
         let name = "test_history_9";
         let u = "test";
         let t = "penguin";
@@ -4246,11 +4175,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Add row 7 after row 6 (action #17, undo)",
             "▲ Add row 3 after row 2 (action #18, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_10() {
+    async fn test_history_10() -> Result<()> {
         let name = "test_history_10";
         let u = "test";
         let t = "penguin";
@@ -4280,11 +4209,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Add row 6 after row 5 (action #17, undo)",
             "▲ Delete row 11 (action #18, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_11() {
+    async fn test_history_11() -> Result<()> {
         let name = "test_history_11";
         let u = "test";
         let t = "penguin";
@@ -4304,11 +4233,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Delete row 12 (action #9, undo)",
             "▲ Delete row 11 (action #10, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_12() {
+    async fn test_history_12() -> Result<()> {
         let name = "test_history_12";
         let u = "test";
         let t = "penguin";
@@ -4328,11 +4257,11 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Move row 3 from after row 1 to after row 2 (action #9, undo)",
             "▲ Move row 4 from after row 9 to after row 3 (action #10, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     #[tokio::test]
-    async fn test_history_13() {
+    async fn test_history_13() -> Result<()> {
         let name = "test_history_13";
         let u = "test";
         let t = "penguin";
@@ -4350,7 +4279,7 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
             "  Add row 9 after row 8 (action #7, undo)",
             "▲ Add row 6 after row 5 (action #8, undo)",
         ];
-        test_history(name, actions, history).await;
+        test_history(name, actions, history).await
     }
 
     /// Generate a vector of random API calls.
@@ -4455,43 +4384,42 @@ FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5   
         }
     }
 
-    async fn test_random_editing(name: &str) {
+    async fn test_random_editing(name: &str) -> Result<()> {
         println!("{name}");
-        let rltbl = Relatable::test(name).await.expect("initialize Relatable");
+        let rltbl = Relatable::test(name, false).await?;
 
         let table_size = 20;
-        crate::demo::build_demo(&rltbl, &true, table_size)
-            .await
-            .expect("build demo");
+        crate::demo::build_demo(&rltbl, &true, table_size).await?;
 
         let users = ["mike", "barbara", "ahmed", "afreen"];
 
         let select = Select::from("penguin");
-        let before = rltbl.fetch(&select).await.expect("fetch before");
+        let before = rltbl.fetch(&select).await?;
 
         let mut rng = rand::rng();
         let mut actions = random_actions(&rltbl, &mut rng, &users, 10);
         assert_eq!(actions.len(), 10);
 
-        run(&rltbl, &actions).await.expect("all actions to succeed");
+        run(&rltbl, &actions).await?;
         // TODO: Undo order should be shuffled.
         actions.shuffle(&mut rng);
         for action in &actions {
-            rltbl.undo(&action.user()).await.expect("undo each action");
+            rltbl.undo(&action.user()).await?;
         }
 
-        let after = rltbl.fetch(&select).await.expect("fetch after");
+        let after = rltbl.fetch(&select).await?;
         // TODO: better to compare result sets
         assert_eq!(before.to_console(), after.to_console());
 
-        rltbl.drop_test().await.expect("drop test database");
         println!("");
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
-    async fn test_random_editing_loop() {
+    async fn test_random_editing_loop() -> Result<()> {
         for i in 1..2 {
-            test_random_editing(&format!("test_random_editing_{i}")).await;
+            test_random_editing(&format!("test_random_editing_{i}")).await?;
         }
+        Ok(())
     }
 }
