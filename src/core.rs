@@ -15,7 +15,7 @@ use rltbl::{
 };
 use rltbl_db::{
     any::AnyPool,
-    core::{DbQuery, JsonRow, ParamValue},
+    core::{DbQuery, DbRow, JsonRow, ParamValue},
     db_kind::DbKind,
     params,
 };
@@ -23,7 +23,7 @@ use rltbl_db::{
 use anyhow::Result;
 use colored::Colorize;
 use csv::{QuoteStyle, ReaderBuilder, Writer, WriterBuilder};
-use indexmap::IndexMap;
+use indexmap::{indexmap, IndexMap};
 use lazy_static::lazy_static;
 use minijinja::{path_loader, Environment};
 use regex::Regex;
@@ -914,6 +914,26 @@ impl Relatable {
         Ok(())
     }
 
+    fn prepare_value(
+        &self,
+        sql_type: &str,
+        value: &JsonValue,
+    ) -> Result<ParamValue, rltbl_db::core::DbError> {
+        let result = match value {
+            serde_json::Value::Null => Ok(ParamValue::Null),
+            _ => {
+                let string = match value {
+                    JsonValue::String(string) => string.to_string(),
+                    JsonValue::Null => "NULL".to_string(),
+                    _ => value.to_string(),
+                };
+                self.pool.kind().parse(sql_type, &string)
+            }
+        };
+        // println!("convert_json {sql_type} {value:?}");
+        result
+    }
+
     /// Prepare this row for insertion into the database.
     /// Return the row and any messages to insert.
     pub fn prepare_row(
@@ -921,66 +941,42 @@ impl Relatable {
         schema: &Schema,
         table_name: &str,
         row: &JsonRow,
-    ) -> (JsonRow, Vec<JsonRow>) {
-        // TODO: Try to eliminate this.
-        fn json_value_to_string(value: &JsonValue) -> String {
-            match value {
-                JsonValue::String(string) => string.to_string(),
-                JsonValue::Null => "NULL".to_string(),
-                _ => value.to_string(),
-            }
-        }
-
-        // TODO: Try to eliminate this.
-        fn convert_json(
-            db_kind: &DbKind,
-            sql_type: &str,
-            value: &JsonValue,
-        ) -> Result<ParamValue, rltbl_db::core::DbError> {
-            let result = match value {
-                serde_json::Value::Null => Ok(ParamValue::Null),
-                _ => {
-                    let string = json_value_to_string(value);
-                    db_kind.parse(sql_type, &string)
-                }
-            };
-            // println!("convert_json {sql_type} {value:?}");
-            result
-        }
-
-        let id = row.get("_id").unwrap_or(&json!(0)).clone();
+    ) -> (DbRow, Vec<DbRow>) {
+        let id = row
+            .get("_id")
+            .unwrap_or(&json!(0))
+            .clone()
+            .as_i64()
+            .unwrap_or_default() as RowID;
         let mut messages = Vec::new();
-        let mut json_row = JsonRow::new();
+        let mut db_row = DbRow::new();
         for (column_name, value) in row.iter() {
             let value = schema.nullify_value(table_name, column_name, value);
             let sql_type = schema
                 .column(table_name, &column_name)
                 .and_then(|c| Some(c.sql_type.as_str()))
                 .unwrap_or("text");
-            let value = match convert_json(&self.pool.kind(), sql_type, &value) {
-                Ok(_) => value,
+            let value = match self.prepare_value(sql_type, &value) {
+                Ok(value) => value,
                 Err(_) => {
                     messages.push(
-                        json!({
-                            "added_by": "rltbl".to_string(),
-                            "table": table_name.to_string(),
-                            "row": id,
-                            "column": column_name.to_string(),
-                            "value": value.clone(),
-                            "level": "error".to_string(),
-                            "rule": format!("sql_type:{sql_type}"),
-                            "message": format!("{column_name} must be of type {sql_type}"),
-                        })
-                        .as_object()
-                        .unwrap()
-                        .clone(),
+                        indexmap! {
+                            "added_by".to_string() => ParamValue::from("rltbl"),
+                            "table".to_string() => ParamValue::from(table_name),
+                            "row".to_string() => ParamValue::from(id),
+                            "column".to_string() => ParamValue::from(column_name),
+                            "value".to_string() => ParamValue::from(value.as_str().unwrap_or_default()),
+                            "level".to_string() => ParamValue::from("error"),
+                            "rule".to_string() => ParamValue::from(format!("sql_type:{sql_type}")),
+                            "message".to_string() => ParamValue::from(format!("{column_name} must be of type {sql_type}")),
+                        }
                     );
-                    JsonValue::Null
+                    ParamValue::Null
                 }
             };
-            json_row.insert(column_name.to_owned(), value);
+            db_row.insert(column_name.to_owned(), value);
         }
-        (json_row, messages)
+        (db_row, messages)
     }
 
     /// Reload a table from a TSV file at a path.
@@ -1039,11 +1035,11 @@ impl Relatable {
         columns: &[&str],
         rows: &[&JsonRow],
     ) -> Result<Vec<RowID>> {
-        let rows_and_messages: Vec<(JsonRow, Vec<JsonRow>)> = rows
+        let rows_and_messages: Vec<(DbRow, Vec<DbRow>)> = rows
             .iter()
             .map(|row| self.prepare_row(schema, table_name, row))
             .collect();
-        let new_rows: Vec<JsonRow> = rows_and_messages
+        let new_rows: Vec<DbRow> = rows_and_messages
             .iter()
             .map(|(row, _)| row.clone())
             .collect();
@@ -1056,7 +1052,7 @@ impl Relatable {
             .map(|row| row.get("_id").unwrap().as_i64().unwrap() as RowID)
             .collect();
 
-        let messsages: Vec<JsonRow> = rows_and_messages
+        let messages: Vec<DbRow> = rows_and_messages
             .iter()
             .map(|(_, message)| message.clone())
             .flatten()
@@ -1067,7 +1063,7 @@ impl Relatable {
                 &[
                     "added_by", "table", "row", "column", "value", "level", "rule", "message",
                 ],
-                messsages,
+                messages,
             )
             .await?;
         Ok(row_ids)
@@ -2298,7 +2294,14 @@ impl Relatable {
                         .column(&table.name, column)
                         .cloned()
                         .unwrap_or_default();
-                    let mut sql_value = cell.value.clone();
+                    let sql_type = schema
+                        .column(&changeset.table, &column)
+                        .and_then(|c| Some(c.sql_type.as_str()))
+                        .unwrap_or("text");
+                    let mut sql_value = match self.prepare_value(sql_type, &cell.value) {
+                        Ok(value) => value,
+                        Err(_) => ParamValue::Null,
+                    };
                     if self.validation_level != ValidationLevel::None {
                         cell.validate_sql_type(&schema.datatypes, &column_config)
                             .expect("Error validating cell");
@@ -2320,7 +2323,7 @@ impl Relatable {
 
                         // If the cell is invalid, insert a NULL instead of its actual value
                         if cell.has_sql_type_error() {
-                            sql_value = JsonValue::Null;
+                            sql_value = ParamValue::Null;
                         }
                     }
 
