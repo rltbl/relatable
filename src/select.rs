@@ -7,7 +7,10 @@ use rltbl::{
     core::{Page, Relatable, RelatableError, Tab, DEFAULT_LIMIT},
     sql::{self, SqlParam},
 };
-use rltbl_db::core::{DbKind, DbQuery, IntoParamValue, ParamValue};
+use rltbl_db::{
+    core::{DbQuery, IntoParamValue, JsonValue, ParamValue},
+    db_kind::DbKind,
+};
 
 use anyhow::Result;
 use enquote::unquote;
@@ -484,6 +487,7 @@ impl Select {
         ))
         .unwrap();
 
+        #[allow(dependency_on_unit_never_type_fallback)]
         fn parse_as_value(value: &str) -> Result<ParamValue> {
             // TODO: Move this to rltbl_db?
             if let Ok(signed) = value.parse::<i64>() {
@@ -492,10 +496,10 @@ impl Select {
                 Ok(ParamValue::from(float))
             } else if value.starts_with("\"") {
                 let value = serde_json::from_str(&value)?;
-                Ok(ParamValue::from_json(value))
+                Ok(ParamValue::from(value))
             } else {
-                let value = serde_json::from_str(&format!(r#""{value}""#))?;
-                Ok(ParamValue::from_json(value))
+                let value: JsonValue = serde_json::from_str(&format!(r#""{value}""#))?;
+                Ok(ParamValue::from(value))
             }
         }
 
@@ -3150,14 +3154,14 @@ LIMIT 100"#
         );
         assert_eq!(params, empty);
         let (sql, params) = select.to_sql_count(&rltbl.pool.kind()).unwrap();
-        rltbl.pool.query(&sql, params.clone()).await.unwrap();
+        rltbl.pool.execute(&sql, params.clone()).await.unwrap();
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
 FROM "B""#
         );
         assert_eq!(params, empty);
-        rltbl.pool.query(&sql, params).await.unwrap();
+        rltbl.pool.execute(&sql, params).await.unwrap();
 
         // Filter the B table by one of its own columns.
         let url = "http://example.com/combined/B?B.b=eq.i";
@@ -3189,7 +3193,7 @@ WHERE "B"."b" = {sql_param}"#
             )
         );
         assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.query(&sql, params).await.unwrap();
+        rltbl.pool.execute(&sql, params).await.unwrap();
 
         // Filter the A table by one of the columns from B.
         let url = "http://example.com/combined/A?B.b=eq.i";
@@ -3215,7 +3219,7 @@ LIMIT 100"#
             )
         );
         assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.query(&sql, params).await.unwrap();
+        rltbl.pool.execute(&sql, params).await.unwrap();
         let (sql, params) = select.to_sql_count(&rltbl.pool.kind()).unwrap();
         assert_eq!(
             sql,
@@ -3232,7 +3236,7 @@ WHERE "_id" IN (
             )
         );
         assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.query(&sql, params).await.unwrap();
+        rltbl.pool.execute(&sql, params).await.unwrap();
 
         // Filter the B2C table by one of the columns from B.
         let url = "http://example.com/combined/B2C?B.b=eq.i";
@@ -3258,7 +3262,7 @@ LIMIT 100"#
             )
         );
         assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.query(&sql, params).await.unwrap();
+        rltbl.pool.execute(&sql, params).await.unwrap();
         let (sql, params) = select.to_sql_count(&rltbl.pool.kind()).unwrap();
         assert_eq!(
             sql,
@@ -3275,7 +3279,7 @@ WHERE "_id" IN (
             )
         );
         assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.query(&sql, params).await.unwrap();
+        rltbl.pool.execute(&sql, params).await.unwrap();
 
         // Filter the D table by one of the columns from B.
         let url = "http://example.com/combined/D?B.b=eq.i";
@@ -3301,7 +3305,7 @@ LIMIT 100"#
             )
         );
         assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.query(&sql, params).await.unwrap();
+        rltbl.pool.execute(&sql, params).await.unwrap();
         let (sql, params) = select.to_sql_count(&rltbl.pool.kind()).unwrap();
         assert_eq!(
             sql,
@@ -3318,7 +3322,7 @@ WHERE "_id" IN (
             )
         );
         assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.query(&sql, params).await.unwrap();
+        rltbl.pool.execute(&sql, params).await.unwrap();
 
         // Filter the C table by one of the columns from B,
         // This should cause joined_query() to return an error.

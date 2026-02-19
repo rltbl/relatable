@@ -11,6 +11,7 @@ use rltbl::{
 use rltbl_db::{
     any::AnyPool,
     core::{DbQuery, JsonRow, ParamValue},
+    db_kind::DbKind,
 };
 
 use indexmap::IndexMap;
@@ -186,7 +187,7 @@ impl Datatype {
                         params.extend(rows.iter().map(|row| ParamValue::from(**row)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
-                    let rows = rltbl.pool.query(&sql, params).await?;
+                    let rows: Vec<JsonRow> = rltbl.pool.query(&sql, params).await?;
                     messages_were_added = rows.len() > 0;
                 }
             }
@@ -408,10 +409,10 @@ impl<'a> DatatypeTable<'a> {
     /// Drop the datatype table from the database.
     pub async fn drop(&self) -> Result<()> {
         let sql = match self.pool.kind() {
-            rltbl_db::core::DbKind::SQLite => {
+            DbKind::SQLite => {
                 format!(r#"DROP TABLE IF EXISTS "{}""#, self.table_name)
             }
-            rltbl_db::core::DbKind::PostgreSQL => {
+            DbKind::PostgreSQL => {
                 format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.table_name)
             }
         };
@@ -427,8 +428,7 @@ impl<'a> DatatypeTable<'a> {
             .values()
             .map(|dt| json!(dt).as_object().unwrap().clone())
             .collect();
-        let refs: Vec<&JsonRow> = rows.iter().collect();
-        self.pool.insert(&self.table_name, &COLUMNS, &refs).await?;
+        self.pool.insert(&self.table_name, &COLUMNS, rows).await?;
         Ok(())
     }
 
@@ -439,10 +439,9 @@ impl<'a> DatatypeTable<'a> {
             .iter()
             .map(|dt| json!(dt).as_object().unwrap().clone())
             .collect();
-        let refs: Vec<&JsonRow> = rows.iter().collect();
-        let rows = self
+        let rows: Vec<JsonRow> = self
             .pool
-            .insert_returning(&self.table_name, &COLUMNS, &refs, &[])
+            .insert_returning(&self.table_name, &COLUMNS, rows, &[])
             .await?;
         let dts: Vec<Datatype> = rows
             .into_iter()
@@ -456,7 +455,7 @@ impl<'a> DatatypeTable<'a> {
     /// Built-in datatypes override rows found in the table.
     /// If the datatype table does not exist, just return buildins.
     pub async fn get(&self) -> Datatypes {
-        let rows = match self.pool
+        let rows: Vec<JsonRow> = match self.pool
             .query(
                 &format!(
                     r#"SELECT "datatype", "description", "parent", "condition", "sql_type", "format" FROM "{}""#,

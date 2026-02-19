@@ -15,7 +15,7 @@ use rltbl::{
     datatype::Datatypes,
     table::Table,
 };
-use rltbl_db::core::DbKind;
+use rltbl_db::db_kind::DbKind;
 
 //////////////////////////////////////////
 // External imports

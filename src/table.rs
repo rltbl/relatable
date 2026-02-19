@@ -9,7 +9,10 @@ use rltbl::{
     core::{Relatable, RowID},
     sql::{self},
 };
-use rltbl_db::core::{DbKind, DbQuery};
+use rltbl_db::{
+    core::{DbQuery, JsonRow},
+    db_kind::DbKind,
+};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -79,7 +82,7 @@ impl Table {
                 ["%TABLE", table_name],
             ),
         };
-        let rows = rltbl.pool.query(&sql, params).await?;
+        let rows: Vec<JsonRow> = rltbl.pool.query(&sql, params).await?;
         if rows.len() == 0 {
             Ok(false)
         } else {

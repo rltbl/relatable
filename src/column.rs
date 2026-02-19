@@ -11,6 +11,7 @@ use rltbl::{
 use rltbl_db::{
     any::AnyPool,
     core::{DbQuery, JsonRow},
+    db_kind::DbKind,
 };
 
 use anyhow::Result;
@@ -393,10 +394,10 @@ impl<'a> ColumnTable<'a> {
     /// Drop the column table from the database.
     pub async fn drop(&self) -> Result<()> {
         let sql = match self.pool.kind() {
-            rltbl_db::core::DbKind::SQLite => {
+            DbKind::SQLite => {
                 format!(r#"DROP TABLE IF EXISTS "{}""#, self.table_name)
             }
-            rltbl_db::core::DbKind::PostgreSQL => {
+            DbKind::PostgreSQL => {
                 format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.table_name)
             }
         };
@@ -412,8 +413,7 @@ impl<'a> ColumnTable<'a> {
             .iter()
             .map(|col| json!(col).as_object().unwrap().clone())
             .collect();
-        let refs: Vec<&JsonRow> = rows.iter().collect();
-        self.pool.insert(&self.table_name, &COLUMNS, &refs).await?;
+        self.pool.insert(&self.table_name, &COLUMNS, rows).await?;
         Ok(())
     }
 
@@ -424,10 +424,9 @@ impl<'a> ColumnTable<'a> {
             .iter()
             .map(|dt| json!(dt).as_object().unwrap().clone())
             .collect();
-        let refs: Vec<&JsonRow> = rows.iter().collect();
-        let rows = self
+        let rows: Vec<JsonRow> = self
             .pool
-            .insert_returning(&self.table_name, &COLUMNS, &refs, &[])
+            .insert_returning(&self.table_name, &COLUMNS, rows, &[])
             .await?;
         let cols: Vec<Column> = rows
             .into_iter()
@@ -442,7 +441,7 @@ impl<'a> ColumnTable<'a> {
     fn get_sql(&self, tables: &[&str]) -> Result<String> {
         // TODO: Validate table names.
         match self.pool.kind() {
-            rltbl_db::core::DbKind::SQLite => {
+            DbKind::SQLite => {
                 // TODO: Improve this
                 let filter = if tables.len() > 0 {
                     format!(
@@ -480,7 +479,7 @@ impl<'a> ColumnTable<'a> {
                     self.table_name
                 ))
             }
-            rltbl_db::core::DbKind::PostgreSQL => {
+            DbKind::PostgreSQL => {
                 // TODO: Improve this
                 let filter = if tables.len() > 0 {
                     format!(
@@ -530,7 +529,7 @@ impl<'a> ColumnTable<'a> {
     /// This merges the actual columns with the content of the column table.
     pub async fn get(&self, tables: &[&str]) -> Result<Columns> {
         let sql = self.get_sql(tables)?;
-        let rows = self.pool.query(&sql, ()).await?;
+        let rows: Vec<JsonRow> = self.pool.query(&sql, ()).await?;
         let list = rows
             .iter()
             .filter_map(|row: &JsonRow| {
@@ -568,7 +567,7 @@ impl<'a> ColumnTable<'a> {
                 .collect::<Vec<String>>()
                 .join(", ")
         );
-        let rows = self.pool.query(&sql, ()).await?;
+        let rows: Vec<JsonRow> = self.pool.query(&sql, ()).await?;
         let list = rows
             .iter()
             .filter_map(|row: &JsonRow| {

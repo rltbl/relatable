@@ -8,7 +8,7 @@ use rltbl::{
     core::{Relatable, RelatableError, RowID},
     sql::SqlParam,
 };
-use rltbl_db::core::{DbQuery, ParamValue};
+use rltbl_db::core::{DbQuery, JsonRow, ParamValue};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -92,7 +92,7 @@ impl Structure {
                     params.extend(rows.iter().map(|row| ParamValue::from(**row)));
                 }
                 sql.push_str(r#" RETURNING 1 AS "inserted""#);
-                let rows = rltbl.pool.query(&sql, params).await?;
+                let rows: Vec<JsonRow> = rltbl.pool.query(&sql, params).await?;
                 messages_were_added = rows.len() > 0;
             }
         };

@@ -9,7 +9,7 @@ use rltbl::{
     datatype::Datatypes,
     schema::Schema,
 };
-use rltbl_db::core::JsonRow;
+use rltbl_db::core::{DbRow, JsonRow};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -76,6 +76,17 @@ impl From<Row> for Vec<String> {
     }
 }
 
+impl From<DbRow> for Row {
+    fn from(db_row: DbRow) -> Self {
+        // TODO: This could be more efficient.
+        let json_row: JsonRow = db_row
+            .into_iter()
+            .map(|(key, val)| (key, val.into()))
+            .collect();
+        json_row.into()
+    }
+}
+
 impl From<JsonRow> for Row {
     fn from(row: JsonRow) -> Self {
         let id = row.get("_id").and_then(|i| i.as_u64()).unwrap_or_default() as RowID;
@@ -122,7 +133,13 @@ impl From<JsonRow> for Row {
                     if let Some(cell) = cells.get(column) {
                         let mut new_cell = cell.clone();
                         new_cell.value = message.value.clone();
-                        new_cell.text = rltbl_db::core::json_value_to_string(&new_cell.value);
+                        // TODO: Be more careful converting JSON to string.
+                        new_cell.text = message
+                            .value
+                            .clone()
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
                         new_cell.messages.push(message);
                         cells.insert(column.to_string(), new_cell);
                     }

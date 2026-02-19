@@ -284,7 +284,7 @@ async fn get_tableset(
     let site = rltbl.get_site(&username).await;
 
     let sql = r#"SELECT * FROM "tableset" WHERE tableset = $1"#;
-    let json_rows = match rltbl.pool.query(&sql, [&tableset_name]).await {
+    let json_rows: Vec<JsonRow> = match rltbl.pool.query(&sql, [&tableset_name]).await {
         Ok(rows) => rows,
         Err(error) => return get_500(&error.into()),
     };
@@ -510,16 +510,11 @@ async fn get_cell_options(
     );
     let values: Vec<JsonValue> = rltbl
         .pool
-        .query(&statement, ())
+        .query_strings(&statement, ())
         .await
         .expect("Get column values")
         .iter()
-        .map(|row| {
-            let value = row
-                .get("value")
-                .expect("No 'value' in row")
-                .as_str()
-                .expect("Not a string");
+        .map(|value| {
             json!({
                     "value": value,
                     "label": value,

@@ -5,10 +5,7 @@ use rltbl::{
     datatype::DatatypeBuilder,
     sql::{self, CachingStrategy, SqlParam},
 };
-use rltbl_db::{
-    core::{DbKind, DbQuery},
-    params,
-};
+use rltbl_db::{core::DbQuery, db_kind::DbKind, params};
 
 use anyhow::Result;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
@@ -177,7 +174,7 @@ pub async fn create_island_table(
                  island TEXT
                )"#,
     );
-    rltbl.pool.query(&sql, ()).await?;
+    rltbl.pool.execute(&sql, ()).await?;
 
     let mut ddl = vec![];
     sql::add_metacolumn_trigger_ddl(&mut ddl, table, &rltbl.pool.kind());

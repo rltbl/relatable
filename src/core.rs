@@ -15,7 +15,8 @@ use rltbl::{
 };
 use rltbl_db::{
     any::AnyPool,
-    core::{DbKind, DbQuery, JsonRow, ParamValue},
+    core::{DbQuery, JsonRow, ParamValue},
+    db_kind::DbKind,
     params,
 };
 
@@ -392,7 +393,7 @@ impl Relatable {
                    );"#
             }
         };
-        let rows = self.pool.query(&sql, ()).await?;
+        let rows: Vec<JsonRow> = self.pool.query(&sql, ()).await?;
         let mut tables = rows
             .iter()
             .filter_map(|row: &JsonRow| {
@@ -445,7 +446,7 @@ impl Relatable {
             }
         };
         // TODO: support Postgres
-        let rows = self.pool.query(sql, [table_name]).await?;
+        let rows: Vec<JsonRow> = self.pool.query(sql, [table_name]).await?;
         Ok(rows.len() > 0)
     }
 
@@ -578,7 +579,7 @@ impl Relatable {
         // Fetch the data
         let (statement, parameters) = select.to_sql(&self.pool.kind())?;
         let params = parameters.clone();
-        let json_rows = self.pool.query(&statement, params).await?;
+        let json_rows: Vec<JsonRow> = self.pool.query(&statement, params).await?;
         let count = json_rows.len();
         tracing::info!("Fetched {count} rows");
 
@@ -832,7 +833,7 @@ impl Relatable {
                             .expect(&format!("Column '{column}' not found"))
                             .sql_type
                             .clone();
-                        let param_value = match self.pool.parse(&sql_type, value) {
+                        let param_value = match self.pool.kind().parse(&sql_type, value) {
                             Ok(param_value) => param_value,
                             Err(_) => {
                                 self.add_message(
@@ -921,6 +922,32 @@ impl Relatable {
         table_name: &str,
         row: &JsonRow,
     ) -> (JsonRow, Vec<JsonRow>) {
+        // TODO: Try to eliminate this.
+        fn json_value_to_string(value: &JsonValue) -> String {
+            match value {
+                JsonValue::String(string) => string.to_string(),
+                JsonValue::Null => "NULL".to_string(),
+                _ => value.to_string(),
+            }
+        }
+
+        // TODO: Try to eliminate this.
+        fn convert_json(
+            db_kind: &DbKind,
+            sql_type: &str,
+            value: &JsonValue,
+        ) -> Result<ParamValue, rltbl_db::core::DbError> {
+            let result = match value {
+                serde_json::Value::Null => Ok(ParamValue::Null),
+                _ => {
+                    let string = json_value_to_string(value);
+                    db_kind.parse(sql_type, &string)
+                }
+            };
+            // println!("convert_json {sql_type} {value:?}");
+            result
+        }
+
         let id = row.get("_id").unwrap_or(&json!(0)).clone();
         let mut messages = Vec::new();
         let mut json_row = JsonRow::new();
@@ -930,7 +957,7 @@ impl Relatable {
                 .column(table_name, &column_name)
                 .and_then(|c| Some(c.sql_type.as_str()))
                 .unwrap_or("text");
-            let value = match self.pool.convert_json(sql_type, &value) {
+            let value = match convert_json(&self.pool.kind(), sql_type, &value) {
                 Ok(_) => value,
                 Err(_) => {
                     messages.push(
@@ -1016,19 +1043,22 @@ impl Relatable {
             .iter()
             .map(|row| self.prepare_row(schema, table_name, row))
             .collect();
-        let row_refs: Vec<&JsonRow> = rows_and_messages.iter().map(|(row, _)| row).collect();
-        let result_rows = self
+        let new_rows: Vec<JsonRow> = rows_and_messages
+            .iter()
+            .map(|(row, _)| row.clone())
+            .collect();
+        let result_rows: Vec<JsonRow> = self
             .pool
-            .insert_returning(table_name, columns, &row_refs, &["_id"])
+            .insert_returning(table_name, columns, new_rows, &["_id"])
             .await?;
         let row_ids: Vec<RowID> = result_rows
             .into_iter()
             .map(|row| row.get("_id").unwrap().as_i64().unwrap() as RowID)
             .collect();
 
-        let messsage_refs: Vec<&JsonRow> = rows_and_messages
+        let messsages: Vec<JsonRow> = rows_and_messages
             .iter()
-            .map(|(_, message)| message)
+            .map(|(_, message)| message.clone())
             .flatten()
             .collect();
         self.pool
@@ -1037,7 +1067,7 @@ impl Relatable {
                 &[
                     "added_by", "table", "row", "column", "value", "level", "rule", "message",
                 ],
-                &messsage_refs,
+                messsages,
             )
             .await?;
         Ok(row_ids)
@@ -1109,7 +1139,7 @@ impl Relatable {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
-            let data_rows = self.pool.query(&sql, ()).await?;
+            let data_rows: Vec<JsonRow> = self.pool.query(&sql, ()).await?;
             for data_row in data_rows {
                 let values = {
                     let mut str_values = vec![];
@@ -1200,19 +1230,7 @@ impl Relatable {
             r#"SELECT "path" FROM "table" WHERE "path" {is_not} NULL"#,
             is_not = sql::is_not_clause(&self.pool.kind()),
         );
-        let paths = self
-            .pool
-            .query(&sql, ())
-            .await?
-            .iter()
-            .map(|row| {
-                row.get("path")
-                    .expect("No 'path' found")
-                    .as_str()
-                    .expect("Path is not a string")
-                    .to_string()
-            })
-            .collect::<Vec<_>>();
+        let paths = self.pool.query_strings(&sql, ()).await?;
         git::add(&paths)?;
 
         // Finally, commit to git:
@@ -1236,7 +1254,7 @@ impl Relatable {
             sql_param_2 = sql_param.next(),
         );
         let params = [user, &format!("{action}")];
-        let records = self.pool.query(&sql, params).await?;
+        let records: Vec<JsonRow> = self.pool.query(&sql, params).await?;
         match records.len() {
             0 => Ok(None),
             _ => {
@@ -1345,8 +1363,11 @@ impl Relatable {
                     // otherwise we will use the old_change_id to look for it in the history
                     // table:
                     let sql = format!(r#"SELECT * FROM {table} WHERE _id = $1"#);
-                    let json_row = match self.pool.query_row(&sql, [*row]).await {
-                        Ok(json_row) => json_row,
+                    let json_row: JsonRow = match self.pool.query_row(&sql, [*row]).await {
+                        Ok(db_row) => db_row
+                            .into_iter()
+                            .map(|(key, val)| (key, val.into()))
+                            .collect(),
                         Err(_) => match old_change_id {
                             Some(change_id) => {
                                 let sql = format!(
@@ -1404,7 +1425,11 @@ impl Relatable {
                 }
                 Change::Delete { row, after: _ } => {
                     let sql = format!(r#"SELECT * FROM {table} WHERE _id = $1"#);
-                    let json_row = self.pool.query_row(&sql, [*row]).await?;
+                    let db_row = self.pool.query_row(&sql, [*row]).await?;
+                    let json_row: JsonRow = db_row
+                        .into_iter()
+                        .map(|(key, val)| (key, val.into()))
+                        .collect();
                     let sql = format!(
                         r#"INSERT INTO "history"
                            ("change_id", "table", "row", "before")
@@ -1467,7 +1492,7 @@ impl Relatable {
                WHERE cursor {is_not} NULL"#,
             is_not = sql::is_not_clause(&self.pool.kind()),
         );
-        let rows = self.pool.query(&statement, ()).await?;
+        let rows: Vec<JsonRow> = self.pool.query(&statement, ()).await?;
         for row in rows {
             let user_cursor: UserCursor = serde_json::from_value(json!(row))?;
             users.insert(user_cursor.name.clone(), user_cursor);
@@ -1526,7 +1551,7 @@ impl Relatable {
         // Make sure the user is present in the user table
         let user = changeset.user.clone();
         let statement = r#"SELECT 1 FROM "user" WHERE "name" = $1"#;
-        let rows = self.pool.query(&statement, [&user]).await?;
+        let rows: Vec<JsonRow> = self.pool.query(&statement, [&user]).await?;
         if rows.len() == 0 {
             let color = random_color::RandomColor::new().to_hex();
             let statement = r#"INSERT INTO "user" ("name", "color") VALUES ($1, $2)"#;
@@ -1766,7 +1791,7 @@ impl Relatable {
                 ORDER BY "change_id" DESC"#,
             sql_param = SqlParam::new(&self.pool.kind()).next()
         );
-        let history = self.pool.query(&sql, [user]).await?;
+        let history: Vec<JsonRow> = self.pool.query(&sql, [user]).await?;
 
         // Initialize the stacks to be returned and counters:
         let mut changes_done_stack = vec![];
@@ -2142,13 +2167,15 @@ impl Relatable {
                                        WHERE "change_id" = {sql_param}"#,
                                     sql_param = SqlParam::new(&self.pool.kind()).next()
                                 );
-                                let before_row = self.pool.query_row(&sql, [change_id]).await?;
-                                let before = before_row
-                                    .get("before")
-                                    .and_then(|v| v.as_str())
-                                    .ok_or(RelatableError::DataError(format!(
-                                        "No history row found with change_id {change_id}"
-                                    )))?;
+                                let before = match self.pool.query_string(&sql, [change_id]).await {
+                                    Ok(before) => before,
+                                    Err(_) => {
+                                        return Err(RelatableError::DataError(format!(
+                                            "No history row found with change_id {change_id}"
+                                        ))
+                                        .into())
+                                    }
+                                };
                                 let before = match serde_json::from_str::<JsonValue>(&before) {
                                     Err(err) => return Err(err.into()),
                                     Ok(JsonValue::Object(o)) => o,
@@ -2305,13 +2332,10 @@ impl Relatable {
                                RETURNING 1 AS "updated""#,
                         table = changeset.table,
                     );
-                    let param = self
-                        .pool
-                        .convert_json(&column_config.sql_type, &sql_value)?;
-                    let params = params![param, *row];
+                    let params = params![sql_value, *row];
 
                     // Execute the UPDATE statement.
-                    if self.pool.query(&sql, params).await?.len() < 1 {
+                    if self.pool.query_strings(&sql, params).await?.len() < 1 {
                         tracing::warn!("No row with _id {row} found to update");
                     } else {
                         actual_changes.push(Change::Update {
@@ -2370,7 +2394,7 @@ impl Relatable {
     pub async fn get_value(&self, table: &str, row: RowID, column: &str) -> Result<JsonValue> {
         let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#);
         let value = self.pool.query_value(&sql, [row]).await?;
-        Ok(value)
+        Ok(value.into())
     }
 
     /// Set one cell value.
@@ -2411,7 +2435,7 @@ impl Relatable {
             changes: vec![Change::Update {
                 row,
                 column: column.to_string(),
-                before: before,
+                before: before.into(),
                 after: value.clone(),
             }],
         })
@@ -2450,8 +2474,16 @@ impl Relatable {
                RETURNING "message_id""#,
             sql_params = SqlParam::new(&self.pool.kind()).get_as_list(8)
         );
-        let param = rltbl_db::core::json_value_to_string(value);
-        let params = params![user, table_name, row, column, param, level, rule, message];
+        let params = params![
+            user,
+            table_name,
+            row,
+            column,
+            value.clone(),
+            level,
+            rule,
+            message
+        ];
         let message_id = self.pool.query_i64(&sql, params).await? as RowID;
 
         Ok((
@@ -2632,7 +2664,7 @@ impl Relatable {
         // Record the change to the history table:
         self.record_changeset(&changeset).await?;
 
-        let num_deleted = self.pool.query(&sql, [row_id]).await?.len();
+        let num_deleted = self.pool.query_strings(&sql, [row_id]).await?.len();
 
         Ok(num_deleted)
     }
@@ -2713,7 +2745,7 @@ impl Relatable {
         }
 
         sql.push_str(r#" RETURNING 1 AS "deleted""#);
-        let num_deleted = self.pool.query(&sql, params).await?.len();
+        let num_deleted = self.pool.query_strings(&sql, params).await?.len();
         Ok(num_deleted)
     }
 
@@ -2791,7 +2823,7 @@ impl Relatable {
                 table.name,
                 sql_param = SqlParam::new(&rltbl.pool.kind()).next()
             );
-            let rows = rltbl.pool.query(&sql, [row_id]).await?;
+            let rows: Vec<JsonRow> = rltbl.pool.query(&sql, [row_id]).await?;
             if rows.is_empty() {
                 return Err(RelatableError::DataError(format!(
                     "Unable to fetch _order for row {row_id} of table '{table}'",
@@ -2841,7 +2873,7 @@ impl Relatable {
                 table.name,
                 sql_param = SqlParam::new(&self.pool.kind()).next()
             );
-            let rows = self.pool.query(&sql, [order_prev]).await?;
+            let rows: Vec<JsonRow> = self.pool.query(&sql, [order_prev]).await?;
             if rows.is_empty() {
                 return Err(RelatableError::DataError(format!(
                     "Could not determine the minimum row order greater than {order_prev}"
@@ -2893,7 +2925,7 @@ impl Relatable {
                     sql_param_1 = sql_param.next(),
                     sql_param_2 = sql_param.next()
                 );
-                let rows = self.pool.query(&sql, [order_next, upper_bound]).await?;
+                let rows: Vec<JsonRow> = self.pool.query(&sql, [order_next, upper_bound]).await?;
                 if rows.is_empty() {
                     return Err(RelatableError::DataError(
                         "Could not determine the highest row order".to_string(),
@@ -2935,7 +2967,7 @@ impl Relatable {
                         table.name,
                         sql_param = SqlParam::new(&self.pool.kind()).next()
                     );
-                    self.pool.query(&sql, [current_order]).await?;
+                    self.pool.execute(&sql, [current_order]).await?;
                 }
                 // Now that we have made some room, we can use order_prev + 1,
                 // which should no longer be occupied:
@@ -2957,7 +2989,13 @@ impl Relatable {
             sql_param_1 = sql_param.next(),
             sql_param_2 = sql_param.next(),
         );
-        if self.pool.query(&sql, params![new_order, id]).await?.len() < 1 {
+        if self
+            .pool
+            .query_strings(&sql, params![new_order, id])
+            .await?
+            .len()
+            < 1
+        {
             tracing::warn!("Now row with _id {id} found to move");
             // It is not possible for a row to have an order of zero. It is used here to
             // represent the case where no row was actually moved to the caller.
