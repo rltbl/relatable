@@ -4,7 +4,8 @@
 
 use crate as rltbl;
 use rltbl::{
-    core::{Page, Relatable, RelatableError, Tab, DEFAULT_LIMIT},
+    core::{Relatable, RelatableError, DEFAULT_LIMIT},
+    site::{Page, Tab},
     sql::{self, SqlParam},
 };
 use rltbl_db::{

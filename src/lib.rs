@@ -12,8 +12,20 @@ pub mod sql;
 /// An abstraction over SQL Select statements
 pub mod select;
 
+/// An abstraction over SQL result sets.
+pub mod result_set;
+
+/// An abstraction over a website / web application.
+pub mod site;
+
 /// Git interface
 pub mod git;
+
+/// User accounts and cursors.
+pub mod user;
+
+/// Data changes and history.
+pub mod change;
 
 /// Structs for column datatypes
 pub mod datatype;

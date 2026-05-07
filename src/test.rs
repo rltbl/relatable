@@ -1,7 +1,8 @@
 //! API tests
 
 use rltbl::{
-    core::{Change, ChangeAction, ChangeSet, Relatable, RowID, RLTBL_DEFAULT_DB},
+    change::{Change, ChangeAction, ChangeSet},
+    core::{Relatable, RowID, RLTBL_DEFAULT_DB},
     select::Select,
     sql::CachingStrategy,
 };

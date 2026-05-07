@@ -4,14 +4,18 @@
 
 use crate as rltbl;
 use rltbl::{
+    change::{Change, ChangeAction, ChangeSet, History},
     column::{Column, ColumnBuilder, ColumnTable},
-    datatype::{Datatype, DatatypeTable, Datatypes},
+    datatype::{DatatypeTable, Datatypes},
     git,
+    result_set::{Range, ResultSet},
     row::{Cell, Message, Row},
     schema::Schema,
     select::{Select, SelectField},
+    site::Site,
     sql::{self, CachingStrategy, MemoryCacheKey, SqlParam},
     table::Table,
+    user::{Account, UserCursor},
 };
 use rltbl_db::{
     any::AnyPool,
@@ -23,25 +27,20 @@ use rltbl_db::{
 };
 
 use anyhow::Result;
-use colored::Colorize;
-use csv::{QuoteStyle, ReaderBuilder, Writer, WriterBuilder};
+use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
 use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use minijinja::{path_loader, Environment};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value, Value as JsonValue};
-use sprintf::sprintf;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
     fs::File,
-    io::Write,
     path::Path as FilePath,
     str::FromStr,
     sync::Mutex,
 };
-use tabwriter::TabWriter;
 
 /// Default location of the [relatable](crate) database
 pub static RLTBL_DEFAULT_DB: &str = ".relatable/relatable.db";
@@ -3260,433 +3259,11 @@ impl FromStr for ValidationLevel {
     }
 }
 
-// Changes and History
-
-/// A set of changes made by a user to a table.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ChangeSet {
-    pub action: ChangeAction,
-    pub table: String,
-    pub user: String,
-    pub description: String,
-    pub changes: Vec<Change>,
-}
-
-impl ChangeSet {
-    /// Given a change, returns the a [Cursor] representing where the user's cursor
-    /// should be placed in the frontend.
-    fn to_cursor(&self) -> Result<Cursor> {
-        tracing::trace!("ChangeSet::to_cursor()");
-        let table = self.table.clone();
-        match self.changes.first() {
-            Some(change) => match change {
-                Change::Update {
-                    row,
-                    column,
-                    before: _,
-                    after: _,
-                } => Ok(Cursor {
-                    table,
-                    row: *row,
-                    column: column.to_string(),
-                }),
-                Change::Add { row, after: _ } => Ok(Cursor {
-                    table,
-                    row: *row,
-                    column: "".to_string(),
-                }),
-                Change::Move {
-                    row,
-                    from_after: _,
-                    to_after: _,
-                } => Ok(Cursor {
-                    table,
-                    row: *row,
-                    column: "".to_string(),
-                }),
-                Change::Delete { row, after: _ } => Ok(Cursor {
-                    table,
-                    row: *row,
-                    column: "".to_string(),
-                }),
-            },
-            None => Err(RelatableError::ChangeError("No changes in set".into()).into()),
-        }
-    }
-}
-
-/// The kind of action that is performed by a change
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ChangeAction {
-    Do,
-    Undo,
-    Redo,
-}
-
-impl FromStr for ChangeAction {
-    type Err = anyhow::Error;
-
-    fn from_str(action: &str) -> Result<Self> {
-        tracing::trace!("ChangeAction::from_str({action:?})");
-        match action.to_lowercase().as_str() {
-            "do" => Ok(ChangeAction::Do),
-            "undo" => Ok(ChangeAction::Undo),
-            "redo" => Ok(ChangeAction::Redo),
-            _ => {
-                return Err(
-                    RelatableError::InputError(format!("Unrecognized action: {action}")).into(),
-                );
-            }
-        }
-    }
-}
-
-impl Display for ChangeAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChangeAction::Do => write!(f, "do"),
-            ChangeAction::Undo => write!(f, "undo"),
-            ChangeAction::Redo => write!(f, "redo"),
-        }
-    }
-}
-
-/// A change to a table in the database
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum Change {
-    Update {
-        /// The id of the row that was updated
-        row: RowID,
-        /// The column whose value was updated
-        column: String,
-        /// The value of the column before the change
-        before: JsonValue,
-        /// The value of the column after the change
-        after: JsonValue,
-    },
-    Add {
-        /// The id of the row that was added
-        row: RowID,
-        /// The _id of the row whose _order this comes immediately after in the table
-        after: RowID,
-    },
-    Move {
-        /// The id of the row that was moved
-        row: RowID,
-        /// The row that this row came after before the change
-        from_after: RowID,
-        /// The row that this row came after after the change
-        to_after: RowID,
-    },
-    Delete {
-        /// The id of the row that was deleted
-        row: RowID,
-        /// The _id of the row whose _order this row came immediately after in the table before
-        /// being deleted.
-        after: RowID,
-    },
-}
-
-/// Describes a history of changes that have been done and undone.
-#[derive(Default, Debug, Serialize, Deserialize)]
-pub struct History {
-    pub changes_done_stack: Vec<JsonRow>,
-    pub changes_undone_stack: Vec<JsonRow>,
-}
-
-impl Display for Change {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Change::Update {
-                row,
-                column,
-                before,
-                after,
-            } => {
-                write!(
-                    f,
-                    "Update '{column}' in row {row} from {before} to {after}",
-                    before = sql::json_to_string(before),
-                    after = sql::json_to_string(after)
-                )
-            }
-            Change::Add { row, after } => {
-                write!(f, "Add row {row} after row {after}")
-            }
-            Change::Move {
-                row,
-                from_after,
-                to_after,
-            } => {
-                write!(
-                    f,
-                    "Move row {row} from after row {from_after} to after row {to_after}"
-                )
-            }
-            Change::Delete { row, after: _ } => write!(f, "Delete row {row}"),
-        }
-    }
-}
-
-// Ranges and Results
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Range {
-    count: usize,
-    total: u64,
-    start: u64,
-    end: u64,
-}
-
-impl std::fmt::Display for Range {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Rows {}-{} of {}", self.start, self.end, self.total)
-    }
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResultSet {
-    pub select: Select,
-    pub statement: String,
-    pub parameters: Vec<DbValue>,
-    pub range: Range,
-    pub table: Table,
-    /// The columns (and only the columns) used in the Select statement
-    pub columns: Vec<Column>,
-    /// The datatypes used in the Select statement
-    pub datatypes: Vec<Datatype>,
-    pub rows: Vec<Row>,
-}
-
-impl ResultSet {
-    /// Write the result set to CSV
-    pub fn to_csv(&self) -> String {
-        let writer = WriterBuilder::new().from_writer(vec![]);
-        self.to_xsv(writer)
-    }
-
-    /// Write the result set to TSV
-    pub fn to_tsv(&self) -> String {
-        let writer = WriterBuilder::new()
-            .delimiter(b'\t')
-            .quote_style(QuoteStyle::Never)
-            .from_writer(vec![]);
-        self.to_xsv(writer)
-    }
-
-    /// Write the result set to XSV
-    pub fn to_xsv(&self, mut writer: Writer<Vec<u8>>) -> String {
-        let header_row = &self
-            .columns
-            .iter()
-            .map(|c| c.column.clone())
-            .collect::<Vec<String>>();
-        writer.write_record(header_row.clone()).unwrap();
-        for row in &self.rows {
-            writer.write_record(row.to_strings()).unwrap();
-        }
-        String::from_utf8(writer.into_inner().unwrap()).unwrap()
-    }
-
-    /// Uses the given (unverified) printf-style format string and the given compiled regular
-    /// expression (which is used to verify the given format) to format the given cell.
-    fn format_cell_text_value(column_format: &str, format_regex: &Regex, cell: &str) -> String {
-        // If the cell is an empty string, just return it as is:
-        if cell == "" {
-            return "".to_string();
-        }
-
-        let conversion_spec = match format_regex.captures(column_format) {
-            Some(c) => c[1].to_lowercase(),
-            None => {
-                tracing::warn!("Illegal format: '{}'", column_format);
-                "s".to_string()
-            }
-        };
-        let generic_error = format!("Error applying format '{}' to '{}'", column_format, cell);
-        match conversion_spec.as_str() {
-            "d" | "i" | "c" => match cell.parse::<isize>() {
-                Ok(cell) => match sprintf!(&column_format, cell) {
-                    Ok(cell) => {
-                        // For some reason sprintf converts signed ints to unsigned ints before
-                        // converting them to a string. So we have to workaround this here:
-                        let cell = cell.parse::<usize>().unwrap();
-                        let cell = cell as isize;
-                        cell.to_string()
-                    }
-                    Err(e) => {
-                        tracing::warn!("{}: {}", generic_error, e);
-                        cell.to_string()
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("{}: {}", generic_error, e);
-                    cell.to_string()
-                }
-            },
-            "o" | "u" | "x" => match cell.parse::<usize>() {
-                Ok(cell) => sprintf!(&column_format, cell).unwrap_or(cell.to_string()),
-                Err(e) => {
-                    tracing::warn!("{}: {}", generic_error, e);
-                    cell.to_string()
-                }
-            },
-            "e" | "f" | "g" | "a" => match cell.parse::<f64>() {
-                Ok(cell) => sprintf!(&column_format, cell).unwrap_or(cell.to_string()),
-                Err(e) => {
-                    tracing::warn!("{}: {}", generic_error, e);
-                    cell.to_string()
-                }
-            },
-            "s" => sprintf!(&column_format, cell).unwrap_or(cell.to_string()),
-            _ => {
-                tracing::warn!(
-                    "Unsupported conversion specifier '{}' in column format '{}'",
-                    conversion_spec,
-                    column_format
-                );
-                cell.to_string()
-            }
-        }
-    }
-
-    /// Write the result set to the console
-    pub fn to_console(&self) -> String {
-        let tw = TabWriter::new(vec![]);
-        let mut tw = tw.ansi(true);
-        tw.write(format!("{}\n", self.range).as_bytes())
-            .unwrap_or_default();
-        let header = &self
-            .columns
-            .iter()
-            .map(|c| c.column.clone())
-            .collect::<Vec<String>>();
-        tw.write(format!("{}\n", header.join("\t")).as_bytes())
-            .unwrap_or_default();
-
-        let format_regex = Regex::new(r#"^%.*([\w%])$"#).expect("Invalid regular expression");
-        let mut contains_errors = false;
-        for row in &self.rows {
-            let cells = row
-                .cells
-                .iter()
-                .map(|(column_name, cell)| {
-                    let value_to_print = {
-                        let column = self
-                            .columns
-                            .iter()
-                            .filter(|col| &col.column == column_name)
-                            .nth(0)
-                            .unwrap();
-                        let datatype = self
-                            .datatypes
-                            .iter()
-                            .filter(|dt| dt.datatype == column.datatype)
-                            .nth(0);
-                        let column_format = match datatype {
-                            Some(datatype) => match datatype.format.as_str() {
-                                "" => "%s",
-                                value => value,
-                            },
-                            None => "%s",
-                        };
-                        ResultSet::format_cell_text_value(&column_format, &format_regex, &cell.text)
-                    };
-                    if cell.message_level() >= 2 {
-                        contains_errors = true;
-                        format!("{}", value_to_print.red())
-                    } else {
-                        value_to_print
-                    }
-                })
-                .collect::<Vec<_>>();
-            tw.write(format!("{}\n", cells.join("\t")).as_bytes())
-                .unwrap_or_default();
-        }
-        tw.flush().expect("TabWriter to flush");
-        let written = String::from_utf8(tw.into_inner().unwrap()).unwrap();
-        written
-    }
-}
-
-impl std::fmt::Display for ResultSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut tw = TabWriter::new(vec![]);
-        tw.write(format!("{}\n", self.range).as_bytes())
-            .unwrap_or_default();
-        let header = &self
-            .columns
-            .iter()
-            .map(|c| c.column.clone())
-            .collect::<Vec<String>>();
-        tw.write(format!("{}\n", header.join("\t")).as_bytes())
-            .unwrap_or_default();
-        for row in &self.rows {
-            tw.write(format!("{}\n", row.to_strings().join("\t")).as_bytes())
-                .unwrap_or_default();
-        }
-        tw.flush().expect("TabWriter to flush");
-        let written = String::from_utf8(tw.into_inner().unwrap()).unwrap();
-        write!(f, "{written}")
-    }
-}
-
-// Web Site Stuff
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Site {
-    pub title: String,
-    pub root: String,
-    pub editable: bool,
-    pub user: Account,
-    pub users: IndexMap<String, UserCursor>,
-    pub tables: Vec<String>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Account {
-    name: String,
-    color: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(dead_code)]
-pub struct Cursor {
-    table: String,
-    row: RowID,
-    column: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-pub struct UserCursor {
-    name: String,
-    color: String,
-    cursor: Cursor,
-    datetime: String,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Page {
-    pub path: String,
-    pub formats: IndexMap<String, String>,
-    pub tabs: Vec<Tab>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Tab {
-    pub table: String,
-    pub active: bool,
-    pub url: String,
-    pub count: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use rand::{rngs::ThreadRng, seq::SliceRandom, Rng};
-    use serde_json::from_value;
 
     #[tokio::test]
     async fn test_schema() -> Result<()> {
@@ -3698,47 +3275,6 @@ mod tests {
         assert_eq!(schema.columns.len(), 65);
         assert_eq!(schema.datatypes.len(), 9);
         assert_eq!(schema.columns("penguin").len(), 10);
-
-        rltbl.drop_test().await
-    }
-
-    // Test inner JSON string.
-    #[tokio::test]
-    async fn test_user() -> Result<()> {
-        let user_cursor = UserCursor {
-            name: "john".to_owned(),
-            color: "#000000".to_owned(),
-            cursor: Cursor {
-                table: "foo".to_owned(),
-                row: 1,
-                column: "bar".to_owned(),
-            },
-            datetime: "2025-01-01T00:00:00".to_owned(),
-        };
-        let string = r##"{"name":"john","color":"#000000","cursor":{"table":"foo","row":1,"column":"bar"},"datetime":"2025-01-01T00:00:00"}"##;
-        assert_eq!(serde_json::from_str::<UserCursor>(&string)?, user_cursor,);
-        assert_eq!(serde_json::to_string(&user_cursor)?, string,);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_result_set() -> Result<()> {
-        let rltbl = Relatable::test("test_result_set", false).await?;
-        crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
-
-        // A basic URL
-        let query_params = from_value(json!({})).unwrap();
-        let select = Select::from_path_and_query("penguin", &query_params, &rltbl)
-            .await
-            .limit(&1)
-            .offset(&9);
-
-        let result_set = rltbl.fetch(&select).await?;
-        let expected = r"Rows 10-10 of 10
-study_name  sample_number  species             island     individual_id  bill_length  bill_depth  body_mass
-FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5         27.9        3237
-";
-        assert_eq!(result_set.to_console(), expected);
 
         rltbl.drop_test().await
     }

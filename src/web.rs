@@ -4,11 +4,14 @@
 
 use crate as rltbl;
 use rltbl::{
+    change::ChangeSet,
     cli::Cli,
-    core::{ChangeSet, Cursor, Relatable, RelatableError, ResultSet, RowID},
+    core::{Relatable, RelatableError, RowID},
+    result_set::ResultSet,
     row::Row,
     select::{joined_query, Format, QueryParams, Select},
     sql::CachingStrategy,
+    user::Cursor,
 };
 use rltbl_db::{core::DbQuery, db_value::JsonRow};
 
