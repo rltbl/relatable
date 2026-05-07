@@ -8,7 +8,7 @@ use rltbl::{
     core::{Relatable, RelatableError, RowID},
     sql::SqlParam,
 };
-use rltbl_db::core::{DbQuery, JsonRow, ParamValue};
+use rltbl_db::{core::DbQuery, db_value::DbValue};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -75,7 +75,7 @@ impl Structure {
                     sql_param_3 = sql_param_gen.next(),
                     sql_param_4 = sql_param_gen.next(),
                 );
-                let mut params: Vec<ParamValue> = vec![
+                let mut params: Vec<DbValue> = vec![
                     c_table.to_owned(),
                     c_column.to_owned(),
                     format!("key:foreign"),
@@ -89,10 +89,10 @@ impl Structure {
                         r#" AND "_id" IN({sql_params})"#,
                         sql_params = sql_param_gen.get_as_list(rows.len()),
                     ));
-                    params.extend(rows.iter().map(|row| ParamValue::from(**row)));
+                    params.extend(rows.iter().map(|row| DbValue::from(**row)));
                 }
                 sql.push_str(r#" RETURNING 1 AS "inserted""#);
-                let rows: Vec<JsonRow> = rltbl.pool.query(&sql, params).await?;
+                let rows = rltbl.pool.query(&sql, params).await?;
                 messages_were_added = rows.len() > 0;
             }
         };

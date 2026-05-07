@@ -9,7 +9,7 @@ use rltbl::{
     sql::CachingStrategy,
     web::{serve, serve_cgi},
 };
-use rltbl_db::core::{DbQuery, JsonRow};
+use rltbl_db::{core::DbQuery, db_value::JsonRow};
 
 use ansi_term::Style;
 use anyhow::Result;
@@ -62,6 +62,21 @@ pub struct Cli {
 // in the usage statement that is printed when valve is run with the option `--help`.
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Run a Relatable server
+    Serve {
+        /// Server host address
+        #[arg(long, default_value="0.0.0.0", action = ArgAction::Set)]
+        host: String,
+
+        /// Server port
+        #[arg(long, default_value="0", action = ArgAction::Set)]
+        port: u16,
+
+        /// Instruct the server to exit after this many seconds. Defaults to 0, i.e., no timeout.
+        #[arg(long, default_value="0", action = ArgAction::Set)]
+        timeout: usize,
+    },
+
     /// Initialize a database
     Init {
         /// Overwrite an existing database
@@ -137,21 +152,6 @@ pub enum Command {
     Drop {
         #[command(subcommand)]
         subcommand: DropSubcommand,
-    },
-
-    /// Run a Relatable server
-    Serve {
-        /// Server host address
-        #[arg(long, default_value="0.0.0.0", action = ArgAction::Set)]
-        host: String,
-
-        /// Server port
-        #[arg(long, default_value="0", action = ArgAction::Set)]
-        port: u16,
-
-        /// Instruct the server to exit after this many seconds. Defaults to 0, i.e., no timeout.
-        #[arg(long, default_value="0", action = ArgAction::Set)]
-        timeout: usize,
     },
 
     /// Run Relatable as a CGI script
@@ -531,9 +531,12 @@ pub async fn print_value(cli: &Cli, table: &str, row: RowID, column: &str) {
     let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = $1"#,);
     let text = rltbl
         .pool
-        .query_string(&statement, [row])
+        .query(&statement, [row])
         .await
-        .expect("Error querying value");
+        .expect("Error querying value")
+        .value()
+        .expect("Error querying value")
+        .to_string();
     println!("{text}");
 }
 

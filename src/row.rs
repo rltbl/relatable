@@ -9,7 +9,7 @@ use rltbl::{
     datatype::Datatypes,
     schema::Schema,
 };
-use rltbl_db::core::{DbRow, JsonRow};
+use rltbl_db::db_value::{DbRow, JsonRow};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -84,6 +84,12 @@ impl From<DbRow> for Row {
             .map(|(key, val)| (key, val.into()))
             .collect();
         json_row.into()
+    }
+}
+
+impl From<&DbRow> for Row {
+    fn from(db_row: &DbRow) -> Self {
+        db_row.clone().into()
     }
 }
 

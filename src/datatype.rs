@@ -10,8 +10,9 @@ use rltbl::{
 };
 use rltbl_db::{
     any::AnyPool,
-    core::{DbQuery, JsonRow, ParamValue},
+    core::DbQuery,
     db_kind::DbKind,
+    db_value::{DbValue, JsonRow},
 };
 
 use indexmap::IndexMap;
@@ -111,7 +112,7 @@ impl Datatype {
                         sql_param_4 = sql_param_gen.next(),
                         sql_param_5 = sql_param_gen.next(),
                     );
-                    let mut params: Vec<ParamValue> = vec![
+                    let mut params: Vec<DbValue> = vec![
                         column.table.clone(),
                         column.column.clone(),
                         format!("datatype:{}", self.datatype),
@@ -126,10 +127,10 @@ impl Datatype {
                             r#" AND "_id" IN({sql_params})"#,
                             sql_params = sql_param_gen.get_as_list(rows.len()),
                         ));
-                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
+                        params.extend(rows.iter().map(|row| DbValue::from(**row)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
-                    let rows = rltbl.pool.query_row(&sql, params).await?;
+                    let rows = rltbl.pool.query(&sql, params).await?;
                     messages_were_added = rows.len() > 0;
                 }
             }
@@ -167,7 +168,7 @@ impl Datatype {
                         sql_param_4 = sql_param_gen.next(),
                         sql_param_5 = sql_param_gen.get_as_list(condition_list.len()),
                     );
-                    let mut params: Vec<ParamValue> = vec![
+                    let mut params: Vec<DbValue> = vec![
                         column.table.clone(),
                         column.column.clone(),
                         format!("datatype:{}", self.datatype),
@@ -184,10 +185,10 @@ impl Datatype {
                             r#" AND "_id" IN({sql_params})"#,
                             sql_params = sql_param_gen.get_as_list(rows.len()),
                         ));
-                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
+                        params.extend(rows.iter().map(|row| DbValue::from(**row)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
-                    let rows: Vec<JsonRow> = rltbl.pool.query(&sql, params).await?;
+                    let rows = rltbl.pool.query(&sql, params).await?;
                     messages_were_added = rows.len() > 0;
                 }
             }
@@ -221,7 +222,7 @@ impl Datatype {
                         sql_param_4 = sql_param_gen.next(),
                         match_condition = sql::regexp_mismatch(&column.column, &mut sql_param_gen),
                     );
-                    let mut params: Vec<ParamValue> = vec![
+                    let mut params: Vec<DbValue> = vec![
                         column.table.clone(),
                         column.column.clone(),
                         format!("datatype:{}", self.datatype),
@@ -236,7 +237,7 @@ impl Datatype {
                             r#" AND "_id" IN({sql_params})"#,
                             sql_params = sql_param_gen.get_as_list(rows.len()),
                         ));
-                        params.extend(rows.iter().map(|row| ParamValue::from(**row)));
+                        params.extend(rows.iter().map(|row| DbValue::from(**row)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
                     // TODO: re-enable this!
@@ -439,11 +440,12 @@ impl<'a> DatatypeTable<'a> {
             .iter()
             .map(|dt| json!(dt).as_object().unwrap().clone())
             .collect();
-        let rows: Vec<JsonRow> = self
+        let db_rows = self
             .pool
             .insert_returning(&self.table_name, &COLUMNS, rows, &[])
             .await?;
-        let dts: Vec<Datatype> = rows
+        let dts: Vec<Datatype> = db_rows
+            .rows
             .into_iter()
             // WARN: This silently ignores invalid datatypes.
             .filter_map(|row| serde_json::from_value::<Datatype>(json!(row)).ok())
@@ -455,7 +457,7 @@ impl<'a> DatatypeTable<'a> {
     /// Built-in datatypes override rows found in the table.
     /// If the datatype table does not exist, just return buildins.
     pub async fn get(&self) -> Datatypes {
-        let rows: Vec<JsonRow> = match self.pool
+        let datatypes: Vec<Datatype> = self.pool
             .query(
                 &format!(
                     r#"SELECT "datatype", "description", "parent", "condition", "sql_type", "format" FROM "{}""#,
@@ -464,14 +466,10 @@ impl<'a> DatatypeTable<'a> {
                 (),
             )
             .await
-        {
-            Ok(rows) => rows,
-            Err(_) => return Datatypes::builtins(),
-        };
-        let mut map = rows
-            .iter()
-            .map(|row| serde_json::from_value(json!(row)))
-            .filter_map(|result| result.ok())
+            .and_then(|db_rows| db_rows.try_into_vec())
+            .unwrap_or_default();
+        let mut map = datatypes
+            .into_iter()
             .map(|dt: Datatype| (dt.datatype.to_string(), dt))
             .collect::<IndexMap<_, _>>();
         map.extend(Datatypes::builtins().map);
@@ -492,10 +490,11 @@ mod tests {
 
         let table = DatatypeTable::connect(&rltbl.pool);
         table.create().await?;
-        let count = rltbl
+        let count: u64 = rltbl
             .pool
-            .query_u64("SELECT count(1) FROM datatype", ())
-            .await?;
+            .query("SELECT count(1) FROM datatype", ())
+            .await?
+            .try_into()?;
         assert_eq!(count, Datatypes::builtins().len() as u64);
 
         rltbl.drop_test().await
@@ -513,10 +512,11 @@ mod tests {
             .unwrap();
         table.add(&[&test]).await?;
 
-        let count = rltbl
+        let count: u64 = rltbl
             .pool
-            .query_u64("SELECT count(1) FROM datatype", ())
-            .await?;
+            .query("SELECT count(1) FROM datatype", ())
+            .await?
+            .try_into()?;
         assert_eq!(count as usize, Datatypes::builtins().len() + 1);
         assert_eq!(&test, table.get().await.get("test").unwrap());
 

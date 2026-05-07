@@ -10,8 +10,9 @@ use rltbl::{
 };
 use rltbl_db::{
     any::AnyPool,
-    core::{DbQuery, JsonRow},
+    core::{DbError, DbQuery},
     db_kind::DbKind,
+    db_value::{DbRow, JsonRow},
 };
 
 use anyhow::Result;
@@ -420,19 +421,16 @@ impl<'a> ColumnTable<'a> {
     /// Insert these columns into the column table,
     /// returning the results.
     pub async fn add(&self, columns: &[&Column]) -> Result<Vec<Column>> {
-        let rows: Vec<JsonRow> = columns
+        let rows: Vec<DbRow> = columns
             .iter()
-            .map(|dt| json!(dt).as_object().unwrap().clone())
-            .collect();
-        let rows: Vec<JsonRow> = self
+            .map(|col| rltbl_db::serde::to_db_row(col))
+            .collect::<Result<Vec<DbRow>, DbError>>()?;
+        let cols: Vec<Column> = self
             .pool
-            .insert_returning(&self.table_name, &COLUMNS, rows, &[])
-            .await?;
-        let cols: Vec<Column> = rows
-            .into_iter()
-            // WARN: This silently ignores invalid columns.
-            .filter_map(|row| serde_json::from_value::<Column>(json!(row)).ok())
-            .collect();
+            .insert_returning(&self.table_name, &COLUMNS, rows, &COLUMNS)
+            .await?
+            .remove_nulls()
+            .try_into_vec()?;
         Ok(cols)
     }
 
@@ -529,18 +527,12 @@ impl<'a> ColumnTable<'a> {
     /// This merges the actual columns with the content of the column table.
     pub async fn get(&self, tables: &[&str]) -> Result<Columns> {
         let sql = self.get_sql(tables)?;
-        let rows: Vec<JsonRow> = self.pool.query(&sql, ()).await?;
-        let list = rows
-            .iter()
-            .filter_map(|row: &JsonRow| {
-                let row: JsonRow = row
-                    .iter()
-                    .filter(|(_, value)| !value.is_null())
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect();
-                serde_json::from_value(json!(row)).ok()
-            })
-            .collect::<Vec<_>>();
+        let list: Vec<Column> = self
+            .pool
+            .query(&sql, ())
+            .await?
+            .remove_nulls()
+            .try_into_vec()?;
         Ok(Columns { list })
     }
 
@@ -567,18 +559,12 @@ impl<'a> ColumnTable<'a> {
                 .collect::<Vec<String>>()
                 .join(", ")
         );
-        let rows: Vec<JsonRow> = self.pool.query(&sql, ()).await?;
-        let list = rows
-            .iter()
-            .filter_map(|row: &JsonRow| {
-                let row: JsonRow = row
-                    .iter()
-                    .filter(|(_, value)| !value.is_null())
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect();
-                serde_json::from_value(json!(row)).ok()
-            })
-            .collect::<Vec<_>>();
+        let list: Vec<Column> = self
+            .pool
+            .query(&sql, ())
+            .await?
+            .remove_nulls()
+            .try_into_vec()?;
         Ok(Columns { list })
     }
 }

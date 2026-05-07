@@ -10,7 +10,7 @@ use rltbl::{
     select::{joined_query, Format, QueryParams, Select},
     sql::CachingStrategy,
 };
-use rltbl_db::core::{DbQuery, JsonRow};
+use rltbl_db::{core::DbQuery, db_value::JsonRow};
 
 use std::io::Write;
 
@@ -56,11 +56,17 @@ fn get_500(error: &anyhow::Error) -> Response<Body> {
 
 async fn get_root(State(rltbl): State<Arc<Relatable>>) -> impl IntoResponse {
     tracing::info!("request root");
-    let table = rltbl
+    let table = match rltbl
         .pool
-        .query_string(r#"SELECT "table" FROM "table" ORDER BY _order LIMIT 1"#, ())
+        .query(r#"SELECT "table" FROM "table" ORDER BY _order LIMIT 1"#, ())
         .await
-        .unwrap_or(String::from("table"));
+    {
+        Ok(db_rows) => match db_rows.value() {
+            Ok(db_value) => db_value.to_string(),
+            Err(_) => "table".to_string(),
+        },
+        Err(_) => "table".to_string(),
+    };
     Redirect::permanent(format!("{}/table/{table}", rltbl.root).as_str())
 }
 
@@ -284,15 +290,15 @@ async fn get_tableset(
     let site = rltbl.get_site(&username).await;
 
     let sql = r#"SELECT * FROM "tableset" WHERE tableset = $1"#;
-    let json_rows: Vec<JsonRow> = match rltbl.pool.query(&sql, [&tableset_name]).await {
+    let db_rows = match rltbl.pool.query(&sql, [&tableset_name]).await {
         Ok(rows) => rows,
         Err(error) => return get_500(&error.into()),
     };
 
     // tracing::info!("TAB {json_rows:?}");
     let mut tabset = vec![];
-    for json_row in json_rows {
-        let table = json_row
+    for db_row in db_rows.rows {
+        let table = db_row
             .get("right_table")
             .unwrap()
             .as_str()
@@ -315,11 +321,13 @@ async fn get_tableset(
 async fn init_user(rltbl: &Relatable, username: &str) -> () {
     let color = random_color::RandomColor::new().to_hex();
     let sql = r#"SELECT COUNT(1) FROM "user" WHERE "name" = $1"#;
-    let count = rltbl
+    let count: u64 = rltbl
         .pool
-        .query_u64(&sql, [username])
+        .query(&sql, [username])
         .await
-        .expect("Error getting user count");
+        .expect("Error getting user count")
+        .try_into()
+        .expect("User count not a u64");
     if count == 0 {
         let sql = r#"INSERT INTO "user"("name", "color") VALUES ($1, $2)"#;
         rltbl
@@ -406,13 +414,16 @@ async fn get_row_menu(
     };
     let row: Row = match rltbl
         .pool
-        .query_row(
+        .query(
             &format!(r#"SELECT * FROM "{}" WHERE _id = $1"#, table.view,),
             [row_id],
         )
         .await
     {
-        Ok(row) => row.into(),
+        Ok(db_rows) => match db_rows.row() {
+            Ok(db_row) => db_row.into(),
+            Err(error) => return get_500(&error.into()),
+        },
         Err(error) => return get_500(&error.into()),
     };
     match rltbl.render("row_menu.html", context! {site, table, row}) {
@@ -474,13 +485,16 @@ async fn get_cell_menu(
     };
     let row: Row = match rltbl
         .pool
-        .query_row(
+        .query(
             &format!(r#"SELECT * FROM "{}" WHERE _id = $1"#, table.view,),
             [row_id],
         )
         .await
     {
-        Ok(row) => row.into(),
+        Ok(db_rows) => match db_rows.row() {
+            Ok(db_row) => db_row.into(),
+            Err(error) => return get_500(&error.into()),
+        },
         Err(error) => return get_500(&error.into()),
     };
     let cell = row.cells.get(&column);
@@ -510,9 +524,10 @@ async fn get_cell_options(
     );
     let values: Vec<JsonValue> = rltbl
         .pool
-        .query_strings(&statement, ())
+        .query(&statement, ())
         .await
         .expect("Get column values")
+        .rows
         .iter()
         .map(|value| {
             json!({
@@ -529,11 +544,14 @@ async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &RowID) -> RowI
         r#"SELECT "_id", MAX("_order") FROM "{table}"
         WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = $1)"#,
     );
-    rltbl
+    let row_id: RowID = rltbl
         .pool
-        .query_u64(&sql, [*row_id])
+        .query(&sql, [*row_id])
         .await
-        .unwrap_or_default() as RowID
+        .expect("Get previous row")
+        .try_into()
+        .unwrap_or_default();
+    row_id
 }
 
 async fn add_row_before(
@@ -580,13 +598,15 @@ async fn add_row(
     match rltbl.add_row(&table, &username, after_id, &json_row).await {
         Ok(row) => {
             // tracing::info!("Added row {row:?}");
-            let offset = rltbl
+            let offset: u64 = rltbl
                 .pool
-                .query_u64(
+                .query(
                     &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= $1"#,),
                     [row.order],
                 )
                 .await
+                .expect("Get count")
+                .try_into()
                 .unwrap_or_default();
             let url = format!("{}/table/{table}?offset={offset}", rltbl.root);
             return Redirect::temporary(url.as_str()).into_response();
@@ -609,9 +629,9 @@ async fn delete_row(
     let prev = previous_row_id(&rltbl, &table, &row_id).await;
     match rltbl.delete_row(&table, &username, row_id).await {
         Ok(_) => {
-            let offset = rltbl
+            let offset: u64 = rltbl
                 .pool
-                .query_u64(
+                .query(
                     &format!(
                         r#"SELECT COUNT() FROM "{table}"
                            WHERE _order <= (SELECT _order FROM "{table}" WHERE _id = $1)"#,
@@ -619,6 +639,8 @@ async fn delete_row(
                     [prev],
                 )
                 .await
+                .expect("Get count")
+                .try_into()
                 .unwrap_or_default();
             let url = format!("{}/table/{table}?offset={offset}", rltbl.root);
             Redirect::temporary(url.as_str()).into_response()

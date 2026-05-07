@@ -16,7 +16,7 @@ use rltbl::{
 use anyhow::Result;
 use indexmap::IndexMap;
 use itertools::Itertools;
-use rltbl_db::core::JsonRow;
+use rltbl_db::db_value::JsonRow;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 

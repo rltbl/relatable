@@ -8,8 +8,9 @@ use rltbl::{
     sql::{self, SqlParam},
 };
 use rltbl_db::{
-    core::{DbQuery, IntoParamValue, JsonValue, ParamValue},
+    core::DbQuery,
     db_kind::DbKind,
+    db_value::{DbValue, IntoDbValue, JsonValue},
 };
 
 use anyhow::Result;
@@ -96,23 +97,23 @@ impl Select {
         query_params.shift_remove("offset");
         query_params.shift_remove("order");
 
-        fn value_as_type(sql_type: &str, column: &str, value: &str) -> ParamValue {
-            fn try_parse_as_int(value: &str) -> ParamValue {
+        fn value_as_type(sql_type: &str, column: &str, value: &str) -> DbValue {
+            fn try_parse_as_int(value: &str) -> DbValue {
                 match value.parse::<i64>() {
-                    Ok(signed) => ParamValue::from(signed),
+                    Ok(signed) => DbValue::from(signed),
                     _ => {
                         tracing::warn!("Could not parse {value} as integer. Treating as string");
-                        ParamValue::Text(value.to_string())
+                        DbValue::Text(value.to_string())
                     }
                 }
             }
 
-            fn try_parse_as_decimal(value: &str) -> ParamValue {
+            fn try_parse_as_decimal(value: &str) -> DbValue {
                 match value.parse::<f64>() {
-                    Ok(signed) => ParamValue::from(signed),
+                    Ok(signed) => DbValue::from(signed),
                     _ => {
                         tracing::warn!("Could not parse {value} as decimal. Treating as string");
-                        ParamValue::Text(value.to_string())
+                        DbValue::Text(value.to_string())
                     }
                 }
             }
@@ -120,15 +121,15 @@ impl Select {
             if ["_id", "_order", "_change_id"].contains(&column) {
                 try_parse_as_int(value)
             } else if ["_history", "_message"].contains(&column) {
-                ParamValue::Text(value.to_string())
+                DbValue::Text(value.to_string())
             } else {
                 match sql_type.to_lowercase().as_str() {
-                    "text" | "" => ParamValue::Text(value.to_string()),
+                    "text" | "" => DbValue::Text(value.to_string()),
                     "integer" => try_parse_as_int(value),
                     "decimal" => try_parse_as_decimal(value),
                     other => {
                         tracing::warn!("Unsupported datatype: {other}. Treating {value} as string");
-                        ParamValue::Text(value.to_string())
+                        DbValue::Text(value.to_string())
                     }
                 }
             }
@@ -159,7 +160,7 @@ impl Select {
                     Err(_) => filters.push(Filter::Like {
                         table: table_name,
                         column: column_name,
-                        value: ParamValue::Text(value.to_string()),
+                        value: DbValue::Text(value.to_string()),
                     }),
                 }
             } else {
@@ -226,7 +227,7 @@ impl Select {
                         filters.push(Filter::Is {
                             table: table_name,
                             column: column_name,
-                            value: ParamValue::Null,
+                            value: DbValue::Null,
                         })
                     } else {
                         let value = value_as_type(&sql_type, &column_name, &value);
@@ -242,7 +243,7 @@ impl Select {
                         filters.push(Filter::IsNot {
                             table: table_name,
                             column: column_name,
-                            value: ParamValue::Null,
+                            value: DbValue::Null,
                         })
                     } else {
                         let value = value_as_type(&sql_type, &column_name, &value);
@@ -488,18 +489,18 @@ impl Select {
         .unwrap();
 
         #[allow(dependency_on_unit_never_type_fallback)]
-        fn parse_as_value(value: &str) -> Result<ParamValue> {
+        fn parse_as_value(value: &str) -> Result<DbValue> {
             // TODO: Move this to rltbl_db?
             if let Ok(signed) = value.parse::<i64>() {
-                Ok(ParamValue::from(signed))
+                Ok(DbValue::from(signed))
             } else if let Ok(float) = value.parse::<f64>() {
-                Ok(ParamValue::from(float))
+                Ok(DbValue::from(float))
             } else if value.starts_with("\"") {
                 let value = serde_json::from_str(&value)?;
-                Ok(ParamValue::from(value))
+                Ok(DbValue::from(value))
             } else {
                 let value: JsonValue = serde_json::from_str(&format!(r#""{value}""#))?;
-                Ok(ParamValue::from(value))
+                Ok(DbValue::from(value))
             }
         }
 
@@ -580,7 +581,7 @@ impl Select {
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(3).unwrap().as_str();
                 let value = match value.to_lowercase().as_str() {
-                    "null" => ParamValue::Null,
+                    "null" => DbValue::Null,
                     _ => parse_as_value(value)?,
                 };
                 self.filters.push(Filter::Is {
@@ -593,7 +594,7 @@ impl Select {
                 let column = captures.get(1).unwrap().as_str().to_string();
                 let value = &captures.get(3).unwrap().as_str();
                 let value = match value.to_lowercase().as_str() {
-                    "null" => ParamValue::Null,
+                    "null" => DbValue::Null,
                     _ => parse_as_value(value)?,
                 };
                 self.filters.push(Filter::IsNot {
@@ -610,7 +611,7 @@ impl Select {
                     .split(values)
                     .filter_map(|v| parse_as_value(v).ok())
                     .map(|p| p.into())
-                    .collect::<Vec<ParamValue>>();
+                    .collect::<Vec<DbValue>>();
                 self.filters.push(Filter::In {
                     table: "".to_string(),
                     column,
@@ -625,7 +626,7 @@ impl Select {
                     .split(values)
                     .filter_map(|v| parse_as_value(v).ok())
                     .map(|p| p.into())
-                    .collect::<Vec<ParamValue>>();
+                    .collect::<Vec<DbValue>>();
                 self.filters.push(Filter::NotIn {
                     table: "".to_string(),
                     column,
@@ -639,23 +640,23 @@ impl Select {
     }
 
     /// Add a like filter for the given column on the given value, which may include '%' wildcards
-    pub fn like(mut self, column: &str, value: impl IntoParamValue) -> Result<Self> {
+    pub fn like(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
         tracing::trace!("Select::like({column:?}, value)");
         self.filters.push(Filter::Like {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_param_value(),
+            value: value.into_db_value(),
         });
         Ok(self)
     }
 
     /// Add an equals filter on the given column and value.
-    pub fn where_eq(&mut self, column: &str, value: impl IntoParamValue) -> Result<&Self> {
+    pub fn where_eq(&mut self, column: &str, value: impl IntoDbValue) -> Result<&Self> {
         tracing::trace!("Select::eq({column:?}, value)");
         self.filters.push(Filter::Equal {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_param_value(),
+            value: value.into_db_value(),
         });
         Ok(self)
     }
@@ -665,108 +666,101 @@ impl Select {
         &mut self,
         table: &str,
         column: &str,
-        value: impl IntoParamValue,
+        value: impl IntoDbValue,
     ) -> Result<&Self> {
         tracing::trace!("Select::table_eq({column:?}, value)");
         self.filters.push(Filter::Equal {
             table: table.to_string(),
             column: column.to_string(),
-            value: value.into_param_value(),
+            value: value.into_db_value(),
         });
         Ok(self)
     }
 
     /// Add a not-equals filter on the given column and value.
-    pub fn not_eq(mut self, column: &str, value: impl IntoParamValue) -> Result<Self> {
+    pub fn not_eq(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
         tracing::trace!("Select::not_eq({column:?}, value)");
         self.filters.push(Filter::NotEqual {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_param_value(),
+            value: value.into_db_value(),
         });
         Ok(self)
     }
 
     /// Add an greater-than filter on the given column and value.
-    pub fn gt(mut self, column: &str, value: impl IntoParamValue) -> Result<Self> {
+    pub fn gt(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
         tracing::trace!("Select::gt({column:?}, value)");
         self.filters.push(Filter::GreaterThan {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_param_value(),
+            value: value.into_db_value(),
         });
         Ok(self)
     }
 
     /// Add an greater-than-or-equals filter on the given column and value.
-    pub fn gte(mut self, column: &str, value: impl IntoParamValue) -> Result<Self> {
+    pub fn gte(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
         tracing::trace!("Select::gte({column:?}, value)");
         self.filters.push(Filter::GreaterThanOrEqual {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_param_value(),
+            value: value.into_db_value(),
         });
         Ok(self)
     }
 
     /// Add an less-than filter on the given column and value.
-    pub fn lt(mut self, column: &str, value: impl IntoParamValue) -> Result<Self> {
+    pub fn lt(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
         tracing::trace!("Select::lt({column:?}, value)");
         self.filters.push(Filter::LessThan {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_param_value(),
+            value: value.into_db_value(),
         });
         Ok(self)
     }
 
     /// Add an less-than-or-equals filter on the given column and value.
-    pub fn lte(mut self, column: &str, value: impl IntoParamValue) -> Result<Self> {
+    pub fn lte(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
         tracing::trace!("Select::lte({column:?}, value)");
         self.filters.push(Filter::LessThanOrEqual {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_param_value(),
+            value: value.into_db_value(),
         });
         Ok(self)
     }
 
     /// Add an is filter on the given column and value.
-    pub fn is(mut self, column: &str, value: impl IntoParamValue) -> Result<Self> {
+    pub fn is(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
         tracing::trace!("Select::is({column:?}, value)");
         self.filters.push(Filter::Is {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_param_value(),
+            value: value.into_db_value(),
         });
         Ok(self)
     }
 
     /// Add an is not filter on the given column and value.
-    pub fn is_not(mut self, column: &str, value: impl IntoParamValue) -> Result<Self> {
+    pub fn is_not(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
         tracing::trace!("Select::is_not({column:?}, value)");
         self.filters.push(Filter::IsNot {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_param_value(),
+            value: value.into_db_value(),
         });
         Ok(self)
     }
 
     /// Add an in filter on the given column and value.
-    pub fn is_in(
-        mut self,
-        column: &str,
-        values: &Vec<impl IntoParamValue + Clone>,
-    ) -> Result<Self> {
+    pub fn is_in(mut self, column: &str, values: &Vec<impl IntoDbValue + Clone>) -> Result<Self> {
         tracing::trace!("Select::is_in({column:?}, value)");
         self.filters.push(Filter::In {
             table: "".to_string(),
             column: column.to_string(),
-            values: values
-                .iter()
-                .map(|v| v.clone().into_param_value())
-                .collect(),
+            values: values.iter().map(|v| v.clone().into_db_value()).collect(),
         });
         Ok(self)
     }
@@ -775,7 +769,7 @@ impl Select {
     pub fn is_not_in<T>(
         mut self,
         column: &str,
-        values: &Vec<impl IntoParamValue + Clone>,
+        values: &Vec<impl IntoDbValue + Clone>,
     ) -> Result<Self>
     where
         T: Serialize,
@@ -784,10 +778,7 @@ impl Select {
         self.filters.push(Filter::NotIn {
             table: "".to_string(),
             column: column.to_string(),
-            values: values
-                .iter()
-                .map(|v| v.clone().into_param_value())
-                .collect(),
+            values: values.iter().map(|v| v.clone().into_db_value()).collect(),
         });
         Ok(self)
     }
@@ -824,7 +815,7 @@ impl Select {
 
     /// Convert the filter to a tuple consisting of an SQL string supported by the given database
     /// kind, and a vector of parameters that must be bound to the string before executing it.
-    pub fn to_sql(&self, kind: &DbKind) -> Result<(String, Vec<ParamValue>)> {
+    pub fn to_sql(&self, kind: &DbKind) -> Result<(String, Vec<DbValue>)> {
         tracing::trace!("Select::to_sql({self:?}, {kind:?})");
         let mut sql_param_gen = SqlParam::new(kind);
         let mut lines = Vec::new();
@@ -910,8 +901,8 @@ impl Select {
                 filter_params = filter_params
                     .iter()
                     .map(|param| match param {
-                        ParamValue::Text(_) => param.clone(),
-                        _ => ParamValue::Text(param.clone().into()),
+                        DbValue::Text(_) => param.clone(),
+                        _ => DbValue::Text(param.clone().into()),
                     })
                     .collect::<Vec<_>>();
             }
@@ -947,7 +938,7 @@ impl Select {
 
     /// Generate a SQL statement consisting of a SELECT COUNT(*) over the data that will be returned
     /// by the given [Select]
-    pub fn to_sql_count(&self, kind: &DbKind) -> Result<(String, Vec<ParamValue>)> {
+    pub fn to_sql_count(&self, kind: &DbKind) -> Result<(String, Vec<DbValue>)> {
         tracing::trace!("Select::to_sql_count({self:?}, {kind:?})");
         let mut sql_param_gen = SqlParam::new(kind);
         let target = match self.view_name.as_str() {
@@ -1001,8 +992,8 @@ impl Select {
             params = params
                 .iter()
                 .map(|param| match param {
-                    ParamValue::Text(_) => param.clone(),
-                    _ => ParamValue::Text(param.clone().into()),
+                    DbValue::Text(_) => param.clone(),
+                    _ => DbValue::Text(param.clone().into()),
                 })
                 .collect::<Vec<_>>();
         }
@@ -1012,7 +1003,7 @@ impl Select {
 
     /// Converts this select's filters to a map from column names to URL representations of their
     /// associated filters represented as [JsonValue]s
-    pub fn to_params(&self) -> Result<IndexMap<String, ParamValue>> {
+    pub fn to_params(&self) -> Result<IndexMap<String, DbValue>> {
         tracing::trace!("Select::to_params()");
         if self.table_name.is_empty() {
             return Err(RelatableError::InputError(
@@ -1259,57 +1250,57 @@ pub enum Filter {
     Like {
         table: String,
         column: String,
-        value: ParamValue,
+        value: DbValue,
     },
     Equal {
         table: String,
         column: String,
-        value: ParamValue,
+        value: DbValue,
     },
     NotEqual {
         table: String,
         column: String,
-        value: ParamValue,
+        value: DbValue,
     },
     GreaterThan {
         table: String,
         column: String,
-        value: ParamValue,
+        value: DbValue,
     },
     GreaterThanOrEqual {
         table: String,
         column: String,
-        value: ParamValue,
+        value: DbValue,
     },
     LessThan {
         table: String,
         column: String,
-        value: ParamValue,
+        value: DbValue,
     },
     LessThanOrEqual {
         table: String,
         column: String,
-        value: ParamValue,
+        value: DbValue,
     },
     Is {
         table: String,
         column: String,
-        value: ParamValue,
+        value: DbValue,
     },
     IsNot {
         table: String,
         column: String,
-        value: ParamValue,
+        value: DbValue,
     },
     In {
         table: String,
         column: String,
-        values: Vec<ParamValue>,
+        values: Vec<DbValue>,
     },
     NotIn {
         table: String,
         column: String,
-        values: Vec<ParamValue>,
+        values: Vec<DbValue>,
     },
     InSubquery {
         table: String,
@@ -1418,7 +1409,7 @@ impl Filter {
         operator.to_string()
     }
 
-    pub fn get_values(&self) -> Vec<ParamValue> {
+    pub fn get_values(&self) -> Vec<DbValue> {
         match self {
             Filter::Like { value, .. } => vec![value.clone()],
             Filter::Equal { value, .. } => vec![value.clone()],
@@ -1437,10 +1428,10 @@ impl Filter {
     }
 
     pub fn get_value(&self) -> Result<String> {
-        fn handle_value(value: &ParamValue) -> String {
+        fn handle_value(value: &DbValue) -> String {
             match value {
-                ParamValue::Null => "null".to_string(),
-                ParamValue::Text(token) => {
+                DbValue::Null => "null".to_string(),
+                DbValue::Text(token) => {
                     let reserved = vec![':', ',', '.', '(', ')'];
                     if token.chars().all(char::is_numeric)
                         || reserved.iter().any(|&c| token.contains(c))
@@ -1487,7 +1478,7 @@ impl Filter {
         }
     }
 
-    pub fn to_sql(&self, sql_param: &mut SqlParam) -> Result<(String, Vec<ParamValue>)> {
+    pub fn to_sql(&self, sql_param: &mut SqlParam) -> Result<(String, Vec<DbValue>)> {
         tracing::trace!("Filter::to_sql({sql_param:?})");
 
         fn generate_lhs(table: &str, column: &str) -> String {
@@ -1659,7 +1650,7 @@ impl Filter {
 
     /// Generate a SQL statement consisting of a SELECT COUNT(*) over the data that will bereturned
     /// by the given [Select]
-    pub fn to_sql_count(&self, sql_param: &mut SqlParam) -> Result<(String, Vec<ParamValue>)> {
+    pub fn to_sql_count(&self, sql_param: &mut SqlParam) -> Result<(String, Vec<DbValue>)> {
         tracing::trace!("Filter::to_sql_count({self:?}, {sql_param:?})");
         match self {
             Filter::InSubquery {
@@ -1755,23 +1746,23 @@ impl TryFrom<&String> for Format {
 }
 
 pub fn render_values(
-    items: &Vec<ParamValue>,
+    items: &Vec<DbValue>,
     sql_param_gen: &mut SqlParam,
-) -> Result<(String, Vec<ParamValue>)> {
+) -> Result<(String, Vec<DbValue>)> {
     let mut sql_params = vec![];
     let mut values = vec![];
     for item in items.iter() {
         sql_params.push(sql_param_gen.next());
         let value = match item {
-            ParamValue::Null => "NULL".to_string(),
-            ParamValue::Boolean(bool) => bool.to_string(),
-            ParamValue::SmallInteger(number) => number.to_string(),
-            ParamValue::Integer(number) => number.to_string(),
-            ParamValue::BigInteger(number) => number.to_string(),
-            ParamValue::Real(number) => number.to_string(),
-            ParamValue::BigReal(number) => number.to_string(),
-            ParamValue::Numeric(decimal) => decimal.to_string(),
-            ParamValue::Text(text) => {
+            DbValue::Null => "NULL".to_string(),
+            DbValue::Boolean(bool) => bool.to_string(),
+            DbValue::SmallInteger(number) => number.to_string(),
+            DbValue::Integer(number) => number.to_string(),
+            DbValue::BigInteger(number) => number.to_string(),
+            DbValue::Real(number) => number.to_string(),
+            DbValue::BigReal(number) => number.to_string(),
+            DbValue::Numeric(decimal) => decimal.to_string(),
+            DbValue::Text(text) => {
                 let value = unquote(text).unwrap_or(text.clone());
                 format!("{value}")
             }
@@ -1791,7 +1782,7 @@ pub async fn joined_query(
         return Ok(select.clone());
     }
 
-    let tables: Vec<ParamValue> = tables.into_iter().map(|x| ParamValue::from(x)).collect();
+    let tables: Vec<DbValue> = tables.into_iter().map(|x| DbValue::from(x)).collect();
     let mut sql_param = sql::SqlParam::new(&rltbl.pool.kind());
 
     let sql = format!(
@@ -1819,16 +1810,16 @@ pub async fn joined_query(
     params.extend(tables.clone());
     params.extend(tables.clone());
     tracing::info!("PARAMS {params:?}");
-    let json_rows = rltbl.pool.query_string_rows(&sql, params).await?;
+    let db_rows = rltbl.pool.query(&sql, params).await?;
     tracing::info!(
-        "TABLESET {} {json_rows:?}",
+        "TABLESET {} {db_rows:?}",
         select.to_url("", &Format::Default)?
     );
     println!(
-        "TABLESET {} {json_rows:?}",
+        "TABLESET {} {db_rows:?}",
         select.to_url("", &Format::Default)?
     );
-    if json_rows.len() == 0 {
+    if db_rows.len() == 0 {
         return Err(RelatableError::ConfigError(format!("empty tableset")).into());
     }
 
@@ -1859,12 +1850,12 @@ pub async fn joined_query(
     inner.order_by = vec![];
     inner.limit = 0;
     inner.view_name = String::new();
-    let json_row = json_rows.first().unwrap();
-    inner.table_name = json_row.get("left_table").unwrap().to_string();
+    let db_row = db_rows.first().unwrap();
+    inner.table_name = db_row.get("left_table").unwrap().to_string();
     let mut joined = HashSet::new();
-    for json_row in json_rows.iter() {
-        let left_table = json_row.get("left_table").unwrap().to_string();
-        let right_table = json_row.get("right_table").unwrap().to_string();
+    for db_row in db_rows.iter() {
+        let left_table = db_row.get("left_table").unwrap().to_string();
+        let right_table = db_row.get("right_table").unwrap().to_string();
         if &left_table == "" || &right_table == "" {
             continue;
         }
@@ -1874,9 +1865,9 @@ pub async fn joined_query(
         joined.insert(right_table.clone());
         inner.left_join(
             &left_table,
-            &json_row.get("left_column").unwrap(),
+            &db_row.get("left_column").unwrap().to_string(),
             &right_table,
-            &json_row.get("right_column").unwrap(),
+            &db_row.get("right_column").unwrap().to_string(),
         );
     }
     let (sql, params) = inner.to_sql(&rltbl.pool.kind()).unwrap();
@@ -1912,7 +1903,7 @@ mod tests {
         crate::demo::build_demo(&rltbl, &true, 0).await.unwrap();
         let sql_param = SqlParam::new(&rltbl.pool.kind()).next();
         let base = "http://example.com";
-        let empty: Vec<ParamValue> = vec![];
+        let empty: Vec<DbValue> = vec![];
 
         // A basic URL
         let url = "http://example.com/penguin";
@@ -2025,7 +2016,7 @@ LIMIT 1"#,
                 is_clause = is_clause(&rltbl.pool.kind()),
             )
         );
-        assert_eq!(params, vec![ParamValue::Null]);
+        assert_eq!(params, vec![DbValue::Null]);
         let (sql, params) = select.to_sql_count(&rltbl.pool.kind()).unwrap();
         assert_eq!(
             sql,
@@ -2036,7 +2027,7 @@ WHERE "penguin"."study_name" {is_clause} {sql_param}"#,
                 is_clause = is_clause(&rltbl.pool.kind()),
             )
         );
-        assert_eq!(params, vec![ParamValue::Null]);
+        assert_eq!(params, vec![DbValue::Null]);
 
         // A URL with an IS NOT NULL filter
         let url = "http://example.com/penguin?penguin.study_name=is_not.null&limit=1";
@@ -2060,7 +2051,7 @@ LIMIT 1"#,
                 is_not_clause = is_not_clause(&rltbl.pool.kind()),
             )
         );
-        assert_eq!(params, vec![ParamValue::Null]);
+        assert_eq!(params, vec![DbValue::Null]);
         let (sql, params) = select.to_sql_count(&rltbl.pool.kind()).unwrap();
         assert_eq!(
             sql,
@@ -2071,7 +2062,7 @@ WHERE "penguin"."study_name" {is_not_clause} {sql_param}"#,
                 is_not_clause = is_not_clause(&rltbl.pool.kind()),
             )
         );
-        assert_eq!(params, vec![ParamValue::Null]);
+        assert_eq!(params, vec![DbValue::Null]);
 
         // A URL with an IN filter
         let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind());
@@ -2648,7 +2639,7 @@ FROM "penguin""#
 )"#;
         rltbl.pool.execute(drop_sql, ()).await.unwrap();
         rltbl.pool.execute(create_sql, ()).await.unwrap();
-        let empty: Vec<ParamValue> = vec![];
+        let empty: Vec<DbValue> = vec![];
 
         // select_columns
         let mut select = Select::from("penguin_test");
@@ -3022,7 +3013,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         let rltbl = Relatable::test("test_tablesets", false).await?;
         let sql_param = SqlParam::new(&rltbl.pool.kind()).next();
         let base = "http://example.com/combined";
-        let empty: Vec<ParamValue> = vec![];
+        let empty: Vec<DbValue> = vec![];
 
         // Create five tables:
         //   / B \

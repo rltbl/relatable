@@ -9,10 +9,7 @@ use rltbl::{
     core::{Relatable, RowID},
     sql::{self},
 };
-use rltbl_db::{
-    core::{DbQuery, JsonRow},
-    db_kind::DbKind,
-};
+use rltbl_db::{core::DbQuery, db_kind::DbKind};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -82,7 +79,7 @@ impl Table {
                 ["%TABLE", table_name],
             ),
         };
-        let rows: Vec<JsonRow> = rltbl.pool.query(&sql, params).await?;
+        let rows = rltbl.pool.query(&sql, params).await?;
         if rows.len() == 0 {
             Ok(false)
         } else {
@@ -116,9 +113,9 @@ impl Table {
                 vec![format!("{table}_{view_type}_view"), "VIEW".to_owned()],
             ),
         };
-        match rltbl.pool.query_u64(&statement, params).await {
-            Ok(value) => Ok(value > 0),
-            Err(_) => Ok(false),
+        match rltbl.pool.query(&statement, params).await?.len() {
+            1 => Ok(true),
+            _ => Ok(false),
         }
     }
 
@@ -226,8 +223,8 @@ impl Table {
             r#"SELECT "_id" FROM "{table}" WHERE "_order" < (SELECT _order FROM "{table}" WHERE _id = $1)
                ORDER BY "_order" DESC LIMIT 1"#,
         );
-        match rltbl.pool.query_i64(&sql, [row_id]).await {
-            Ok(id) => Ok(id as RowID),
+        match rltbl.pool.query(&sql, [row_id]).await?.value() {
+            Ok(value) => Ok(value.as_i32().unwrap_or_default()),
             Err(_) => Ok(0),
         }
     }
