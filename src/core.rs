@@ -29,7 +29,7 @@ use indexmap::IndexMap;
 use lazy_static::lazy_static;
 use minijinja::{path_loader, Environment};
 use regex::Regex;
-use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value, Value as JsonValue};
 use sprintf::sprintf;
 use std::{
@@ -3632,28 +3632,6 @@ impl std::fmt::Display for ResultSet {
     }
 }
 
-// Serialization utilities
-
-/// Use serde serialize_with to serialize a field to a JSON string
-/// that we can insert into the datatbase.
-fn serialize_as_json_string<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
-where
-    T: Serialize,
-    S: Serializer,
-{
-    let json_string = serde_json::to_string(value).map_err(serde::ser::Error::custom)?;
-    serializer.serialize_str(&json_string)
-}
-
-fn deserialize_from_json_string<'de, T, D>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let buf = String::deserialize(deserializer)?;
-    serde_json::from_str(&buf).map_err(serde::de::Error::custom)
-}
-
 // Web Site Stuff
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3684,10 +3662,6 @@ pub struct Cursor {
 pub struct UserCursor {
     name: String,
     color: String,
-    #[serde(
-        serialize_with = "serialize_as_json_string",
-        deserialize_with = "deserialize_from_json_string"
-    )]
     cursor: Cursor,
     datetime: String,
 }
@@ -3741,7 +3715,7 @@ mod tests {
             },
             datetime: "2025-01-01T00:00:00".to_owned(),
         };
-        let string = r##"{"name":"john","color":"#000000","cursor":"{\"table\":\"foo\",\"row\":1,\"column\":\"bar\"}","datetime":"2025-01-01T00:00:00"}"##;
+        let string = r##"{"name":"john","color":"#000000","cursor":{"table":"foo","row":1,"column":"bar"},"datetime":"2025-01-01T00:00:00"}"##;
         assert_eq!(serde_json::from_str::<UserCursor>(&string)?, user_cursor,);
         assert_eq!(serde_json::to_string(&user_cursor)?, string,);
         Ok(())

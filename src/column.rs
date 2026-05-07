@@ -19,14 +19,10 @@ use anyhow::Result;
 use derive_builder::Builder;
 use indexmap::IndexMap;
 use regex::Regex;
-use serde::{
-    de::{self, Visitor},
-    Deserialize, Serialize,
-};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     collections::HashSet,
-    fmt,
     ops::{Deref, DerefMut},
 };
 
@@ -55,107 +51,8 @@ pub struct Column {
     pub nulltype: String,
     pub datatype: String,
     pub structure: Structures,
-    #[serde(deserialize_with = "to_bool")]
     pub primary_key: bool,
-    #[serde(deserialize_with = "to_bool")]
     pub unique: bool,
-}
-
-// Adapted from serde_with BoolFromInt
-// https://tg-rs.github.io/tgbot/serde_with/struct.BoolFromInt.html#impl-DeserializeAs%3C'de,+bool%3E-for-BoolFromInt
-/// Deserialize various values to a bool.
-/// Required to convert SQLite booleans.
-fn to_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
-where
-    D: de::Deserializer<'de>,
-{
-    struct BoolVisitor;
-    impl Visitor<'_> for BoolVisitor {
-        type Value = bool;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("an integer")
-        }
-
-        fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v)
-        }
-
-        fn visit_u8<E>(self, v: u8) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v != 0)
-        }
-
-        fn visit_i8<E>(self, v: i8) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v != 0)
-        }
-
-        fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v != 0)
-        }
-
-        fn visit_i16<E>(self, v: i16) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v != 0)
-        }
-
-        fn visit_u32<E>(self, v: u32) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v != 0)
-        }
-
-        fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v != 0)
-        }
-
-        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v != 0)
-        }
-
-        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v != 0)
-        }
-
-        fn visit_u128<E>(self, v: u128) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v != 0)
-        }
-
-        fn visit_i128<E>(self, v: i128) -> Result<Self::Value, E>
-        where
-            E: de::Error,
-        {
-            Ok(v != 0)
-        }
-    }
-
-    deserializer.deserialize_u8(BoolVisitor)
 }
 
 impl Column {
@@ -196,6 +93,7 @@ impl ColumnBuilder {
     }
 }
 
+/// A list of columns and their structure.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Columns {
     list: Vec<Column>,
@@ -225,19 +123,17 @@ impl Into<IndexMap<String, Column>> for Columns {
     fn into(self) -> IndexMap<String, Column> {
         self.list
             .into_iter()
-            .map(|col| (col.column.clone(), col.clone()))
+            .map(|col| (col.column.to_string(), col))
             .collect()
     }
 }
 
 impl Columns {
-    // Returns an [IndexMap] representing all of the built-in columns, indexed by column name
+    /// Return all the default columns for the "column" table.
     pub fn builtins() -> Self {
         Columns {
             list: vec![
-                ColumnBuilder::default()
-                    .table("column")
-                    .column("table")
+                ColumnBuilder::new("column", "table")
                     .description("the table for this column")
                     .datatype("word")
                     .sql_type("text")
