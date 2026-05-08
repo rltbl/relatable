@@ -4,8 +4,8 @@ use rltbl::{
     change::{Change, ChangeAction, ChangeSet},
     core::{Relatable, RowID, RLTBL_DEFAULT_DB},
     select::Select,
-    sql::CachingStrategy,
 };
+use rltbl_db::core::CachingStrategy;
 
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;

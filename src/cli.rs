@@ -6,10 +6,12 @@ use crate as rltbl;
 use rltbl::{
     core::{Relatable, RowID, ValidationLevel},
     select::{Format, Select},
-    sql::CachingStrategy,
     web::{serve, serve_cgi},
 };
-use rltbl_db::{core::DbQuery, db_value::JsonRow};
+use rltbl_db::{
+    core::{CachingStrategy, DbQuery},
+    db_value::JsonRow,
+};
 
 use ansi_term::Style;
 use anyhow::Result;

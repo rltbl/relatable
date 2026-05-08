@@ -511,7 +511,7 @@ mod tests {
                 .filter(|c| &c.table == "column")
                 .collect::<Vec<_>>(),
         );
-        assert_eq!(columns.len(), 43);
+        assert_eq!(columns.len(), 39);
 
         rltbl.drop_test().await
     }

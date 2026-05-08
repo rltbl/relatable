@@ -10,10 +10,12 @@ use rltbl::{
     result_set::ResultSet,
     row::Row,
     select::{joined_query, Format, QueryParams, Select},
-    sql::CachingStrategy,
     user::Cursor,
 };
-use rltbl_db::{core::DbQuery, db_value::JsonRow};
+use rltbl_db::{
+    core::{CachingStrategy, DbQuery},
+    db_value::JsonRow,
+};
 
 use std::io::Write;
 

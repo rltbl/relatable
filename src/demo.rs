@@ -3,7 +3,7 @@ use rltbl::{
     column::ColumnBuilder,
     core::{Relatable, RowID, RowOrder, NEW_ORDER_MULTIPLIER},
     datatype::DatatypeBuilder,
-    sql::{self, CachingStrategy, SqlParam},
+    sql::{self, SqlParam},
 };
 use rltbl_db::{core::DbQuery, db_kind::DbKind, params};
 
@@ -61,14 +61,6 @@ pub async fn create_penguin_table(
     );
     rltbl.pool.execute(&sql, ()).await?;
 
-    let mut ddl = vec![];
-    sql::add_metacolumn_trigger_ddl(&mut ddl, table, &rltbl.pool.kind());
-    if let CachingStrategy::Trigger = rltbl.caching_strategy {
-        sql::add_caching_trigger_ddl(&mut ddl, table, &rltbl.pool.kind());
-    }
-    for sql in ddl {
-        rltbl.pool.execute(&sql, ()).await?;
-    }
     // Populate the demo table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
     let mut rng = StdRng::seed_from_u64(0);
@@ -175,15 +167,6 @@ pub async fn create_island_table(
                )"#,
     );
     rltbl.pool.execute(&sql, ()).await?;
-
-    let mut ddl = vec![];
-    sql::add_metacolumn_trigger_ddl(&mut ddl, table, &rltbl.pool.kind());
-    if let CachingStrategy::Trigger = rltbl.caching_strategy {
-        sql::add_caching_trigger_ddl(&mut ddl, table, &rltbl.pool.kind());
-    }
-    for sql in ddl {
-        rltbl.pool.execute(&sql, ()).await?;
-    }
 
     let sql = format!(
         r#"INSERT INTO "{table}" ("island_id", "island")

@@ -11,7 +11,7 @@
 use crate as rltbl;
 use rltbl::{
     column::Column,
-    core::{id_ddl, meta_column_ddl, RelatableError, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER},
+    core::{id_ddl, meta_column_ddl, RelatableError, ID_SQL_TYPE},
     datatype::Datatypes,
     table::Table,
 };
@@ -24,7 +24,6 @@ use anyhow::Result;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde_json::Value as JsonValue;
-use std::{fmt::Display, str::FromStr};
 
 //////////////////////////////////////////
 // The rest of the code
@@ -51,76 +50,6 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 // WARN: tokio-postgres seems to have a much lower limit than Postgres itself,
 // but this is already big enough.
 pub static MAX_PARAMS_POSTGRES: usize = 32766;
-
-/// Default size for the in-memory cache
-pub static DEFAULT_MEMORY_CACHE_SIZE: usize = 1000;
-
-/// Strategy to use for caching
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CachingStrategy {
-    None,
-    TruncateAll,
-    Truncate,
-    Trigger,
-    Memory(usize),
-}
-
-/// The structure used to look up query results in the in-memory cache:
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct MemoryCacheKey {
-    pub tables: String,
-    pub statement: String,
-    pub parameters: String,
-}
-
-impl FromStr for CachingStrategy {
-    type Err = anyhow::Error;
-
-    fn from_str(strategy: &str) -> Result<Self> {
-        tracing::trace!("CachingStrategy::from_str({strategy:?})");
-        match strategy.to_lowercase().as_str() {
-            "none" => Ok(CachingStrategy::None),
-            "truncate_all" => Ok(CachingStrategy::TruncateAll),
-            "truncate" => Ok(CachingStrategy::Truncate),
-            "trigger" => Ok(CachingStrategy::Trigger),
-            strategy if strategy.starts_with("memory") => {
-                let elems = strategy.split(":").collect::<Vec<_>>();
-                let cache_size = {
-                    if elems.len() < 2 {
-                        DEFAULT_MEMORY_CACHE_SIZE
-                    } else {
-                        let cache_size = elems[1];
-                        let cache_size = cache_size.parse::<usize>()?;
-                        match cache_size {
-                            0 => DEFAULT_MEMORY_CACHE_SIZE,
-                            size => size,
-                        }
-                    }
-                };
-                tracing::debug!("Using memory cache with size: {cache_size}");
-                Ok(CachingStrategy::Memory(cache_size))
-            }
-            _ => {
-                return Err(RelatableError::InputError(format!(
-                    "Unrecognized strategy: {strategy}"
-                ))
-                .into());
-            }
-        }
-    }
-}
-
-impl Display for CachingStrategy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CachingStrategy::None => write!(f, "none"),
-            CachingStrategy::TruncateAll => write!(f, "truncate_all"),
-            CachingStrategy::Truncate => write!(f, "truncate"),
-            CachingStrategy::Trigger => write!(f, "trigger"),
-            CachingStrategy::Memory(size) => write!(f, "memory:{size}"),
-        }
-    }
-}
 
 /// Used to generate database-specific parameter placeholder strings for binding to SQL statements
 #[derive(Clone, Copy, Debug)]
@@ -316,7 +245,6 @@ pub fn generate_table_ddl(
     datatypes: &Datatypes,
     force: bool,
     db_kind: &DbKind,
-    caching_strategy: &CachingStrategy,
 ) -> Result<Vec<String>> {
     if table.has_meta {
         for col in columns {
@@ -378,135 +306,7 @@ pub fn generate_table_ddl(
     sql.push_str(&format!(" {})", column_clauses.join(", ")));
     ddl.push(sql);
 
-    // Add triggers for metacolumns if they are present:
-    if table.has_meta {
-        add_metacolumn_trigger_ddl(&mut ddl, &table.name, db_kind);
-    }
-
-    // Add triggers for updating the "cache" and "table" tables whenever this table is
-    // changed, if the Trigger caching strategy has been specified:
-    if let CachingStrategy::Trigger = caching_strategy {
-        add_caching_trigger_ddl(&mut ddl, &table.name, db_kind);
-    }
-
     Ok(ddl)
-}
-
-/// Add triggers for updating the meta columns, _id, and _order, of the given table.
-pub fn add_metacolumn_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
-    let update_stmt = format!(
-        r#"UPDATE "{table}" SET _order = ({NEW_ORDER_MULTIPLIER} * NEW._id)
-           WHERE _id = NEW._id;"#
-    );
-    match db_kind {
-        DbKind::SQLite => {
-            ddl.push(format!(
-                r#"CREATE TRIGGER "{table}_order"
-                   AFTER INSERT ON "{table}"
-                   WHEN NEW._order IS NULL
-                     BEGIN
-                       {update_stmt}
-                     END"#
-            ));
-        }
-        DbKind::PostgreSQL => {
-            // This is required, because in PostgreSQL, assigning SERIAL PRIMARY KEY to a column is
-            // equivalent to:
-            //   CREATE SEQUENCE table_name_id_seq;
-            //   CREATE TABLE table_name (
-            //     id integer NOT NULL DEFAULT nextval('table_name_id_seq')
-            //   );
-            //   ALTER SEQUENCE table_name_id_seq OWNED BY table_name.id;
-            // This means that such a column is only ever auto-incremented when it is explicitly
-            // left out of an INSERT statement. To replicate SQLite's more sane behaviour, we define
-            // the following trigger to *always* update the last value of the sequence to the
-            // currently inserted row number. A similar trigger is also defined generically for
-            // postgresql tables in [rltbl::core].
-            ddl.push(format!(
-                r#"CREATE OR REPLACE FUNCTION "update_order_and_nextval_{table}"()
-                     RETURNS TRIGGER
-                     LANGUAGE PLPGSQL
-                   AS
-                   $$
-                   BEGIN
-                     IF NEW._order IS NOT DISTINCT FROM NULL THEN
-                       {update_stmt}
-                     END IF;
-                     IF NEW._id > (SELECT MAX(last_value) FROM "{table}__id_seq") THEN
-                       PERFORM setval('{table}__id_seq', NEW._id);
-                     END IF;
-                     RETURN NEW;
-                   END;
-                   $$"#
-            ));
-            ddl.push(format!(
-                r#"CREATE TRIGGER "{table}_order"
-                   AFTER INSERT ON "{table}"
-                   FOR EACH ROW
-                   EXECUTE FUNCTION "update_order_and_nextval_{table}"()"#
-            ));
-        }
-    };
-}
-
-/// Add a trigger to update the query cache for the given table.
-pub fn add_caching_trigger_ddl(ddl: &mut Vec<String>, table: &str, db_kind: &DbKind) {
-    match db_kind {
-        DbKind::SQLite => {
-            ddl.push(format!(
-                r#"CREATE TRIGGER "{table}_cache_after_insert"
-                   AFTER INSERT ON "{table}"
-                   BEGIN
-                     DELETE FROM "cache" WHERE "tables" LIKE '%"{table}"%';
-                   END"#
-            ));
-            ddl.push(format!(
-                r#"CREATE TRIGGER "{table}_cache_after_update"
-                   AFTER UPDATE ON "{table}"
-                   BEGIN
-                     DELETE FROM "cache" WHERE "tables" LIKE '%"{table}"%';
-                   END"#
-            ));
-            ddl.push(format!(
-                r#"CREATE TRIGGER "{table}_cache_after_delete"
-                   AFTER DELETE ON "{table}"
-                   BEGIN
-                     DELETE FROM "cache" WHERE "tables" LIKE '%"{table}"%';
-                   END"#
-            ));
-        }
-        DbKind::PostgreSQL => {
-            // Note that the '?' is *not* being used as a parameter placeholder here
-            // but a JSONB operator.
-            ddl.push(format!(
-                r#"CREATE OR REPLACE FUNCTION "clean_cache_for_{table}"()
-                     RETURNS TRIGGER
-                     LANGUAGE PLPGSQL
-                   AS
-                   $$
-                   BEGIN
-                     DELETE FROM "cache" WHERE "tables" ? '{table}';
-                     RETURN NEW;
-                   END;
-                   $$"#
-            ));
-            ddl.push(format!(
-                r#"CREATE TRIGGER "{table}_cache_after_insert"
-                   AFTER INSERT ON "{table}"
-                   EXECUTE FUNCTION "clean_cache_for_{table}"()"#
-            ));
-            ddl.push(format!(
-                r#"CREATE TRIGGER "{table}_cache_after_update"
-                   AFTER UPDATE ON "{table}"
-                   EXECUTE FUNCTION "clean_cache_for_{table}"()"#
-            ));
-            ddl.push(format!(
-                r#"CREATE TRIGGER "{table}_cache_after_delete"
-                   AFTER DELETE ON "{table}"
-                   EXECUTE FUNCTION "clean_cache_for_{table}"()"#
-            ));
-        }
-    };
 }
 
 /// Generate the DDL for creating the default view on the given table,
@@ -888,35 +688,6 @@ pub fn generate_table_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
         meta_columns = meta_column_ddl(db_kind)
     ));
 
-    // Add metacolumn triggers before returning the DDL:
-    add_metacolumn_trigger_ddl(&mut ddl, "table", db_kind);
-    ddl
-}
-
-/// Generate the DDL used to create the cache table. If `force` is set, drop the table first
-pub fn generate_cache_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
-    tracing::trace!("generate_cache_table_ddl({force}, {db_kind:?})");
-    let mut ddl = vec![];
-    if force {
-        if let DbKind::PostgreSQL = db_kind {
-            ddl.push(format!(r#"DROP TABLE IF EXISTS "cache" CASCADE"#));
-        }
-    }
-
-    let json_type = match db_kind {
-        DbKind::PostgreSQL => "JSONB",
-        DbKind::SQLite => "JSON",
-    };
-
-    ddl.push(format!(
-        r#"CREATE TABLE "cache" (
-             "tables" {json_type},
-             "statement" TEXT,
-             "parameters" TEXT,
-             "value" TEXT,
-              PRIMARY KEY ("tables", "statement", "parameters")
-           )"#
-    ));
     ddl
 }
 
@@ -1085,7 +856,6 @@ pub fn generate_message_table_ddl(force: bool, db_kind: &DbKind) -> Vec<String> 
 pub fn generate_meta_tables_ddl(force: bool, db_kind: &DbKind) -> Vec<String> {
     tracing::trace!("generate_meta_tables_ddl({force}, {db_kind:?})");
     let mut ddl = generate_table_table_ddl(force, db_kind);
-    ddl.append(&mut generate_cache_table_ddl(force, db_kind));
     ddl.append(&mut generate_user_table_ddl(force, db_kind));
     ddl.append(&mut generate_change_table_ddl(force, db_kind));
     ddl.append(&mut generate_history_table_ddl(force, db_kind));

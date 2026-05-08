@@ -13,13 +13,13 @@ use rltbl::{
     schema::Schema,
     select::{Select, SelectField},
     site::Site,
-    sql::{self, CachingStrategy, MemoryCacheKey, SqlParam},
+    sql::{self, SqlParam},
     table::Table,
     user::{Account, UserCursor},
 };
 use rltbl_db::{
     any::AnyPool,
-    core::DbQuery,
+    core::{CachingStrategy, DbQuery},
     db_kind::DbKind,
     db_row,
     db_value::{DbRow, DbValue, JsonRow},
@@ -29,18 +29,10 @@ use rltbl_db::{
 use anyhow::Result;
 use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
 use indexmap::IndexMap;
-use lazy_static::lazy_static;
 use minijinja::{path_loader, Environment};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value, Value as JsonValue};
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Display,
-    fs::File,
-    path::Path as FilePath,
-    str::FromStr,
-    sync::Mutex,
-};
+use std::{collections::HashSet, fmt::Display, fs::File, path::Path as FilePath, str::FromStr};
 
 /// Default location of the [relatable](crate) database
 pub static RLTBL_DEFAULT_DB: &str = ".relatable/relatable.db";
@@ -57,10 +49,6 @@ pub static DEFAULT_LIMIT: usize = 100;
 
 /// THe maximum number of rows to return in a fetch.
 pub static MAX_LIMIT: usize = 1000;
-
-lazy_static! {
-    pub static ref CACHE: Mutex<HashMap<MemoryCacheKey, Vec<JsonRow>>> = Mutex::new(HashMap::new());
-}
 
 /// Type for _id columns
 pub type RowID = i32;
@@ -148,7 +136,6 @@ pub struct Relatable {
     pub caching_strategy: CachingStrategy,
     /// The validation level, which defaults to 'full'
     pub validation_level: ValidationLevel,
-    pub memory_cache_size: usize,
 }
 
 impl Relatable {
@@ -186,7 +173,8 @@ impl Relatable {
                 .into());
             }
         }
-        let pool = AnyPool::connect(&path).await?;
+        let mut pool = AnyPool::connect(&path).await?;
+        pool.set_caching_strategy(caching_strategy);
         Ok(Self {
             root,
             readonly,
@@ -199,17 +187,6 @@ impl Relatable {
             max_limit: MAX_LIMIT,
             caching_strategy: *caching_strategy,
             validation_level: ValidationLevel::Full,
-            memory_cache_size: match caching_strategy {
-                CachingStrategy::Memory(size) => {
-                    let mut cache = CACHE.lock().expect("Could not lock cache");
-                    let current_capacity = cache.capacity();
-                    if current_capacity < *size {
-                        cache.reserve(*size - current_capacity);
-                    }
-                    *size
-                }
-                _ => 0,
-            },
         })
     }
 
@@ -742,15 +719,8 @@ impl Relatable {
 
         // Generate the SQL statements needed to create the table and execute them:
         let datatypes = self.datatypes().await;
-        for sql in sql::generate_table_ddl(
-            &table,
-            &table_column_refs,
-            &datatypes,
-            force,
-            &db_kind,
-            &self.caching_strategy,
-        )
-        .expect("Error getting DDL")
+        for sql in sql::generate_table_ddl(&table, &table_column_refs, &datatypes, force, &db_kind)
+            .expect("Error getting DDL")
         {
             self.pool
                 .execute(&sql, ())
@@ -909,7 +879,6 @@ impl Relatable {
             &schema.datatypes,
             true,
             &self.pool.kind(),
-            &self.caching_strategy,
         )? {
             self.pool.execute(&sql, ()).await?;
         }
@@ -997,15 +966,17 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
             .from_reader(File::open(path).expect(&format!("Unable to open '{path}'")));
 
         let headers = rdr.headers()?.clone();
-        let column_refs: Vec<&str> = headers.deserialize(None)?;
+        let mut column_refs: Vec<&str> = headers.deserialize(None)?;
+        column_refs.insert(0, "_order");
 
         let records = rdr.records();
         let rows: Vec<JsonRow> = records
             .into_iter()
             .enumerate()
-            .map(|(id, record)| {
+            .map(|(i, record)| {
                 let mut row: JsonRow = record?.deserialize(Some(&headers))?;
-                row.insert("_id".to_string(), json!(id));
+                let index = i as i64 + 1;
+                row.insert("_order".to_string(), json!(index * NEW_ORDER_MULTIPLIER));
                 Ok(row)
             })
             .collect::<Result<Vec<JsonRow>>>()?;
@@ -1456,16 +1427,6 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
                 }
             };
         }
-
-        // Possibly delete dirty entries from the cache in accordance with our caching strategy:
-        match self.caching_strategy {
-            // Trigger has the same behaviour as None here, since the database will be triggering
-            // this step automatically every time the table is edited in that case.
-            CachingStrategy::None | CachingStrategy::Trigger => (),
-            CachingStrategy::Memory(_) => self.clear_mem_cache(&table),
-            CachingStrategy::TruncateAll => self.clear_cache(None).await?,
-            CachingStrategy::Truncate => self.clear_cache(Some(&table)).await?,
-        };
 
         Ok(())
     }
@@ -2577,7 +2538,16 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
         }
 
         let after_id = match after_id {
-            None => Table::get_previous_row_id(&table.name, *row_id, &self).await?,
+            None => {
+                let sql = format!(r#"SELECT MAX("_order") FROM "{table_name}""#);
+                let max_order: RowOrder = self.pool.query(&sql, ()).await?.try_into()?;
+                let order = max_order + NEW_ORDER_MULTIPLIER;
+                let row = db_row! {"_id"=> *row_id, "_order"=> order};
+                self.pool
+                    .update(table_name, &["_id", "_order"], &[&row])
+                    .await?;
+                Table::get_previous_row_id(&table.name, *row_id, &self).await?
+            }
             Some(after_id) => {
                 // Move the row to its assigned spot within the table:
                 tracing::debug!(
@@ -3174,57 +3144,6 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
             .await?;
         Ok(())
     }
-
-    /// Delete all entries from the cache corresponding to the given table, or clear it completely
-    /// if no table is given.
-    pub(crate) async fn clear_cache(&self, table: Option<&str>) -> Result<()> {
-        let mut sql = r#"DELETE FROM "cache""#.to_string();
-        if let Some(table) = table {
-            let mut table = table.to_string();
-            tracing::debug!("Deleting entries for table '{table}' from cache");
-            match self.pool.kind() {
-                DbKind::PostgreSQL => {
-                    // Note that the '?' is *not* being used as a parameter placeholder here
-                    // but a JSONB operator.
-                    sql.push_str(&format!(
-                        r#" WHERE "tables" ? {}"#,
-                        SqlParam::new(&self.pool.kind()).next()
-                    ));
-                }
-                DbKind::SQLite => {
-                    sql.push_str(&format!(
-                        r#" WHERE "tables" LIKE {}"#,
-                        SqlParam::new(&self.pool.kind()).next()
-                    ));
-                    table = format!(r#"%"{table}"%"#);
-                }
-            };
-            self.pool.execute(&sql, [table]).await?;
-        } else {
-            self.pool.execute(&sql, ()).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Delete all entries from the in-memory cache corresponding to the given table
-    pub(crate) fn clear_mem_cache(&self, table: &str) {
-        let table = format!("\"{table}\"");
-        let mut cache = CACHE.lock().expect("Could not lock cache");
-        let keys = cache
-            .keys()
-            .map(|k| k)
-            .cloned()
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        for key in keys.iter() {
-            if key.tables.contains(&table) {
-                tracing::debug!("Removing {key:?} from cache");
-                cache.remove(key);
-            }
-        }
-    }
 }
 
 // Validation
@@ -3271,8 +3190,8 @@ mod tests {
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
 
         let schema = rltbl.schema().await?;
-        assert_eq!(schema.tables.len(), 10);
-        assert_eq!(schema.columns.len(), 65);
+        assert_eq!(schema.tables.len(), 9);
+        assert_eq!(schema.columns.len(), 61);
         assert_eq!(schema.datatypes.len(), 9);
         assert_eq!(schema.columns("penguin").len(), 10);
 
