@@ -55,21 +55,21 @@ impl Structure {
                 let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind());
                 let mut sql = format!(
                     r#"INSERT INTO "message"
-                             ("added_by", "table", "row", "column", "value", "level", "rule",
-                              "message")
-                           SELECT
-                             'rltbl' AS "added_by",
-                             {sql_param_1} AS "table",
-                             "_id" AS "row",
-                             {sql_param_2} AS "column",
-                             "{c_column}" AS "value",
-                             'error' AS "level",
-                             {sql_param_3} AS "rule",
-                             {sql_param_4} AS "message"
-                           FROM "{c_table}"
-                           WHERE "{c_column}" NOT IN (
-                               SELECT "{s_column}" FROM "{s_table}"
-                           )"#,
+                         ("added_by", "table", "row", "column", "value", "level", "rule",
+                          "message")
+                       SELECT
+                         'rltbl' AS "added_by",
+                         {sql_param_1} AS "table",
+                         "_id" AS "row",
+                         {sql_param_2} AS "column",
+                         "{c_column}" AS "value",
+                         'error' AS "level",
+                         {sql_param_3} AS "rule",
+                         {sql_param_4} AS "message"
+                       FROM "{c_table}"
+                       WHERE "{c_column}" NOT IN (
+                           SELECT "{s_column}" FROM "{s_table}"
+                       )"#,
                     sql_param_1 = sql_param_gen.next(),
                     sql_param_2 = sql_param_gen.next(),
                     sql_param_3 = sql_param_gen.next(),

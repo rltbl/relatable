@@ -2,7 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
-use crate as rltbl;
+use crate::{self as rltbl, user::UserTable};
 use rltbl::{
     change::{Change, ChangeAction, ChangeSet, History},
     column::{Column, ColumnBuilder, ColumnTable},
@@ -15,7 +15,6 @@ use rltbl::{
     site::Site,
     sql::{self, SqlParam},
     table::Table,
-    user::{Account, UserCursor},
 };
 use rltbl_db::{
     any::AnyPool,
@@ -341,6 +340,11 @@ impl Relatable {
     /// Get all the defined datatypes.
     pub async fn datatypes(&self) -> Datatypes {
         self.datatype_table().get().await
+    }
+
+    /// Get the user table
+    pub fn user_table(&self) -> UserTable<'_> {
+        UserTable::connect(&self.pool)
     }
 
     /// Get the full schema:
@@ -1431,50 +1435,6 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
         Ok(())
     }
 
-    /// Get information about the given user from the database and return it as an [Account]. If
-    /// there is no user with the given username, return a default Account.
-    pub async fn get_user(&self, username: &str) -> Account {
-        tracing::trace!("Relatable::get_user({username:?})");
-        let statement = format!(r#"SELECT "color" FROM "user" WHERE name = '{username}' LIMIT 1"#);
-        match self.pool.query(&statement, ()).await {
-            Ok(db_rows) => match db_rows.value() {
-                Ok(db_value) => Account {
-                    name: username.to_string(),
-                    color: db_value.to_string(),
-                },
-                Err(_) => Account {
-                    ..Default::default()
-                },
-            },
-            Err(_) => Account {
-                ..Default::default()
-            },
-        }
-    }
-
-    /// Returns a map with information about all of the users who have corresponding records in
-    /// the user table.
-    pub async fn get_users(&self) -> Result<IndexMap<String, UserCursor>> {
-        tracing::trace!("Relatable::get_users()");
-        let mut users = IndexMap::new();
-        // let statement = format!(
-        //     r#"SELECT "name", color", "cursor", "datetime" FROM "user" WHERE cursor IS NOT NULL
-        //        AND "datetime" >= DATETIME('now', '-10 minutes')"#
-        // );
-        let statement = format!(
-            r#"SELECT "name", "color", "cursor", "datetime"
-               FROM "user"
-               WHERE cursor {is_not} NULL"#,
-            is_not = sql::is_not_clause(&self.pool.kind()),
-        );
-        let user_cursors: Vec<UserCursor> =
-            self.pool.query(&statement, ()).await?.try_into_vec()?;
-        for user_cursor in user_cursors {
-            users.insert(user_cursor.name.clone(), user_cursor);
-        }
-        Ok(users)
-    }
-
     /// Returns a vector of the names of the tables that have entries in the table table
     pub async fn list_tables(&self) -> Result<Vec<String>> {
         tracing::trace!("Relatable::list_tables({self:?})");
@@ -1508,13 +1468,13 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
     /// Returns a [Site] corresponding to the given username.
     pub async fn get_site(&self, username: &str) -> Site {
         tracing::trace!("Relatable::get_site({username:?})");
-        let mut users = self.get_users().await.unwrap_or_default();
-        users.shift_remove(username);
+        let mut users = self.user_table().map().await;
+        let user = users.shift_remove(username).unwrap_or_default().into();
         Site {
             title: "RLTBL".to_string(),
             root: self.root.clone(),
             editable: !self.readonly,
-            user: self.get_user(username).await,
+            user,
             users,
             tables: self.list_tables().await.unwrap_or_default(),
         }
@@ -1524,14 +1484,8 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
     /// changeset.
     pub async fn prepare_user_cursor(&self, changeset: &ChangeSet) -> Result<()> {
         // Make sure the user is present in the user table
-        let user = changeset.user.clone();
-        let statement = r#"SELECT 1 FROM "user" WHERE "name" = $1"#;
-        let rows = self.pool.query(&statement, [&user]).await?;
-        if rows.len() == 0 {
-            let color = random_color::RandomColor::new().to_hex();
-            let statement = r#"INSERT INTO "user" ("name", "color") VALUES ($1, $2)"#;
-            self.pool.execute(&statement, [&user, &color]).await?;
-        }
+        let username = changeset.user.clone();
+        self.user_table().get_or_insert(&username).await;
 
         // Update the user's cursor position.
         let mut cursor = changeset.to_cursor()?;
@@ -1545,14 +1499,7 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
             ChangeAction::Do => (),
         };
 
-        let statement = format!(
-            r#"UPDATE "user"
-               SET "cursor" = $1, "datetime" = CURRENT_TIMESTAMP
-               WHERE "name" = $2"#,
-        );
-        let params = [&to_value(cursor).unwrap_or_default().to_string(), &user];
-        self.pool.execute(&statement, params).await?;
-        Ok(())
+        self.user_table().update_cursor(&username, &cursor).await
     }
 
     /// Get the last set of changes that can be redone for the given user

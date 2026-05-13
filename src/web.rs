@@ -151,7 +151,7 @@ async fn get_table(
 
     let username = get_username(session);
     if username.trim() != "" {
-        init_user(&rltbl, &username).await;
+        rltbl.user_table().get_or_insert(&username).await;
     }
     let select = Select::from_path_and_query(&path, &query_params, &rltbl).await;
     let format = match Format::try_from(&path) {
@@ -288,7 +288,7 @@ async fn get_tableset(
 
     let username = get_username(session);
     if username.trim() != "" {
-        init_user(&rltbl, &username).await;
+        rltbl.user_table().get_or_insert(&username).await;
     }
     // tracing::info!("USERNAME {username}");
 
@@ -323,26 +323,6 @@ async fn get_tableset(
     respond(&rltbl, &format, &content).await
 }
 
-async fn init_user(rltbl: &Relatable, username: &str) -> () {
-    let color = random_color::RandomColor::new().to_hex();
-    let sql = r#"SELECT COUNT(1) FROM "user" WHERE "name" = $1"#;
-    let count: u64 = rltbl
-        .pool
-        .query(&sql, [username])
-        .await
-        .expect("Error getting user count")
-        .try_into()
-        .expect("User count not a u64");
-    if count == 0 {
-        let sql = r#"INSERT INTO "user"("name", "color") VALUES ($1, $2)"#;
-        rltbl
-            .pool
-            .execute(&sql, [username, &color])
-            .await
-            .expect("Update user");
-    }
-}
-
 async fn post_sign_in(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
@@ -352,7 +332,7 @@ async fn post_sign_in(
     let username = String::new();
     let username = form.get("username").unwrap_or(&username);
     session.set("username", username);
-    init_user(&rltbl, &username).await;
+    rltbl.user_table().get_or_insert(username).await;
 
     match form.get("redirect") {
         Some(url) => Redirect::to(url).into_response(),

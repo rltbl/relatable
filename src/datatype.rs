@@ -11,7 +11,6 @@ use rltbl::{
 use rltbl_db::{
     any::AnyPool,
     core::DbQuery,
-    db_kind::DbKind,
     db_value::{DbValue, JsonRow},
 };
 
@@ -364,10 +363,7 @@ pub struct DatatypeTable<'a> {
 
 impl<'a> DatatypeTable<'a> {
     /// Create a new instance of DatatypeTable from an AnyPool.
-    pub fn connect<'b>(pool: &'b AnyPool) -> Self
-    where
-        'b: 'a,
-    {
+    pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
             table_name: "datatype".to_owned(),
             pool,
@@ -409,15 +405,7 @@ impl<'a> DatatypeTable<'a> {
     // TODO: replace this with self.pool.drop(self.name).
     /// Drop the datatype table from the database.
     pub async fn drop(&self) -> Result<()> {
-        let sql = match self.pool.kind() {
-            DbKind::SQLite => {
-                format!(r#"DROP TABLE IF EXISTS "{}""#, self.table_name)
-            }
-            DbKind::PostgreSQL => {
-                format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.table_name)
-            }
-        };
-        self.pool.execute(&sql, ()).await?;
+        self.pool.drop_table(&self.table_name).await?;
         Ok(())
     }
 
