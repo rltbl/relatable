@@ -1,13 +1,60 @@
 use crate as rltbl;
-use rltbl::core::{id_ddl, ID_SQL_TYPE};
-use rltbl_db::{any::AnyPool, core::DbQuery};
-
-use anyhow::Result;
+use rltbl::{
+    column::{ColumnBuilder, Columns},
+    core::ID_SQL_TYPE,
+    simple_table::SimpleTable,
+};
+use rltbl_db::any::AnyPool;
 
 /// Represents the special "history" table.
 pub struct HistoryTable<'a> {
     table_name: String,
     pool: &'a AnyPool,
+}
+
+impl<'a> SimpleTable for HistoryTable<'a> {
+    fn table_name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn pool(&self) -> &AnyPool {
+        self.pool
+    }
+
+    fn columns(&self) -> Columns {
+        vec![
+            ColumnBuilder::new(self.table_name(), "history_id")
+                .sql_type("SERIAL")
+                .primary_key(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "change_id")
+                .sql_type(ID_SQL_TYPE)
+                .not_null(true)
+                .references(vec!["change".to_string(), "change_id".to_string()])
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "table")
+                .sql_type("TEXT")
+                .not_null(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "row")
+                .sql_type(ID_SQL_TYPE)
+                .not_null(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "before")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "after")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+        ]
+        .into()
+    }
 }
 
 impl<'a> HistoryTable<'a> {
@@ -18,41 +65,28 @@ impl<'a> HistoryTable<'a> {
             pool,
         }
     }
+}
 
-    pub fn column_names(&self) -> Vec<String> {
-        vec!["history_id", "change_id", "table", "row", "before", "after"]
-            .into_iter()
-            .map(|x| x.to_string())
-            .collect()
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use rltbl_db::any::AnyPool;
 
-    /// Get the SQL DDL as a string.
-    /// Requires the db only to know the SQL flavour to use.
-    pub fn ddl(&self) -> String {
-        format!(
-            r#"CREATE TABLE "{table_name}" (
-              "history_id" {id},
-              "change_id" {ID_SQL_TYPE} NOT NULL REFERENCES "change"("change_id"),
-              "table" TEXT NOT NULL,
-              "row" {ID_SQL_TYPE} NOT NULL,
-              "before" TEXT,
-              "after" TEXT
-            )"#,
-            table_name = self.table_name,
-            id = id_ddl(&self.pool.kind())
+    #[tokio::test]
+    async fn test_ddl() {
+        let pool = AnyPool::connect(":memory:").await.unwrap();
+        let table = HistoryTable::connect(&pool);
+        assert_eq!(
+            r#"CREATE TABLE "history" (
+  "history_id" INTEGER PRIMARY KEY AUTOINCREMENT,
+  "change_id" INTEGER NOT NULL REFERENCES "change"("change_id"),
+  "table" TEXT NOT NULL,
+  "row" INTEGER NOT NULL,
+  "before" TEXT,
+  "after" TEXT
+);"#,
+            table.ddl()
         )
-    }
-
-    /// Drop the datatype table from the database.
-    pub async fn drop(&self) -> Result<()> {
-        self.pool.drop_table(&self.table_name).await?;
-        Ok(())
-    }
-
-    /// Create the "datatype" table in the database
-    /// and insert the built-in datatypes.
-    pub async fn create(&self) -> Result<()> {
-        self.pool.execute(&self.ddl(), ()).await?;
-        Ok(())
     }
 }

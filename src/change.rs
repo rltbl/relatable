@@ -2,12 +2,14 @@ use std::{fmt::Display, str::FromStr};
 
 use crate as rltbl;
 use rltbl::{
-    core::{id_ddl, RelatableError, RowID},
+    column::{ColumnBuilder, Columns},
+    core::{RelatableError, RowID},
+    simple_table::SimpleTable,
     user::Cursor,
 };
+use rltbl_db::{any::AnyPool, db_value::JsonRow};
 
 use anyhow::Result;
-use rltbl_db::{any::AnyPool, core::DbQuery, db_value::JsonRow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -186,6 +188,56 @@ pub struct ChangeTable<'a> {
     pool: &'a AnyPool,
 }
 
+impl<'a> SimpleTable for ChangeTable<'a> {
+    fn table_name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn pool(&self) -> &AnyPool {
+        self.pool
+    }
+
+    fn columns(&self) -> Columns {
+        vec![
+            ColumnBuilder::new(self.table_name(), "change_id")
+                .sql_type("SERIAL")
+                .primary_key(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "datetime")
+                .sql_type("TIMESTAMP")
+                .sql_default("CURRENT_TIMESTAMP")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "user")
+                .sql_type("TEXT")
+                .not_null(true)
+                .references(vec!["user".to_string(), "name".to_string()])
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "action")
+                .sql_type("TEXT")
+                .not_null(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "table")
+                .sql_type("TEXT")
+                .not_null(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "description")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "content")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+        ]
+        .into()
+    }
+}
+
 impl<'a> ChangeTable<'a> {
     /// Create a new instance of UserTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
@@ -194,50 +246,29 @@ impl<'a> ChangeTable<'a> {
             pool,
         }
     }
+}
 
-    pub fn column_names(&self) -> Vec<String> {
-        vec![
-            "change_id",
-            "datetime",
-            "user",
-            "action",
-            "table",
-            "description",
-            "content",
-        ]
-        .into_iter()
-        .map(|x| x.to_string())
-        .collect()
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use rltbl_db::any::AnyPool;
 
-    /// Get the SQL DDL as a string.
-    /// Requires the db only to know the SQL flavour to use.
-    pub fn ddl(&self) -> String {
-        format!(
-            r#"CREATE TABLE "{table_name}" (
-              "change_id" {id},
-              "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              "user" TEXT NOT NULL REFERENCES "user"("name"),
-              "action" TEXT NOT NULL,
-              "table" TEXT NOT NULL,
-              "description" TEXT,
-              "content" TEXT
-            )"#,
-            table_name = self.table_name,
-            id = id_ddl(&self.pool.kind())
+    #[tokio::test]
+    async fn test_ddl() {
+        let pool = AnyPool::connect(":memory:").await.unwrap();
+        let table = ChangeTable::connect(&pool);
+        assert_eq!(
+            r#"CREATE TABLE "change" (
+  "change_id" INTEGER PRIMARY KEY AUTOINCREMENT,
+  "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  "user" TEXT NOT NULL REFERENCES "user"("name"),
+  "action" TEXT NOT NULL,
+  "table" TEXT NOT NULL,
+  "description" TEXT,
+  "content" TEXT
+);"#,
+            table.ddl()
         )
-    }
-
-    /// Drop the datatype table from the database.
-    pub async fn drop(&self) -> Result<()> {
-        self.pool.drop_table(&self.table_name).await?;
-        Ok(())
-    }
-
-    /// Create the "datatype" table in the database
-    /// and insert the built-in datatypes.
-    pub async fn create(&self) -> Result<()> {
-        self.pool.execute(&self.ddl(), ()).await?;
-        Ok(())
     }
 }

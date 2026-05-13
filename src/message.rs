@@ -1,8 +1,11 @@
 use crate as rltbl;
-use rltbl::core::{id_ddl, RowID, ID_SQL_TYPE};
-use rltbl_db::{any::AnyPool, core::DbQuery, db_value::JsonValue};
+use rltbl::{
+    column::{ColumnBuilder, Columns},
+    core::{RowID, ID_SQL_TYPE},
+    simple_table::SimpleTable,
+};
+use rltbl_db::{any::AnyPool, db_value::JsonValue};
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 /// Represents a validation message for a cell.
@@ -42,62 +45,94 @@ pub struct MessageTable<'a> {
     pool: &'a AnyPool,
 }
 
+impl<'a> SimpleTable for MessageTable<'a> {
+    fn table_name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn pool(&self) -> &AnyPool {
+        self.pool
+    }
+
+    fn columns(&self) -> Columns {
+        vec![
+            ColumnBuilder::new(self.table_name(), "message_id")
+                .sql_type("SERIAL")
+                .primary_key(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "added_by")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "table")
+                .sql_type("TEXT")
+                .not_null(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "row")
+                .sql_type(ID_SQL_TYPE)
+                .not_null(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "column")
+                .sql_type("TEXT")
+                .not_null(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "value")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "level")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "rule")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "message")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+        ]
+        .into()
+    }
+}
+
 impl<'a> MessageTable<'a> {
-    /// Create a new instance of UserTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
             table_name: "message".to_owned(),
             pool,
         }
     }
+}
 
-    pub fn column_names(&self) -> Vec<String> {
-        vec![
-            "message_id",
-            "added_by",
-            "table",
-            "row",
-            "column",
-            "value",
-            "level",
-            "rule",
-            "message",
-        ]
-        .into_iter()
-        .map(|x| x.to_string())
-        .collect()
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use rltbl_db::any::AnyPool;
 
-    /// Get the SQL DDL as a string.
-    /// Requires the db only to know the SQL flavour to use.
-    pub fn ddl(&self) -> String {
-        format!(
-            r#"CREATE TABLE "{table_name}" (
-              "message_id" {id},
-              "added_by" TEXT,
-              "table" TEXT NOT NULL,
-              "row" {ID_SQL_TYPE} NOT NULL,
-              "column" TEXT NOT NULL,
-              "value" TEXT,
-              "level" TEXT,
-              "rule" TEXT,
-              "message" TEXT
-            )"#,
-            table_name = self.table_name,
-            id = id_ddl(&self.pool.kind())
+    #[tokio::test]
+    async fn test_ddl() {
+        let pool = AnyPool::connect(":memory:").await.unwrap();
+        let table = MessageTable::connect(&pool);
+        assert_eq!(
+            r#"CREATE TABLE "message" (
+  "message_id" INTEGER PRIMARY KEY AUTOINCREMENT,
+  "added_by" TEXT,
+  "table" TEXT NOT NULL,
+  "row" INTEGER NOT NULL,
+  "column" TEXT NOT NULL,
+  "value" TEXT,
+  "level" TEXT,
+  "rule" TEXT,
+  "message" TEXT
+);"#,
+            table.ddl()
         )
-    }
-
-    /// Drop the datatype table from the database.
-    pub async fn drop(&self) -> Result<()> {
-        self.pool.drop_table(&self.table_name).await?;
-        Ok(())
-    }
-
-    /// Create the "datatype" table in the database
-    /// and insert the built-in datatypes.
-    pub async fn create(&self) -> Result<()> {
-        self.pool.execute(&self.ddl(), ()).await?;
-        Ok(())
     }
 }

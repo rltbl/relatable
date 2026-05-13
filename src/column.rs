@@ -3,6 +3,7 @@
 //! This is [relatable](crate) (rltbl::[column](crate::column)).
 
 use crate as rltbl;
+use itertools::Itertools;
 use rltbl::{
     core::{meta_column_ddl, RelatableError},
     datatype::Datatypes,
@@ -48,11 +49,14 @@ pub struct Column {
     pub label: String,
     pub description: String,
     pub sql_type: String,
+    pub sql_default: String,
     pub nulltype: String,
     pub datatype: String,
     pub structure: Structures,
     pub primary_key: bool,
     pub unique: bool,
+    pub not_null: bool,
+    pub references: Vec<String>,
 }
 
 impl Column {
@@ -81,6 +85,45 @@ impl Column {
             Some(dt) => dt.sql_type.to_owned(),
             None => "text".to_owned(),
         }
+    }
+
+    pub fn ddl(&self, kind: &DbKind) -> String {
+        let mut parts = vec![format!(r#""{}""#, self.column)];
+        let sql_type = match self.sql_type.to_uppercase().as_str() {
+            "SERIAL" => match kind {
+                DbKind::SQLite => "INTEGER".to_string(),
+                _ => self.sql_type.to_string(),
+            },
+            _ => self.sql_type.to_string(),
+        };
+        parts.push(sql_type);
+        if self.primary_key {
+            match (kind, self.sql_type.to_uppercase().as_str()) {
+                (DbKind::SQLite, "SERIAL") => parts.push("PRIMARY KEY AUTOINCREMENT".to_string()),
+                _ => parts.push("PRIMARY KEY".to_string()),
+            }
+        } else if self.unique {
+            parts.push("UNIQUE".to_string());
+        }
+        if self.not_null {
+            parts.push("NOT NULL".to_string());
+        }
+        if self.references.len() > 0 {
+            parts.push(format!(
+                r#"REFERENCES "{table}"({columns})"#,
+                table = self.references.first().unwrap(),
+                columns = self
+                    .references
+                    .iter()
+                    .skip(1)
+                    .map(|c| format!(r#""{c}""#))
+                    .join(", ")
+            ));
+        }
+        if self.sql_default != "" {
+            parts.push(format!("DEFAULT {}", self.sql_default));
+        }
+        parts.join(" ")
     }
 }
 
@@ -116,6 +159,12 @@ impl DerefMut for Columns {
 impl Into<Vec<Column>> for Columns {
     fn into(self) -> Vec<Column> {
         self.list
+    }
+}
+
+impl From<Vec<Column>> for Columns {
+    fn from(value: Vec<Column>) -> Self {
+        Columns { list: value }
     }
 }
 
@@ -177,6 +226,15 @@ impl Columns {
                     .unwrap(),
             ],
         }
+    }
+
+    pub fn ddl(&self, kind: &DbKind, table_name: &str) -> String {
+        let cols = self.list.iter().map(|col| col.ddl(kind)).join(",\n  ");
+        format!(
+            r#"CREATE TABLE "{table_name}" (
+  {cols}
+);"#
+        )
     }
 
     /// Return all the "meta" columns, starting with "_".

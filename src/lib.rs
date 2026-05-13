@@ -21,6 +21,8 @@ pub mod site;
 /// Git interface
 pub mod git;
 
+pub mod simple_table;
+
 /// User accounts and cursors.
 pub mod user;
 

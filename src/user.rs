@@ -1,9 +1,13 @@
 use crate as rltbl;
-use indexmap::IndexMap;
-use rltbl::core::RowID;
+use rltbl::{
+    column::{ColumnBuilder, Columns},
+    core::RowID,
+    simple_table::SimpleTable,
+};
 use rltbl_db::{any::AnyPool, core::DbQuery, serde::to_db_row};
 
 use anyhow::Result;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::to_value;
 
@@ -67,6 +71,40 @@ pub struct UserTable<'a> {
     pool: &'a AnyPool,
 }
 
+impl<'a> SimpleTable for UserTable<'a> {
+    fn table_name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn pool(&self) -> &AnyPool {
+        self.pool
+    }
+
+    fn columns(&self) -> Columns {
+        vec![
+            ColumnBuilder::new(self.table_name(), "name")
+                .sql_type("TEXT")
+                .primary_key(true)
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "color")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "cursor")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.table_name(), "datetime")
+                .sql_type("TIMESTAMP")
+                .sql_default("CURRENT_TIMESTAMP")
+                .build()
+                .unwrap(),
+        ]
+        .into()
+    }
+}
+
 impl<'a> UserTable<'a> {
     /// Create a new instance of UserTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
@@ -74,40 +112,6 @@ impl<'a> UserTable<'a> {
             table_name: "user".to_owned(),
             pool,
         }
-    }
-
-    pub fn column_names(&self) -> Vec<String> {
-        vec!["name", "color", "cursor", "datetime"]
-            .into_iter()
-            .map(|x| x.to_string())
-            .collect()
-    }
-
-    /// Get the SQL DDL as a string.
-    /// Requires the db only to know the SQL flavour to use.
-    pub fn ddl(&self) -> String {
-        format!(
-            r#"CREATE TABLE "{table_name}" (
-              "name" TEXT PRIMARY KEY,
-              "color" TEXT,
-              "cursor" TEXT,
-              "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )"#,
-            table_name = self.table_name,
-        )
-    }
-
-    /// Drop the datatype table from the database.
-    pub async fn drop(&self) -> Result<()> {
-        self.pool.drop_table(&self.table_name).await?;
-        Ok(())
-    }
-
-    /// Create the "datatype" table in the database
-    /// and insert the built-in datatypes.
-    pub async fn create(&self) -> Result<()> {
-        self.pool.execute(&self.ddl(), ()).await?;
-        Ok(())
     }
 
     /// Get a user by name, or create an entry for that name.
@@ -177,7 +181,24 @@ impl<'a> UserTable<'a> {
 mod tests {
     use super::*;
     use anyhow::Result;
+    use pretty_assertions::assert_eq;
+    use rltbl_db::any::AnyPool;
     use serde_json;
+
+    #[tokio::test]
+    async fn test_ddl() {
+        let pool = AnyPool::connect(":memory:").await.unwrap();
+        let table = UserTable::connect(&pool);
+        assert_eq!(
+            r#"CREATE TABLE "user" (
+  "name" TEXT PRIMARY KEY,
+  "color" TEXT,
+  "cursor" TEXT,
+  "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);"#,
+            table.ddl()
+        )
+    }
 
     // Test inner JSON string.
     #[tokio::test]

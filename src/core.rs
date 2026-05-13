@@ -14,6 +14,7 @@ use rltbl::{
     row::{Cell, Row},
     schema::Schema,
     select::{Select, SelectField},
+    simple_table::SimpleTable,
     site::Site,
     sql::{self, SqlParam},
     table::{Table, TableTable},
@@ -230,13 +231,7 @@ impl Relatable {
         // Create the meta tables:
         let rltbl = Relatable::connect(Some(&path), caching_strategy).await?;
         if *force {
-            rltbl.datatype_table().drop().await?;
-            rltbl.column_table().drop().await?;
-            rltbl.table_table().drop().await?;
-            rltbl.message_table().drop().await?;
-            rltbl.history_table().drop().await?;
-            rltbl.change_table().drop().await?;
-            rltbl.user_table().drop().await?;
+            rltbl.drop_meta_tables().await?;
         }
         rltbl.user_table().create().await?;
         rltbl.change_table().create().await?;
@@ -283,6 +278,8 @@ impl Relatable {
     pub fn datatype_table(&self) -> DatatypeTable<'_> {
         DatatypeTable::connect(&self.pool)
     }
+
+    // TODO: Continue from here.
 
     /// Get all the defined datatypes.
     pub async fn datatypes(&self) -> Datatypes {
@@ -407,16 +404,13 @@ impl Relatable {
 
     // Drop all of the meta tables
     pub async fn drop_meta_tables(&self) -> Result<()> {
-        tracing::trace!("Relatable::drop_meta_tables({self:?})");
-        for table_name in [
-            "cache", "history", "change", "user", "message", "datatype", "column", "table",
-        ] {
-            let mut table = Table {
-                name: table_name.to_string(),
-                ..Default::default()
-            };
-            table.drop_table(self).await?;
-        }
+        self.datatype_table().drop().await?;
+        self.column_table().drop().await?;
+        self.table_table().drop().await?;
+        self.message_table().drop().await?;
+        self.history_table().drop().await?;
+        self.change_table().drop().await?;
+        self.user_table().drop().await?;
         Ok(())
     }
 
@@ -986,17 +980,6 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
             )
             .await?;
         Ok(row_ids)
-    }
-
-    pub async fn truncate_table(&self, table_name: &str) -> Result<()> {
-        self.delete_message(table_name, &[], None, None, None)
-            .await?;
-        let sql = match self.pool.kind() {
-            DbKind::SQLite => format!(r#"DELETE FROM "{table_name}""#),
-            DbKind::PostgreSQL => format!(r#"TRUNCATE TABLE "{table_name}""#),
-        };
-        self.pool.execute(&sql, ()).await?;
-        Ok(())
     }
 
     /// Returns a [Table] corresponding to the given table name.
