@@ -249,95 +249,6 @@ impl Relatable {
         Ok(rltbl)
     }
 
-    /// Get the connection URL for a test database.
-    pub fn test_url(name: &str) -> Result<String> {
-        match std::env::var_os("RLTBL_TEST_CONNECTION").and_then(|p| Some(p.into_string())) {
-            Some(Ok(url)) if !url.is_empty() => Ok(url),
-            _ => Ok(format!("build/{name}.db")),
-        }
-    }
-
-    /// Create a test database using the RLTBL_TEST_CONNECTION environment variable.
-    /// Run `drop_test()` when finished.
-    /// Use a distinct `name` to keep this database separate from all others.
-    /// If RLTBL_TEST_CONNECTION is not set, use a SQLite database in `build/`.
-    /// If RLTBL_TEST_CONNECTION is a PostgreSQL database,
-    /// use that connection to create a new database with `name`.
-    pub async fn test(name: &str, create_dir: bool) -> Result<Relatable> {
-        let url = Self::test_url(name)?;
-        let pool = AnyPool::connect(&url).await?;
-        let url = match pool.kind() {
-            DbKind::SQLite => {
-                let dir: &std::path::Path =
-                    FilePath::new("build")
-                        .parent()
-                        .ok_or(RelatableError::InputError(format!(
-                            "Path 'build' has no parent",
-                        )))?;
-                if !dir.exists() {
-                    std::fs::create_dir_all(&dir)?;
-                    tracing::info!("Created '{dir:?}' directory");
-                }
-                url
-            }
-            DbKind::PostgreSQL => {
-                pool.execute(&format!(r#"DROP DATABASE IF EXISTS "{name}""#), ())
-                    .await?;
-                pool.execute(&format!(r#"CREATE DATABASE "{name}""#), ())
-                    .await?;
-                format!("postgresql:///{name}")
-            }
-        };
-        let mut rltbl = Self::init(&true, Some(&url), &CachingStrategy::Trigger).await?;
-        rltbl.test_database = Some(name.to_owned());
-
-        if create_dir {
-            let dir = FilePath::new("build").join(name);
-            if dir.exists() {
-                std::fs::remove_dir_all(&dir)?;
-            }
-            std::fs::create_dir_all(&dir)?;
-            rltbl.test_dir = Some(dir.to_str().unwrap().to_string());
-        }
-
-        Ok(rltbl)
-    }
-
-    /// Drop this test database and delete any files.
-    /// Consumes this Relatable instance.
-    // NOTE: This might be better using the upcoming AsyncDrop trait.
-    pub async fn drop_test(self) -> Result<()> {
-        let name = self
-            .test_database
-            .clone()
-            .ok_or(RelatableError::InitError(format!(
-                "No test database configured"
-            )))?;
-        let url = Self::test_url(&name)?;
-        match AnyPool::connection_kind(&url)? {
-            DbKind::SQLite => {
-                let file = FilePath::new(&url);
-                if file.exists() {
-                    std::fs::remove_file(&file)?;
-                }
-            }
-            DbKind::PostgreSQL => {
-                let pool = AnyPool::connect(&url).await?;
-                pool.execute(&format!(r#"DROP DATABASE "{name}" WITH (FORCE)"#), ())
-                    .await?;
-            }
-        };
-
-        if let Some(path) = self.test_dir {
-            let dir = FilePath::new(&path);
-            if dir.exists() {
-                std::fs::remove_dir_all(&dir)?;
-            }
-        }
-
-        Ok(())
-    }
-
     /// Get the user table
     pub fn user_table(&self) -> UserTable<'_> {
         UserTable::connect(&self.pool)
@@ -3161,6 +3072,97 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use rand::{rngs::ThreadRng, seq::SliceRandom, Rng};
+
+    impl Relatable {
+        /// Get the connection URL for a test database.
+        pub fn test_url(name: &str) -> Result<String> {
+            match std::env::var_os("RLTBL_TEST_CONNECTION").and_then(|p| Some(p.into_string())) {
+                Some(Ok(url)) if !url.is_empty() => Ok(url),
+                _ => Ok(format!("build/{name}.db")),
+            }
+        }
+
+        /// Create a test database using the RLTBL_TEST_CONNECTION environment variable.
+        /// Run `drop_test()` when finished.
+        /// Use a distinct `name` to keep this database separate from all others.
+        /// If RLTBL_TEST_CONNECTION is not set, use a SQLite database in `build/`.
+        /// If RLTBL_TEST_CONNECTION is a PostgreSQL database,
+        /// use that connection to create a new database with `name`.
+        pub async fn test(name: &str, create_dir: bool) -> Result<Relatable> {
+            let url = Self::test_url(name)?;
+            let pool = AnyPool::connect(&url).await?;
+            let url = match pool.kind() {
+                DbKind::SQLite => {
+                    let dir: &std::path::Path =
+                        FilePath::new("build")
+                            .parent()
+                            .ok_or(RelatableError::InputError(format!(
+                                "Path 'build' has no parent",
+                            )))?;
+                    if !dir.exists() {
+                        std::fs::create_dir_all(&dir)?;
+                        tracing::info!("Created '{dir:?}' directory");
+                    }
+                    url
+                }
+                DbKind::PostgreSQL => {
+                    pool.execute(&format!(r#"DROP DATABASE IF EXISTS "{name}""#), ())
+                        .await?;
+                    pool.execute(&format!(r#"CREATE DATABASE "{name}""#), ())
+                        .await?;
+                    format!("postgresql:///{name}")
+                }
+            };
+            let mut rltbl = Self::init(&true, Some(&url), &CachingStrategy::Trigger).await?;
+            rltbl.test_database = Some(name.to_owned());
+
+            if create_dir {
+                let dir = FilePath::new("build").join(name);
+                if dir.exists() {
+                    std::fs::remove_dir_all(&dir)?;
+                }
+                std::fs::create_dir_all(&dir)?;
+                rltbl.test_dir = Some(dir.to_str().unwrap().to_string());
+            }
+
+            Ok(rltbl)
+        }
+
+        /// Drop this test database and delete any files.
+        /// Consumes this Relatable instance.
+        // NOTE: This might be better using the upcoming AsyncDrop trait.
+        pub async fn drop_test(self) -> Result<()> {
+            let name = self
+                .test_database
+                .clone()
+                .ok_or(RelatableError::InitError(format!(
+                    "No test database configured"
+                )))?;
+            let url = Self::test_url(&name)?;
+            match AnyPool::connection_kind(&url)? {
+                DbKind::SQLite => {
+                    let file = FilePath::new(&url);
+                    if file.exists() {
+                        std::fs::remove_file(&file)?;
+                    }
+                }
+                DbKind::PostgreSQL => {
+                    let pool = AnyPool::connect(&url).await?;
+                    pool.execute(&format!(r#"DROP DATABASE "{name}" WITH (FORCE)"#), ())
+                        .await?;
+                }
+            };
+
+            if let Some(path) = self.test_dir {
+                let dir = FilePath::new(&path);
+                if dir.exists() {
+                    std::fs::remove_dir_all(&dir)?;
+                }
+            }
+
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn test_schema() -> Result<()> {
