@@ -24,8 +24,14 @@ pub mod git;
 /// User accounts and cursors.
 pub mod user;
 
-/// Data changes and history.
+/// Data editing changes.
 pub mod change;
+
+/// Data editing history.
+pub mod history;
+
+/// Validation messages.
+pub mod message;
 
 /// Structs for column datatypes
 pub mod datatype;

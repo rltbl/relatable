@@ -4,17 +4,19 @@
 
 use crate::{self as rltbl, user::UserTable};
 use rltbl::{
-    change::{Change, ChangeAction, ChangeSet, History},
+    change::{Change, ChangeAction, ChangeSet, ChangeTable, History},
     column::{Column, ColumnBuilder, ColumnTable},
     datatype::{DatatypeTable, Datatypes},
     git,
+    history::HistoryTable,
+    message::{CellMessage, MessageTable},
     result_set::{Range, ResultSet},
-    row::{Cell, Message, Row},
+    row::{Cell, Row},
     schema::Schema,
     select::{Select, SelectField},
     site::Site,
     sql::{self, SqlParam},
-    table::Table,
+    table::{Table, TableTable},
 };
 use rltbl_db::{
     any::AnyPool,
@@ -227,13 +229,22 @@ impl Relatable {
 
         // Create the meta tables:
         let rltbl = Relatable::connect(Some(&path), caching_strategy).await?;
-        let ddl = sql::generate_meta_tables_ddl(*force, &rltbl.pool.kind());
-        for sql in ddl {
-            rltbl.pool.execute(&sql, ()).await?;
+        if *force {
+            rltbl.datatype_table().drop().await?;
+            rltbl.column_table().drop().await?;
+            rltbl.table_table().drop().await?;
+            rltbl.message_table().drop().await?;
+            rltbl.history_table().drop().await?;
+            rltbl.change_table().drop().await?;
+            rltbl.user_table().drop().await?;
         }
-
-        rltbl.column_table().drop().await?;
+        rltbl.user_table().create().await?;
+        rltbl.change_table().create().await?;
+        rltbl.history_table().create().await?;
+        rltbl.message_table().create().await?;
+        rltbl.table_table().create().await?;
         rltbl.column_table().create().await?;
+        rltbl.datatype_table().create().await?;
 
         Ok(rltbl)
     }
@@ -327,6 +338,31 @@ impl Relatable {
         Ok(())
     }
 
+    /// Get the user table
+    pub fn user_table(&self) -> UserTable<'_> {
+        UserTable::connect(&self.pool)
+    }
+
+    /// Get the change table
+    pub fn change_table(&self) -> ChangeTable<'_> {
+        ChangeTable::connect(&self.pool)
+    }
+
+    /// Get the history table
+    pub fn history_table(&self) -> HistoryTable<'_> {
+        HistoryTable::connect(&self.pool)
+    }
+
+    /// Get the message table
+    pub fn message_table(&self) -> MessageTable<'_> {
+        MessageTable::connect(&self.pool)
+    }
+
+    /// Get the message table
+    pub fn table_table(&self) -> TableTable<'_> {
+        TableTable::connect(&self.pool)
+    }
+
     /// Get the column table for this Relatable instance.
     pub fn column_table(&self) -> ColumnTable<'_> {
         ColumnTable::connect(&self.pool)
@@ -340,11 +376,6 @@ impl Relatable {
     /// Get all the defined datatypes.
     pub async fn datatypes(&self) -> Datatypes {
         self.datatype_table().get().await
-    }
-
-    /// Get the user table
-    pub fn user_table(&self) -> UserTable<'_> {
-        UserTable::connect(&self.pool)
     }
 
     /// Get the full schema:
@@ -2401,7 +2432,7 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
         level: &str,
         rule: &str,
         message: &str,
-    ) -> Result<(RowID, Message)> {
+    ) -> Result<(RowID, CellMessage)> {
         let sql = format!(
             r#"INSERT INTO "message"
                ("added_by", "table", "row", "column", "value",
@@ -2425,7 +2456,7 @@ format!("sql_type:{sql_type}"), "message" =>                       format!("{col
 
         Ok((
             message_id,
-            Message {
+            CellMessage {
                 value: value.clone(),
                 level: level.to_string(),
                 rule: rule.to_string(),

@@ -1,19 +1,20 @@
 use crate as rltbl;
 use indexmap::IndexMap;
-use rltbl::core::{RelatableError, RowID};
+use rltbl::core::RowID;
 use rltbl_db::{any::AnyPool, core::DbQuery, serde::to_db_row};
 
 use anyhow::Result;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::to_value;
 
+// Minimal fields for a user.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Account {
     pub name: String,
     pub color: String,
 }
 
+// TODO: Handle ranges of columns and rows.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Cursor {
     pub table: String,
@@ -70,23 +71,9 @@ impl<'a> UserTable<'a> {
     /// Create a new instance of UserTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
-            table_name: "datatype".to_owned(),
+            table_name: "user".to_owned(),
             pool,
         }
-    }
-
-    // TODO: use rltbl_db to sanitize the name
-    /// Use this name for the datatype table.
-    /// The default is "datatype".
-    pub fn name(mut self, table_name: &str) -> Result<Self> {
-        let pattern = Regex::new(r"^\w+$").unwrap();
-        if !pattern.is_match(table_name) {
-            return Err(
-                RelatableError::DataError(format!("Not a valid table name: {table_name}")).into(),
-            );
-        }
-        self.table_name = table_name.to_owned();
-        Ok(self)
     }
 
     pub fn column_names(&self) -> Vec<String> {
@@ -110,7 +97,6 @@ impl<'a> UserTable<'a> {
         )
     }
 
-    // TODO: replace this with self.pool.drop(self.name).
     /// Drop the datatype table from the database.
     pub async fn drop(&self) -> Result<()> {
         self.pool.drop_table(&self.table_name).await?;

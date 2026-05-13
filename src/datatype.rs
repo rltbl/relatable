@@ -476,8 +476,6 @@ mod tests {
     async fn test_create() -> Result<()> {
         let rltbl = Relatable::test("test_datatype_create", false).await?;
 
-        let table = DatatypeTable::connect(&rltbl.pool);
-        table.create().await?;
         let count: u64 = rltbl
             .pool
             .query("SELECT count(1) FROM datatype", ())
@@ -491,9 +489,8 @@ mod tests {
     #[tokio::test]
     async fn test_add() -> Result<()> {
         let rltbl = Relatable::test("test_datatype_add", false).await?;
+        let table = rltbl.datatype_table();
 
-        let table = DatatypeTable::connect(&rltbl.pool);
-        table.create().await?;
         let test = DatatypeBuilder::new("test")
             .description("test datatype")
             .build()
@@ -515,9 +512,8 @@ mod tests {
     async fn test_priority() -> Result<()> {
         // built-ins take priority over rows from the table
         let rltbl = Relatable::test("test_datatype_priority", false).await?;
+        let table = rltbl.datatype_table();
 
-        let table = DatatypeTable::connect(&rltbl.pool);
-        table.create().await?;
         rltbl
             .pool
             .execute(

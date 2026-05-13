@@ -489,10 +489,8 @@ mod tests {
     #[tokio::test]
     async fn test_create() -> Result<()> {
         let rltbl = Relatable::test("test_column_create", false).await?;
+        let table = rltbl.column_table();
 
-        let table = ColumnTable::connect(&rltbl.pool);
-        table.drop().await?;
-        table.create().await?;
         let columns = table.get_all().await?;
         // TODO: Extend builtins to cover all tables.
         // assert_eq!(
@@ -511,7 +509,7 @@ mod tests {
                 .filter(|c| &c.table == "column")
                 .collect::<Vec<_>>(),
         );
-        assert_eq!(columns.len(), 39);
+        assert_eq!(columns.len(), 47);
 
         rltbl.drop_test().await
     }

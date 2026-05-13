@@ -1,10 +1,13 @@
 use std::{fmt::Display, str::FromStr};
 
-use crate::{self as rltbl, core::RelatableError};
-use rltbl::{core::RowID, user::Cursor};
+use crate as rltbl;
+use rltbl::{
+    core::{id_ddl, RelatableError, RowID},
+    user::Cursor,
+};
 
 use anyhow::Result;
-use rltbl_db::db_value::JsonRow;
+use rltbl_db::{any::AnyPool, core::DbQuery, db_value::JsonRow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -174,5 +177,67 @@ impl Display for Change {
             }
             Change::Delete { row, after: _ } => write!(f, "Delete row {row}"),
         }
+    }
+}
+
+/// Represents the special "change" table.
+pub struct ChangeTable<'a> {
+    table_name: String,
+    pool: &'a AnyPool,
+}
+
+impl<'a> ChangeTable<'a> {
+    /// Create a new instance of UserTable from an AnyPool.
+    pub fn connect(pool: &'a AnyPool) -> Self {
+        Self {
+            table_name: "change".to_owned(),
+            pool,
+        }
+    }
+
+    pub fn column_names(&self) -> Vec<String> {
+        vec![
+            "change_id",
+            "datetime",
+            "user",
+            "action",
+            "table",
+            "description",
+            "content",
+        ]
+        .into_iter()
+        .map(|x| x.to_string())
+        .collect()
+    }
+
+    /// Get the SQL DDL as a string.
+    /// Requires the db only to know the SQL flavour to use.
+    pub fn ddl(&self) -> String {
+        format!(
+            r#"CREATE TABLE "{table_name}" (
+              "change_id" {id},
+              "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              "user" TEXT NOT NULL REFERENCES "user"("name"),
+              "action" TEXT NOT NULL,
+              "table" TEXT NOT NULL,
+              "description" TEXT,
+              "content" TEXT
+            )"#,
+            table_name = self.table_name,
+            id = id_ddl(&self.pool.kind())
+        )
+    }
+
+    /// Drop the datatype table from the database.
+    pub async fn drop(&self) -> Result<()> {
+        self.pool.drop_table(&self.table_name).await?;
+        Ok(())
+    }
+
+    /// Create the "datatype" table in the database
+    /// and insert the built-in datatypes.
+    pub async fn create(&self) -> Result<()> {
+        self.pool.execute(&self.ddl(), ()).await?;
+        Ok(())
     }
 }

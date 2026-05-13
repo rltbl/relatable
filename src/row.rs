@@ -7,6 +7,7 @@ use rltbl::{
     column::Column,
     core::{Relatable, RelatableError, RowID, RowOrder},
     datatype::Datatypes,
+    message::CellMessage,
     schema::Schema,
 };
 use rltbl_db::db_value::{DbRow, JsonRow};
@@ -127,7 +128,7 @@ impl From<JsonRow> for Row {
                         .unwrap()
                         .as_str()
                         .unwrap();
-                    let message: Message = match serde_json::from_value(message.to_owned()) {
+                    let message: CellMessage = match serde_json::from_value(message.to_owned()) {
                         Ok(message) => message,
                         Err(err) => {
                             tracing::warn!(
@@ -167,7 +168,7 @@ impl From<JsonRow> for Row {
 pub struct Cell {
     pub value: JsonValue,
     pub text: String,
-    pub messages: Vec<Message>,
+    pub messages: Vec<CellMessage>,
 }
 
 impl From<&JsonValue> for Cell {
@@ -193,7 +194,7 @@ impl Cell {
         let sql_type = column.sql_type(datatypes).to_lowercase();
 
         fn invalidate(cell: &mut Cell, sql_type: &str, column: &Column) {
-            cell.messages.push(Message {
+            cell.messages.push(CellMessage {
                 value: cell.value.clone(),
                 level: "error".to_string(),
                 rule: format!("sql_type:{sql_type}"),
@@ -269,19 +270,6 @@ impl Cell {
     }
 }
 
-/// Represents a validation message
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Message {
-    /// The value referred to by the message
-    pub value: JsonValue,
-    /// The severity of the message.
-    pub level: String,
-    /// The rule violation that the message is about.
-    pub rule: String,
-    /// The contents of the message.
-    pub message: String,
-}
-
 // Tests
 
 #[cfg(test)]
@@ -345,7 +333,7 @@ mod tests {
             Cell {
                 value: json!("FOO"),
                 text: "FOO".to_string(),
-                messages: vec![Message {
+                messages: vec![CellMessage {
                     value: json!("FOO"),
                     level: "error".to_string(),
                     rule: "test rule".to_string(),
