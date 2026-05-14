@@ -3,25 +3,24 @@
 //! This is [relatable](crate) (rltbl::[column](crate::column)).
 
 use crate as rltbl;
-use itertools::Itertools;
 use rltbl::{
-    core::{meta_column_ddl, RelatableError},
-    datatype::Datatypes,
+    datatype::{DatatypeTable, Datatypes},
     structure::{Structure, Structures},
+    table::TableTable,
+    tsv_table::TsvTable,
 };
 use rltbl_db::{
     any::AnyPool,
     core::{DbError, DbQuery},
     db_kind::DbKind,
-    db_value::{DbRow, JsonRow},
+    db_value::DbRow,
 };
 
 use anyhow::Result;
 use derive_builder::Builder;
 use indexmap::IndexMap;
-use regex::Regex;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::{
     collections::HashSet,
     ops::{Deref, DerefMut},
@@ -178,56 +177,6 @@ impl Into<IndexMap<String, Column>> for Columns {
 }
 
 impl Columns {
-    /// Return all the default columns for the "column" table.
-    pub fn builtins() -> Self {
-        Columns {
-            list: vec![
-                ColumnBuilder::new("column", "table")
-                    .description("the table for this column")
-                    .datatype("word")
-                    .sql_type("text")
-                    .build()
-                    .unwrap(),
-                ColumnBuilder::new("column", "column")
-                    .description("the name of this column")
-                    .datatype("word")
-                    .sql_type("text")
-                    .build()
-                    .unwrap(),
-                ColumnBuilder::new("column", "label")
-                    .description("the label of this column")
-                    .datatype("trimmed_line")
-                    .sql_type("text")
-                    .build()
-                    .unwrap(),
-                ColumnBuilder::new("column", "description")
-                    .description("the description of this column")
-                    .datatype("trimmed_line")
-                    .sql_type("text")
-                    .build()
-                    .unwrap(),
-                ColumnBuilder::new("column", "nulltype")
-                    .description("the null type of this column")
-                    .datatype("word")
-                    .sql_type("text")
-                    .build()
-                    .unwrap(),
-                ColumnBuilder::new("column", "datatype")
-                    .description("the datatype of this column")
-                    .datatype("word")
-                    .sql_type("text")
-                    .build()
-                    .unwrap(),
-                ColumnBuilder::new("column", "structure")
-                    .description("the structure of this column")
-                    .datatype("trimmed_line")
-                    .sql_type("text")
-                    .build()
-                    .unwrap(),
-            ],
-        }
-    }
-
     pub fn ddl(&self, kind: &DbKind, table_name: &str) -> String {
         let cols = self.list.iter().map(|col| col.ddl(kind)).join(",\n  ");
         format!(
@@ -303,6 +252,68 @@ pub struct ColumnTable<'a> {
     pool: &'a AnyPool,
 }
 
+impl<'a> TsvTable for ColumnTable<'a> {
+    fn name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn id(&self) -> &str {
+        &self.table_name
+    }
+
+    fn pool(&self) -> &AnyPool {
+        self.pool
+    }
+
+    fn columns(&self) -> Columns {
+        vec![
+            ColumnBuilder::new(self.name(), "table")
+                .description("the table for this column")
+                .datatype("word")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "column")
+                .description("the name of this column")
+                .datatype("word")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "label")
+                .description("the label of this column")
+                .datatype("trimmed_line")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "nulltype")
+                .description("the null type of this column")
+                .datatype("word")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "datatype")
+                .description("the datatype of this column")
+                .datatype("word")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "structure")
+                .description("the structure of this column")
+                .datatype("trimmed_line")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "description")
+                .description("the description of this column")
+                .datatype("trimmed_line")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+        ]
+        .into()
+    }
+}
+
 impl<'a> ColumnTable<'a> {
     /// Create a new instance of ColumnTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
@@ -312,63 +323,19 @@ impl<'a> ColumnTable<'a> {
         }
     }
 
-    // TODO: use rltbl_db to sanitize the name
-    /// Use this name for the column table.
-    /// The default is "column".
-    pub fn name(mut self, table_name: &str) -> Result<Self> {
-        let pattern = Regex::new(r"^\w+$").unwrap();
-        if !pattern.is_match(table_name) {
-            return Err(
-                RelatableError::DataError(format!("Not a valid table name: {table_name}")).into(),
-            );
-        }
-        self.table_name = table_name.to_owned();
-        Ok(self)
-    }
+    /// Create tables and fill with default rows.
+    pub async fn init(&self) -> Result<()> {
+        self.create().await?;
+        let mut columns = vec![];
 
-    /// Get the SQL DDL as a string.
-    /// Requires the db only to know the SQL flavour to use.
-    pub fn ddl(&self) -> String {
-        format!(
-            r#"CREATE TABLE "{table_name}" (
-              {meta_columns},
-              "table" TEXT,
-              "column" TEXT,
-              "label" TEXT,
-              "description" TEXT,
-              "nulltype" TEXT,
-              "datatype" TEXT,
-              "structure" TEXT
-            )"#,
-            table_name = self.table_name,
-            meta_columns = meta_column_ddl(&self.pool.kind()),
-        )
-    }
+        let table = TableTable::connect(self.pool());
+        columns.extend(table.columns().iter().cloned());
+        columns.extend(self.columns().iter().cloned());
+        let table = DatatypeTable::connect(self.pool());
+        columns.extend(table.columns().iter().cloned());
 
-    // TODO: replace this with self.pool.drop(self.name).
-    /// Drop the column table from the database.
-    pub async fn drop(&self) -> Result<()> {
-        let sql = match self.pool.kind() {
-            DbKind::SQLite => {
-                format!(r#"DROP TABLE IF EXISTS "{}""#, self.table_name)
-            }
-            DbKind::PostgreSQL => {
-                format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.table_name)
-            }
-        };
-        self.pool.execute(&sql, ()).await?;
-        Ok(())
-    }
-
-    /// Create the column table in the database
-    /// and insert the built-in columns.
-    pub async fn create(&self) -> Result<()> {
-        self.pool.execute(&self.ddl(), ()).await?;
-        let rows: Vec<JsonRow> = Columns::builtins()
-            .iter()
-            .map(|col| json!(col).as_object().unwrap().clone())
-            .collect();
-        self.pool.insert(&self.table_name, &COLUMNS, rows).await?;
+        let refs: Vec<&Column> = columns.iter().collect();
+        self.add(&refs).await?;
         Ok(())
     }
 
@@ -427,6 +394,7 @@ impl<'a> ColumnTable<'a> {
                     LEFT JOIN "{}" AS col ON col."table" = main.name AND col."column" = pti.name
                     WHERE main.type = 'table'
                       AND main.name != 'sqlite_sequence'{filter}
+                      AND main.name NOT LIKE '%_alt'
                     ORDER BY main.name;"#,
                     self.table_name
                 ))
@@ -463,7 +431,7 @@ impl<'a> ColumnTable<'a> {
                            SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
                            FROM "pg_settings"
                            WHERE "name" = 'search_path'
-                         ){filter}
+                         ) AND main.table_name NOT LIKE '%_alt'{filter}
                        ORDER BY main.ordinal_position;"#,
                     self.table_name
                 ))
@@ -528,6 +496,39 @@ mod tests {
     use super::*;
     use crate::core::Relatable;
     use pretty_assertions::assert_eq;
+    use rltbl_db::any::AnyPool;
+
+    #[tokio::test]
+    async fn test_ddl() {
+        let pool = AnyPool::connect(":memory:").await.unwrap();
+        let table = ColumnTable::connect(&pool);
+        assert_eq!(
+            r#"CREATE TABLE "column" (
+  "_id" INTEGER PRIMARY KEY AUTOINCREMENT,
+  "_order" BIGINT UNIQUE,
+  "table" TEXT,
+  "column" TEXT,
+  "label" TEXT,
+  "nulltype" TEXT,
+  "datatype" TEXT,
+  "structure" TEXT,
+  "description" TEXT
+);
+CREATE TABLE "column_alt" (
+  "_id" INTEGER PRIMARY KEY,
+  "_order" BIGINT UNIQUE,
+  "_deleted" BOOL,
+  "table" TEXT,
+  "column" TEXT,
+  "label" TEXT,
+  "nulltype" TEXT,
+  "datatype" TEXT,
+  "structure" TEXT,
+  "description" TEXT
+);"#,
+            table.ddl()
+        )
+    }
 
     #[tokio::test]
     async fn test_sql_type() -> Result<()> {
@@ -545,29 +546,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create() -> Result<()> {
-        let rltbl = Relatable::test("test_column_create", false).await?;
-        let table = rltbl.column_table();
+    async fn test_init() -> Result<()> {
+        let rltbl = Relatable::test("test_column_init", false).await?;
 
-        let columns = table.get_all().await?;
-        // TODO: Extend builtins to cover all tables.
-        // assert_eq!(
-        //     columns.data(),
-        //     Columns::builtins().iter().collect::<Vec<_>>()
-        // );
-        assert_eq!(
-            columns
-                .data()
-                .iter()
-                .cloned()
-                .filter(|c| &c.table == "column")
-                .collect::<Vec<_>>(),
-            Columns::builtins()
-                .iter()
-                .filter(|c| &c.table == "column")
-                .collect::<Vec<_>>(),
-        );
-        assert_eq!(columns.len(), 47);
+        let count: u64 = rltbl
+            .pool
+            .query(r#"SELECT count(1) FROM "column""#, ())
+            .await?
+            .try_into()?;
+        assert_eq!(count, 15);
 
         rltbl.drop_test().await
     }

@@ -4,9 +4,10 @@
 
 use crate as rltbl;
 use rltbl::{
-    column::Column,
-    core::{meta_column_ddl, Relatable, RelatableError, RowID},
+    column::{Column, ColumnBuilder, Columns},
+    core::{Relatable, RowID},
     sql::{self, SqlParam},
+    tsv_table::TsvTable,
 };
 use rltbl_db::{
     any::AnyPool,
@@ -14,11 +15,9 @@ use rltbl_db::{
     db_value::{DbValue, JsonRow},
 };
 
-use indexmap::IndexMap;
-use regex::Regex;
-
 use anyhow::Result;
 use derive_builder::Builder;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::ops::{Deref, DerefMut};
@@ -361,6 +360,62 @@ pub struct DatatypeTable<'a> {
     pool: &'a AnyPool,
 }
 
+impl<'a> TsvTable for DatatypeTable<'a> {
+    fn name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn id(&self) -> &str {
+        &self.table_name
+    }
+
+    fn pool(&self) -> &AnyPool {
+        self.pool
+    }
+
+    fn columns(&self) -> Columns {
+        vec![
+            ColumnBuilder::new(self.name(), "datatype")
+                .description("the name of this datatype")
+                .datatype("word")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "parent")
+                .description("the parent datatype")
+                .datatype("word")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "condition")
+                .description("the validation condition")
+                .datatype("trimmed_line")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "sql_type")
+                .description("the validation condition")
+                .datatype("trimmed_line")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "format")
+                .description("the SQL type for this datatype")
+                .datatype("word")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "description")
+                .description("the description of this datatype")
+                .datatype("trimmed_line")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+        ]
+        .into()
+    }
+}
+
 impl<'a> DatatypeTable<'a> {
     /// Create a new instance of DatatypeTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
@@ -370,54 +425,16 @@ impl<'a> DatatypeTable<'a> {
         }
     }
 
-    // TODO: use rltbl_db to sanitize the name
-    /// Use this name for the datatype table.
-    /// The default is "datatype".
-    pub fn name(mut self, table_name: &str) -> Result<Self> {
-        let pattern = Regex::new(r"^\w+$").unwrap();
-        if !pattern.is_match(table_name) {
-            return Err(
-                RelatableError::DataError(format!("Not a valid table name: {table_name}")).into(),
-            );
-        }
-        self.table_name = table_name.to_owned();
-        Ok(self)
-    }
-
-    /// Get the SQL DDL as a string.
-    /// Requires the db only to know the SQL flavour to use.
-    pub fn ddl(&self) -> String {
-        format!(
-            r#"CREATE TABLE "{table_name}" (
-              {meta_columns},
-              "datatype" TEXT,
-              "description" TEXT,
-              "parent" TEXT,
-              "condition" TEXT,
-              "sql_type" TEXT,
-              "format" TEXT
-            )"#,
-            table_name = self.table_name,
-            meta_columns = meta_column_ddl(&self.pool.kind()),
-        )
-    }
-
-    // TODO: replace this with self.pool.drop(self.name).
-    /// Drop the datatype table from the database.
-    pub async fn drop(&self) -> Result<()> {
-        self.pool.drop_table(&self.table_name).await?;
-        Ok(())
-    }
-
-    /// Create the "datatype" table in the database
-    /// and insert the built-in datatypes.
-    pub async fn create(&self) -> Result<()> {
-        self.pool.execute(&self.ddl(), ()).await?;
-        let rows: Vec<JsonRow> = Datatypes::builtins()
+    /// Create tables and fill with default rows.
+    pub async fn init(&self) -> Result<()> {
+        self.create().await?;
+        let datatypes: Vec<Datatype> = Datatypes::builtins()
             .values()
-            .map(|dt| json!(dt).as_object().unwrap().clone())
+            .into_iter()
+            .cloned()
             .collect();
-        self.pool.insert(&self.table_name, &COLUMNS, rows).await?;
+        let refs: Vec<&Datatype> = datatypes.iter().collect();
+        self.add(&refs).await?;
         Ok(())
     }
 
@@ -471,10 +488,41 @@ impl<'a> DatatypeTable<'a> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use rltbl_db::any::AnyPool;
 
     #[tokio::test]
-    async fn test_create() -> Result<()> {
-        let rltbl = Relatable::test("test_datatype_create", false).await?;
+    async fn test_ddl() {
+        let pool = AnyPool::connect(":memory:").await.unwrap();
+        let table = DatatypeTable::connect(&pool);
+        assert_eq!(
+            r#"CREATE TABLE "datatype" (
+  "_id" INTEGER PRIMARY KEY AUTOINCREMENT,
+  "_order" BIGINT UNIQUE,
+  "datatype" TEXT,
+  "parent" TEXT,
+  "condition" TEXT,
+  "sql_type" TEXT,
+  "format" TEXT,
+  "description" TEXT
+);
+CREATE TABLE "datatype_alt" (
+  "_id" INTEGER PRIMARY KEY,
+  "_order" BIGINT UNIQUE,
+  "_deleted" BOOL,
+  "datatype" TEXT,
+  "parent" TEXT,
+  "condition" TEXT,
+  "sql_type" TEXT,
+  "format" TEXT,
+  "description" TEXT
+);"#,
+            table.ddl()
+        )
+    }
+
+    #[tokio::test]
+    async fn test_init() -> Result<()> {
+        let rltbl = Relatable::test("test_datatype_init", false).await?;
 
         let count: u64 = rltbl
             .pool

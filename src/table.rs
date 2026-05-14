@@ -4,11 +4,12 @@
 
 use crate as rltbl;
 use rltbl::{
-    column::Column,
-    core::{meta_column_ddl, Relatable, RowID},
+    column::{Column, ColumnBuilder, Columns},
+    core::{Relatable, RowID, RowOrder},
     sql::{self},
+    tsv_table::TsvTable,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery, db_kind::DbKind};
+use rltbl_db::{any::AnyPool, core::DbQuery, db_kind::DbKind, db_value::DbRow, serde::to_db_row};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,12 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Table {
     /// The name of the table
+    #[serde(rename = "table")]
     pub name: String,
+    #[serde(rename = "_id")]
+    pub id: RowID,
+    #[serde(rename = "_order")]
+    pub order: RowOrder,
     /// The optional path for loading and saving the table
     pub path: String,
     /// The name of the view (blank if there is none) to be used when querying the table
@@ -32,6 +38,8 @@ impl Default for Table {
     fn default() -> Self {
         Self {
             name: Default::default(),
+            id: Default::default(),
+            order: Default::default(),
             path: Default::default(),
             view: Default::default(),
             editable: true,
@@ -235,6 +243,35 @@ pub struct TableTable<'a> {
     pool: &'a AnyPool,
 }
 
+impl<'a> TsvTable for TableTable<'a> {
+    fn name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn id(&self) -> &str {
+        &self.table_name
+    }
+
+    fn pool(&self) -> &AnyPool {
+        self.pool
+    }
+
+    fn columns(&self) -> Columns {
+        // TODO: both should be unique
+        vec![
+            ColumnBuilder::new(self.name(), "table")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new(self.name(), "path")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
+        ]
+        .into()
+    }
+}
+
 impl<'a> TableTable<'a> {
     /// Create a new instance of UserTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
@@ -244,37 +281,92 @@ impl<'a> TableTable<'a> {
         }
     }
 
-    pub fn column_names(&self) -> Vec<String> {
-        vec!["_id", "_order", "table", "path"]
-            .into_iter()
-            .map(|x| x.to_string())
-            .collect()
+    /// Create tables and fill with default rows.
+    pub async fn init(&self) -> Result<()> {
+        self.create().await?;
+        let tables = vec![
+            Table {
+                name: self.name().to_string(),
+                path: "src/schema/table.tsv".to_string(),
+                ..Default::default()
+            },
+            Table {
+                name: "column".to_string(),
+                path: "src/schema/column.tsv".to_string(),
+                ..Default::default()
+            },
+            Table {
+                name: "datatype".to_string(),
+                path: "src/schema/datatype.tsv".to_string(),
+                ..Default::default()
+            },
+        ];
+        let refs: Vec<&Table> = tables.iter().collect();
+        self.add(&refs).await?;
+        Ok(())
     }
 
-    /// Get the SQL DDL as a string.
-    /// Requires the db only to know the SQL flavour to use.
-    pub fn ddl(&self) -> String {
-        format!(
-            r#"CREATE TABLE "{table_name}" (
-              {meta_columns},
-              "table" TEXT UNIQUE,
-              "path" TEXT UNIQUE
-            )"#,
-            table_name = self.table_name,
-            meta_columns = meta_column_ddl(&self.pool.kind()),
+    /// Insert these tables into the "table" table,
+    /// returning the results.
+    pub async fn add(&self, tables: &[&Table]) -> Result<Vec<Table>> {
+        let rows: Vec<DbRow> = tables
+            .iter()
+            .map(|t| to_db_row(t))
+            .collect::<Result<Vec<_>, _>>()?;
+        let new_tables: Vec<Table> = self
+            .pool
+            .insert_returning(
+                &self.table_name,
+                &["table", "path"],
+                rows,
+                &["_id", "_order", "table", "path"],
+            )
+            .await?
+            .remove_nulls()
+            .try_into_vec()?;
+        Ok(new_tables)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use rltbl_db::any::AnyPool;
+
+    #[tokio::test]
+    async fn test_ddl() {
+        let pool = AnyPool::connect(":memory:").await.unwrap();
+        let table = TableTable::connect(&pool);
+        assert_eq!(
+            r#"CREATE TABLE "table" (
+  "_id" INTEGER PRIMARY KEY AUTOINCREMENT,
+  "_order" BIGINT UNIQUE,
+  "table" TEXT,
+  "path" TEXT
+);
+CREATE TABLE "table_alt" (
+  "_id" INTEGER PRIMARY KEY,
+  "_order" BIGINT UNIQUE,
+  "_deleted" BOOL,
+  "table" TEXT,
+  "path" TEXT
+);"#,
+            table.ddl()
         )
     }
 
-    /// Drop the datatype table from the database.
-    pub async fn drop(&self) -> Result<()> {
-        self.pool.drop_table(&self.table_name).await?;
-        Ok(())
-    }
+    #[tokio::test]
+    async fn test_init() -> Result<()> {
+        let rltbl = Relatable::test("test_table_init", false).await?;
 
-    /// Create the "datatype" table in the database
-    /// and insert the built-in datatypes.
-    pub async fn create(&self) -> Result<()> {
-        self.pool.execute(&self.ddl(), ()).await?;
-        Ok(())
+        let count: u64 = rltbl
+            .pool
+            .query(r#"SELECT count(1) FROM "table""#, ())
+            .await?
+            .try_into()?;
+        assert_eq!(count, 3);
+
+        rltbl.drop_test().await
     }
 }

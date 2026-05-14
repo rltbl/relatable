@@ -21,7 +21,11 @@ pub mod site;
 /// Git interface
 pub mod git;
 
+/// Trait for simple SQL tables.
 pub mod simple_table;
+
+/// Trait for TSV tables.
+pub mod tsv_table;
 
 /// User accounts and cursors.
 pub mod user;

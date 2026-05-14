@@ -4,6 +4,7 @@ use rltbl::{
     core::{Relatable, RowID, RowOrder, NEW_ORDER_MULTIPLIER},
     datatype::DatatypeBuilder,
     sql::{self, SqlParam},
+    tsv_table::TsvTable,
 };
 use rltbl_db::{core::DbQuery, db_kind::DbKind, params};
 

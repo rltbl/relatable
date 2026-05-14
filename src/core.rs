@@ -18,6 +18,7 @@ use rltbl::{
     site::Site,
     sql::{self, SqlParam},
     table::{Table, TableTable},
+    tsv_table::TsvTable,
 };
 use rltbl_db::{
     any::AnyPool,
@@ -237,9 +238,9 @@ impl Relatable {
         rltbl.change_table().create().await?;
         rltbl.history_table().create().await?;
         rltbl.message_table().create().await?;
-        rltbl.table_table().create().await?;
-        rltbl.column_table().create().await?;
-        rltbl.datatype_table().create().await?;
+        rltbl.table_table().init().await?;
+        rltbl.column_table().init().await?;
+        rltbl.datatype_table().init().await?;
 
         Ok(rltbl)
     }
@@ -294,16 +295,17 @@ impl Relatable {
         let sql = match self.pool.kind() {
             DbKind::SQLite => {
                 r#"SELECT
-                       main.name,
+                       main.name AS "table",
                        tbl.path
                    FROM sqlite_master AS main
                    LEFT JOIN "table" AS tbl ON main.name = tbl."table"
                    WHERE main.type = 'table'
-                     AND main.name != 'sqlite_sequence';"#
+                     AND main.name != 'sqlite_sequence'
+                     AND main.name NOT LIKE '%_alt';"#
             }
             DbKind::PostgreSQL => {
                 r#"SELECT
-                       main.table_name AS name,
+                       main.table_name AS "table",
                        tbl.path
                    FROM information_schema.tables AS main
                    LEFT JOIN "table" AS tbl ON main.table_name = tbl."table"
@@ -311,7 +313,7 @@ impl Relatable {
                        SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
                        FROM "pg_settings"
                        WHERE "name" = 'search_path'
-                   );"#
+                   ) AND main.table_name NOT LIKE '%_alt';"#
             }
         };
         let tables: Vec<Table> = self

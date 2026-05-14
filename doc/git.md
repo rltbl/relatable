@@ -25,16 +25,20 @@ Now we set up Relatable and make a first commit:
 ```console tesh-session="git"
 $ rltbl -v demo --size 1 --force
 Created a demonstration database in ...
+$ mkdir -p src/schema/
 $ rltbl -v save
 $ echo '.relatable/' > .gitignore
 $ echo 'setup.sh' >> .gitignore
-$ git add .gitignore penguin.tsv island.tsv
+$ git add .gitignore src/schema/*.tsv penguin.tsv island.tsv
 $ git commit --message 'Initial commit'
 [master (root-commit) ...] Initial commit
- 3 files changed, 8 insertions(+)
+ 6 files changed, 26 insertions(+)
  create mode 100644 .gitignore
  create mode 100644 island.tsv
  create mode 100644 penguin.tsv
+ create mode 100644 src/schema/column.tsv
+ create mode 100644 src/schema/datatype.tsv
+ create mode 100644 src/schema/table.tsv
 $ git log
 commit ... (HEAD -> master)
 Author: Alice <alice@example.com>
