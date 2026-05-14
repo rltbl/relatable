@@ -33,6 +33,9 @@ pub mod user;
 /// Data editing changes.
 pub mod change;
 
+/// Struct for general, editable tables.
+pub mod data_table;
+
 /// Data editing history.
 pub mod history;
 

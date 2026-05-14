@@ -32,7 +32,7 @@ $ echo 'setup.sh' >> .gitignore
 $ git add .gitignore src/schema/*.tsv penguin.tsv island.tsv
 $ git commit --message 'Initial commit'
 [master (root-commit) ...] Initial commit
- 6 files changed, 26 insertions(+)
+ 6 files changed, 50 insertions(+)
  create mode 100644 .gitignore
  create mode 100644 island.tsv
  create mode 100644 penguin.tsv

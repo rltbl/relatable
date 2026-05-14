@@ -1,12 +1,13 @@
 use crate::{self as rltbl, core::meta_column_ddl};
 use rltbl::{
-    column::ColumnBuilder,
+    column::{Column, ColumnBuilder},
     core::{Relatable, RowID, RowOrder, NEW_ORDER_MULTIPLIER},
     datatype::DatatypeBuilder,
     sql::{self, SqlParam},
+    table::Table,
     tsv_table::TsvTable,
 };
-use rltbl_db::{core::DbQuery, db_kind::DbKind, params};
+use rltbl_db::{core::DbQuery, db_kind::DbKind, db_row, db_value::DbRow, params};
 
 use anyhow::Result;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
@@ -136,45 +137,85 @@ pub async fn create_island_table(
     table: Option<&str>,
     force: &bool,
 ) -> Result<()> {
-    tracing::trace!("create_island_table({rltbl:?}, {table:?}, {force})");
     let table = match table {
         Some(table) => table,
         None => "island",
     };
-    if *force {
-        if let DbKind::PostgreSQL = rltbl.pool.kind() {
-            rltbl
-                .pool
-                .execute(&format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#), ())
-                .await?;
-        }
-    }
-
-    let sql = format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
-    rltbl.pool.execute(&sql, ()).await?;
-
-    let pkey_clause = match rltbl.pool.kind() {
-        DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
+    let table = Table {
+        name: table.to_string(),
+        path: "island.tsv".to_string(),
+        ..Default::default()
     };
+    let tables = rltbl.table_table().add(&[&table]).await?;
+    let table = tables.first().unwrap();
+    let mut table = table.connect(&rltbl.pool);
+    table.columns = vec![
+        ColumnBuilder::new("island", "island_id")
+            .datatype("integer")
+            .build()
+            .unwrap(),
+        ColumnBuilder::new("island", "island")
+            .datatype("trimmed_line")
+            .build()
+            .unwrap(),
+    ]
+    .into();
+    let refs: Vec<&Column> = table.columns.iter().collect();
+    table.columns = rltbl.column_table().add(&refs).await?.into();
+    let datatypes = rltbl.datatypes().await;
+    table.columns.sql_types(&datatypes);
+    if *force {
+        table.drop().await?;
+    }
+    table.create().await?;
 
-    // Create the demo table:
+    // let rows = vec![
+    //     db_row! {
+    //         "_order" => 1000,
+    //         "island_id" => 1,
+    //         "island" => "Torgersen",
+    //     },
+    //     db_row! {
+    //         "_order" => 2000,
+    //         "island_id" => 2,
+    //         "island" => "Biscoe",
+    //     },
+    //     db_row! {
+    //         "_order" => 3000,
+    //         "island_id" => 3,
+    //         "island" => "Dream",
+    //     },
+    // ];
+    // // let rows = table.columns.resolve_rows(rows);
+    let island_id = table.columns.get(0).unwrap().id();
+    let island = table.columns.get(1).unwrap().id();
+    let rows = vec![
+        db_row! {
+            "_order" => 1000_i64,
+            island_id => 1,
+            island => "Torgersen",
+        },
+        db_row! {
+            "_order" => 2000_i64,
+            island_id => 2,
+            island => "Biscoe",
+        },
+        db_row! {
+            "_order" => 3000_i64,
+            island_id => 3,
+            island => "Dream",
+        },
+    ];
+    // let rows = table.columns.resolve_rows(rows);
+    table.insert_regular(rows).await?;
+
+    // TODO: Eliminate this
     let sql = format!(
-        r#"CREATE TABLE "{table}" (
-                 _id {pkey_clause},
-                 _order INTEGER UNIQUE,
-                 island_id INTEGER,
-                 island TEXT
-               )"#,
+        "DROP TABLE IF EXISTS island; CREATE TABLE island AS SELECT _id, _order, {island_id} AS island_id, {island} AS island FROM {table_id}",
+        table_id = table.id(),
     );
-    rltbl.pool.execute(&sql, ()).await?;
+    rltbl.pool.execute_batch(&sql).await?;
 
-    let sql = format!(
-        r#"INSERT INTO "{table}" ("island_id", "island")
-               VALUES (1, 'Torgersen'), (2, 'Biscoe'), (3, 'Dream')"#
-    );
-
-    rltbl.pool.execute(&sql, ()).await?;
     Ok(())
 }
 
@@ -184,7 +225,7 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
     if *force {
         datatype_table.drop().await?;
     }
-    datatype_table.create().await?;
+    datatype_table.init().await?;
     datatype_table
         .add(&[
             &DatatypeBuilder::new("decimal")
@@ -210,7 +251,7 @@ pub async fn create_demo_column_table(rltbl: &Relatable, force: &bool) -> Result
     if *force {
         column_table.drop().await?;
     }
-    column_table.create().await?;
+    column_table.init().await?;
     column_table
         .add(&[
             &ColumnBuilder::new("penguin", "study_name")
@@ -333,4 +374,19 @@ pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) 
     rltbl.pool.execute(sql, ()).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+
+    #[tokio::test]
+    async fn test_island() -> Result<()> {
+        let rltbl = Relatable::test("test_demo_island", false).await?;
+
+        create_island_table(&rltbl, None, &false).await?;
+
+        rltbl.drop_test().await
+    }
 }

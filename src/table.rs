@@ -6,6 +6,7 @@ use crate as rltbl;
 use rltbl::{
     column::{Column, ColumnBuilder, Columns},
     core::{Relatable, RowID, RowOrder},
+    data_table::DataTable,
     sql::{self},
     tsv_table::TsvTable,
 };
@@ -235,21 +236,30 @@ impl Table {
             Err(_) => Ok(0),
         }
     }
+
+    pub fn connect<'a>(&self, pool: &'a AnyPool) -> DataTable<'a> {
+        DataTable {
+            name: self.name.clone(),
+            id: self.id.clone(),
+            pool,
+            columns: Columns::default(),
+        }
+    }
 }
 
 /// Represents the special "table" table.
 pub struct TableTable<'a> {
-    table_name: String,
+    name: String,
     pool: &'a AnyPool,
 }
 
 impl<'a> TsvTable for TableTable<'a> {
-    fn name(&self) -> &str {
-        &self.table_name
+    fn name(&self) -> String {
+        self.name.clone()
     }
 
-    fn id(&self) -> &str {
-        &self.table_name
+    fn id(&self) -> String {
+        self.name.clone()
     }
 
     fn pool(&self) -> &AnyPool {
@@ -259,11 +269,11 @@ impl<'a> TsvTable for TableTable<'a> {
     fn columns(&self) -> Columns {
         // TODO: both should be unique
         vec![
-            ColumnBuilder::new(self.name(), "table")
+            ColumnBuilder::new(&self.name, "table")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "path")
+            ColumnBuilder::new(&self.name, "path")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
@@ -276,7 +286,7 @@ impl<'a> TableTable<'a> {
     /// Create a new instance of UserTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
-            table_name: "table".to_owned(),
+            name: "table".to_owned(),
             pool,
         }
     }
@@ -309,18 +319,11 @@ impl<'a> TableTable<'a> {
     /// Insert these tables into the "table" table,
     /// returning the results.
     pub async fn add(&self, tables: &[&Table]) -> Result<Vec<Table>> {
-        let new_orders = self.new_orders(tables.len()).await?;
         let rows = tables
-            .into_iter()
-            .cloned()
-            .zip(new_orders)
-            .map(|(table, order)| {
-                let mut table = table.clone();
-                table.order = order;
-                to_db_row(&table)
-            })
+            .iter()
+            .map(|table| to_db_row(table))
             .collect::<Result<Vec<_>, _>>()?;
-        let rows = self.insert_regular(rows).await?;
+        let rows = self.append_regular(rows).await?;
         let new_tables: Vec<Table> = rows.remove_nulls().try_into_vec()?;
         Ok(new_tables)
     }

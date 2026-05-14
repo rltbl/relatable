@@ -269,7 +269,7 @@ impl Datatypes {
                 DatatypeBuilder::new("text")
                     .description("any text")
                     .parent("")
-                    .sql_type("text")
+                    .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 DatatypeBuilder::new("empty")
@@ -348,17 +348,17 @@ impl Datatypes {
 /// Represents the special "datatype" table.
 pub struct DatatypeTable<'a> {
     // This table_name is "datatype" by default.
-    table_name: String,
+    name: String,
     pool: &'a AnyPool,
 }
 
 impl<'a> TsvTable for DatatypeTable<'a> {
-    fn name(&self) -> &str {
-        &self.table_name
+    fn name(&self) -> String {
+        self.name.clone()
     }
 
-    fn id(&self) -> &str {
-        &self.table_name
+    fn id(&self) -> String {
+        self.name.clone()
     }
 
     fn pool(&self) -> &AnyPool {
@@ -367,37 +367,37 @@ impl<'a> TsvTable for DatatypeTable<'a> {
 
     fn columns(&self) -> Columns {
         vec![
-            ColumnBuilder::new(self.name(), "datatype")
+            ColumnBuilder::new(&self.name, "datatype")
                 .description("the name of this datatype")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "parent")
+            ColumnBuilder::new(&self.name, "parent")
                 .description("the parent datatype")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "condition")
+            ColumnBuilder::new(&self.name, "condition")
                 .description("the validation condition")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "sql_type")
+            ColumnBuilder::new(&self.name, "sql_type")
                 .description("the validation condition")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "format")
+            ColumnBuilder::new(&self.name, "format")
                 .description("the SQL type for this datatype")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "description")
+            ColumnBuilder::new(&self.name, "description")
                 .description("the description of this datatype")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
@@ -412,7 +412,7 @@ impl<'a> DatatypeTable<'a> {
     /// Create a new instance of DatatypeTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
-            table_name: "datatype".to_owned(),
+            name: "datatype".to_owned(),
             pool,
         }
     }
@@ -455,7 +455,7 @@ impl<'a> DatatypeTable<'a> {
     pub async fn get(&self) -> Datatypes {
         let datatypes: Vec<Datatype> = self
             .pool
-            .query(&format!(r#"SELECT * FROM "{}""#, self.table_name), ())
+            .query(&format!(r#"SELECT * FROM "{}""#, self.name), ())
             .await
             .and_then(|db_rows| db_rows.try_into_vec())
             .unwrap_or_default();

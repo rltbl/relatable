@@ -49,6 +49,14 @@ pub struct Column {
 }
 
 impl Column {
+    pub fn id(&self) -> String {
+        if self.id != 0 {
+            format!("c{}", self.id)
+        } else {
+            self.column.clone()
+        }
+    }
+
     /// True if this is a "meta" column.
     pub fn is_meta(&self) -> bool {
         self.column.starts_with("_")
@@ -77,7 +85,7 @@ impl Column {
     }
 
     pub fn ddl(&self, kind: &DbKind) -> String {
-        let mut parts = vec![format!(r#""{}""#, self.column)];
+        let mut parts = vec![format!(r#""{}""#, self.id())];
         let sql_type = match self.sql_type.to_uppercase().as_str() {
             "SERIAL" => match kind {
                 DbKind::SQLite => "INTEGER".to_string(),
@@ -171,6 +179,10 @@ impl Columns {
         self.list.iter().map(|c| c.column.to_string()).collect()
     }
 
+    pub fn ids(&self) -> Vec<String> {
+        self.list.iter().map(|c| c.id().to_string()).collect()
+    }
+
     pub fn ddl(&self, kind: &DbKind, table_name: &str) -> String {
         let cols = self.list.iter().map(|col| col.ddl(kind)).join(",\n  ");
         format!(
@@ -237,22 +249,29 @@ impl Columns {
         }
         dependents
     }
+
+    /// Give a set of Datatypes, update the sql_type of each column, in place.
+    pub fn sql_types(&mut self, datatypes: &Datatypes) {
+        for column in self.list.iter_mut() {
+            column.sql_type = column.sql_type(datatypes);
+        }
+    }
 }
 
 /// Represents the special "column" table.
 pub struct ColumnTable<'a> {
     // This table_name is "column" by default.
-    table_name: String,
+    name: String,
     pool: &'a AnyPool,
 }
 
 impl<'a> TsvTable for ColumnTable<'a> {
-    fn name(&self) -> &str {
-        &self.table_name
+    fn name(&self) -> String {
+        self.name.clone()
     }
 
-    fn id(&self) -> &str {
-        &self.table_name
+    fn id(&self) -> String {
+        self.name.clone()
     }
 
     fn pool(&self) -> &AnyPool {
@@ -261,43 +280,43 @@ impl<'a> TsvTable for ColumnTable<'a> {
 
     fn columns(&self) -> Columns {
         vec![
-            ColumnBuilder::new(self.name(), "table")
+            ColumnBuilder::new(&self.name, "table")
                 .description("the table for this column")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "column")
+            ColumnBuilder::new(&self.name, "column")
                 .description("the name of this column")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "label")
+            ColumnBuilder::new(&self.name, "label")
                 .description("the label of this column")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "nulltype")
+            ColumnBuilder::new(&self.name, "nulltype")
                 .description("the null type of this column")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "datatype")
+            ColumnBuilder::new(&self.name, "datatype")
                 .description("the datatype of this column")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "structure")
+            ColumnBuilder::new(&self.name, "structure")
                 .description("the structure of this column")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "description")
+            ColumnBuilder::new(&self.name, "description")
                 .description("the description of this column")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
@@ -312,7 +331,7 @@ impl<'a> ColumnTable<'a> {
     /// Create a new instance of ColumnTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
-            table_name: "column".to_owned(),
+            name: "column".to_owned(),
             pool,
         }
     }
@@ -393,7 +412,7 @@ impl<'a> ColumnTable<'a> {
                       AND main.name != 'sqlite_sequence'{filter}
                       AND main.name NOT LIKE '%_alt'
                     ORDER BY main.name;"#,
-                    self.table_name
+                    self.name
                 ))
             }
             DbKind::PostgreSQL => {
@@ -430,7 +449,7 @@ impl<'a> ColumnTable<'a> {
                            WHERE "name" = 'search_path'
                          ) AND main.table_name NOT LIKE '%_alt'{filter}
                        ORDER BY main.ordinal_position;"#,
-                    self.table_name
+                    self.name
                 ))
             }
         }
@@ -471,7 +490,7 @@ impl<'a> ColumnTable<'a> {
               FROM "{}"
               WHERE "table" IN({})
             "#,
-            self.table_name,
+            self.name,
             tables
                 .iter()
                 .map(|t| format!("'{t}'"))
@@ -546,7 +565,7 @@ CREATE TABLE "column_alt" (
         let datatypes = Datatypes::builtins();
 
         let column = ColumnBuilder::new("foo", "bar").build()?;
-        assert_eq!(column.sql_type(&datatypes), "text");
+        assert_eq!(column.sql_type(&datatypes), "TEXT");
 
         let column = ColumnBuilder::new("foo", "bar")
             .datatype("integer")

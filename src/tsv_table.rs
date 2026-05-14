@@ -1,3 +1,5 @@
+use std::iter::zip;
+
 use crate as rltbl;
 use rltbl::{
     column::{ColumnBuilder, Columns},
@@ -14,9 +16,9 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait TsvTable {
-    fn name(&self) -> &str;
+    fn name(&self) -> String;
 
-    fn id(&self) -> &str;
+    fn id(&self) -> String;
 
     fn pool(&self) -> &AnyPool;
 
@@ -30,12 +32,12 @@ pub trait TsvTable {
 
         // The regular table includes _id and _order columns.
         let mut regular_columns: Columns = vec![
-            ColumnBuilder::new(self.name(), "_id")
+            ColumnBuilder::new(&self.name(), "_id")
                 .sql_type("SERIAL")
                 .primary_key(true)
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "_order")
+            ColumnBuilder::new(&self.name(), "_order")
                 .sql_type(ORDER_SQL_TYPE)
                 .unique(true)
                 .build()
@@ -43,22 +45,22 @@ pub trait TsvTable {
         ]
         .into();
         regular_columns.extend(content_columns.iter().cloned());
-        ddls.push(regular_columns.ddl(&self.pool().kind(), self.id()));
+        ddls.push(regular_columns.ddl(&self.pool().kind(), &self.id()));
 
         // The alternate table includes _id, _order, and _deleted columns,
         // plus a _text column for each column that is not already TEXT.
         let mut alternate_columns: Columns = vec![
-            ColumnBuilder::new(self.name(), "_id")
+            ColumnBuilder::new(&self.name(), "_id")
                 .sql_type(ID_SQL_TYPE)
                 .primary_key(true)
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "_order")
+            ColumnBuilder::new(&self.name(), "_order")
                 .sql_type(ORDER_SQL_TYPE)
                 .unique(true)
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.name(), "_deleted")
+            ColumnBuilder::new(&self.name(), "_deleted")
                 .sql_type("BOOL")
                 .build()
                 .unwrap(),
@@ -67,9 +69,11 @@ pub trait TsvTable {
         for column in content_columns.iter() {
             alternate_columns.push(column.clone());
             if column.sql_type.to_uppercase() != "TEXT" {
-                let mut alt = column.clone();
-                alt.column = format!("{}_text", alt.column);
-                alt.sql_type = "TEXT".to_string();
+                let name = format!("{}_text", column.id());
+                let alt = ColumnBuilder::new(&column.table, &name)
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap();
                 alternate_columns.push(alt);
             }
         }
@@ -102,11 +106,10 @@ pub trait TsvTable {
         // SELECT MAX(previous_order) AS _order FROM history
         //   WHERE "table" = "{id}"
         let sql = format!(
-            r#"SELECT _order FROM (
+            r#"SELECT MAX(_order) FROM (
                 SELECT MAX(_order) AS _order FROM "{id}"
                 UNION ALL
                 SELECT MAX(_order) AS _order FROM "{id}_alt"
-                ORDER BY _order DESC
             )
             LIMIT 1"#,
             id = self.id()
@@ -124,15 +127,26 @@ pub trait TsvTable {
         Ok(new_orders)
     }
 
+    /// Append rows to the regular table.
+    async fn append_regular(&self, rows: impl IntoDbRows + Send) -> Result<DbRows> {
+        let mut rows = rows.into_db_rows();
+        let new_orders = self.new_orders(rows.len()).await?;
+        for (row, order) in zip(rows.iter_mut(), new_orders) {
+            row.insert("_order".to_string(), order.into());
+        }
+        self.insert_regular(rows).await
+    }
+
     /// Insert rows to the regular table.
     async fn insert_regular(&self, rows: impl IntoDbRows + Send) -> Result<DbRows> {
-        let mut column_names = self.columns().names();
+        let mut column_names = self.columns().ids();
         column_names.insert(0, "_order".to_string());
+        // TODO: resolve column IDs
         // TODO: nullify rows
         let refs: Vec<&str> = column_names.iter().map(|x| x.as_str()).collect();
         let new_rows = self
             .pool()
-            .insert_returning(self.id(), &refs, rows, &[])
+            .insert_returning(&self.id(), &refs, rows, &[])
             .await?;
         Ok(new_rows)
     }
