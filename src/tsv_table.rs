@@ -1,9 +1,13 @@
 use crate as rltbl;
 use rltbl::{
     column::{ColumnBuilder, Columns},
-    core::{ID_SQL_TYPE, ORDER_SQL_TYPE},
+    core::{RowOrder, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
 };
-use rltbl_db::{any::AnyPool, core::DbQuery};
+use rltbl_db::{
+    any::AnyPool,
+    core::DbQuery,
+    db_value::{DbRows, IntoDbRows},
+};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -16,6 +20,7 @@ pub trait TsvTable {
 
     fn pool(&self) -> &AnyPool;
 
+    // Does not include meta columns: _id, _order, _deleted.
     fn columns(&self) -> Columns;
 
     fn ddl(&self) -> String {
@@ -88,5 +93,47 @@ pub trait TsvTable {
             self.pool().drop_table(&table_name).await?;
         }
         Ok(())
+    }
+
+    /// Return the specified number of new RowOrders for a table.
+    async fn new_orders(&self, count: usize) -> Result<Vec<RowOrder>> {
+        // TODO: Account for history/change table:
+        // UNION ALL
+        // SELECT MAX(previous_order) AS _order FROM history
+        //   WHERE "table" = "{id}"
+        let sql = format!(
+            r#"SELECT _order FROM (
+                SELECT MAX(_order) AS _order FROM "{id}"
+                UNION ALL
+                SELECT MAX(_order) AS _order FROM "{id}_alt"
+                ORDER BY _order DESC
+            )
+            LIMIT 1"#,
+            id = self.id()
+        );
+        let max_order: RowOrder = self
+            .pool()
+            .query(&sql, ())
+            .await?
+            .try_into()
+            .unwrap_or_default();
+        let new_orders = (1..=count)
+            .into_iter()
+            .map(|i| max_order + (i as RowOrder * NEW_ORDER_MULTIPLIER))
+            .collect();
+        Ok(new_orders)
+    }
+
+    /// Insert rows to the regular table.
+    async fn insert_regular(&self, rows: impl IntoDbRows + Send) -> Result<DbRows> {
+        let mut column_names = self.columns().names();
+        column_names.insert(0, "_order".to_string());
+        // TODO: nullify rows
+        let refs: Vec<&str> = column_names.iter().map(|x| x.as_str()).collect();
+        let new_rows = self
+            .pool()
+            .insert_returning(self.id(), &refs, rows, &[])
+            .await?;
+        Ok(new_rows)
     }
 }

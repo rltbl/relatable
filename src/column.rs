@@ -4,17 +4,13 @@
 
 use crate as rltbl;
 use rltbl::{
+    core::{RowID, RowOrder},
     datatype::{DatatypeTable, Datatypes},
     structure::{Structure, Structures},
     table::TableTable,
     tsv_table::TsvTable,
 };
-use rltbl_db::{
-    any::AnyPool,
-    core::{DbError, DbQuery},
-    db_kind::DbKind,
-    db_value::DbRow,
-};
+use rltbl_db::{any::AnyPool, core::DbQuery, db_kind::DbKind, serde::to_db_row};
 
 use anyhow::Result;
 use derive_builder::Builder;
@@ -26,16 +22,6 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-pub static COLUMNS: [&str; 7] = [
-    "table",
-    "column",
-    "label",
-    "description",
-    "nulltype",
-    "datatype",
-    "structure",
-];
-
 /// Represents a column from some table
 #[derive(
     Builder, Clone, Debug, Default, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord,
@@ -43,6 +29,10 @@ pub static COLUMNS: [&str; 7] = [
 #[serde(default)]
 #[builder(default, setter(into))]
 pub struct Column {
+    #[serde(rename = "_id")]
+    pub id: RowID,
+    #[serde(rename = "_order")]
+    pub order: RowOrder,
     pub table: String,
     pub column: String,
     pub label: String,
@@ -177,6 +167,10 @@ impl Into<IndexMap<String, Column>> for Columns {
 }
 
 impl Columns {
+    pub fn names(&self) -> Vec<String> {
+        self.list.iter().map(|c| c.column.to_string()).collect()
+    }
+
     pub fn ddl(&self, kind: &DbKind, table_name: &str) -> String {
         let cols = self.list.iter().map(|col| col.ddl(kind)).join(",\n  ");
         format!(
@@ -339,20 +333,23 @@ impl<'a> ColumnTable<'a> {
         Ok(())
     }
 
-    /// Insert these columns into the column table,
+    /// Insert these columns into the "column" table,
     /// returning the results.
     pub async fn add(&self, columns: &[&Column]) -> Result<Vec<Column>> {
-        let rows: Vec<DbRow> = columns
-            .iter()
-            .map(|col| rltbl_db::serde::to_db_row(col))
-            .collect::<Result<Vec<DbRow>, DbError>>()?;
-        let cols: Vec<Column> = self
-            .pool
-            .insert_returning(&self.table_name, &COLUMNS, rows, &COLUMNS)
-            .await?
-            .remove_nulls()
-            .try_into_vec()?;
-        Ok(cols)
+        let new_orders = self.new_orders(columns.len()).await?;
+        let rows = columns
+            .into_iter()
+            .cloned()
+            .zip(new_orders)
+            .map(|(column, order)| {
+                let mut column = column.clone();
+                column.order = order;
+                to_db_row(&column)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let rows = self.insert_regular(rows).await?;
+        let new_columns: Vec<Column> = rows.remove_nulls().try_into_vec()?;
+        Ok(new_columns)
     }
 
     /// Get a SQL string for a query over actual columns,
@@ -531,6 +528,20 @@ CREATE TABLE "column_alt" (
     }
 
     #[tokio::test]
+    async fn test_init() -> Result<()> {
+        let rltbl = Relatable::test("test_column_init", false).await?;
+
+        let count: u64 = rltbl
+            .pool
+            .query(r#"SELECT count(1) FROM "column""#, ())
+            .await?
+            .try_into()?;
+        assert_eq!(count, 15);
+
+        rltbl.drop_test().await
+    }
+
+    #[tokio::test]
     async fn test_sql_type() -> Result<()> {
         let datatypes = Datatypes::builtins();
 
@@ -543,20 +554,6 @@ CREATE TABLE "column_alt" (
         assert_eq!(column.sql_type(&datatypes), "INTEGER");
 
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_init() -> Result<()> {
-        let rltbl = Relatable::test("test_column_init", false).await?;
-
-        let count: u64 = rltbl
-            .pool
-            .query(r#"SELECT count(1) FROM "column""#, ())
-            .await?
-            .try_into()?;
-        assert_eq!(count, 15);
-
-        rltbl.drop_test().await
     }
 
     #[tokio::test]

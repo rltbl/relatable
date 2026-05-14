@@ -9,7 +9,7 @@ use rltbl::{
     sql::{self},
     tsv_table::TsvTable,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery, db_kind::DbKind, db_value::DbRow, serde::to_db_row};
+use rltbl_db::{any::AnyPool, core::DbQuery, db_kind::DbKind, serde::to_db_row};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -309,21 +309,19 @@ impl<'a> TableTable<'a> {
     /// Insert these tables into the "table" table,
     /// returning the results.
     pub async fn add(&self, tables: &[&Table]) -> Result<Vec<Table>> {
-        let rows: Vec<DbRow> = tables
-            .iter()
-            .map(|t| to_db_row(t))
+        let new_orders = self.new_orders(tables.len()).await?;
+        let rows = tables
+            .into_iter()
+            .cloned()
+            .zip(new_orders)
+            .map(|(table, order)| {
+                let mut table = table.clone();
+                table.order = order;
+                to_db_row(&table)
+            })
             .collect::<Result<Vec<_>, _>>()?;
-        let new_tables: Vec<Table> = self
-            .pool
-            .insert_returning(
-                &self.table_name,
-                &["table", "path"],
-                rows,
-                &["_id", "_order", "table", "path"],
-            )
-            .await?
-            .remove_nulls()
-            .try_into_vec()?;
+        let rows = self.insert_regular(rows).await?;
+        let new_tables: Vec<Table> = rows.remove_nulls().try_into_vec()?;
         Ok(new_tables)
     }
 }

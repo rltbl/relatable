@@ -5,36 +5,26 @@
 use crate as rltbl;
 use rltbl::{
     column::{Column, ColumnBuilder, Columns},
-    core::{Relatable, RowID},
+    core::{Relatable, RowID, RowOrder},
     sql::{self, SqlParam},
     tsv_table::TsvTable,
 };
-use rltbl_db::{
-    any::AnyPool,
-    core::DbQuery,
-    db_value::{DbValue, JsonRow},
-};
+use rltbl_db::{any::AnyPool, core::DbQuery, db_value::DbValue, serde::to_db_row};
 
 use anyhow::Result;
 use derive_builder::Builder;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::ops::{Deref, DerefMut};
-
-pub static COLUMNS: [&str; 6] = [
-    "datatype",
-    "description",
-    "parent",
-    "condition",
-    "sql_type",
-    "format",
-];
 
 /// Represents a column's datatype
 #[derive(Builder, Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Ord, Eq)]
 #[builder(default, setter(into))]
 pub struct Datatype {
+    #[serde(rename = "_id")]
+    pub id: RowID,
+    #[serde(rename = "_order")]
+    pub order: RowOrder,
     pub datatype: String,
     pub description: String,
     pub parent: String,
@@ -46,6 +36,8 @@ pub struct Datatype {
 impl Default for Datatype {
     fn default() -> Self {
         Self {
+            id: Default::default(),
+            order: Default::default(),
             datatype: Default::default(),
             description: Default::default(),
             parent: "text".to_owned(),
@@ -441,35 +433,29 @@ impl<'a> DatatypeTable<'a> {
     /// Insert these datatypes into the "datatype" table,
     /// returning the results.
     pub async fn add(&self, datatypes: &[&Datatype]) -> Result<Vec<Datatype>> {
-        let rows: Vec<JsonRow> = datatypes
-            .iter()
-            .map(|dt| json!(dt).as_object().unwrap().clone())
-            .collect();
-        let db_rows = self
-            .pool
-            .insert_returning(&self.table_name, &COLUMNS, rows, &[])
-            .await?;
-        let dts: Vec<Datatype> = db_rows
-            .rows
+        let new_orders = self.new_orders(datatypes.len()).await?;
+        let rows = datatypes
             .into_iter()
-            // WARN: This silently ignores invalid datatypes.
-            .filter_map(|row| serde_json::from_value::<Datatype>(json!(row)).ok())
-            .collect();
-        Ok(dts)
+            .cloned()
+            .zip(new_orders)
+            .map(|(datatype, order)| {
+                let mut datatype = datatype.clone();
+                datatype.order = order;
+                to_db_row(&datatype)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let rows = self.insert_regular(rows).await?;
+        let new_datatypes: Vec<Datatype> = rows.remove_nulls().try_into_vec()?;
+        Ok(new_datatypes)
     }
 
     /// Get all the dataypes from the datatype table.
     /// Built-in datatypes override rows found in the table.
     /// If the datatype table does not exist, just return buildins.
     pub async fn get(&self) -> Datatypes {
-        let datatypes: Vec<Datatype> = self.pool
-            .query(
-                &format!(
-                    r#"SELECT "datatype", "description", "parent", "condition", "sql_type", "format" FROM "{}""#,
-                    self.table_name
-                ),
-                (),
-            )
+        let datatypes: Vec<Datatype> = self
+            .pool
+            .query(&format!(r#"SELECT * FROM "{}""#, self.table_name), ())
             .await
             .and_then(|db_rows| db_rows.try_into_vec())
             .unwrap_or_default();
@@ -541,6 +527,8 @@ CREATE TABLE "datatype_alt" (
 
         let test = DatatypeBuilder::new("test")
             .description("test datatype")
+            .id(8)
+            .order(8000)
             .build()
             .unwrap();
         table.add(&[&test]).await?;
