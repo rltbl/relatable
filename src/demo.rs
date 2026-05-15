@@ -3,6 +3,7 @@ use rltbl::{
     column::{Column, ColumnBuilder},
     core::{Relatable, RowID, RowOrder, NEW_ORDER_MULTIPLIER},
     datatype::DatatypeBuilder,
+    row::Rows,
     sql::{self, SqlParam},
     table::Table,
     tsv_table::TsvTable,
@@ -169,49 +170,32 @@ pub async fn create_island_table(
     }
     table.create().await?;
 
-    // let rows = vec![
-    //     db_row! {
-    //         "_order" => 1000,
-    //         "island_id" => 1,
-    //         "island" => "Torgersen",
-    //     },
-    //     db_row! {
-    //         "_order" => 2000,
-    //         "island_id" => 2,
-    //         "island" => "Biscoe",
-    //     },
-    //     db_row! {
-    //         "_order" => 3000,
-    //         "island_id" => 3,
-    //         "island" => "Dream",
-    //     },
-    // ];
-    // // let rows = table.columns.resolve_rows(rows);
-    let island_id = table.columns.get(0).unwrap().id();
-    let island = table.columns.get(1).unwrap().id();
-    let rows = vec![
-        db_row! {
-            "_order" => 1000_i64,
-            island_id => 1,
-            island => "Torgersen",
-        },
-        db_row! {
-            "_order" => 2000_i64,
-            island_id => 2,
-            island => "Biscoe",
-        },
-        db_row! {
-            "_order" => 3000_i64,
-            island_id => 3,
-            island => "Dream",
-        },
-    ];
-    // let rows = table.columns.resolve_rows(rows);
-    table.insert_regular(rows).await?;
+    let schema = rltbl.schema().await?;
+    let rows = Rows::new(
+        schema,
+        "island",
+        vec![
+            db_row! {
+                "island_id" => 1,
+                "island" => "Torgersen",
+            },
+            db_row! {
+                "island_id" => 2,
+                "island" => "Biscoe",
+            },
+            db_row! {
+                "island_id" => 3,
+                "island" => "Dream",
+            },
+        ],
+    )?;
+    table.append(rows).await?;
 
     // TODO: Eliminate this
     let sql = format!(
         "DROP TABLE IF EXISTS island; CREATE TABLE island AS SELECT _id, _order, {island_id} AS island_id, {island} AS island FROM {table_id}",
+        island_id = table.columns.get(0).unwrap().id(),
+        island = table.columns.get(1).unwrap().id(),
         table_id = table.id(),
     );
     rltbl.pool.execute_batch(&sql).await?;

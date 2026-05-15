@@ -4,6 +4,7 @@ use crate as rltbl;
 use rltbl::{
     column::{ColumnBuilder, Columns},
     core::{RowOrder, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
+    row::Rows,
 };
 use rltbl_db::{
     any::AnyPool,
@@ -125,6 +126,14 @@ pub trait TsvTable {
             .map(|i| max_order + (i as RowOrder * NEW_ORDER_MULTIPLIER))
             .collect();
         Ok(new_orders)
+    }
+
+    /// Append a set of Rows to the table.
+    async fn append(&self, rows: Rows) -> Result<Rows> {
+        let db_rows = rows.regular();
+        self.append_regular(db_rows).await?;
+        // TODO: return modified rows
+        Ok(rows)
     }
 
     /// Append rows to the regular table.

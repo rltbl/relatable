@@ -10,7 +10,10 @@ use rltbl::{
     message::CellMessage,
     schema::Schema,
 };
-use rltbl_db::db_value::{DbRow, JsonRow};
+use rltbl_db::{
+    db_row,
+    db_value::{DbRow, IntoDbRow, IntoDbRows, JsonRow},
+};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -66,6 +69,18 @@ impl Row {
         }
 
         Ok(self)
+    }
+
+    // TODO: handle validation
+    pub fn regular(&self) -> Option<DbRow> {
+        let mut db_row = db_row! {
+            "_id" => self.id,
+            "_order" => self.order,
+        };
+        for (column, cell) in self.cells.clone() {
+            db_row.insert(column, cell.value.into());
+        }
+        Some(db_row)
     }
 }
 
@@ -267,6 +282,44 @@ impl Cell {
             .collect::<Vec<_>>()
             .len()
             > 0
+    }
+}
+
+/// Represents a list of rows
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Rows {
+    pub schema: Schema,
+    pub table_name: String,
+    pub rows: Vec<Row>,
+}
+
+impl Rows {
+    pub fn new(schema: Schema, table: &str, rows: impl IntoDbRows + Send) -> Result<Rows> {
+        // TODO: check schema for table
+        let mut new_rows = Rows {
+            schema,
+            table_name: table.to_string(),
+            ..Default::default()
+        };
+        let rows = rows.into_db_rows();
+        for row in rows {
+            new_rows.add(row)?;
+        }
+        Ok(new_rows)
+    }
+
+    pub fn add(&mut self, row: impl IntoDbRow + Send) -> Result<&Row> {
+        let db_row = row.into_db_row();
+        // TODO: Check columns, corerce types
+        // for key in db_row.keys() {
+        // }
+        let row = db_row.into();
+        self.rows.push(row);
+        Ok(self.rows.last().unwrap())
+    }
+
+    pub fn regular(&self) -> Vec<DbRow> {
+        self.rows.iter().filter_map(|row| row.regular()).collect()
     }
 }
 
