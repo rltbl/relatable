@@ -158,7 +158,7 @@ pub async fn create_island_table(rltbl: &Relatable, force: &bool) -> Result<()> 
     }
     table.create().await?;
 
-    let rows = table.columns.rows(vec![
+    let rows = vec![
         db_row! {
             "island_id" => 1,
             "island" => "Torgersen",
@@ -171,7 +171,7 @@ pub async fn create_island_table(rltbl: &Relatable, force: &bool) -> Result<()> 
             "island_id" => 3,
             "island" => "Dream",
         },
-    ]);
+    ];
     table.append(rows).await?;
 
     Ok(())

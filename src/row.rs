@@ -25,6 +25,7 @@ use serde_json::Value as JsonValue;
 pub struct Row {
     pub id: RowID,
     pub order: RowOrder,
+    pub deleted: bool,
     pub change_id: RowID,
     pub cells: IndexMap<String, Cell>,
 }
@@ -116,6 +117,10 @@ impl From<JsonRow> for Row {
             .get("_order")
             .and_then(|i| i.as_u64())
             .unwrap_or_default() as RowOrder;
+        let deleted = row
+            .get("_deleted")
+            .and_then(|b| b.as_bool())
+            .unwrap_or_default();
         let change_id = row
             .get("_change_id")
             .and_then(|i| i.as_u64())
@@ -172,6 +177,7 @@ impl From<JsonRow> for Row {
         Self {
             id,
             order,
+            deleted,
             change_id,
             cells,
         }
@@ -417,6 +423,7 @@ mod tests {
             Row {
                 id: 1,
                 order: 1000,
+                deleted: false,
                 change_id: 0,
                 cells
             }
@@ -460,6 +467,7 @@ mod tests {
             Row {
                 id: 1,
                 order: 1000,
+                deleted: false,
                 change_id: 0,
                 cells
             }

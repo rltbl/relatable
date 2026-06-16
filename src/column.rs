@@ -29,6 +29,58 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+#[derive(Clone, Debug, Default)]
+pub struct SqlColumn {
+    pub column: String,
+    pub sql_type: String,
+    pub sql_default: String,
+    pub primary_key: bool,
+    pub unique: bool,
+    pub not_null: bool,
+    pub references: Vec<String>,
+}
+
+impl SqlColumn {
+    pub fn ddl(&self, kind: &DbKind) -> String {
+        let mut parts = vec![format!(r#""{}""#, self.column)];
+        let sql_type = match self.sql_type.to_uppercase().as_str() {
+            "SERIAL" => match kind {
+                DbKind::SQLite => "INTEGER".to_string(),
+                _ => self.sql_type.to_string(),
+            },
+            _ => self.sql_type.to_string(),
+        };
+        parts.push(sql_type);
+        if self.primary_key {
+            match (kind, self.sql_type.to_uppercase().as_str()) {
+                (DbKind::SQLite, "SERIAL") => parts.push("PRIMARY KEY AUTOINCREMENT".to_string()),
+                _ => parts.push("PRIMARY KEY".to_string()),
+            }
+        } else if self.unique {
+            parts.push("UNIQUE".to_string());
+        }
+        if self.not_null {
+            parts.push("NOT NULL".to_string());
+        }
+        if self.references.len() > 0 {
+            parts.push(format!(
+                r#"REFERENCES "{table}"({columns})"#,
+                table = self.references.first().unwrap(),
+                columns = self
+                    .references
+                    .iter()
+                    .skip(1)
+                    .map(|c| format!(r#""{c}""#))
+                    .join(", ")
+            ));
+        }
+        if self.sql_default != "" {
+            parts.push(format!("DEFAULT {}", self.sql_default));
+        }
+        parts.join(" ")
+    }
+}
+
 /// Represents a column from some table
 #[derive(
     Builder, Clone, Debug, Default, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord,
@@ -109,42 +161,8 @@ impl Column {
     }
 
     pub fn ddl(&self, kind: &DbKind) -> String {
-        let mut parts = vec![format!(r#""{}""#, self.id())];
-        let sql_type = match self.sql_type.to_uppercase().as_str() {
-            "SERIAL" => match kind {
-                DbKind::SQLite => "INTEGER".to_string(),
-                _ => self.sql_type.to_string(),
-            },
-            _ => self.sql_type.to_string(),
-        };
-        parts.push(sql_type);
-        if self.primary_key {
-            match (kind, self.sql_type.to_uppercase().as_str()) {
-                (DbKind::SQLite, "SERIAL") => parts.push("PRIMARY KEY AUTOINCREMENT".to_string()),
-                _ => parts.push("PRIMARY KEY".to_string()),
-            }
-        } else if self.unique {
-            parts.push("UNIQUE".to_string());
-        }
-        if self.not_null {
-            parts.push("NOT NULL".to_string());
-        }
-        if self.references.len() > 0 {
-            parts.push(format!(
-                r#"REFERENCES "{table}"({columns})"#,
-                table = self.references.first().unwrap(),
-                columns = self
-                    .references
-                    .iter()
-                    .skip(1)
-                    .map(|c| format!(r#""{c}""#))
-                    .join(", ")
-            ));
-        }
-        if self.sql_default != "" {
-            parts.push(format!("DEFAULT {}", self.sql_default));
-        }
-        parts.join(" ")
+        let sql_column: SqlColumn = self.clone().into();
+        sql_column.ddl(kind)
     }
 
     /// Parse DbValue into a CellValue.
@@ -161,6 +179,20 @@ impl Column {
                 println!("Value {self:?} {value:?}");
                 todo!("Handle more sql_types")
             }
+        }
+    }
+}
+
+impl Into<SqlColumn> for Column {
+    fn into(self) -> SqlColumn {
+        SqlColumn {
+            column: self.id(),
+            sql_type: self.sql_type.clone(),
+            sql_default: self.sql_default.clone(),
+            primary_key: self.primary_key.clone(),
+            unique: self.unique.clone(),
+            not_null: self.not_null.clone(),
+            references: self.references.clone(),
         }
     }
 }
@@ -247,6 +279,43 @@ impl Columns {
             .collect::<Vec<String>>()
             .join(", ");
         format!(r#"CREATE VIEW "{view_name}" AS SELECT {columns} FROM "{source_name}";"#,)
+    }
+
+    /// Create a union view of the regular and alternate tables.
+    pub fn union_view(&self, view_name: &str, table_name: &str) -> String {
+        let regular_columns = self
+            .list
+            .iter()
+            .filter(|c| c.column != "_deleted")
+            .map(|c| {
+                if c.column == c.id() {
+                    c.column.clone()
+                } else if c.column.ends_with("_text") {
+                    format!(r#"NULL AS "{name}""#, name = c.column)
+                } else {
+                    format!(r#""{id}" AS "{name}""#, id = c.id(), name = c.column)
+                }
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+        let alternate_columns = self
+            .list
+            .iter()
+            .map(|c| {
+                if c.column == c.id() {
+                    c.column.clone()
+                } else {
+                    format!(r#""{id}" AS "{name}""#, id = c.id(), name = c.column)
+                }
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+        format!(
+            r#"CREATE VIEW "{view_name}" AS
+            SELECT {regular_columns} FROM "{table_name}"
+            UNION ALL
+            SELECT {alternate_columns} FROM "{table_name}_alt";"#
+        )
     }
 
     /// Return all the "meta" columns, starting with "_".

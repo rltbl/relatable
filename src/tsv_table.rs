@@ -1,9 +1,8 @@
-use std::iter::zip;
-
-use crate as rltbl;
+use crate::{self as rltbl, column::SqlColumn, core::ID_SQL_TYPE};
+use indexmap::IndexMap;
 use rltbl::{
-    column::{ColumnBuilder, Columns},
-    core::{RowOrder, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
+    column::Columns,
+    core::{RowOrder, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
     row::{ConstrainedRow, ConstrainedRows, ConstrainedValue, TypedRows},
 };
 use rltbl_db::{
@@ -14,6 +13,7 @@ use rltbl_db::{
 
 use anyhow::Result;
 use async_trait::async_trait;
+use std::iter::zip;
 
 #[async_trait]
 pub trait TsvTable {
@@ -26,69 +26,195 @@ pub trait TsvTable {
     // Does not include meta columns: _id, _order, _deleted.
     fn columns(&self) -> Columns;
 
-    /// Generate SQL DDLs for this table, including alternate table and maybe views.
-    fn ddl(&self) -> String {
-        let mut ddls = vec![];
+    // The regular table includes _id and _order columns.
+    fn regular_table_columns(&self) -> Vec<SqlColumn> {
+        let mut columns = vec![
+            SqlColumn {
+                column: "_id".to_string(),
+                sql_type: "SERIAL".to_string(),
+                primary_key: true,
+                ..Default::default()
+            },
+            SqlColumn {
+                column: "_order".to_string(),
+                sql_type: ORDER_SQL_TYPE.to_string(),
+                unique: true,
+                ..Default::default()
+            },
+        ];
+        columns.extend(self.columns().iter().map(|c| c.clone().into()));
+        columns
+    }
 
-        let content_columns = self.columns();
-
-        // The regular table includes _id and _order columns.
-        let mut regular_columns: Columns = vec![
-            ColumnBuilder::new(&self.name(), "_id")
-                .sql_type("SERIAL")
-                .primary_key(true)
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name(), "_order")
-                .sql_type(ORDER_SQL_TYPE)
-                .unique(true)
-                .build()
-                .unwrap(),
-        ]
-        .into();
-        regular_columns.extend(content_columns.iter().cloned());
-        ddls.push(regular_columns.ddl(&self.pool().kind(), &self.id()));
-
-        // The alternate table includes _id, _order, and _deleted columns,
-        // plus a _text column for each column that is not already TEXT.
-        let mut alternate_columns: Columns = vec![
-            ColumnBuilder::new(&self.name(), "_id")
-                .sql_type(ID_SQL_TYPE)
-                .primary_key(true)
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name(), "_order")
-                .sql_type(ORDER_SQL_TYPE)
-                .unique(true)
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name(), "_deleted")
-                .sql_type("BOOL")
-                .build()
-                .unwrap(),
-        ]
-        .into();
-        for column in content_columns.iter() {
-            alternate_columns.push(column.clone());
+    // The alternate table includes _id, _order, and _deleted columns,
+    // plus a _text column for each column that is not already TEXT.
+    fn alternate_table_columns(&self) -> Vec<SqlColumn> {
+        let mut columns = vec![
+            SqlColumn {
+                column: "_id".to_string(),
+                sql_type: ID_SQL_TYPE.to_string(),
+                primary_key: true,
+                ..Default::default()
+            },
+            SqlColumn {
+                column: "_order".to_string(),
+                sql_type: ORDER_SQL_TYPE.to_string(),
+                unique: true,
+                ..Default::default()
+            },
+            SqlColumn {
+                column: "_deleted".to_string(),
+                sql_type: "BOOL".to_string(),
+                ..Default::default()
+            },
+        ];
+        for column in self.columns().iter() {
+            columns.push(column.clone().into());
             if column.sql_type.to_uppercase() != "TEXT" {
-                let name = format!("{}_text", column.id());
-                let alt = ColumnBuilder::new(&column.table, &name)
-                    .sql_type("TEXT")
-                    .build()
-                    .unwrap();
-                alternate_columns.push(alt);
+                let alt = SqlColumn {
+                    column: format!("{}_text", column.id()),
+                    sql_type: "TEXT".to_string(),
+                    ..Default::default()
+                };
+                columns.push(alt);
             }
         }
-        let table_name = format!("{}_alt", self.id());
-        ddls.push(alternate_columns.ddl(&self.pool().kind(), &table_name));
+        columns
+    }
+
+    /// Create a DDL for the regular table,
+    /// which includes "_id" and "_order" columns,
+    /// and uses the table ID and column IDs.
+    fn regular_table_ddl(&self) -> String {
+        let table_name = self.id();
+        let cols = self
+            .regular_table_columns()
+            .iter()
+            .map(|col| col.ddl(&self.pool().kind()))
+            .collect::<Vec<String>>()
+            .join(",\n  ");
+        format!(
+            r#"CREATE TABLE "{table_name}" (
+  {cols}
+);"#
+        )
+    }
+
+    /// Create a DDL for the alternate table,
+    /// which includes "_id", "_order", and "_deleted" columns,
+    /// uses the table ID and column IDs,
+    /// and includes "_text" columns for each non-TEXT column.
+    fn alternate_table_ddl(&self) -> String {
+        let table_name = self.id();
+        let cols = self
+            .alternate_table_columns()
+            .iter()
+            .map(|col| col.ddl(&self.pool().kind()))
+            .collect::<Vec<String>>()
+            .join(",\n  ");
+        format!(
+            r#"CREATE TABLE "{table_name}_alt" (
+  {cols}
+);"#
+        )
+    }
+
+    fn regular_view_columns(&self) -> Vec<String> {
+        let mut columns: Vec<String> = ["_id", "_order"]
+            .iter()
+            .map(|s| format!(r#""{s}""#))
+            .collect();
+        columns.extend(self.columns().iter().map(|column| {
+            format!(
+                r#""{id}" AS "{name}""#,
+                id = column.id(),
+                name = column.column
+            )
+        }));
+        columns
+    }
+
+    fn regular_view_ddl(&self) -> String {
+        let view_name = self.name();
+        let table_id = self.id();
+        let columns = self.regular_view_columns().join(", ");
+        format!(r#"CREATE VIEW "{view_name}" AS SELECT {columns} FROM "{table_id}";"#,)
+    }
+
+    fn alternate_column_mapping(&self) -> IndexMap<String, String> {
+        let mut columns: IndexMap<String, String> = ["_id", "_order", "_deleted"]
+            .iter()
+            .map(|s| (s.to_string(), s.to_string()))
+            .collect();
+        for column in self.columns().iter() {
+            columns.insert(column.id(), column.column.to_string());
+            if column.sql_type.to_uppercase() != "TEXT" {
+                columns.insert(
+                    format!("{}_text", column.id()),
+                    format!("{}_text", column.column.to_string()),
+                );
+            }
+        }
+        columns
+    }
+
+    fn alternate_view_columns(&self) -> Vec<String> {
+        self.alternate_column_mapping()
+            .iter()
+            .map(|(k, v)| {
+                if k == v {
+                    format!(r#""{v}""#)
+                } else {
+                    format!(r#""{k}" AS "{v}""#,)
+                }
+            })
+            .collect()
+    }
+
+    fn alternate_view_ddl(&self) -> String {
+        let view_name = self.name();
+        let table_id = self.id();
+        let columns = self.alternate_view_columns().join(", ");
+        format!(r#"CREATE VIEW "{view_name}_alt" AS SELECT {columns} FROM "{table_id}_alt";"#,)
+    }
+
+    fn union_view_ddl(&self) -> String {
+        let view_name = self.name();
+        let table_id = self.id();
+        let regular_columns = self
+            .alternate_column_mapping()
+            .iter()
+            .map(|(k, v)| {
+                if k == "_deleted" {
+                    r#"FALSE AS "_deleted""#.to_string()
+                } else if k == v {
+                    format!(r#""{v}""#)
+                } else if k.ends_with("_text") {
+                    format!(r#"NULL AS "{v}""#)
+                } else {
+                    format!(r#""{k}" AS "{v}""#)
+                }
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+        let alternate_columns = self.alternate_view_columns().join(", ");
+        format!(
+            r#"CREATE VIEW "{view_name}_union" AS
+SELECT {regular_columns} FROM "{table_id}"
+UNION ALL
+SELECT {alternate_columns} FROM "{table_id}_alt";"#,
+        )
+    }
+
+    /// Generate SQL DDLs for this table, including alternate table and maybe views.
+    fn ddl(&self) -> String {
+        let mut ddls = vec![self.regular_table_ddl(), self.alternate_table_ddl()];
 
         // Create views.
         if self.name() != self.id() {
-            ddls.push(regular_columns.view(&self.name(), &self.id()));
-            ddls.push(alternate_columns.view(
-                &format!("{}_alt", self.name()),
-                &format!("{}_alt", self.id()),
-            ));
+            ddls.push(self.regular_view_ddl());
+            ddls.push(self.alternate_view_ddl());
+            ddls.push(self.union_view_ddl());
         }
 
         ddls.join("\n")
@@ -109,7 +235,11 @@ pub trait TsvTable {
         }
 
         if self.id() != self.name() {
-            let view_names = vec![self.name().to_string(), format!("{}_alt", self.name())];
+            let view_names = vec![
+                self.name().to_string(),
+                format!("{}_alt", self.name()),
+                format!("{}_union", self.name()),
+            ];
             for view_name in view_names {
                 self.pool().drop_view(&view_name).await?;
             }
@@ -146,6 +276,8 @@ pub trait TsvTable {
         Ok(new_orders)
     }
 
+    /// Given TypedRows, ensure that they conform to all database constraints,
+    /// including uniqueness, not null, and foreign keys.
     async fn constrain(&self, rows: TypedRows) -> ConstrainedRows {
         for column in self.columns().iter() {
             if column.is_constrained() {
@@ -175,8 +307,9 @@ pub trait TsvTable {
         }
     }
 
-    /// Append a set of Rows to the table.
-    async fn append(&self, rows: TypedRows) -> Result<ConstrainedRows> {
+    /// Append a set of TypedRows to the table.
+    async fn append(&self, rows: impl IntoDbRows + Send) -> Result<ConstrainedRows> {
+        let rows = self.columns().rows(rows);
         let rows = self.constrain(rows).await;
         let db_rows = rows.regular();
         self.append_regular(db_rows).await?;
@@ -206,5 +339,199 @@ pub trait TsvTable {
             .insert_returning(&self.id(), &refs, rows, &[])
             .await?;
         Ok(new_rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        column::{Column, ColumnBuilder},
+        core::Relatable,
+        data_table::DataTable,
+        row::Row,
+        table::Table,
+    };
+
+    use super::*;
+    use anyhow::Result;
+    use pretty_assertions::assert_eq;
+    use rltbl_db::{db_row, db_value::DbRow};
+
+    #[allow(dead_code)]
+    async fn tsv(table: &DataTable<'_>) -> Result<String> {
+        let header = table
+            .columns()
+            .iter()
+            .map(|c| c.column.clone())
+            .collect::<Vec<String>>()
+            .join("\t");
+        let header = format!("_id\t_order\t{header}");
+        let results = table
+            .pool
+            .query(&format!(r#"SELECT * FROM "{}""#, table.name()), ())
+            .await?;
+        let data = results
+            .iter()
+            .map(|row| {
+                row.values()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<String>>()
+                    .join("\t")
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+        Ok(format!("{header}\n{data}"))
+    }
+
+    async fn vecs(table: &DataTable<'_>) -> Result<Vec<Vec<String>>> {
+        let mut result = vec![];
+        result.push(table.alternate_column_mapping().values().cloned().collect());
+        let results = table
+            .pool
+            .query(&format!(r#"SELECT * FROM "{}_union""#, table.name()), ())
+            .await?;
+        for row in results.iter() {
+            let row: Row = row.into();
+            let mut strings = row.to_strings();
+            strings.insert(0, row.id.to_string());
+            strings.insert(1, row.order.to_string());
+            strings.insert(2, row.deleted.to_string());
+            result.push(strings);
+        }
+        Ok(result)
+    }
+
+    async fn create_table<'a>(rltbl: &'a Relatable) -> Result<DataTable<'a>> {
+        let mut table = rltbl
+            .table_table()
+            .add(Table::from_path("island.tsv"))
+            .await?
+            .connect(&rltbl.pool);
+        table.columns = vec![
+            ColumnBuilder::new("island", "island_id")
+                .datatype("integer")
+                .build()
+                .unwrap(),
+            ColumnBuilder::new("island", "island")
+                .datatype("trimmed_line")
+                .build()
+                .unwrap(),
+        ]
+        .into();
+        let datatypes = rltbl.datatypes().await;
+        table.columns.sql_types(&datatypes);
+        let refs: Vec<&Column> = table.columns.iter().collect();
+        table.columns = rltbl.column_table().add(&refs).await?.into();
+        table.create().await?;
+        Ok(table)
+    }
+
+    #[tokio::test]
+    async fn test_tsv_table_ddl() -> Result<()> {
+        // Testing SQLite in-memory only.
+        let rltbl = Relatable::init(
+            &true,
+            Some(":memory:"),
+            &rltbl_db::core::CachingStrategy::None,
+        )
+        .await?;
+
+        let mut table = Table::from_path("island.tsv").connect(&rltbl.pool);
+        table.id = 1;
+        let mut col1 = ColumnBuilder::new("island", "island_id")
+            .datatype("integer")
+            .build()
+            .unwrap();
+        col1.id = 1;
+        let mut col2 = ColumnBuilder::new("island", "island")
+            .datatype("trimmed_line")
+            .build()
+            .unwrap();
+        col2.id = 2;
+        table.columns = vec![col1, col2].into();
+        let datatypes = rltbl.datatypes().await;
+        table.columns.sql_types(&datatypes);
+
+        assert_eq!(
+            r#"CREATE TABLE "t1" (
+  "_id" INTEGER PRIMARY KEY AUTOINCREMENT,
+  "_order" BIGINT UNIQUE,
+  "c1" INTEGER,
+  "c2" TEXT
+);"#,
+            table.regular_table_ddl()
+        );
+        assert_eq!(
+            r#"CREATE TABLE "t1_alt" (
+  "_id" INTEGER PRIMARY KEY,
+  "_order" BIGINT UNIQUE,
+  "_deleted" BOOL,
+  "c1" INTEGER,
+  "c1_text" TEXT,
+  "c2" TEXT
+);"#,
+            table.alternate_table_ddl()
+        );
+        assert_eq!(
+            r#"CREATE VIEW "island" AS SELECT "_id", "_order", "c1" AS "island_id", "c2" AS "island" FROM "t1";"#,
+            table.regular_view_ddl()
+        );
+        assert_eq!(
+            r#"CREATE VIEW "island_alt" AS SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id_text", "c2" AS "island" FROM "t1_alt";"#,
+            table.alternate_view_ddl()
+        );
+        assert_eq!(
+            r#"CREATE VIEW "island_union" AS
+SELECT "_id", "_order", FALSE AS "_deleted", "c1" AS "island_id", NULL AS "island_id_text", "c2" AS "island" FROM "t1"
+UNION ALL
+SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id_text", "c2" AS "island" FROM "t1_alt";"#,
+            table.union_view_ddl()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_tsv_table() -> Result<()> {
+        let rltbl = Relatable::test("test_tsv_table", false).await?;
+        let table = create_table(&rltbl).await?;
+
+        assert_eq!(
+            vec![vec![
+                "_id",
+                "_order",
+                "_deleted",
+                "island_id",
+                "island_id_text",
+                "island"
+            ]],
+            vecs(&table).await?,
+            "empty table"
+        );
+
+        let rows = vec![db_row! {
+            "island_id" => 1,
+            "island" => "Torgersen",
+        }];
+        table.append(rows).await?;
+
+        assert_eq!(
+            vec![
+                vec![
+                    "_id",
+                    "_order",
+                    "_deleted",
+                    "island_id",
+                    "island_id_text",
+                    "island"
+                ],
+                vec!["1", "1000", "false", "1", "", "Torgersen"]
+            ],
+            vecs(&table).await?,
+            "append one row"
+        );
+
+        // assert!(false, "DONE");
+        rltbl.drop_test().await
     }
 }
