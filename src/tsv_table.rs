@@ -26,6 +26,7 @@ pub trait TsvTable {
     // Does not include meta columns: _id, _order, _deleted.
     fn columns(&self) -> Columns;
 
+    /// Generate SQL DDLs for this table, including alternate table and maybe views.
     fn ddl(&self) -> String {
         let mut ddls = vec![];
 
@@ -81,6 +82,15 @@ pub trait TsvTable {
         let table_name = format!("{}_alt", self.id());
         ddls.push(alternate_columns.ddl(&self.pool().kind(), &table_name));
 
+        // Create views.
+        if self.name() != self.id() {
+            ddls.push(regular_columns.view(&self.name(), &self.id()));
+            ddls.push(alternate_columns.view(
+                &format!("{}_alt", self.name()),
+                &format!("{}_alt", self.id()),
+            ));
+        }
+
         ddls.join("\n")
     }
 
@@ -97,6 +107,14 @@ pub trait TsvTable {
         for table_name in table_names {
             self.pool().drop_table(&table_name).await?;
         }
+
+        if self.id() != self.name() {
+            let view_names = vec![self.name().to_string(), format!("{}_alt", self.name())];
+            for view_name in view_names {
+                self.pool().drop_view(&view_name).await?;
+            }
+        }
+
         Ok(())
     }
 

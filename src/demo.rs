@@ -18,7 +18,7 @@ pub async fn build_demo(rltbl: &Relatable, force: &bool, size: usize) -> Result<
     create_demo_column_table(rltbl, force).await?;
     create_demo_datatype_table(rltbl, force).await?;
     create_penguin_table(rltbl, None, force, size).await?;
-    create_island_table(rltbl, None, force).await?;
+    create_island_table(rltbl, force).await?;
     Ok(())
 }
 
@@ -130,25 +130,14 @@ pub async fn create_penguin_table(
     Ok(())
 }
 
-/// Create a demonstration table similar to the island table, but with the given name,
-/// and add `size` rows of data to it. Drop the table first if `force` is set.
-pub async fn create_island_table(
-    rltbl: &Relatable,
-    table: Option<&str>,
-    force: &bool,
-) -> Result<()> {
-    let table = match table {
-        Some(table) => table,
-        None => "island",
-    };
-    let table = Table {
-        name: table.to_string(),
-        path: "island.tsv".to_string(),
-        ..Default::default()
-    };
-    let tables = rltbl.table_table().add(&[&table]).await?;
-    let table = tables.first().unwrap();
-    let mut table = table.connect(&rltbl.pool);
+/// Create a demonstration table of islands.
+/// Drop the table first if `force` is set.
+pub async fn create_island_table(rltbl: &Relatable, force: &bool) -> Result<()> {
+    let mut table = rltbl
+        .table_table()
+        .add(Table::from_path("island.tsv"))
+        .await?
+        .connect(&rltbl.pool);
     table.columns = vec![
         ColumnBuilder::new("island", "island_id")
             .datatype("integer")
@@ -164,8 +153,6 @@ pub async fn create_island_table(
     table.columns.sql_types(&datatypes);
     let refs: Vec<&Column> = table.columns.iter().collect();
     table.columns = rltbl.column_table().add(&refs).await?.into();
-    // TODO: Eliminate this
-    table.columns.sql_types(&datatypes);
     if *force {
         table.drop().await?;
     }
@@ -186,15 +173,6 @@ pub async fn create_island_table(
         },
     ]);
     table.append(rows).await?;
-
-    // TODO: Eliminate this
-    let sql = format!(
-        "DROP TABLE IF EXISTS island; CREATE TABLE island AS SELECT _id, _order, {island_id} AS island_id, {island} AS island FROM {table_id}",
-        island_id = table.columns.get(0).unwrap().id(),
-        island = table.columns.get(1).unwrap().id(),
-        table_id = table.id(),
-    );
-    rltbl.pool.execute_batch(&sql).await?;
 
     Ok(())
 }
@@ -365,7 +343,7 @@ mod tests {
     async fn test_island() -> Result<()> {
         let rltbl = Relatable::test("test_demo_island", false).await?;
 
-        create_island_table(&rltbl, None, &false).await?;
+        create_island_table(&rltbl, &false).await?;
 
         rltbl.drop_test().await
     }

@@ -233,6 +233,22 @@ impl Columns {
         )
     }
 
+    pub fn view(&self, view_name: &str, source_name: &str) -> String {
+        let columns = self
+            .list
+            .iter()
+            .map(|c| {
+                if c.column == c.id() {
+                    c.column.clone()
+                } else {
+                    format!(r#""{id}" AS "{name}""#, id = c.id(), name = c.column)
+                }
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+        format!(r#"CREATE VIEW "{view_name}" AS SELECT {columns} FROM "{source_name}";"#,)
+    }
+
     /// Return all the "meta" columns, starting with "_".
     pub fn meta(&self) -> Vec<&Column> {
         self.list.iter().filter(|col| col.is_meta()).collect()
@@ -428,7 +444,15 @@ impl<'a> ColumnTable<'a> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let rows = self.insert_regular(rows).await?;
-        let new_columns: Vec<Column> = rows.remove_nulls().try_into_vec()?;
+        let mut new_columns: Vec<Column> = rows.remove_nulls().try_into_vec()?;
+        for new_column in new_columns.iter_mut() {
+            for old_column in columns {
+                if old_column.column == new_column.column {
+                    new_column.sql_type = old_column.sql_type.clone();
+                    break;
+                }
+            }
+        }
         Ok(new_columns)
     }
 

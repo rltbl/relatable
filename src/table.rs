@@ -2,6 +2,8 @@
 //!
 //! This is [relatable](crate) (rltbl::[table](crate::table)).
 
+use std::path::Path;
+
 use crate as rltbl;
 use rltbl::{
     column::{Column, ColumnBuilder, Columns},
@@ -50,6 +52,24 @@ impl Default for Table {
 }
 
 impl Table {
+    pub fn from_path(path: &str) -> Self {
+        if !path.ends_with(".tsv") {
+            todo!("Only TSV is currently supported");
+        }
+        let name = Path::new(path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .trim_end_matches(".tsv")
+            .to_string();
+        let path = path.to_string();
+        Self {
+            name,
+            path,
+            ..Default::default()
+        }
+    }
+
     /// Drop the given table in the database
     pub async fn drop_table(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::drop_data_tables({self:?}, {rltbl:?})");
@@ -312,13 +332,13 @@ impl<'a> TableTable<'a> {
             },
         ];
         let refs: Vec<&Table> = tables.iter().collect();
-        self.add(&refs).await?;
+        self.extend(&refs).await?;
         Ok(())
     }
 
     /// Insert these tables into the "table" table,
     /// returning the results.
-    pub async fn add(&self, tables: &[&Table]) -> Result<Vec<Table>> {
+    pub async fn extend(&self, tables: &[&Table]) -> Result<Vec<Table>> {
         let rows = tables
             .iter()
             .map(|table| to_db_row(table))
@@ -326,6 +346,14 @@ impl<'a> TableTable<'a> {
         let rows = self.append_regular(rows).await?;
         let new_tables: Vec<Table> = rows.remove_nulls().try_into_vec()?;
         Ok(new_tables)
+    }
+
+    /// Insert one tables into the "table" table,
+    /// returning the result.
+    pub async fn add(&self, table: Table) -> Result<Table> {
+        let mut tables = self.extend(&[&table]).await?;
+        let table = tables.pop().expect("Added one table");
+        Ok(table)
     }
 }
 

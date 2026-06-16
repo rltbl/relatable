@@ -117,7 +117,7 @@ impl<'a> UserTable<'a> {
     /// Get a user by name, or create an entry for that name.
     pub async fn get_or_insert(&self, username: &str) -> UserCursor {
         // TODO: Handle datetime natively?
-        let sql = r#"SELECT name, color, cursor, TEXT(datetime) AS datetime FROM "user" WHERE name = $1 LIMIT 1"#;
+        let sql = r#"SELECT name, color, cursor, CAST(datetime AS TEXT) AS datetime FROM "user" WHERE name = $1 LIMIT 1"#;
         let mut users: Vec<UserCursor> = self
             .pool
             .query(sql, &[username])
@@ -129,11 +129,16 @@ impl<'a> UserTable<'a> {
             return users.pop().unwrap();
         }
         let user = UserCursor::new(username);
-        let row = to_db_row(&user).unwrap();
+        let mut row = to_db_row(&user).unwrap();
+        // TODO: Fix this hack.
+        row.insert(
+            "cursor".to_string(),
+            rltbl_db::db_value::DbValue::Text(serde_json::to_string(&user.cursor).unwrap()),
+        );
         self.pool
             .insert("user", &["name", "color", "cursor"], &[&row])
             .await
-            .unwrap_or_default();
+            .unwrap();
         user
     }
 
