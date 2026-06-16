@@ -747,7 +747,12 @@ impl Relatable {
                             .expect(&format!("Column '{column}' not found"))
                             .sql_type
                             .clone();
-                        let param_value = match self.pool.kind().parse(&sql_type, value) {
+                        let param_value = match self
+                            .pool
+                            .kind()
+                            .db_type(&sql_type)
+                            .and_then(|t| t.parse(value))
+                        {
                             Ok(param_value) => param_value,
                             Err(_) => {
                                 self.add_message(
@@ -840,7 +845,7 @@ impl Relatable {
                     JsonValue::Null => "NULL".to_string(),
                     _ => value.to_string(),
                 };
-                self.pool.kind().parse(sql_type, &string)
+                self.pool.kind().db_type(sql_type)?.parse(&string)
             }
         };
         // println!("convert_json {sql_type} {value:?}");
@@ -872,17 +877,16 @@ impl Relatable {
             let value = match self.prepare_value(sql_type, &value) {
                 Ok(value) => value,
                 Err(_) => {
-                    messages.push(
-                        db_row! {
-                            "added_by" => "rltbl",
-                            "table" => table_name,
-                            "row" => id,
-                            "column" => column_name,
-                            "value" => value,
-                            "level" => "error",
-                            "rule" =>
-format!("sql_type:{sql_type}"), "message" =>                       format!("{column_name} must be of type {sql_type}"), }
-                    );
+                    messages.push(db_row! {
+                        "added_by" => "rltbl",
+                        "table" => table_name,
+                        "row" => id,
+                        "column" => column_name,
+                        "value" => value,
+                        "level" => "error",
+                        "rule" => format!("sql_type:{sql_type}"),
+                        "message" => format!("{column_name} must be of type {sql_type}")
+                    });
                     DbValue::Null
                 }
             };

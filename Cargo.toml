@@ -20,6 +20,7 @@ path = "src/test.rs"
 [dependencies]
 ansi_term = "0.12"
 anyhow = "1.0.94"
+async-trait = "0.1.89"
 axum = { version = "0.8.1", features = ["macros"] }
 axum_session = "0.16.0"
 chrono = "0.4"
@@ -53,7 +54,6 @@ whoami = "1.5.2"
 
 # rltbl_db = { git = "https://github.com/rltbl/rltbl_db.git", default-features = false, optional= true}
 rltbl_db = { path = "../rltbl_db", default-features = false, optional= true}
-async-trait = "0.1.89"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

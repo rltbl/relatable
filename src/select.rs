@@ -1767,6 +1767,7 @@ pub fn render_values(
                 let value = unquote(text).unwrap_or(text.clone());
                 format!("{value}")
             }
+            _ => todo!(),
         };
         values.push(value.into());
     }

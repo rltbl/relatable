@@ -3,7 +3,6 @@ use rltbl::{
     column::{Column, ColumnBuilder},
     core::{Relatable, RowID, RowOrder, NEW_ORDER_MULTIPLIER},
     datatype::DatatypeBuilder,
-    row::Rows,
     sql::{self, SqlParam},
     table::Table,
     tsv_table::TsvTable,
@@ -161,34 +160,31 @@ pub async fn create_island_table(
             .unwrap(),
     ]
     .into();
+    let datatypes = rltbl.datatypes().await;
+    table.columns.sql_types(&datatypes);
     let refs: Vec<&Column> = table.columns.iter().collect();
     table.columns = rltbl.column_table().add(&refs).await?.into();
-    let datatypes = rltbl.datatypes().await;
+    // TODO: Eliminate this
     table.columns.sql_types(&datatypes);
     if *force {
         table.drop().await?;
     }
     table.create().await?;
 
-    let schema = rltbl.schema().await?;
-    let rows = Rows::new(
-        schema,
-        "island",
-        vec![
-            db_row! {
-                "island_id" => 1,
-                "island" => "Torgersen",
-            },
-            db_row! {
-                "island_id" => 2,
-                "island" => "Biscoe",
-            },
-            db_row! {
-                "island_id" => 3,
-                "island" => "Dream",
-            },
-        ],
-    )?;
+    let rows = table.columns.rows(vec![
+        db_row! {
+            "island_id" => 1,
+            "island" => "Torgersen",
+        },
+        db_row! {
+            "island_id" => 2,
+            "island" => "Biscoe",
+        },
+        db_row! {
+            "island_id" => 3,
+            "island" => "Dream",
+        },
+    ]);
     table.append(rows).await?;
 
     // TODO: Eliminate this

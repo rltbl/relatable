@@ -12,7 +12,7 @@ use rltbl::{
 };
 use rltbl_db::{
     db_row,
-    db_value::{DbRow, IntoDbRow, IntoDbRows, JsonRow},
+    db_value::{DbRow, DbValue, IntoDbRow, IntoDbRows, JsonRow},
 };
 
 use anyhow::Result;
@@ -285,6 +285,67 @@ impl Cell {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum TypedValue {
+    Regular(DbValue),
+    Text(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct TypedRow {
+    pub map: IndexMap<String, TypedValue>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypedRows {
+    pub rows: Vec<TypedRow>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstrainedValue {
+    pub actual: TypedValue,
+    pub placeholder: Option<DbValue>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstrainedRow {
+    pub map: IndexMap<String, ConstrainedValue>,
+}
+
+impl ConstrainedRow {
+    pub fn is_regular(&self) -> bool {
+        for value in self.map.values() {
+            match value.actual {
+                TypedValue::Text(_) => return false,
+                _ => (),
+            };
+        }
+        true
+    }
+
+    pub fn regular(&self) -> Option<DbRow> {
+        let mut db_row = DbRow::new();
+        for (key, value) in self.map.iter() {
+            match value.actual.clone() {
+                TypedValue::Regular(db_value) => db_row.insert(key.to_string(), db_value),
+                TypedValue::Text(_) => return None,
+            }
+        }
+        Some(db_row)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstrainedRows {
+    pub rows: Vec<ConstrainedRow>,
+}
+
+impl ConstrainedRows {
+    pub fn regular(&self) -> Vec<DbRow> {
+        self.rows.iter().filter_map(|row| row.regular()).collect()
+    }
+}
+
 /// Represents a list of rows
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Rows {
@@ -302,7 +363,7 @@ impl Rows {
             ..Default::default()
         };
         let rows = rows.into_db_rows();
-        for row in rows {
+        for row in rows.iter() {
             new_rows.add(row)?;
         }
         Ok(new_rows)

@@ -4,7 +4,7 @@ use crate as rltbl;
 use rltbl::{
     column::{ColumnBuilder, Columns},
     core::{RowOrder, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
-    row::Rows,
+    row::{ConstrainedRow, ConstrainedRows, ConstrainedValue, TypedRows},
 };
 use rltbl_db::{
     any::AnyPool,
@@ -128,8 +128,38 @@ pub trait TsvTable {
         Ok(new_orders)
     }
 
+    async fn constrain(&self, rows: TypedRows) -> ConstrainedRows {
+        for column in self.columns().iter() {
+            if column.is_constrained() {
+                todo!("Handle constrained columns");
+            }
+        }
+        ConstrainedRows {
+            rows: rows
+                .rows
+                .iter()
+                .map(|row| ConstrainedRow {
+                    map: row
+                        .map
+                        .iter()
+                        .map(|(key, value)| {
+                            (
+                                key.to_string(),
+                                ConstrainedValue {
+                                    actual: value.clone(),
+                                    placeholder: None,
+                                },
+                            )
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
     /// Append a set of Rows to the table.
-    async fn append(&self, rows: Rows) -> Result<Rows> {
+    async fn append(&self, rows: TypedRows) -> Result<ConstrainedRows> {
+        let rows = self.constrain(rows).await;
         let db_rows = rows.regular();
         self.append_regular(db_rows).await?;
         // TODO: return modified rows
