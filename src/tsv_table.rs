@@ -304,7 +304,6 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .await?
             .try_into_vec()
             .unwrap_or_default();
-        println!("orders {orders:?}");
 
         if orders.len() == 0 {
             return Err(
@@ -438,6 +437,28 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         }
 
         Ok(inserted_rows)
+    }
+
+    async fn delete(&self, row_ids: &[RowID]) -> Result<()> {
+        let id = self.id();
+        let columns = self
+            .regular_table_columns()
+            .iter()
+            .map(|c| c.column.to_string())
+            .collect::<Vec<String>>()
+            .join(", ");
+        let ids = row_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<String>>()
+            .join(", ");
+        let mut sql = format!(
+            r#"INSERT INTO "{id}_alt"({columns}) SELECT {columns} FROM "{id}" WHERE _id IN ({ids});"#
+        );
+        sql += &format!(r#"DELETE FROM "{id}" WHERE _id IN ({ids});"#);
+        sql += &format!(r#"UPDATE "{id}_alt" SET _deleted = TRUE WHERE _id IN ({ids});"#);
+        self.pool().execute_batch(&sql).await?;
+        Ok(())
     }
 
     /// Append rows to the regular table.
@@ -702,6 +723,26 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
             ],
             vecs(&table).await?,
             "insert one row"
+        );
+
+        table.delete(&[2, 3]).await?;
+
+        assert_eq!(
+            vec![
+                vec![
+                    "_id",
+                    "_order",
+                    "_deleted",
+                    "island_id",
+                    "island_id_text",
+                    "island"
+                ],
+                vec!["1", "1000", "false", "1", "", "Torgersen"],
+                vec!["3", "1500", "true", "3", "", "Dream"],
+                vec!["2", "2000", "true", "", "foo", "Biscoe"]
+            ],
+            vecs(&table).await?,
+            "delete two rows"
         );
 
         // assert!(false, "DONE");

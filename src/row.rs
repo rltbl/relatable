@@ -121,7 +121,19 @@ impl From<JsonRow> for Row {
             .unwrap_or_default() as RowOrder;
         let deleted = row
             .get("_deleted")
-            .and_then(|b| b.as_bool())
+            .and_then(|b| match b {
+                // TODO: Fix this hack!
+                JsonValue::Null => Some(false),
+                JsonValue::Bool(bool) => Some(*bool),
+                JsonValue::Number(number) => {
+                    if number.as_i64() == Some(0) || number.as_f64() == Some(0.0) {
+                        Some(false)
+                    } else {
+                        Some(true)
+                    }
+                }
+                _ => b.as_bool(),
+            })
             .unwrap_or_default();
         let change_id = row
             .get("_change_id")
@@ -431,7 +443,6 @@ pub struct InsertedRows {
 
 impl InsertedRows {
     pub fn identify(ordered_rows: OrderedRows, db_rows: DbRows) -> Self {
-        println!("db_rows {db_rows:?}");
         let mut inserted_rows = Vec::new();
         for db_row in db_rows.rows.iter() {
             for ordered_row in ordered_rows.rows.iter() {
