@@ -1,7 +1,7 @@
 use crate::{
     self as rltbl,
     column::SqlColumn,
-    core::{RowID, ID_SQL_TYPE},
+    core::{RelatableError, RowID, ID_SQL_TYPE},
     row::{InsertedRows, OrderedRows},
 };
 use indexmap::IndexMap;
@@ -253,7 +253,8 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         Ok(())
     }
 
-    /// Return the specified number of new RowOrders for a table.
+    /// Return the specified number of new RowOrders
+    /// at the end of a table (appending).
     async fn new_orders(&self, count: usize) -> Result<Vec<RowOrder>> {
         // TODO: Account for history/change table:
         // UNION ALL
@@ -281,8 +282,68 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         Ok(new_orders)
     }
 
+    /// Return the specified number of new RowOrders
+    /// after a given RowID.
+    async fn new_orders_after(&self, count: usize, after_id: RowID) -> Result<Vec<RowOrder>> {
+        // TODO: Account for history/change table:
+        let sql = format!(
+            r#"SELECT _order
+            FROM "{table_name}_union"
+            WHERE _order >= (
+                SELECT _order
+                FROM "{table_name}_union"
+                WHERE _id = $1
+            )
+            ORDER BY _order
+            LIMIT 2"#,
+            table_name = self.name()
+        );
+        let mut orders: Vec<RowOrder> = self
+            .pool()
+            .query(&sql, &[after_id])
+            .await?
+            .try_into_vec()
+            .unwrap_or_default();
+        println!("orders {orders:?}");
+
+        if orders.len() == 0 {
+            return Err(
+                RelatableError::DataError(format!("No orders found for {}", self.name())).into(),
+            );
+        }
+
+        if orders.len() == 1 {
+            let max_order = orders.first().unwrap();
+            let new_orders = (1..=count)
+                .into_iter()
+                .map(|i| max_order + (i as RowOrder * NEW_ORDER_MULTIPLIER))
+                .collect();
+            return Ok(new_orders);
+        }
+
+        let next_order = orders.pop().unwrap();
+        let previous_order = orders.pop().unwrap();
+
+        let gap = if previous_order + count as RowOrder >= next_order {
+            self.reorder(previous_order, count).await?
+        } else {
+            (next_order - previous_order) as usize / (count + 1)
+        };
+
+        let new_orders = (1..=count)
+            .into_iter()
+            .map(|i| previous_order + (i * gap) as RowOrder)
+            .collect();
+        Ok(new_orders)
+    }
+
+    async fn reorder(&self, _previous_order: RowOrder, _count: usize) -> Result<usize> {
+        todo!("implement reorder");
+    }
+
     /// Given TypedRows, ensure that they conform to all database constraints,
     /// including uniqueness, not null, and foreign keys.
+    /// TODO: Generate placeholders as a second step? Only for insert.
     async fn constrain(&self, rows: TypedRows) -> ConstrainedRows {
         for column in self.columns().iter() {
             if column.is_constrained() {
@@ -324,12 +385,12 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         self.insert_ordered(rows).await
     }
 
-    async fn insert(
-        &self,
-        _rows: impl IntoDbRows + Send,
-        _after_id: RowID,
-    ) -> Result<InsertedRows> {
-        todo!()
+    async fn insert(&self, after_id: RowID, rows: impl IntoDbRows + Send) -> Result<InsertedRows> {
+        let rows = self.columns().rows(rows);
+        let rows = self.constrain(rows).await;
+        let new_orders = self.new_orders_after(rows.rows.len(), after_id).await?;
+        let rows = OrderedRows::order(&new_orders, rows);
+        self.insert_ordered(rows).await
     }
 
     /// Insert ordered rows,
@@ -450,7 +511,10 @@ mod tests {
         result.push(table.alternate_column_mapping().values().cloned().collect());
         let results = table
             .pool
-            .query(&format!(r#"SELECT * FROM "{}_union""#, table.name()), ())
+            .query(
+                &format!(r#"SELECT * FROM "{}_union" ORDER BY _order"#, table.name()),
+                (),
+            )
             .await?;
         for row in results.iter() {
             let row: Row = row.into();
@@ -613,7 +677,31 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
                 vec!["2", "2000", "false", "", "foo", "Biscoe"]
             ],
             vecs(&table).await?,
-            "append one row"
+            "append one row with invalid type"
+        );
+
+        let rows = vec![db_row! {
+            "island_id" => 3,
+            "island" => "Dream",
+        }];
+        table.insert(1, rows).await?;
+
+        assert_eq!(
+            vec![
+                vec![
+                    "_id",
+                    "_order",
+                    "_deleted",
+                    "island_id",
+                    "island_id_text",
+                    "island"
+                ],
+                vec!["1", "1000", "false", "1", "", "Torgersen"],
+                vec!["3", "1500", "false", "3", "", "Dream"],
+                vec!["2", "2000", "false", "", "foo", "Biscoe"]
+            ],
+            vecs(&table).await?,
+            "insert one row"
         );
 
         // assert!(false, "DONE");
