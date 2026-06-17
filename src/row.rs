@@ -2,6 +2,8 @@
 //!
 //! This is [relatable](crate) (rltbl::[row](crate::row)).
 
+use std::iter::zip;
+
 use crate as rltbl;
 use rltbl::{
     column::Column,
@@ -12,7 +14,7 @@ use rltbl::{
 };
 use rltbl_db::{
     db_row,
-    db_value::{DbRow, DbValue, IntoDbRow, IntoDbRows, JsonRow},
+    db_value::{DbRow, DbRows, DbValue, IntoDbRow, IntoDbRows, JsonRow},
 };
 
 use anyhow::Result;
@@ -318,7 +320,67 @@ pub struct ConstrainedRow {
     pub map: IndexMap<String, ConstrainedValue>,
 }
 
-impl ConstrainedRow {
+#[derive(Clone, Debug)]
+pub struct ConstrainedRows {
+    pub rows: Vec<ConstrainedRow>,
+}
+
+#[derive(Clone, Debug)]
+pub struct OrderedRow {
+    pub order: RowOrder,
+    pub map: IndexMap<String, ConstrainedValue>,
+}
+
+impl OrderedRow {
+    /// Return version of this row that definitely can be inserted into the regular table.
+    /// May use placeholder values.
+    pub fn insertable(&self) -> DbRow {
+        let mut db_row = DbRow::new();
+        db_row.insert("_order".to_string(), DbValue::from(self.order));
+        for (key, value) in self.map.iter() {
+            match &value.placeholder {
+                Some(placeholder) => db_row.insert(key.to_string(), placeholder.clone()),
+                None => match value.actual.clone() {
+                    TypedValue::Regular(db_value) => db_row.insert(key.to_string(), db_value),
+                    TypedValue::Text(_) => db_row.insert(key.to_string(), DbValue::Null),
+                },
+            }
+        }
+        db_row
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct OrderedRows {
+    pub rows: Vec<OrderedRow>,
+}
+
+impl OrderedRows {
+    pub fn order(orders: &Vec<RowOrder>, constrained_rows: ConstrainedRows) -> Self {
+        let mut ordered_rows = Vec::new();
+        for (order, constrained_row) in zip(orders, constrained_rows.rows) {
+            let ordered_row = OrderedRow {
+                order: *order,
+                map: constrained_row.map,
+            };
+            ordered_rows.push(ordered_row);
+        }
+        Self { rows: ordered_rows }
+    }
+
+    pub fn insertable(&self) -> Vec<DbRow> {
+        self.rows.iter().map(|row| row.insertable()).collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct InsertedRow {
+    pub id: RowID,
+    pub order: RowOrder,
+    pub map: IndexMap<String, ConstrainedValue>,
+}
+
+impl InsertedRow {
     pub fn is_regular(&self) -> bool {
         for value in self.map.values() {
             match value.actual {
@@ -329,8 +391,12 @@ impl ConstrainedRow {
         true
     }
 
+    /// A DbRow that can be inserted into the regular table,
+    /// if this row satisfies all the SQL types and constraints.
     pub fn regular(&self) -> Option<DbRow> {
         let mut db_row = DbRow::new();
+        db_row.insert("_id".to_string(), DbValue::from(self.id));
+        db_row.insert("_order".to_string(), DbValue::from(self.order));
         for (key, value) in self.map.iter() {
             match value.actual.clone() {
                 TypedValue::Regular(db_value) => db_row.insert(key.to_string(), db_value),
@@ -339,16 +405,67 @@ impl ConstrainedRow {
         }
         Some(db_row)
     }
+
+    /// A DbRow that can be inserted into the alternate table,
+    pub fn alternate(&self) -> Option<DbRow> {
+        if self.is_regular() {
+            return None;
+        }
+        let mut db_row = DbRow::new();
+        db_row.insert("_id".to_string(), DbValue::from(self.id));
+        db_row.insert("_order".to_string(), DbValue::from(self.order));
+        for (key, value) in self.map.iter() {
+            match value.actual.clone() {
+                TypedValue::Regular(db_value) => db_row.insert(key.to_string(), db_value),
+                TypedValue::Text(text) => db_row.insert(format!("{key}_text"), DbValue::Text(text)),
+            }
+        }
+        Some(db_row)
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct ConstrainedRows {
-    pub rows: Vec<ConstrainedRow>,
+pub struct InsertedRows {
+    pub rows: Vec<InsertedRow>,
 }
 
-impl ConstrainedRows {
+impl InsertedRows {
+    pub fn identify(ordered_rows: OrderedRows, db_rows: DbRows) -> Self {
+        println!("db_rows {db_rows:?}");
+        let mut inserted_rows = Vec::new();
+        for db_row in db_rows.rows.iter() {
+            for ordered_row in ordered_rows.rows.iter() {
+                if db_row
+                    .get("_order")
+                    .expect("inserted row must have an order")
+                    .as_i64()
+                    .expect("order should be an i64")
+                    == ordered_row.order
+                {
+                    inserted_rows.push(InsertedRow {
+                        id: db_row
+                            .get("_id")
+                            .expect("inserted row must have an id")
+                            .as_i32()
+                            .expect("id should be an i32"),
+                        order: ordered_row.order,
+                        map: ordered_row.map.clone(),
+                    })
+                }
+            }
+        }
+
+        Self {
+            rows: inserted_rows,
+        }
+    }
+
     pub fn regular(&self) -> Vec<DbRow> {
         self.rows.iter().filter_map(|row| row.regular()).collect()
+    }
+
+    pub fn alternate(&self) -> Vec<DbRow> {
+        self.rows.iter().filter_map(|row| row.alternate()).collect()
     }
 }
 

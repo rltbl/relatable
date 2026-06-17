@@ -1,4 +1,9 @@
-use crate::{self as rltbl, column::SqlColumn, core::ID_SQL_TYPE};
+use crate::{
+    self as rltbl,
+    column::SqlColumn,
+    core::{RowID, ID_SQL_TYPE},
+    row::{InsertedRows, OrderedRows},
+};
 use indexmap::IndexMap;
 use rltbl::{
     column::Columns,
@@ -307,14 +312,71 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         }
     }
 
-    /// Append a set of TypedRows to the table.
-    async fn append(&self, rows: impl IntoDbRows + Send) -> Result<ConstrainedRows> {
+    /// Append a set of DbRows to the table, returning the new rows.
+    async fn append(&self, rows: impl IntoDbRows + Send) -> Result<InsertedRows> {
+        // type the rows
         let rows = self.columns().rows(rows);
+        // constrain the rows
         let rows = self.constrain(rows).await;
-        let db_rows = rows.regular();
-        self.append_regular(db_rows).await?;
-        // TODO: return modified rows
-        Ok(rows)
+        // order the rows
+        let new_orders = self.new_orders(rows.rows.len()).await?;
+        let rows = OrderedRows::order(&new_orders, rows);
+        self.insert_ordered(rows).await
+    }
+
+    async fn insert(
+        &self,
+        _rows: impl IntoDbRows + Send,
+        _after_id: RowID,
+    ) -> Result<InsertedRows> {
+        todo!()
+    }
+
+    /// Insert ordered rows,
+    /// first using "insertable" rows (maybe with placeholder) to generate IDs,
+    /// then moving placeholder and alternate rows.
+    async fn insert_ordered(&self, rows: OrderedRows) -> Result<InsertedRows> {
+        // insert the rows and get IDs
+        let db_rows = rows.insertable();
+        let new_rows = self.insert_regular(&db_rows).await?;
+
+        // collect the IDs
+        let inserted_rows = InsertedRows::identify(rows, new_rows.clone());
+
+        // If a row is regular, leave it in place.
+        // If a row is alternate, delete from the regular table
+        //  and insert into the alternate table.
+        let alternate_rows = inserted_rows.alternate();
+        if alternate_rows.len() > 0 {
+            let alternate_ids: Vec<RowID> = alternate_rows
+                .iter()
+                .map(|r| r.get("_id").unwrap().as_i32().unwrap())
+                .collect();
+            let kind = self.pool().kind();
+            let prefix = kind.param_prefix();
+            let params = alternate_ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("{prefix}{}", i + 1))
+                .collect::<Vec<String>>()
+                .join(", ");
+            let sql = format!(
+                r#"DELETE FROM "{table_id}" WHERE "_id" IN ({params})"#,
+                table_id = self.id(),
+            );
+            let column_names = self
+                .alternate_column_mapping()
+                .keys()
+                .cloned()
+                .collect::<Vec<String>>();
+            let refs: Vec<&str> = column_names.iter().map(|s| s.as_str()).collect();
+            self.pool().execute(&sql, alternate_ids).await?;
+            self.pool()
+                .insert(&format!("{}_alt", self.id()), &refs, alternate_rows)
+                .await?;
+        }
+
+        Ok(inserted_rows)
     }
 
     /// Append rows to the regular table.
@@ -526,6 +588,29 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
                     "island"
                 ],
                 vec!["1", "1000", "false", "1", "", "Torgersen"]
+            ],
+            vecs(&table).await?,
+            "append one row"
+        );
+
+        let rows = vec![db_row! {
+            "island_id" => "foo",
+            "island" => "Biscoe",
+        }];
+        table.append(rows).await?;
+
+        assert_eq!(
+            vec![
+                vec![
+                    "_id",
+                    "_order",
+                    "_deleted",
+                    "island_id",
+                    "island_id_text",
+                    "island"
+                ],
+                vec!["1", "1000", "false", "1", "", "Torgersen"],
+                vec!["2", "2000", "false", "", "foo", "Biscoe"]
             ],
             vecs(&table).await?,
             "append one row"
