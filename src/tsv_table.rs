@@ -11,7 +11,8 @@ use rltbl::{
 use rltbl_db::{
     any::AnyPool,
     core::DbQuery,
-    db_value::{DbRows, DbValue, IntoDbRows},
+    db_row,
+    db_value::{DbRow, DbRows, DbValue, IntoDbRows},
 };
 
 use anyhow::Result;
@@ -612,7 +613,7 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .collect();
         let refs: Vec<&str> = column_names.iter().map(|x| x.as_str()).collect();
         let regular_rows = inserted_rows.regular();
-        println!("regular {column_names:?} {regular_rows:?}");
+        // println!("regular {column_names:?} {regular_rows:?}");
         self.pool().upsert(&self.id(), &refs, &regular_rows).await?;
 
         // upsert alternate table
@@ -623,7 +624,7 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .collect();
         let refs: Vec<&str> = column_names.iter().map(|x| x.as_str()).collect();
         let alternate_rows = inserted_rows.alternate();
-        println!("alternate {alternate_rows:?}");
+        // println!("alternate {alternate_rows:?}");
         self.pool()
             .upsert(&format!("{id}_alt"), &refs, &alternate_rows)
             .await?;
@@ -643,6 +644,28 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         }
         self.pool().execute_batch(&sqls.join("\n")).await?;
 
+        Ok(())
+    }
+
+    async fn move_after(&self, after_id: RowID, ids: &[RowID]) -> Result<()> {
+        let new_orders = self.new_orders_after(ids.len(), after_id).await?;
+        let pairs: Vec<(RowID, RowOrder)> = zip(ids, new_orders)
+            .map(|(id, order)| (*id, order))
+            .collect();
+        self.move_to(&pairs).await
+    }
+
+    async fn move_to(&self, pairs: &[(RowID, RowOrder)]) -> Result<()> {
+        // TODO: record existing orders in history table?
+        let rows: Vec<DbRow> = pairs
+            .iter()
+            .map(|(id, order)| db_row! { "_id" => *id, "_order" => *order})
+            .collect();
+        let id = self.id();
+        self.pool().update(&id, &["_id", "_order"], &rows).await?;
+        self.pool()
+            .update(&format!("{id}_alt"), &["_id", "_order"], &rows)
+            .await?;
         Ok(())
     }
 
@@ -990,6 +1013,26 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
             ],
             vecs(&table).await?,
             "update row 2 into alternate table"
+        );
+
+        table.move_after(1, &[2]).await?;
+
+        assert_eq!(
+            vec![
+                vec![
+                    "_id",
+                    "_order",
+                    "_deleted",
+                    "island_id",
+                    "island_id_text",
+                    "island"
+                ],
+                vec!["1", "1000", "false", "1", "", "Torgersen"],
+                vec!["2", "1250", "false", "", "foo", "Biscoe"],
+                vec!["3", "1500", "false", "3", "", "Dream"]
+            ],
+            vecs(&table).await?,
+            "move 2 after 1"
         );
 
         // assert!(false, "DONE");
