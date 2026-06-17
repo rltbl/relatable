@@ -416,12 +416,18 @@ impl InsertedRow {
         true
     }
 
-    /// A DbRow that can be inserted into the regular table,
-    /// if this row satisfies all the SQL types and constraints.
-    pub fn regular(&self) -> Option<DbRow> {
+    fn base_row(&self) -> DbRow {
         let mut db_row = DbRow::new();
         db_row.insert("_id".to_string(), DbValue::from(self.id));
         db_row.insert("_order".to_string(), DbValue::from(self.order));
+        db_row.insert("_deleted".to_string(), DbValue::from(self.deleted));
+        db_row
+    }
+
+    /// A DbRow that can be inserted into the regular table,
+    /// if this row satisfies all the SQL types and constraints.
+    pub fn regular(&self) -> Option<DbRow> {
+        let mut db_row = self.base_row();
         for (key, value) in self.map.iter() {
             match value.actual.clone() {
                 TypedValue::Regular(db_value) => db_row.insert(key.to_string(), db_value),
@@ -436,9 +442,7 @@ impl InsertedRow {
         if self.is_regular() {
             return None;
         }
-        let mut db_row = DbRow::new();
-        db_row.insert("_id".to_string(), DbValue::from(self.id));
-        db_row.insert("_order".to_string(), DbValue::from(self.order));
+        let mut db_row = self.base_row();
         for (key, value) in self.map.iter() {
             match value.actual.clone() {
                 TypedValue::Regular(db_value) => db_row.insert(key.to_string(), db_value),

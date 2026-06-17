@@ -1,4 +1,4 @@
-use crate::{self as rltbl};
+use crate::{self as rltbl, column::Column};
 use indexmap::IndexMap;
 use rltbl::{
     column::{Columns, SqlColumn},
@@ -11,12 +11,12 @@ use rltbl::{
 use rltbl_db::{
     any::AnyPool,
     core::DbQuery,
-    db_value::{DbRows, IntoDbRows},
+    db_value::{DbRows, DbValue, IntoDbRows},
 };
 
 use anyhow::Result;
 use async_trait::async_trait;
-use std::iter::zip;
+use std::{collections::BTreeSet, iter::zip};
 
 #[async_trait]
 pub trait TsvTable {
@@ -532,11 +532,117 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .collect::<Vec<String>>()
             .join(", ");
         let mut sql = format!(r#"UPDATE "{id}_alt" SET _deleted = FALSE WHERE _id IN ({ids});"#);
-        sql += &format!(
-            r#"INSERT INTO "{id}"({columns}) SELECT {columns} FROM "{id}_alt" WHERE _id IN ({regular_ids});"#
-        );
-        sql += &format!(r#"DELETE FROM "{id}_alt" WHERE _id IN ({regular_ids});"#);
+        if !regular_ids.is_empty() {
+            sql += &format!(
+                r#"INSERT INTO "{id}"({columns}) SELECT {columns} FROM "{id}_alt" WHERE _id IN ({regular_ids});"#
+            );
+            sql += &format!(r#"DELETE FROM "{id}_alt" WHERE _id IN ({regular_ids});"#);
+        }
         self.pool().execute_batch(&sql).await?;
+        Ok(())
+    }
+
+    fn column(&self, name: &str) -> Option<Column> {
+        self.columns()
+            .iter()
+            .filter(|c| c.column == name)
+            .nth(0)
+            .cloned()
+    }
+
+    async fn update(&self, triples: &[(RowID, &str, DbValue)]) -> Result<()> {
+        let row_ids: BTreeSet<RowID> = triples.iter().map(|(id, _, _)| *id).collect();
+        let table_name = self.name();
+        let id = self.id();
+        let ids = row_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<String>>()
+            .join(", ");
+        let sql = format!(r#"SELECT * FROM "{table_name}_union" WHERE _id IN ({ids});"#);
+        let db_rows = self.pool().query(&sql, ()).await?;
+        let mut inserted_rows = self.validate(db_rows).await?;
+
+        // Update rows from triples.
+        for (id, col, value) in triples {
+            for row in inserted_rows.rows.iter_mut() {
+                if row.id == *id {
+                    if let Some(column) = self.column(col) {
+                        let value = ConstrainedValue {
+                            actual: column.typed_value(value.clone()),
+                            placeholder: None,
+                        };
+                        row.map.entry(col.to_string()).insert_entry(value);
+                    }
+                }
+            }
+        }
+
+        // resolve column name to ids
+        for row in inserted_rows.rows.iter_mut() {
+            let mut map: IndexMap<String, ConstrainedValue> = IndexMap::new();
+            for (k, v) in row.map.iter() {
+                if let Some(column) = self.column(&k) {
+                    map.insert(column.id(), v.clone());
+                }
+            }
+            row.map = map;
+        }
+
+        let regular_ids = inserted_rows
+            .rows
+            .iter()
+            .filter(|row| row.is_regular())
+            .map(|row| row.id.to_string())
+            .collect::<Vec<String>>()
+            .join(", ");
+        let alternate_ids = inserted_rows
+            .rows
+            .iter()
+            .filter(|row| !row.is_regular())
+            .map(|row| row.id.to_string())
+            .collect::<Vec<String>>()
+            .join(", ");
+
+        // upsert regular table
+        let column_names: Vec<String> = self
+            .regular_table_columns()
+            .iter()
+            .map(|c| c.column.to_string())
+            .collect();
+        let refs: Vec<&str> = column_names.iter().map(|x| x.as_str()).collect();
+        let regular_rows = inserted_rows.regular();
+        println!("regular {column_names:?} {regular_rows:?}");
+        self.pool().upsert(&self.id(), &refs, &regular_rows).await?;
+
+        // upsert alternate table
+        let column_names: Vec<String> = self
+            .alternate_table_columns()
+            .iter()
+            .map(|c| c.column.to_string())
+            .collect();
+        let refs: Vec<&str> = column_names.iter().map(|x| x.as_str()).collect();
+        let alternate_rows = inserted_rows.alternate();
+        println!("alternate {alternate_rows:?}");
+        self.pool()
+            .upsert(&format!("{id}_alt"), &refs, &alternate_rows)
+            .await?;
+
+        let mut sqls = vec![];
+        // Delete alternate rows from regular table.
+        if !alternate_ids.is_empty() {
+            sqls.push(format!(
+                r#"DELETE FROM "{id}" WHERE _id IN ({alternate_ids});"#
+            ));
+        }
+        // Delete regular rows from alternate table.
+        if !regular_ids.is_empty() {
+            sqls.push(format!(
+                r#"DELETE FROM "{id}_alt" WHERE _id IN ({regular_ids});"#
+            ));
+        }
+        self.pool().execute_batch(&sqls.join("\n")).await?;
+
         Ok(())
     }
 
@@ -842,6 +948,48 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
             ],
             vecs(&table).await?,
             "undelete two rows"
+        );
+
+        table.update(&[(2, "island_id", DbValue::from(2))]).await?;
+
+        assert_eq!(
+            vec![
+                vec![
+                    "_id",
+                    "_order",
+                    "_deleted",
+                    "island_id",
+                    "island_id_text",
+                    "island"
+                ],
+                vec!["1", "1000", "false", "1", "", "Torgersen"],
+                vec!["3", "1500", "false", "3", "", "Dream"],
+                vec!["2", "2000", "false", "2", "", "Biscoe"]
+            ],
+            vecs(&table).await?,
+            "update row 2 into regular table"
+        );
+
+        table
+            .update(&[(2, "island_id", DbValue::from("foo"))])
+            .await?;
+
+        assert_eq!(
+            vec![
+                vec![
+                    "_id",
+                    "_order",
+                    "_deleted",
+                    "island_id",
+                    "island_id_text",
+                    "island"
+                ],
+                vec!["1", "1000", "false", "1", "", "Torgersen"],
+                vec!["3", "1500", "false", "3", "", "Dream"],
+                vec!["2", "2000", "false", "", "foo", "Biscoe"]
+            ],
+            vecs(&table).await?,
+            "update row 2 into alternate table"
         );
 
         // assert!(false, "DONE");
