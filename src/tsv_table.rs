@@ -1,14 +1,12 @@
-use crate::{
-    self as rltbl,
-    column::SqlColumn,
-    core::{RelatableError, RowID, ID_SQL_TYPE},
-    row::{InsertedRows, OrderedRows},
-};
+use crate::{self as rltbl};
 use indexmap::IndexMap;
 use rltbl::{
-    column::Columns,
-    core::{RowOrder, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
-    row::{ConstrainedRow, ConstrainedRows, ConstrainedValue, TypedRows},
+    column::{Columns, SqlColumn},
+    core::{RelatableError, RowID, RowOrder, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
+    row::{
+        ConstrainedRow, ConstrainedRows, ConstrainedValue, InsertedRow, InsertedRows, OrderedRows,
+        TypedRow, TypedRows, TypedValue,
+    },
 };
 use rltbl_db::{
     any::AnyPool,
@@ -461,6 +459,87 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         Ok(())
     }
 
+    /// Given DbRows from a union table,
+    /// type and constrain the rows,
+    /// and return InsertedRows.
+    async fn validate(&self, rows: impl IntoDbRows + Send) -> Result<InsertedRows> {
+        let mut db_rows = rows.into_db_rows();
+        let mut meta = vec![];
+        let mut typed_rows = vec![];
+        for db_row in db_rows.iter_mut() {
+            let id = db_row.get("_id").unwrap().as_i32().unwrap();
+            let order = db_row.get("_order").unwrap().as_i64().unwrap();
+            let deleted = db_row
+                .get("_deleted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default();
+            meta.push((id, order, deleted));
+
+            db_row.shift_remove("_id");
+            db_row.shift_remove("_order");
+            db_row.shift_remove("_deleted");
+
+            let mut map: IndexMap<String, TypedValue> = IndexMap::new();
+            for (k, v) in db_row.iter() {
+                if k.ends_with("_text") && !v.is_null() {
+                    map.insert(
+                        k.strip_suffix("_text").unwrap().to_string(),
+                        TypedValue::Text(v.as_str().unwrap_or_default().to_string()),
+                    );
+                } else {
+                    map.insert(k.to_string(), TypedValue::Regular(v.clone()));
+                }
+            }
+            typed_rows.push(TypedRow { map });
+        }
+        let typed_rows = TypedRows { rows: typed_rows };
+        let constrained_rows = self.constrain(typed_rows).await;
+        Ok(InsertedRows {
+            rows: zip(meta, constrained_rows.rows)
+                .map(|((id, order, deleted), row)| InsertedRow {
+                    id,
+                    order,
+                    deleted,
+                    map: row.map,
+                })
+                .collect(),
+        })
+    }
+
+    async fn undelete(&self, row_ids: &[RowID]) -> Result<()> {
+        let table_name = self.name();
+        let id = self.id();
+        let ids = row_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<String>>()
+            .join(", ");
+        let sql = format!(r#"SELECT * FROM "{table_name}_union" WHERE _id IN ({ids});"#);
+        let db_rows = self.pool().query(&sql, ()).await?;
+        let inserted_rows = self.validate(db_rows).await?;
+        let regular_ids = inserted_rows
+            .rows
+            .iter()
+            .filter(|row| row.is_regular())
+            .map(|row| row.id.to_string())
+            .collect::<Vec<String>>()
+            .join(", ");
+
+        let columns = self
+            .regular_table_columns()
+            .iter()
+            .map(|c| c.column.to_string())
+            .collect::<Vec<String>>()
+            .join(", ");
+        let mut sql = format!(r#"UPDATE "{id}_alt" SET _deleted = FALSE WHERE _id IN ({ids});"#);
+        sql += &format!(
+            r#"INSERT INTO "{id}"({columns}) SELECT {columns} FROM "{id}_alt" WHERE _id IN ({regular_ids});"#
+        );
+        sql += &format!(r#"DELETE FROM "{id}_alt" WHERE _id IN ({regular_ids});"#);
+        self.pool().execute_batch(&sql).await?;
+        Ok(())
+    }
+
     /// Append rows to the regular table.
     async fn append_regular(&self, rows: impl IntoDbRows + Send) -> Result<DbRows> {
         let mut rows = rows.into_db_rows();
@@ -743,6 +822,26 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
             ],
             vecs(&table).await?,
             "delete two rows"
+        );
+
+        table.undelete(&[2, 3]).await?;
+
+        assert_eq!(
+            vec![
+                vec![
+                    "_id",
+                    "_order",
+                    "_deleted",
+                    "island_id",
+                    "island_id_text",
+                    "island"
+                ],
+                vec!["1", "1000", "false", "1", "", "Torgersen"],
+                vec!["3", "1500", "false", "3", "", "Dream"],
+                vec!["2", "2000", "false", "", "foo", "Biscoe"]
+            ],
+            vecs(&table).await?,
+            "undelete two rows"
         );
 
         // assert!(false, "DONE");

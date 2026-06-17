@@ -332,6 +332,18 @@ pub struct ConstrainedRow {
     pub map: IndexMap<String, ConstrainedValue>,
 }
 
+impl ConstrainedRow {
+    pub fn get(&self, k: &str) -> Option<&DbValue> {
+        match self.map.get(k) {
+            Some(value) => match &value.actual {
+                TypedValue::Regular(db_value) => Some(db_value),
+                TypedValue::Text(_) => None,
+            },
+            None => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ConstrainedRows {
     pub rows: Vec<ConstrainedRow>,
@@ -389,6 +401,7 @@ impl OrderedRows {
 pub struct InsertedRow {
     pub id: RowID,
     pub order: RowOrder,
+    pub deleted: bool,
     pub map: IndexMap<String, ConstrainedValue>,
 }
 
@@ -460,6 +473,10 @@ impl InsertedRows {
                             .as_i32()
                             .expect("id should be an i32"),
                         order: ordered_row.order,
+                        deleted: db_row
+                            .get("_deleted")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or_default(),
                         map: ordered_row.map.clone(),
                     })
                 }
