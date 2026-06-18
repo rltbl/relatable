@@ -6,18 +6,11 @@ use crate as rltbl;
 use rltbl::{
     core::{RowID, RowOrder},
     datatype::{DatatypeTable, Datatypes},
-    row::{TypedRow, TypedRows, TypedValue},
     structure::{Structure, Structures},
     table::TableTable,
     tsv_table::TsvTable,
 };
-use rltbl_db::{
-    any::AnyPool,
-    core::DbQuery,
-    db_kind::DbKind,
-    db_value::{DbValue, IntoDbRow, IntoDbRows, IntoDbValue},
-    serde::to_db_row,
-};
+use rltbl_db::{any::AnyPool, core::DbQuery, db_kind::DbKind, serde::to_db_row};
 
 use anyhow::Result;
 use derive_builder::Builder;
@@ -163,23 +156,6 @@ impl Column {
     pub fn ddl(&self, kind: &DbKind) -> String {
         let sql_column: SqlColumn = self.clone().into();
         sql_column.ddl(kind)
-    }
-
-    /// Parse DbValue into a CellValue.
-    // TODO: Handle more SQL types. Push into rltbl_db?
-    pub fn typed_value(&self, value: impl IntoDbValue) -> TypedValue {
-        let value = value.into_db_value();
-        match self.sql_type.to_uppercase().as_str() {
-            "TEXT" => TypedValue::Regular(DbValue::Text(value.into())),
-            "INTEGER" => match value.as_i32() {
-                Some(i) => TypedValue::Regular(DbValue::Integer(i)),
-                None => TypedValue::Text(value.into()),
-            },
-            _ => {
-                println!("Value {self:?} {value:?}");
-                todo!("Handle more sql_types")
-            }
-        }
     }
 }
 
@@ -380,26 +356,6 @@ impl Columns {
     pub fn sql_types(&mut self, datatypes: &Datatypes) {
         for column in self.list.iter_mut() {
             column.sql_type = column.sql_type(datatypes);
-        }
-    }
-
-    /// Convert a DbRow into a TypedRow.
-    pub fn row(&self, row: impl IntoDbRow) -> TypedRow {
-        let row = row.into_db_row();
-        let mut new_row = IndexMap::new();
-        for column in self.list.iter() {
-            if let Some(value) = row.get(&column.column) {
-                new_row.insert(column.id(), column.typed_value(value.clone()));
-            }
-        }
-        TypedRow { map: new_row }
-    }
-
-    /// Convert DbRows into TypedRows.
-    pub fn rows(&self, rows: impl IntoDbRows) -> TypedRows {
-        let rows = rows.into_db_rows();
-        TypedRows {
-            rows: rows.iter().map(|row| self.row(row)).collect(),
         }
     }
 }

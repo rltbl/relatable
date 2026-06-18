@@ -1,4 +1,4 @@
-use crate::{self as rltbl, core::meta_column_ddl};
+use crate::{self as rltbl, core::meta_column_ddl, tsv_table::UserRows, user_row};
 use rltbl::{
     column::{Column, ColumnBuilder},
     core::{Relatable, RowID, RowOrder, NEW_ORDER_MULTIPLIER},
@@ -7,7 +7,7 @@ use rltbl::{
     table::Table,
     tsv_table::TsvTable,
 };
-use rltbl_db::{core::DbQuery, db_kind::DbKind, db_row, db_value::DbRow, params};
+use rltbl_db::{core::DbQuery, db_kind::DbKind, params};
 
 use anyhow::Result;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
@@ -183,20 +183,22 @@ pub async fn create_island_table(rltbl: &Relatable, force: &bool) -> Result<()> 
     }
     table.create().await?;
 
-    let rows = vec![
-        db_row! {
-            "island_id" => 1,
-            "island" => "Torgersen",
-        },
-        db_row! {
-            "island_id" => 2,
-            "island" => "Biscoe",
-        },
-        db_row! {
-            "island_id" => 3,
-            "island" => "Dream",
-        },
-    ];
+    let rows = UserRows {
+        rows: vec![
+            user_row! {
+                "island_id" => 1,
+                "island" => "Torgersen",
+            },
+            user_row! {
+                "island_id" => 2,
+                "island" => "Biscoe",
+            },
+            user_row! {
+                "island_id" => 3,
+                "island" => "Dream",
+            },
+        ],
+    };
     table.append(rows).await?;
 
     Ok(())

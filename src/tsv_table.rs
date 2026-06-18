@@ -3,21 +3,72 @@ use indexmap::IndexMap;
 use rltbl::{
     column::{Columns, SqlColumn},
     core::{RelatableError, RowID, RowOrder, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
-    row::{
-        ConstrainedRow, ConstrainedRows, ConstrainedValue, InsertedRow, InsertedRows, OrderedRows,
-        TypedRow, TypedRows, TypedValue,
-    },
 };
 use rltbl_db::{
     any::AnyPool,
     core::DbQuery,
     db_row,
-    db_value::{DbRow, DbRows, DbValue, IntoDbRows},
+    db_value::{DbRow, DbRows, DbValue, IntoDbRow, IntoDbRows},
 };
 
 use anyhow::Result;
 use async_trait::async_trait;
-use std::{collections::BTreeSet, iter::zip};
+use std::{
+    collections::{BTreeSet, HashSet},
+    iter::zip,
+    ops::{Deref, DerefMut},
+};
+
+pub type ColumnName = String;
+
+/// A row as the user sees it, using column names and values with mixed types.
+#[derive(Clone, Debug)]
+pub struct UserRow {
+    pub map: IndexMap<ColumnName, DbValue>,
+}
+
+impl Deref for UserRow {
+    type Target = IndexMap<ColumnName, DbValue>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl DerefMut for UserRow {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.map
+    }
+}
+
+impl IntoDbRow for UserRow {
+    fn into_db_row(self) -> DbRow {
+        self.into()
+    }
+}
+
+impl Into<DbRow> for UserRow {
+    fn into(self) -> DbRow {
+        DbRow { map: self.map }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct UserRows {
+    pub rows: Vec<UserRow>,
+}
+
+impl IntoDbRows for UserRows {
+    fn into_db_rows(self) -> DbRows {
+        DbRows {
+            rows: self.rows.into_iter().map(|row| row.into()).collect(),
+        }
+    }
+}
+
+/// A row as Relatable sees it, using column ID strings, e.g. "c14".
+pub type InnerRow = IndexMap<String, DbValue>;
+pub type InnerRows = Vec<InnerRow>;
 
 #[async_trait]
 pub trait TsvTable {
@@ -29,6 +80,13 @@ pub trait TsvTable {
 
     // Does not include meta columns: _id, _order, _deleted.
     fn columns(&self) -> Columns;
+
+    fn column_names(&self) -> Vec<String> {
+        self.columns()
+            .iter()
+            .map(|c| c.column.to_string())
+            .collect()
+    }
 
     // The regular table includes _id and _order columns.
     fn regular_table_columns(&self) -> Vec<SqlColumn> {
@@ -255,8 +313,7 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
 
     /// Drop all tables and views for this TsvTable.
     async fn drop(&self) -> Result<()> {
-        let mut table_names = vec![self.id().to_string(), format!("{}_alt", self.id())];
-        table_names.reverse();
+        let table_names = vec![format!("{}_alt", self.id()), self.id()];
         for table_name in table_names {
             self.pool().drop_table(&table_name).await?;
         }
@@ -276,6 +333,111 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         }
 
         Ok(())
+    }
+
+    /// Return UserRows with only the columns for this table,
+    /// and none of the meta columns.
+    fn sanitize_rows(&self, rows: UserRows) -> UserRows {
+        UserRows {
+            rows: rows
+                .rows
+                .into_iter()
+                .map(|row| self.sanitize_row(row))
+                .collect(),
+        }
+    }
+
+    /// Return a UserRow with only the columns for this table,
+    /// and none of the meta columns.
+    fn sanitize_row(&self, row: UserRow) -> UserRow {
+        let column_names = self.column_names();
+        UserRow {
+            map: row
+                .map
+                .into_iter()
+                .filter(|(k, _)| column_names.contains(k))
+                .collect(),
+        }
+    }
+
+    /// Convert DbRows into TsvRows.
+    fn type_rows(&self, rows: impl IntoDbRows + Send) -> TsvRows {
+        rows.into_db_rows()
+            .iter()
+            .map(|db_row| self.type_row(db_row))
+            .collect::<Vec<TsvRow>>()
+            .into()
+    }
+
+    /// Convert a DbRow into a TsvRow.
+    fn type_row(&self, row: impl IntoDbRow + Send) -> TsvRow {
+        let row = row.into_db_row();
+        let db_kind = self.pool().kind();
+        let id = row.get("_id").and_then(|i| i.as_i32()).unwrap_or_default();
+        let order = row
+            .get("_order")
+            .and_then(|o| o.as_i64())
+            .unwrap_or_default();
+        let deleted = row
+            .get("_deleted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or_default();
+        let mut map = IndexMap::new();
+        for column in self.columns().iter() {
+            if let Some(db_value) = row.get(&column.column) {
+                let db_type = db_kind.db_type(&column.sql_type).unwrap_or_default();
+                let value = match db_type.convert(&db_value) {
+                    Ok(db_value) => TsvValue::Regular(db_value),
+                    Err(_) => TsvValue::NotType(db_value.to_string()),
+                };
+                map.insert(column.id, value);
+            }
+        }
+        TsvRow {
+            id,
+            order,
+            deleted,
+            map,
+        }
+    }
+
+    /// Given TsvRows, check that they conform to all database constraints,
+    /// including uniqueness, not null, and foreign keys.
+    async fn constrain(&self, _rows: &mut TsvRows) -> Result<()> {
+        for column in self.columns().iter() {
+            if column.is_constrained() {
+                todo!("Check column constraints");
+            }
+        }
+        Ok(())
+    }
+
+    /// Gievn UserRows or DbRows,
+    async fn rows(&self, rows: impl IntoDbRows + Send) -> Result<TsvRows> {
+        let mut rows = self.type_rows(rows);
+        self.constrain(&mut rows).await?;
+        Ok(rows)
+    }
+
+    /// Convert TsvRows to DbRows that can be inserted into the regular table,
+    /// which may require using placeholder values.
+    async fn insertable(&self, rows: &TsvRows) -> Result<DbRows> {
+        for column in self.columns().iter() {
+            if column.is_constrained() {
+                todo!("Create placeholders for constrained columns");
+            }
+        }
+        let mut db_rows = vec![];
+        for row in rows.rows.iter() {
+            let mut db_row = row.base_row();
+            for (key, value) in row.map.iter() {
+                if value.is_regular() {
+                    db_row.insert(format!("c{key}"), value.typed_value().unwrap().clone());
+                }
+            }
+            db_rows.push(db_row);
+        }
+        Ok(DbRows { rows: db_rows })
     }
 
     /// Return the specified number of new RowOrders
@@ -365,73 +527,49 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         todo!("implement reorder");
     }
 
-    /// Given TypedRows, ensure that they conform to all database constraints,
-    /// including uniqueness, not null, and foreign keys.
-    /// TODO: Generate placeholders as a second step? Only for insert.
-    async fn constrain(&self, rows: TypedRows) -> ConstrainedRows {
-        for column in self.columns().iter() {
-            if column.is_constrained() {
-                todo!("Handle constrained columns");
-            }
-        }
-        ConstrainedRows {
-            rows: rows
-                .rows
-                .iter()
-                .map(|row| ConstrainedRow {
-                    map: row
-                        .map
-                        .iter()
-                        .map(|(key, value)| {
-                            (
-                                key.to_string(),
-                                ConstrainedValue {
-                                    actual: value.clone(),
-                                    placeholder: None,
-                                },
-                            )
-                        })
-                        .collect(),
-                })
-                .collect(),
-        }
-    }
-
     /// Append a set of DbRows to the table, returning the new rows.
-    async fn append(&self, rows: impl IntoDbRows + Send) -> Result<InsertedRows> {
-        // type the rows
-        let rows = self.columns().rows(rows);
-        // constrain the rows
-        let rows = self.constrain(rows).await;
-        // order the rows
+    async fn append(&self, rows: UserRows) -> Result<InnerRows> {
+        let rows = self.sanitize_rows(rows);
+        let mut rows = self.rows(rows).await?;
         let new_orders = self.new_orders(rows.rows.len()).await?;
-        let rows = OrderedRows::order(&new_orders, rows);
-        self.insert_ordered(rows).await
+        for (order, row) in zip(new_orders, rows.rows.iter_mut()) {
+            row.order = order;
+        }
+        self.insert_ordered(&mut rows).await?;
+        Ok(rows.inner())
     }
 
-    async fn insert(&self, after_id: RowID, rows: impl IntoDbRows + Send) -> Result<InsertedRows> {
-        let rows = self.columns().rows(rows);
-        let rows = self.constrain(rows).await;
+    async fn insert(&self, after_id: RowID, rows: UserRows) -> Result<InnerRows> {
+        let rows = self.sanitize_rows(rows);
+        let mut rows = self.rows(rows).await?;
         let new_orders = self.new_orders_after(rows.rows.len(), after_id).await?;
-        let rows = OrderedRows::order(&new_orders, rows);
-        self.insert_ordered(rows).await
+        for (order, row) in zip(new_orders, rows.rows.iter_mut()) {
+            row.order = order;
+        }
+        self.insert_ordered(&mut rows).await?;
+        Ok(rows.inner())
     }
 
     /// Insert ordered rows,
     /// first using "insertable" rows (maybe with placeholder) to generate IDs,
     /// then moving placeholder and alternate rows.
-    async fn insert_ordered(&self, rows: OrderedRows) -> Result<InsertedRows> {
+    async fn insert_ordered(&self, rows: &mut TsvRows) -> Result<()> {
         // insert the rows and get IDs
-        let db_rows = rows.insertable();
+        let db_rows = self.insertable(&rows).await?;
         let new_rows = self.insert_regular(&db_rows).await?;
 
-        // collect the IDs
-        let inserted_rows = InsertedRows::identify(rows, new_rows.clone());
+        // Collect the ids
+        for (row, new_row) in zip(rows.rows.iter_mut(), new_rows.rows) {
+            row.id = new_row
+                .get("_id")
+                .and_then(|i| i.as_i32())
+                .unwrap_or_default();
+        }
 
         // If a row is regular, leave it in place.
         // If a row is alternate, delete from the regular table
         //  and insert into the alternate table.
-        let alternate_rows = inserted_rows.alternate();
+        let alternate_rows = rows.alternate();
         if alternate_rows.len() > 0 {
             let alternate_ids: Vec<RowID> = alternate_rows
                 .iter()
@@ -461,7 +599,7 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
                 .await?;
         }
 
-        Ok(inserted_rows)
+        Ok(())
     }
 
     async fn delete(&self, row_ids: &[RowID]) -> Result<()> {
@@ -486,53 +624,6 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         Ok(())
     }
 
-    /// Given DbRows from a union table,
-    /// type and constrain the rows,
-    /// and return InsertedRows.
-    async fn validate(&self, rows: impl IntoDbRows + Send) -> Result<InsertedRows> {
-        let mut db_rows = rows.into_db_rows();
-        let mut meta = vec![];
-        let mut typed_rows = vec![];
-        for db_row in db_rows.iter_mut() {
-            let id = db_row.get("_id").unwrap().as_i32().unwrap();
-            let order = db_row.get("_order").unwrap().as_i64().unwrap();
-            let deleted = db_row
-                .get("_deleted")
-                .and_then(|v| v.as_bool())
-                .unwrap_or_default();
-            meta.push((id, order, deleted));
-
-            db_row.shift_remove("_id");
-            db_row.shift_remove("_order");
-            db_row.shift_remove("_deleted");
-
-            let mut map: IndexMap<String, TypedValue> = IndexMap::new();
-            for (k, v) in db_row.iter() {
-                if k.ends_with("_text") && !v.is_null() {
-                    map.insert(
-                        k.strip_suffix("_text").unwrap().to_string(),
-                        TypedValue::Text(v.as_str().unwrap_or_default().to_string()),
-                    );
-                } else {
-                    map.insert(k.to_string(), TypedValue::Regular(v.clone()));
-                }
-            }
-            typed_rows.push(TypedRow { map });
-        }
-        let typed_rows = TypedRows { rows: typed_rows };
-        let constrained_rows = self.constrain(typed_rows).await;
-        Ok(InsertedRows {
-            rows: zip(meta, constrained_rows.rows)
-                .map(|((id, order, deleted), row)| InsertedRow {
-                    id,
-                    order,
-                    deleted,
-                    map: row.map,
-                })
-                .collect(),
-        })
-    }
-
     async fn undelete(&self, row_ids: &[RowID]) -> Result<()> {
         let table_name = self.name();
         let id = self.id();
@@ -543,8 +634,8 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .join(", ");
         let sql = format!(r#"SELECT * FROM "{table_name}_union" WHERE _id IN ({ids});"#);
         let db_rows = self.pool().query(&sql, ()).await?;
-        let inserted_rows = self.validate(db_rows).await?;
-        let regular_ids = inserted_rows
+        let rows = self.rows(db_rows).await?;
+        let regular_ids = rows
             .rows
             .iter()
             .filter(|row| row.is_regular())
@@ -577,8 +668,8 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .cloned()
     }
 
-    async fn update(&self, triples: &[(RowID, &str, DbValue)]) -> Result<()> {
-        let row_ids: BTreeSet<RowID> = triples.iter().map(|(id, _, _)| *id).collect();
+    async fn update(&self, pairs: &[(RowID, UserRow)]) -> Result<()> {
+        let row_ids: BTreeSet<RowID> = pairs.iter().map(|(id, _)| *id).collect();
         let table_name = self.name();
         let id = self.id();
         let ids = row_ids
@@ -588,42 +679,36 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .join(", ");
         let sql = format!(r#"SELECT * FROM "{table_name}_union" WHERE _id IN ({ids});"#);
         let db_rows = self.pool().query(&sql, ()).await?;
-        let mut inserted_rows = self.validate(db_rows).await?;
+        let mut rows = self.rows(db_rows).await?;
 
-        // Update rows from triples.
-        for (id, col, value) in triples {
-            for row in inserted_rows.rows.iter_mut() {
+        // Update rows from pairs.
+        let db_kind = self.pool().kind();
+        for (id, user_row) in pairs {
+            let user_row = self.sanitize_row(user_row.clone());
+            for row in rows.rows.iter_mut() {
                 if row.id == *id {
-                    if let Some(column) = self.column(col) {
-                        let value = ConstrainedValue {
-                            actual: column.typed_value(value.clone()),
-                            placeholder: None,
-                        };
-                        row.map.entry(col.to_string()).insert_entry(value);
+                    for (col, db_value) in user_row.iter() {
+                        if let Some(column) = self.column(col) {
+                            let db_type = db_kind.db_type(&column.sql_type).unwrap_or_default();
+                            let value = match db_type.convert(db_value) {
+                                Ok(db_value) => TsvValue::Regular(db_value),
+                                Err(_) => TsvValue::NotType(db_value.to_string()),
+                            };
+                            row.map.entry(column.id).insert_entry(value);
+                        }
                     }
                 }
             }
         }
 
-        // resolve column name to ids
-        for row in inserted_rows.rows.iter_mut() {
-            let mut map: IndexMap<String, ConstrainedValue> = IndexMap::new();
-            for (k, v) in row.map.iter() {
-                if let Some(column) = self.column(&k) {
-                    map.insert(column.id(), v.clone());
-                }
-            }
-            row.map = map;
-        }
-
-        let regular_ids = inserted_rows
+        let regular_ids = rows
             .rows
             .iter()
             .filter(|row| row.is_regular())
             .map(|row| row.id.to_string())
             .collect::<Vec<String>>()
             .join(", ");
-        let alternate_ids = inserted_rows
+        let alternate_ids = rows
             .rows
             .iter()
             .filter(|row| !row.is_regular())
@@ -638,7 +723,7 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .map(|c| c.column.to_string())
             .collect();
         let refs: Vec<&str> = column_names.iter().map(|x| x.as_str()).collect();
-        let regular_rows = inserted_rows.regular();
+        let regular_rows = rows.regular();
         // println!("regular {column_names:?} {regular_rows:?}");
         self.pool().upsert(&self.id(), &refs, &regular_rows).await?;
 
@@ -649,7 +734,7 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .map(|c| c.column.to_string())
             .collect();
         let refs: Vec<&str> = column_names.iter().map(|x| x.as_str()).collect();
-        let alternate_rows = inserted_rows.alternate();
+        let alternate_rows = rows.alternate();
         // println!("alternate {alternate_rows:?}");
         self.pool()
             .upsert(&format!("{id}_alt"), &refs, &alternate_rows)
@@ -720,6 +805,165 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
     }
 }
 
+/// Represent a value in a TSV file with information about whether and how we can insert it into the database.
+#[derive(Clone, Debug)]
+pub enum TsvValue {
+    /// A value that satisfies all database constraints.
+    Regular(DbValue),
+    /// A value that does not have the right database type.
+    NotType(String),
+    /// A value that fails a NOT NULL constraint.
+    NotNotNull(DbValue),
+    /// A value that fails a UNIQUE or PRIMARY KEY constraint.
+    NotUnique(DbValue),
+    /// A value that fails a FOREIGN KEY constraint.
+    NotForeign(DbValue),
+}
+
+impl Into<DbValue> for TsvValue {
+    fn into(self) -> DbValue {
+        match self {
+            TsvValue::Regular(db_value)
+            | TsvValue::NotNotNull(db_value)
+            | TsvValue::NotUnique(db_value)
+            | TsvValue::NotForeign(db_value) => db_value.clone(),
+            TsvValue::NotType(text) => DbValue::Text(text.to_string()),
+        }
+    }
+}
+
+impl TsvValue {
+    pub fn is_regular(&self) -> bool {
+        match self {
+            TsvValue::Regular(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn typed_value(&self) -> Option<&DbValue> {
+        match self {
+            TsvValue::Regular(db_value)
+            | TsvValue::NotNotNull(db_value)
+            | TsvValue::NotUnique(db_value)
+            | TsvValue::NotForeign(db_value) => Some(db_value),
+            TsvValue::NotType(_) => None,
+        }
+    }
+}
+
+impl Into<DbValue> for &TsvValue {
+    fn into(self) -> DbValue {
+        self.clone().into()
+    }
+}
+
+/// A TSV row has an ID, an order, a deleted status, and a map from column IDs to TsvValues.
+#[derive(Clone, Debug, Default)]
+pub struct TsvRow {
+    pub id: RowID,
+    pub order: RowOrder,
+    pub deleted: bool,
+    pub map: IndexMap<RowID, TsvValue>,
+}
+
+impl TsvRow {
+    /// A row is regular if and only if all its values are regular.
+    pub fn is_regular(&self) -> bool {
+        self.map.values().all(|v| v.is_regular())
+    }
+
+    /// A DbRow with just the id, order, and deleted fields.
+    pub fn base_row(&self) -> DbRow {
+        let mut db_row = DbRow::new();
+        db_row.insert("_id".to_string(), DbValue::from(self.id));
+        db_row.insert("_order".to_string(), DbValue::from(self.order));
+        db_row.insert("_deleted".to_string(), DbValue::from(self.deleted));
+        db_row
+    }
+
+    /// A row with column ID strings as keys (e.g. "c14"), and DbValues of mixed types.
+    pub fn inner(&self) -> InnerRow {
+        let mut db_row = self.base_row();
+        for (k, v) in self.map.iter() {
+            db_row.insert(format!("c{k}"), v.into())
+        }
+        db_row.map
+    }
+
+    /// A DbRow that can be inserted into the regular table,
+    /// if this row satisfies all the SQL types and constraints.
+    pub fn regular(&self) -> Option<DbRow> {
+        let mut db_row = self.base_row();
+        for (key, value) in self.map.iter() {
+            match value {
+                TsvValue::Regular(db_value) => db_row.insert(format!("c{key}"), db_value.clone()),
+                _ => return None,
+            }
+        }
+        Some(db_row)
+    }
+
+    /// A DbRow that can be inserted into the alternate table,
+    pub fn alternate(&self) -> Option<DbRow> {
+        if self.is_regular() {
+            return None;
+        }
+        let mut db_row = self.base_row();
+        for (key, value) in self.map.iter() {
+            match value {
+                TsvValue::Regular(db_value)
+                | TsvValue::NotNotNull(db_value)
+                | TsvValue::NotUnique(db_value)
+                | TsvValue::NotForeign(db_value) => {
+                    db_row.insert(format!("c{key}"), db_value.clone())
+                }
+                TsvValue::NotType(text) => {
+                    db_row.insert(format!("c{key}_text"), DbValue::Text(text.to_string()))
+                }
+            }
+        }
+        Some(db_row)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TsvRows {
+    pub rows: Vec<TsvRow>,
+}
+
+impl From<Vec<TsvRow>> for TsvRows {
+    fn from(value: Vec<TsvRow>) -> Self {
+        Self { rows: value }
+    }
+}
+
+impl TsvRows {
+    /// Get a vector of InnerRows.
+    pub fn inner(&self) -> InnerRows {
+        self.rows.iter().map(|row| row.inner()).collect()
+    }
+
+    /// Get DbRows for the regular table.
+    pub fn regular(&self) -> Vec<DbRow> {
+        self.rows.iter().filter_map(|row| row.regular()).collect()
+    }
+
+    /// Get DbRows for the alternate table.
+    pub fn alternate(&self) -> Vec<DbRow> {
+        self.rows.iter().filter_map(|row| row.alternate()).collect()
+    }
+
+    /// Given a column ID, return a set of DbValues, excluding the NotType variant.
+    pub fn column_values(&self, column: RowID) -> HashSet<DbValue> {
+        self.rows
+            .iter()
+            .filter_map(|row| row.map.get(&column))
+            .filter_map(|tsv_value| tsv_value.typed_value())
+            .cloned()
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -728,12 +972,12 @@ mod tests {
         data_table::DataTable,
         row::Row,
         table::Table,
+        user_row,
     };
 
     use super::*;
     use anyhow::Result;
     use pretty_assertions::assert_eq;
-    use rltbl_db::{db_row, db_value::DbRow};
 
     #[allow(dead_code)]
     async fn tsv(table: &DataTable<'_>) -> Result<String> {
@@ -894,10 +1138,12 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
             "empty table"
         );
 
-        let rows = vec![db_row! {
-            "island_id" => 1,
-            "island" => "Torgersen",
-        }];
+        let rows = UserRows {
+            rows: vec![user_row! {
+                "island_id" => 1,
+                "island" => "Torgersen",
+            }],
+        };
         table.append(rows).await?;
 
         assert_eq!(
@@ -916,10 +1162,12 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
             "append one row"
         );
 
-        let rows = vec![db_row! {
-            "island_id" => "foo",
-            "island" => "Biscoe",
-        }];
+        let rows = UserRows {
+            rows: vec![user_row! {
+                "island_id" => "foo",
+                "island" => "Biscoe",
+            }],
+        };
         table.append(rows).await?;
 
         assert_eq!(
@@ -939,10 +1187,12 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
             "append one row with invalid type"
         );
 
-        let rows = vec![db_row! {
-            "island_id" => 3,
-            "island" => "Dream",
-        }];
+        let rows = UserRows {
+            rows: vec![user_row! {
+                "island_id" => 3,
+                "island" => "Dream",
+            }],
+        };
         table.insert(1, rows).await?;
 
         assert_eq!(
@@ -1003,7 +1253,7 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
             "undelete two rows"
         );
 
-        table.update(&[(2, "island_id", DbValue::from(2))]).await?;
+        table.update(&[(2, user_row! {"island_id" => 2})]).await?;
 
         assert_eq!(
             vec![
@@ -1024,7 +1274,7 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
         );
 
         table
-            .update(&[(2, "island_id", DbValue::from("foo"))])
+            .update(&[(2, user_row! { "island_id" => "foo"})])
             .await?;
 
         assert_eq!(

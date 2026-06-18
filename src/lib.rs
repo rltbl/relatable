@@ -72,6 +72,19 @@ pub mod web;
 /// Demonstrations
 pub mod demo;
 
-///////////////////////////////////////////////////////////////////////////////
-// Global constants and other lookups
-///////////////////////////////////////////////////////////////////////////////
+#[macro_export]
+macro_rules! user_row {
+    ($($key:expr => $value:expr,)+) => {
+        crate::tsv_table::UserRow { map: indexmap::indexmap!($($key.to_string() => $value.into()),+) }
+    };
+    ($($key:expr => $value:expr),*) => {
+        {
+            const CAP: usize = <[()]>::len(&[$({ stringify!($key); }),*]);
+            let mut _map = indexmap::IndexMap::with_capacity(CAP);
+            $(
+                let _ = _map.insert($key.to_string(), $value.into());
+            )*
+                UserRow { map: _map }
+        }
+    };
+}
