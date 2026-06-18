@@ -43,7 +43,13 @@ pub async fn create_penguin_table(
         rltbl.pool.execute(&sql, ()).await?;
     }
 
-    let sql = format!(r#"INSERT INTO "table" ("table", "path") VALUES ('{table}', '{table}.tsv')"#);
+    let sql = r#"SELECT MAX(_order) FROM "table";"#;
+    let mut order: RowOrder = rltbl.pool.query(sql, ()).await?.try_into()?;
+    order += 1000;
+
+    let sql = format!(
+        r#"INSERT INTO "table" ("_order", "table", "path") VALUES ({order}, '{table}', '{table}.tsv')"#
+    );
     rltbl.pool.execute(&sql, ()).await?;
 
     // Create the demo table:
@@ -60,6 +66,25 @@ pub async fn create_penguin_table(
              body_mass BIGINT
            )"#,
         meta_columns = meta_column_ddl(&rltbl.pool.kind())
+    );
+    rltbl.pool.execute(&sql, ()).await?;
+
+    // TODO: Replace this.
+    let sql = format!(
+        r#"CREATE VIEW "{table}_text" AS
+        SELECT
+          _id,
+          _order,
+          FALSE AS _deleted,
+          study_name,
+          CAST(sample_number AS TEXT) AS sample_number,
+          species,
+          island,
+          individual_id,
+          CAST(bill_length AS TEXT) AS bill_length,
+          CAST(bill_depth AS TEXT) AS bill_depth,
+          CAST(body_mass AS TEXT) AS body_mass
+        FROM "{table}";"#
     );
     rltbl.pool.execute(&sql, ()).await?;
 

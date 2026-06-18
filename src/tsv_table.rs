@@ -210,16 +210,39 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         )
     }
 
+    fn text_view_ddl(&self) -> String {
+        let view_name = self.name();
+        let columns = self
+            .columns()
+            .iter()
+            .map(|c| {
+                let name = c.column.to_string();
+                if c.sql_type.to_uppercase() != "TEXT" {
+                    format!(r#"COALESCE(CAST("{name}" AS TEXT), "{name}_text") AS "{name}""#)
+                } else {
+                    format!(r#""{name}""#)
+                }
+            })
+            .collect::<Vec<String>>()
+            .join(", ");
+        format!(
+            r#"CREATE VIEW "{view_name}_text" AS SELECT "_id", "_order", "_deleted", {columns} FROM "{view_name}_union";"#
+        )
+    }
+
     /// Generate SQL DDLs for this table, including alternate table and maybe views.
     fn ddl(&self) -> String {
         let mut ddls = vec![self.regular_table_ddl(), self.alternate_table_ddl()];
 
-        // Create views.
+        // Create regular and alternate views.
         if self.name() != self.id() {
             ddls.push(self.regular_view_ddl());
             ddls.push(self.alternate_view_ddl());
-            ddls.push(self.union_view_ddl());
         }
+
+        // Create union and text views.
+        ddls.push(self.union_view_ddl());
+        ddls.push(self.text_view_ddl());
 
         ddls.join("\n")
     }
@@ -238,15 +261,18 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             self.pool().drop_table(&table_name).await?;
         }
 
+        let mut view_names = vec![
+            format!("{}_text", self.name()),
+            format!("{}_union", self.name()),
+        ];
         if self.id() != self.name() {
-            let view_names = vec![
-                self.name().to_string(),
+            view_names.extend(vec![
                 format!("{}_alt", self.name()),
-                format!("{}_union", self.name()),
-            ];
-            for view_name in view_names {
-                self.pool().drop_view(&view_name).await?;
-            }
+                self.name().to_string(),
+            ]);
+        }
+        for view_name in view_names {
+            self.pool().drop_view(&view_name).await?;
         }
 
         Ok(())
@@ -841,6 +867,10 @@ SELECT "_id", "_order", FALSE AS "_deleted", "c1" AS "island_id", NULL AS "islan
 UNION ALL
 SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id_text", "c2" AS "island" FROM "t1_alt";"#,
             table.union_view_ddl()
+        );
+        assert_eq!(
+            r#"CREATE VIEW "island_text" AS SELECT "_id", "_order", "_deleted", COALESCE(CAST("island_id" AS TEXT), "island_id_text") AS "island_id", "island" FROM "island_union";"#,
+            table.text_view_ddl()
         );
 
         Ok(())

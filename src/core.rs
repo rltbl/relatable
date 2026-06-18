@@ -357,6 +357,32 @@ impl Relatable {
         })
     }
 
+    pub async fn schema2(&self) -> Result<Schema> {
+        let tables = self.table_table().list().await?;
+        let mut tables: IndexMap<String, Table> = tables
+            .into_iter()
+            .map(|t| (t.name.to_string(), t))
+            .collect();
+
+        let table_names: Vec<&str> = tables.keys().map(|k| k.as_str()).collect();
+        let columns = self.column_table().get_configured(&table_names).await?;
+        for column in columns.iter() {
+            if let Some(table) = tables.get_mut(&column.table) {
+                if column.is_meta() {
+                    table.has_meta = true;
+                }
+            }
+        }
+
+        let datatypes = self.datatypes().await;
+
+        Ok(Schema {
+            tables,
+            columns,
+            datatypes,
+        })
+    }
+
     /// Check that a table exists in the database.
     pub async fn table_exists(&self, table_name: &str) -> Result<bool> {
         let sql = match self.pool.kind() {
@@ -1010,14 +1036,13 @@ impl Relatable {
     /// Save all of the tables that have entries in the table table to the path indicated for each
     /// table there, unless `save_dir` has been given, in which case save them all there instead.
     pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
-        let schema = self.schema().await?;
-        let mut tables = schema.tables.clone();
-        for table in tables.values_mut() {
+        let schema = self.schema2().await?;
+        for table in schema.tables.values() {
             if table.path == "" {
                 continue;
             }
             let table_name = table.name.to_string();
-            table.set_view(self, "text").await?;
+            // table.set_view(self, "text").await?;
 
             let path = match save_dir {
                 Some(save_dir) => format!("{save_dir}/{table_name}.tsv"),
@@ -1036,7 +1061,7 @@ impl Relatable {
             writer.write_record(header_row.clone())?;
 
             let sql = format!(
-                r#"SELECT {columns} FROM "{table_name}_text_view" ORDER BY "_order""#,
+                r#"SELECT {columns} FROM "{table_name}_text" WHERE "_deleted" = FALSE ORDER BY "_order""#,
                 columns = header_row
                     .iter()
                     .map(|c| format!(r#""{c}""#))
@@ -1044,51 +1069,13 @@ impl Relatable {
                     .join(", ")
             );
             let data_rows = self.pool.query(&sql, ()).await?;
-            for data_row in data_rows.rows {
-                let values = {
-                    let mut str_values = vec![];
-                    for (column, value) in data_row.iter() {
-                        match value {
-                            DbValue::Text(s) => str_values.push(s.to_string()),
-                            DbValue::SmallInteger(n) => str_values.push(n.to_string()),
-                            DbValue::Integer(n) => str_values.push(n.to_string()),
-                            DbValue::BigInteger(n) => str_values.push(n.to_string()),
-                            DbValue::Real(n) => str_values.push(n.to_string()),
-                            DbValue::BigReal(n) => str_values.push(n.to_string()),
-                            DbValue::Null => {
-                                match schema
-                                    .column(&table_name, column)
-                                    .ok_or(RelatableError::InputError(format!(
-                                        "Column '{column}' not found"
-                                    )))?
-                                    .nulltype
-                                    .as_str()
-                                {
-                                    "" => {
-                                        str_values.push("".to_string());
-                                    }
-                                    // Note that the behaviour for the 'empty' nulltype happens
-                                    // to be the same as that for no nulltype, but in general
-                                    // that won't be true for every nulltype.
-                                    "empty" => {
-                                        str_values.push("".to_string());
-                                    }
-                                    nulltype => {
-                                        tracing::warn!("Unsupported nulltype: '{nulltype}'");
-                                        str_values.push("".to_string());
-                                    }
-                                };
-                            }
-                            _ => {
-                                return Err(RelatableError::DataError(format!(
-                                    "Value {value} is not a string, number or NULL"
-                                ))
-                                .into());
-                            }
-                        }
-                    }
-                    str_values
-                };
+            let data_rows: Vec<IndexMap<String, String>> = data_rows
+                .rows
+                .into_iter()
+                .map(|db_row| db_row.into())
+                .collect();
+            for data_row in data_rows {
+                let values: Vec<String> = data_row.values().cloned().collect::<Vec<String>>();
                 writer.write_record(values)?;
             }
         }

@@ -355,6 +355,16 @@ impl<'a> TableTable<'a> {
         let table = tables.pop().expect("Added one table");
         Ok(table)
     }
+
+    pub async fn list(&self) -> Result<Vec<Table>> {
+        // TODO: Handle the alternate table.
+        let sql = r#"SELECT * FROM "table" ORDER BY _order;"#;
+        self.pool()
+            .query(sql, ())
+            .await?
+            .try_into_vec()
+            .map_err(|e| e.into())
+    }
 }
 
 #[cfg(test)]
@@ -380,7 +390,12 @@ CREATE TABLE "table_alt" (
   "_deleted" BOOL,
   "table" TEXT,
   "path" TEXT
-);"#,
+);
+CREATE VIEW "table_union" AS
+SELECT "_id", "_order", FALSE AS "_deleted", "table", "path" FROM "table"
+UNION ALL
+SELECT "_id", "_order", "_deleted", "table", "path" FROM "table_alt";
+CREATE VIEW "table_text" AS SELECT "_id", "_order", "_deleted", "table", "path" FROM "table_union";"#,
             table.ddl()
         )
     }

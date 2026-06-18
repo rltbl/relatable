@@ -695,7 +695,12 @@ CREATE TABLE "column_alt" (
   "datatype" TEXT,
   "structure" TEXT,
   "description" TEXT
-);"#,
+);
+CREATE VIEW "column_union" AS
+SELECT "_id", "_order", FALSE AS "_deleted", "table", "column", "label", "nulltype", "datatype", "structure", "description" FROM "column"
+UNION ALL
+SELECT "_id", "_order", "_deleted", "table", "column", "label", "nulltype", "datatype", "structure", "description" FROM "column_alt";
+CREATE VIEW "column_text" AS SELECT "_id", "_order", "_deleted", "table", "column", "label", "nulltype", "datatype", "structure", "description" FROM "column_union";"#,
             table.ddl()
         )
     }
