@@ -967,43 +967,15 @@ impl TsvRows {
 #[cfg(test)]
 mod tests {
     use crate::{
-        column::{Column, ColumnBuilder},
         core::Relatable,
-        data_table::DataTable,
+        data_table::{DataTable, DataTableBuilder},
         row::Row,
-        table::Table,
         user_row,
     };
 
     use super::*;
     use anyhow::Result;
     use pretty_assertions::assert_eq;
-
-    #[allow(dead_code)]
-    async fn tsv(table: &DataTable<'_>) -> Result<String> {
-        let header = table
-            .columns()
-            .iter()
-            .map(|c| c.column.clone())
-            .collect::<Vec<String>>()
-            .join("\t");
-        let header = format!("_id\t_order\t{header}");
-        let results = table
-            .pool
-            .query(&format!(r#"SELECT * FROM "{}""#, table.name()), ())
-            .await?;
-        let data = results
-            .iter()
-            .map(|row| {
-                row.values()
-                    .map(|v| v.to_string())
-                    .collect::<Vec<String>>()
-                    .join("\t")
-            })
-            .collect::<Vec<String>>()
-            .join("\n");
-        Ok(format!("{header}\n{data}"))
-    }
 
     async fn vecs(table: &DataTable<'_>) -> Result<Vec<Vec<String>>> {
         let mut result = vec![];
@@ -1026,31 +998,6 @@ mod tests {
         Ok(result)
     }
 
-    async fn create_table<'a>(rltbl: &'a Relatable) -> Result<DataTable<'a>> {
-        let mut table = rltbl
-            .table_table()
-            .add(Table::from_path("island.tsv"))
-            .await?
-            .connect(&rltbl.pool);
-        table.columns = vec![
-            ColumnBuilder::new("island", "island_id")
-                .datatype("integer")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new("island", "island")
-                .datatype("trimmed_line")
-                .build()
-                .unwrap(),
-        ]
-        .into();
-        let datatypes = rltbl.datatypes().await;
-        table.columns.sql_types(&datatypes);
-        let refs: Vec<&Column> = table.columns.iter().collect();
-        table.columns = rltbl.column_table().add(&refs).await?.into();
-        table.create().await?;
-        Ok(table)
-    }
-
     #[tokio::test]
     async fn test_tsv_table_ddl() -> Result<()> {
         // Testing SQLite in-memory only.
@@ -1061,24 +1008,13 @@ mod tests {
         )
         .await?;
 
-        let mut table = Table::from_path("island.tsv").connect(&rltbl.pool);
-        table.id = 1;
-        let mut col1 = ColumnBuilder::new("island", "island_id")
-            .datatype("integer")
-            .build()
-            .unwrap();
-        col1.id = 1;
-        let mut col2 = ColumnBuilder::new("island", "island")
-            .datatype("trimmed_line")
-            .build()
-            .unwrap();
-        col2.id = 2;
-        table.columns = vec![col1, col2].into();
-        let datatypes = rltbl.datatypes().await;
-        table.columns.sql_types(&datatypes);
+        let mut builder = DataTableBuilder::from_path("island.tsv");
+        builder.column("island_id").id(1).sql_type("INTEGER");
+        builder.column("island").id(2).sql_type("TEXT");
+        let table = builder.connect(&rltbl.pool)?;
 
         assert_eq!(
-            r#"CREATE TABLE "t1" (
+            r#"CREATE TABLE "t0" (
   "_id" INTEGER PRIMARY KEY AUTOINCREMENT,
   "_order" BIGINT UNIQUE,
   "c1" INTEGER,
@@ -1087,7 +1023,7 @@ mod tests {
             table.regular_table_ddl()
         );
         assert_eq!(
-            r#"CREATE TABLE "t1_alt" (
+            r#"CREATE TABLE "t0_alt" (
   "_id" INTEGER PRIMARY KEY,
   "_order" BIGINT UNIQUE,
   "_deleted" BOOL,
@@ -1098,18 +1034,18 @@ mod tests {
             table.alternate_table_ddl()
         );
         assert_eq!(
-            r#"CREATE VIEW "island" AS SELECT "_id", "_order", "c1" AS "island_id", "c2" AS "island" FROM "t1";"#,
+            r#"CREATE VIEW "island" AS SELECT "_id", "_order", "c1" AS "island_id", "c2" AS "island" FROM "t0";"#,
             table.regular_view_ddl()
         );
         assert_eq!(
-            r#"CREATE VIEW "island_alt" AS SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id_text", "c2" AS "island" FROM "t1_alt";"#,
+            r#"CREATE VIEW "island_alt" AS SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id_text", "c2" AS "island" FROM "t0_alt";"#,
             table.alternate_view_ddl()
         );
         assert_eq!(
             r#"CREATE VIEW "island_union" AS
-SELECT "_id", "_order", FALSE AS "_deleted", "c1" AS "island_id", NULL AS "island_id_text", "c2" AS "island" FROM "t1"
+SELECT "_id", "_order", FALSE AS "_deleted", "c1" AS "island_id", NULL AS "island_id_text", "c2" AS "island" FROM "t0"
 UNION ALL
-SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id_text", "c2" AS "island" FROM "t1_alt";"#,
+SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id_text", "c2" AS "island" FROM "t0_alt";"#,
             table.union_view_ddl()
         );
         assert_eq!(
@@ -1123,7 +1059,10 @@ SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id
     #[tokio::test]
     async fn test_tsv_table() -> Result<()> {
         let rltbl = Relatable::test("test_tsv_table", false).await?;
-        let table = create_table(&rltbl).await?;
+        let mut builder = DataTableBuilder::from_path("island.tsv");
+        builder.column("island_id").datatype("integer");
+        builder.column("island");
+        let table = builder.create(&rltbl).await?;
 
         assert_eq!(
             vec![vec![

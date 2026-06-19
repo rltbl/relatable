@@ -1,11 +1,6 @@
-use crate::{self as rltbl, core::meta_column_ddl, tsv_table::UserRows, user_row};
+use crate::{self as rltbl};
 use rltbl::{
-    column::{Column, ColumnBuilder},
-    core::{Relatable, RowID, RowOrder, NEW_ORDER_MULTIPLIER},
-    datatype::DatatypeBuilder,
-    sql::{self, SqlParam},
-    table::Table,
-    tsv_table::TsvTable,
+    core::Relatable, data_table::DataTableBuilder, datatype::DatatypeBuilder, tsv_table::TsvTable,
 };
 use rltbl_db::{core::DbQuery, db_kind::DbKind, params};
 
@@ -15,10 +10,9 @@ use rust_decimal::Decimal;
 
 /// Build a demonstration database. Based on <https://github.com/allisonhorst/palmerpenguins>.
 pub async fn build_demo(rltbl: &Relatable, force: &bool, size: usize) -> Result<()> {
-    create_demo_column_table(rltbl, force).await?;
     create_demo_datatype_table(rltbl, force).await?;
-    create_penguin_table(rltbl, None, force, size).await?;
-    create_island_table(rltbl, force).await?;
+    create_island_table(rltbl, *force).await?;
+    create_penguin_table(rltbl, None, *force, size).await?;
     Ok(())
 }
 
@@ -27,7 +21,7 @@ pub async fn build_demo(rltbl: &Relatable, force: &bool, size: usize) -> Result<
 pub async fn create_penguin_table(
     rltbl: &Relatable,
     table: Option<&str>,
-    force: &bool,
+    force: bool,
     size: usize,
 ) -> Result<()> {
     tracing::trace!("create_penguin_table({rltbl:?}, {table:?}, {force}, {size})");
@@ -35,172 +29,90 @@ pub async fn create_penguin_table(
         Some(table) => table,
         None => "penguin",
     };
-    if *force {
-        let sql = match rltbl.pool.kind() {
-            DbKind::PostgreSQL => format!(r#"DROP TABLE IF EXISTS "{table}" CASCADE"#),
-            DbKind::SQLite => format!(r#"DROP TABLE IF EXISTS "{table}""#),
-        };
-        rltbl.pool.execute(&sql, ()).await?;
-    }
+    let path = format!("{table}.tsv");
 
-    let sql = r#"SELECT MAX(_order) FROM "table";"#;
-    let mut order: RowOrder = rltbl.pool.query(sql, ()).await?.try_into()?;
-    order += 1000;
-
-    let sql = format!(
-        r#"INSERT INTO "table" ("_order", "table", "path") VALUES ({order}, '{table}', '{table}.tsv')"#
-    );
-    rltbl.pool.execute(&sql, ()).await?;
-
-    // Create the demo table:
-    let sql = format!(
-        r#"CREATE TABLE "{table}" (
-             {meta_columns},
-             study_name TEXT,
-             sample_number INTEGER,
-             species TEXT,
-             island TEXT,
-             individual_id TEXT,
-             bill_length REAL,
-             bill_depth NUMERIC,
-             body_mass BIGINT
-           )"#,
-        meta_columns = meta_column_ddl(&rltbl.pool.kind())
-    );
-    rltbl.pool.execute(&sql, ()).await?;
-
-    // TODO: Replace this.
-    let sql = format!(
-        r#"CREATE VIEW "{table}_text" AS
-        SELECT
-          _id,
-          _order,
-          FALSE AS _deleted,
-          study_name,
-          CAST(sample_number AS TEXT) AS sample_number,
-          species,
-          island,
-          individual_id,
-          CAST(bill_length AS TEXT) AS bill_length,
-          CAST(bill_depth AS TEXT) AS bill_depth,
-          CAST(body_mass AS TEXT) AS body_mass
-        FROM "{table}";"#
-    );
-    rltbl.pool.execute(&sql, ()).await?;
+    let mut builder = DataTableBuilder::from_path(&path);
+    builder
+        .column("study_name")
+        .label("study name")
+        .description("the name of the study")
+        .datatype("study_name");
+    builder
+        .column("sample_number")
+        .label("sample number")
+        .description("a sample number for this measurement")
+        .datatype("integer");
+    builder
+        .column("species")
+        .description("the species of this penguin")
+        .nulltype("empty");
+    builder
+        .column("island")
+        .description("the island where this penguin was studied")
+        .datatype("text")
+        .structure("from(island.island)");
+    builder
+        .column("individual_id")
+        .label("individual id")
+        .description("an identifier for this penguin")
+        .nulltype("empty")
+        .datatype("word");
+    builder
+        .column("bill_length")
+        .label("bill length (mm)")
+        .datatype("decimal");
+    builder
+        .column("bill_depth")
+        .label("bill depth (mm)")
+        .datatype("decimal");
+    builder
+        .column("body_mass")
+        .label("body mass (g)")
+        .nulltype("empty")
+        .datatype("integer");
 
     // Populate the demo table with random data.
     let islands = vec!["Biscoe", "Dream", "Torgersen"];
     let mut rng = StdRng::seed_from_u64(0);
-    let sql_first_part = format!(
-        r#"INSERT INTO "{table}" (_order, study_name, sample_number, species, island, individual_id, bill_length, bill_depth, body_mass) VALUES "#
-    );
-    let mut sql_value_parts = vec![];
-    let mut sql_param = SqlParam::new(&rltbl.pool.kind());
-    let mut param_values = vec![];
-    let max_params = match rltbl.pool.kind() {
-        DbKind::SQLite => sql::MAX_PARAMS_SQLITE,
-        DbKind::PostgreSQL => sql::MAX_PARAMS_POSTGRES,
-    };
+    let study_name = "FAKE123";
+    let species = "Pygoscelis adeliae";
     for i in 0..size {
-        if (param_values.len() + 7) >= max_params {
-            let sql = format!(
-                "{sql_first_part} {sql_value_part}",
-                sql_value_part = sql_value_parts.join(", ")
-            );
-            rltbl.pool.execute(&sql, param_values).await?;
-            tracing::info!(
-                "{num_rows} rows loaded to table '{table}'",
-                num_rows = i - 1
-            );
-            param_values = vec![];
-            sql_value_parts.clear();
-            sql_param.reset();
-        }
-
-        let id = i as RowID + 1;
-        let order = id as RowOrder * NEW_ORDER_MULTIPLIER;
+        let sample_number = i + 1;
         let island = islands.iter().choose(&mut rng).unwrap().to_string();
+        let individual_id = format!("N{}A{}", (i / 2) + 1, (i % 2) + 1);
         let bill_length = rng.random_range(300..500) as f64 / 10.0;
         let bill_depth = rng.random_range(200..400) as f64 / 10.0;
-        let body_mass = rng.random_range(1000..5000);
         let bill_depth = Decimal::try_from(bill_depth).unwrap();
-        let bill_length = bill_length as f32;
-        let body_mass = body_mass as i64;
+        let body_mass = rng.random_range(1000..5000);
 
-        sql_value_parts.push(format!(
-            "({sql_param_1}, 'FAKE123', {sql_param_2}, 'Pygoscelis adeliae', \
-                 {sql_param_list})",
-            sql_param_1 = sql_param.next(),
-            sql_param_2 = sql_param.next(),
-            sql_param_list = sql_param.get_as_list(5),
-        ));
-        param_values.extend(params![
-            order,
-            id,
+        builder.row(params![
+            study_name,
+            sample_number,
+            species,
             island,
-            format!("N{}A{}", (i / 2) + 1, (i % 2) + 1),
-            bill_length,
+            individual_id,
+            bill_length as f32,
             bill_depth,
-            body_mass
-        ]);
-    }
-    if param_values.len() > 0 {
-        let sql = format!(
-            "{sql_first_part} {sql_value_part}",
-            sql_value_part = sql_value_parts.join(", ")
-        );
-        rltbl.pool.execute(&sql, param_values).await?;
+            body_mass as i64
+        ])?;
     }
 
+    builder.force(force);
+    builder.create(&rltbl).await?;
     Ok(())
 }
 
 /// Create a demonstration table of islands.
 /// Drop the table first if `force` is set.
-pub async fn create_island_table(rltbl: &Relatable, force: &bool) -> Result<()> {
-    let mut table = rltbl
-        .table_table()
-        .add(Table::from_path("island.tsv"))
-        .await?
-        .connect(&rltbl.pool);
-    table.columns = vec![
-        ColumnBuilder::new("island", "island_id")
-            .datatype("integer")
-            .build()
-            .unwrap(),
-        ColumnBuilder::new("island", "island")
-            .datatype("trimmed_line")
-            .build()
-            .unwrap(),
-    ]
-    .into();
-    let datatypes = rltbl.datatypes().await;
-    table.columns.sql_types(&datatypes);
-    let refs: Vec<&Column> = table.columns.iter().collect();
-    table.columns = rltbl.column_table().add(&refs).await?.into();
-    if *force {
-        table.drop().await?;
-    }
-    table.create().await?;
-
-    let rows = UserRows {
-        rows: vec![
-            user_row! {
-                "island_id" => 1,
-                "island" => "Torgersen",
-            },
-            user_row! {
-                "island_id" => 2,
-                "island" => "Biscoe",
-            },
-            user_row! {
-                "island_id" => 3,
-                "island" => "Dream",
-            },
-        ],
-    };
-    table.append(rows).await?;
-
+pub async fn create_island_table(rltbl: &Relatable, force: bool) -> Result<()> {
+    let mut builder = DataTableBuilder::from_path("island.tsv");
+    builder.column("island_id").datatype("integer");
+    builder.column("island");
+    builder.row(params![1, "Torgersen"])?;
+    builder.row(params![2, "Biscoe"])?;
+    builder.row(params![3, "Dream"])?;
+    builder.force(force);
+    builder.create(&rltbl).await?;
     Ok(())
 }
 
@@ -224,58 +136,6 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
                 .parent("word")
                 .description("the name of this study")
                 .condition(r"in(FAKE123, FAKE456)")
-                .build()?,
-        ])
-        .await?;
-    Ok(())
-}
-
-/// Create the column table for the demonstration database
-pub async fn create_demo_column_table(rltbl: &Relatable, force: &bool) -> Result<()> {
-    let column_table = rltbl.column_table();
-    if *force {
-        column_table.drop().await?;
-    }
-    column_table.init().await?;
-    column_table
-        .add(&[
-            &ColumnBuilder::new("penguin", "study_name")
-                .label("study name")
-                .description("the name of the study")
-                .datatype("study_name")
-                .build()?,
-            &ColumnBuilder::new("penguin", "sample_number")
-                .label("sample number")
-                .description("a sample number for this measurement")
-                .datatype("integer")
-                .build()?,
-            &ColumnBuilder::new("penguin", "species")
-                .description("the species of this penguin")
-                .nulltype("empty")
-                .build()?,
-            &ColumnBuilder::new("penguin", "island")
-                .description("the island where this penguin was studied")
-                .datatype("text")
-                .structure("from(island.island)")
-                .build()?,
-            &ColumnBuilder::new("penguin", "individual_id")
-                .label("individual id")
-                .description("an identifier for this penguin")
-                .nulltype("empty")
-                .datatype("word")
-                .build()?,
-            &ColumnBuilder::new("penguin", "bill_length")
-                .label("bill length (mm)")
-                .datatype("decimal")
-                .build()?,
-            &ColumnBuilder::new("penguin", "bill_depth")
-                .label("bill depth (mm)")
-                .datatype("decimal")
-                .build()?,
-            &ColumnBuilder::new("penguin", "body_mass")
-                .label("body mass (g)")
-                .nulltype("empty")
-                .datatype("integer")
                 .build()?,
         ])
         .await?;
@@ -340,7 +200,7 @@ pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) 
             (0, 0, 'FAKE123', 'Fake Study 123')"#;
     rltbl.pool.execute(sql, ()).await?;
 
-    create_penguin_table(rltbl, None, force, size).await?;
+    create_penguin_table(rltbl, None, *force, size).await?;
 
     let sql = r#"INSERT INTO "table" ('table', 'path') VALUES ('egg', 'egg.tsv')"#;
     rltbl.pool.execute(sql, ()).await?;
@@ -370,7 +230,7 @@ mod tests {
     async fn test_island() -> Result<()> {
         let rltbl = Relatable::test("test_demo_island", false).await?;
 
-        create_island_table(&rltbl, &false).await?;
+        create_island_table(&rltbl, false).await?;
 
         rltbl.drop_test().await
     }

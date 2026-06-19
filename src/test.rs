@@ -111,7 +111,7 @@ async fn main() {
             let tables_to_choose_from = vec!["penguin", "qenguin", "renguin", "senguin"];
             for table in tables_to_choose_from.iter() {
                 if *table != "penguin" {
-                    rltbl::demo::create_penguin_table(&rltbl, Some(table), force, *table_size)
+                    rltbl::demo::create_penguin_table(&rltbl, Some(table), *force, *table_size)
                         .await
                         .unwrap();
                 }
