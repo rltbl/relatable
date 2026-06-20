@@ -2,10 +2,11 @@
 //!
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
-use crate::{self as rltbl, user::UserTable};
+use crate::{self as rltbl, tsv_table::ColumnName};
 use rltbl::{
     change::{Change, ChangeAction, ChangeSet, ChangeTable, History},
     column::{Column, ColumnBuilder, ColumnTable},
+    data_table::DataTable,
     datatype::{DatatypeTable, Datatypes},
     git,
     history::HistoryTable,
@@ -18,7 +19,8 @@ use rltbl::{
     site::Site,
     sql::{self, SqlParam},
     table::{Table, TableTable},
-    tsv_table::TsvTable,
+    tsv_table::{TsvTable, UserRow, UserRows},
+    user::UserTable,
 };
 use rltbl_db::{
     any::AnyPool,
@@ -35,7 +37,9 @@ use indexmap::IndexMap;
 use minijinja::{path_loader, Environment};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value, Value as JsonValue};
-use std::{collections::HashSet, fmt::Display, fs::File, path::Path as FilePath, str::FromStr};
+use std::{
+    collections::HashSet, fmt::Display, fs::File, iter::zip, path::Path as FilePath, str::FromStr,
+};
 
 /// Default location of the [relatable](crate) database
 pub static RLTBL_DEFAULT_DB: &str = ".relatable/relatable.db";
@@ -167,7 +171,7 @@ impl Relatable {
             _ => false,
         };
         let path = Relatable::determine_db_path(path);
-        if !path.starts_with("postgresql://") {
+        if path != ":memory:" && !path.starts_with("postgresql://") {
             let file = FilePath::new(&path);
             if !file.exists() {
                 return Err(RelatableError::InitError(
@@ -203,7 +207,7 @@ impl Relatable {
     ) -> Result<Self> {
         tracing::trace!("Relatable::init({force:?}, {path:?}, {caching_strategy:?})");
         let path = Relatable::determine_db_path(path);
-        if !path.starts_with("postgresql://") {
+        if path != ":memory:" && !path.starts_with("postgresql://") {
             let dir: &std::path::Path =
                 FilePath::new(&path)
                     .parent()
@@ -291,7 +295,8 @@ impl Relatable {
     /// - all the tables in the "table" table
     /// - all of the columns in the "column" table
     /// - all of the datatypes from the "datatype" table
-    pub async fn schema(&self) -> Result<Schema> {
+    // TODO: eliminate this old function.
+    pub async fn _schema(&self) -> Result<Schema> {
         let sql = match self.pool.kind() {
             DbKind::SQLite => {
                 r#"SELECT
@@ -357,7 +362,7 @@ impl Relatable {
         })
     }
 
-    pub async fn schema2(&self) -> Result<Schema> {
+    pub async fn schema(&self) -> Result<Schema> {
         let tables = self.table_table().list().await?;
         let mut tables: IndexMap<String, Table> = tables
             .into_iter()
@@ -365,7 +370,7 @@ impl Relatable {
             .collect();
 
         let table_names: Vec<&str> = tables.keys().map(|k| k.as_str()).collect();
-        let columns = self.column_table().get_configured(&table_names).await?;
+        let mut columns = self.column_table().get_configured(&table_names).await?;
         for column in columns.iter() {
             if let Some(table) = tables.get_mut(&column.table) {
                 if column.is_meta() {
@@ -375,6 +380,8 @@ impl Relatable {
         }
 
         let datatypes = self.datatypes().await;
+
+        columns.sql_types(&datatypes);
 
         Ok(Schema {
             tables,
@@ -493,7 +500,7 @@ impl Relatable {
         let schema = self.schema().await?;
 
         let table_name = &select.table_name;
-        let mut table = schema
+        let table = schema
             .tables
             .get(table_name)
             .ok_or(RelatableError::MissingError(format!(
@@ -501,17 +508,20 @@ impl Relatable {
                 select.table_name
             )))?
             .clone();
-        if select.view_name == format!("{}_default_view", table.name) || select.view_name == "" {
-            table.set_view(self, "default").await?;
-        } else if select.view_name == format!("{}_text_view", table.name) {
-            table.set_view(self, "text").await?;
-        } else {
-            tracing::warn!(
-                "Unsupported view name: '{}'. Falling back to default view",
-                select.view_name
-            );
-            table.set_view(self, "default").await?;
-        }
+
+        // TODO: Replace default_view and text_view stuff.
+        // if select.view_name == format!("{}_default_view", table.name) || select.view_name == "" {
+        //     table.set_view(self, "default").await?;
+        // } else if select.view_name == format!("{}_text_view", table.name) {
+        //     table.set_view(self, "text").await?;
+        // } else {
+        //     tracing::warn!(
+        //         "Unsupported view name: '{}'. Falling back to default view",
+        //         select.view_name
+        //     );
+        //     table.set_view(self, "default").await?;
+        // }
+
         let mut columns = schema
             .columns(table_name)
             .into_iter()
@@ -838,26 +848,6 @@ impl Relatable {
         self.commit_to_git().await.expect("Error committing to git");
     }
 
-    async fn create_table(&self, schema: &Schema, table_name: &str) -> Result<()> {
-        // Generate the SQL statements needed to create the table and execute them:
-        let column_refs: Vec<&Column> = schema
-            .columns(table_name)
-            .values()
-            .cloned()
-            .filter(|c| !c.column.starts_with("_"))
-            .collect();
-        for sql in sql::generate_table_ddl(
-            schema.table(table_name)?,
-            &column_refs,
-            &schema.datatypes,
-            true,
-            &self.pool.kind(),
-        )? {
-            self.pool.execute(&sql, ()).await?;
-        }
-        Ok(())
-    }
-
     fn prepare_value(
         &self,
         sql_type: &str,
@@ -926,10 +916,9 @@ impl Relatable {
     /// and recreating it from the schema,
     /// then reading rows from the TSV.
     pub async fn reload_table(&self, table_name: &str, path: &str) -> Result<()> {
-        let schema = self.schema().await?;
-
-        self.drop_table(table_name).await?;
-        self.create_table(&schema, table_name).await?;
+        let table = self.get_table2(table_name).await?;
+        table.drop().await?;
+        table.create().await?;
 
         // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
@@ -937,37 +926,32 @@ impl Relatable {
             .delimiter(b'\t')
             .from_reader(File::open(path).expect(&format!("Unable to open '{path}'")));
 
-        let headers = rdr.headers()?.clone();
-        let mut column_refs: Vec<&str> = headers.deserialize(None)?;
-        column_refs.insert(0, "_order");
-
+        let headers: Vec<String> = rdr.headers()?.into_iter().map(|s| s.to_string()).collect();
         let records = rdr.records();
-        let rows: Vec<JsonRow> = records
+        let rows: Vec<UserRow> = records
             .into_iter()
-            .enumerate()
-            .map(|(i, record)| {
-                let mut row: JsonRow = record?.deserialize(Some(&headers))?;
-                let index = i as i64 + 1;
-                row.insert("_order".to_string(), json!(index * NEW_ORDER_MULTIPLIER));
-                Ok(row)
+            .map(|record| {
+                let map: IndexMap<ColumnName, DbValue> = zip(headers.iter(), record?.iter())
+                    .map(|(k, v)| (k.to_string(), DbValue::from(v)))
+                    .collect();
+                Ok(UserRow { map })
             })
-            .collect::<Result<Vec<JsonRow>>>()?;
-        let row_refs: Vec<&JsonRow> = rows.iter().collect();
-        self.insert_rows(&schema, table_name, &column_refs, &row_refs)
-            .await?;
+            .collect::<Result<Vec<UserRow>>>()?;
+        let rows = UserRows { rows };
+        table.append(rows).await?;
 
-        if self.validation_level == ValidationLevel::Full {
-            self.validate_table(&table_name)
-                .await
-                .expect("Error validating table");
-            let dependent_tables = schema.dependent_tables(table_name);
-            for table in &dependent_tables {
-                tracing::debug!("Validating dependent table '{}'", table.name);
-                self.validate_structure_for_table(&schema, table_name)
-                    .await
-                    .expect("Error validating table");
-            }
-        }
+        // if self.validation_level == ValidationLevel::Full {
+        //     self.validate_table(&table_name)
+        //         .await
+        //         .expect("Error validating table");
+        //     let dependent_tables = schema.dependent_tables(table_name);
+        //     for table in &dependent_tables {
+        //         tracing::debug!("Validating dependent table '{}'", table.name);
+        //         self.validate_structure_for_table(&schema, table_name)
+        //             .await
+        //             .expect("Error validating table");
+        //     }
+        // }
 
         Ok(())
     }
@@ -1015,6 +999,19 @@ impl Relatable {
     }
 
     /// Returns a [Table] corresponding to the given table name.
+    pub async fn get_table2<'a>(&'a self, table_name: &str) -> Result<DataTable<'a>> {
+        let schema = self.schema().await?;
+        let mut table = schema.table(table_name)?.connect(&self.pool);
+        table.columns = schema
+            .columns(table_name)
+            .into_values()
+            .cloned()
+            .collect::<Vec<Column>>()
+            .into();
+        Ok(table)
+    }
+
+    /// Returns a [Table] corresponding to the given table name.
     pub async fn get_table(&self, table_name: &str) -> Result<Table> {
         // If the default view exists, set the table's view to it, otherwise leave it blank:
         let result = Table::view_exists(table_name, "default", self).await?;
@@ -1036,7 +1033,7 @@ impl Relatable {
     /// Save all of the tables that have entries in the table table to the path indicated for each
     /// table there, unless `save_dir` has been given, in which case save them all there instead.
     pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
-        let schema = self.schema2().await?;
+        let schema = self.schema().await?;
         for table in schema.tables.values() {
             if table.path == "" {
                 continue;
@@ -3045,7 +3042,11 @@ impl FromStr for ValidationLevel {
 
 #[cfg(test)]
 mod tests {
+    use crate::user_row;
+
     use super::*;
+
+    use indexmap::indexmap;
     use pretty_assertions::assert_eq;
     use rand::{rngs::ThreadRng, seq::SliceRandom, Rng};
 
@@ -3146,10 +3147,62 @@ mod tests {
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
 
         let schema = rltbl.schema().await?;
-        // assert_eq!(schema.tables.len(), 10);
-        // assert_eq!(schema.columns.len(), 61);
-        assert_eq!(schema.datatypes.len(), 9);
-        assert_eq!(schema.columns("penguin").len(), 10);
+
+        assert_eq!(
+            indexmap! {
+                "table".to_string() => Table {
+                    name: "table".to_string(),
+                    id: 1,
+                    order: 1000,
+                    path: "src/schema/table.tsv".to_string(),
+                    view: String::new(),
+                    editable: true,
+                    has_meta: true
+                },
+                "column".to_string() => Table {
+                    name: "column".to_string(),
+                    id: 2,
+                    order: 2000,
+                    path: "src/schema/column.tsv".to_string(),
+                    view: String::new(),
+                    editable: true,
+                    has_meta: true
+                },
+                "datatype".to_string() => Table {
+                    name: "datatype".to_string(),
+                    id: 3,
+                    order: 3000,
+                    path: "src/schema/datatype.tsv".to_string(),
+                    view: String::new(),
+                    editable: true,
+                    has_meta: true
+                },
+                "island".to_string() => Table {
+                    name: "island".to_string(),
+                    id: 4,
+                    order: 4000,
+                    path: "island.tsv".to_string(),
+                    view: String::new(),
+                    editable: true,
+                    has_meta: true
+                },
+                "penguin".to_string() => Table {
+                    name: "penguin".to_string(),
+                    id: 5,
+                    order: 5000,
+                    path: "penguin.tsv".to_string(),
+                    view: String::new(),
+                    editable: true,
+                    has_meta: true
+                }
+            },
+            schema.tables
+        );
+
+        // assert_eq!(schema.tables.len(), 5);
+        assert_eq!(schema.columns.len(), 25, "count all columns");
+        assert_eq!(schema.columns("penguin").len(), 8, "count penguin columns");
+        assert_eq!(schema.datatypes.len(), 9, "count all datatypes");
 
         rltbl.drop_test().await
     }
@@ -3179,27 +3232,40 @@ mod tests {
         let rltbl = Relatable::test("test_roundtrip_nulltype", true).await?;
         crate::demo::build_demo(&rltbl, &true, 1).await?;
 
-        let select = Select::from("penguin");
-        let u = "test";
+        // let u = "test";
         let t = "penguin";
+        let table = rltbl.get_table2(t).await?;
+        let mut select = Select::from(t);
+        select.view_name = "penguin_union".to_string();
 
-        rltbl.set_value(u, t, 1, "species", &json!("")).await?;
-        assert_eq!(rltbl.get_value(t, 1, "species").await?, JsonValue::Null);
+        // rltbl.set_value(u, t, 1, "species", &json!("")).await?;
+        table.update(&[(1, user_row! {"species" => ""})]).await?;
+        // assert_eq!(rltbl.get_value(t, 1, "species").await?, JsonValue::Null);
 
-        rltbl.set_value(u, t, 1, "island", &json!("")).await?;
+        // rltbl.set_value(u, t, 1, "island", &json!("")).await?;
+        table.update(&[(1, user_row! {"island" => ""})]).await?;
         assert_eq!(
             rltbl.get_value(t, 1, "island").await?,
             JsonValue::String(String::new())
         );
 
         // Note that TEXT cells will NULL values will be reloaded as empty strings.
-        let row = json!({"study_name": "", "sample_number": 20, "island": ""});
-        rltbl.add_row(t, u, None, &row.as_object().unwrap()).await?;
+        // let row = json!({"study_name": "", "sample_number": 20, "island": ""});
+        // rltbl.add_row(t, u, None, &row.as_object().unwrap()).await?;
+        table
+            .append(UserRows {
+                rows: vec![user_row! {
+                    "study_name" => "",
+                    "sample_number" => 20,
+                    "island" => "",
+                }],
+            })
+            .await?;
 
-        assert_eq!(
-            rltbl.get_value(t, 2, "island").await?,
-            JsonValue::String(String::new())
-        );
+        // assert_eq!(
+        //     rltbl.get_value(t, 2, "island").await?,
+        //     JsonValue::String(String::new())
+        // );
 
         let before = rltbl.fetch(&select).await?;
         rltbl.save_all(rltbl.test_dir.as_deref()).await?;

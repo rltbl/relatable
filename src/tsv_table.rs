@@ -13,6 +13,7 @@ use rltbl_db::{
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashSet},
     iter::zip,
@@ -22,7 +23,8 @@ use std::{
 pub type ColumnName = String;
 
 /// A row as the user sees it, using column names and values with mixed types.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct UserRow {
     pub map: IndexMap<ColumnName, DbValue>,
 }
@@ -50,6 +52,12 @@ impl IntoDbRow for UserRow {
 impl Into<DbRow> for UserRow {
     fn into(self) -> DbRow {
         DbRow { map: self.map }
+    }
+}
+
+impl From<DbRow> for UserRow {
+    fn from(value: DbRow) -> Self {
+        Self { map: value.map }
     }
 }
 
@@ -385,14 +393,20 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         let mut map = IndexMap::new();
         for column in self.columns().iter() {
             if let Some(db_value) = row.get(&column.column) {
-                let db_type = db_kind.db_type(&column.sql_type).unwrap_or_default();
-                let value = match db_type.convert(&db_value) {
-                    Ok(db_value) => TsvValue::Regular(db_value),
-                    Err(_) => TsvValue::NotType(db_value.to_string()),
-                };
-                map.insert(column.id, value);
+                // TODO: Handle more nulltypes
+                if column.nulltype == "empty" && db_value.to_string() == "" {
+                    map.insert(column.id, TsvValue::Regular(DbValue::Null));
+                } else {
+                    let db_type = db_kind.db_type(&column.sql_type).unwrap_or_default();
+                    let value = match db_type.convert(&db_value) {
+                        Ok(db_value) => TsvValue::Regular(db_value),
+                        Err(_) => TsvValue::NotType(db_value.to_string()),
+                    };
+                    map.insert(column.id, value);
+                }
             }
         }
+        // println!("{row:?} {map:?}");
         TsvRow {
             id,
             order,
@@ -918,7 +932,11 @@ impl TsvRow {
                     db_row.insert(format!("c{key}"), db_value.clone())
                 }
                 TsvValue::NotType(text) => {
-                    db_row.insert(format!("c{key}_text"), DbValue::Text(text.to_string()))
+                    if text == "" {
+                        db_row.insert(format!("c{key}_text"), DbValue::Null)
+                    } else {
+                        db_row.insert(format!("c{key}_text"), DbValue::Text(text.to_string()))
+                    }
                 }
             }
         }

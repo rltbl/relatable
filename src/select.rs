@@ -3039,9 +3039,6 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         rltbl.pool.execute(create_sql, ()).await.unwrap();
         rltbl.pool.execute(insert_sql, ()).await.unwrap();
 
-        let mut table_a = rltbl.get_table("A").await.unwrap();
-        table_a.ensure_default_view_created(&rltbl).await.unwrap();
-
         let drop_sql = r#"DROP TABLE IF EXISTS "B""#;
         let create_sql = r#"CREATE TABLE "B" (
     _id INTEGER,
@@ -3199,7 +3196,7 @@ WHERE "B"."b" = {sql_param}"#
             sql,
             format!(
                 r#"SELECT *
-FROM "A_default_view"
+FROM "A"
 WHERE "_id" IN (
   SELECT
     "A"."_id"
@@ -3207,7 +3204,7 @@ WHERE "_id" IN (
   LEFT JOIN "B" ON "A"."a" = "B"."a"
   WHERE "B"."b" = {sql_param}
 )
-ORDER BY "A_default_view"._order ASC
+ORDER BY "A"._order ASC
 LIMIT 100"#
             )
         );
@@ -3218,7 +3215,7 @@ LIMIT 100"#
             sql,
             format!(
                 r#"SELECT COUNT(1) AS "count"
-FROM "A_default_view"
+FROM "A"
 WHERE "_id" IN (
   SELECT
     "A"."_id"

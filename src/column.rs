@@ -75,9 +75,7 @@ impl SqlColumn {
 }
 
 /// Represents a column from some table
-#[derive(
-    Builder, Clone, Debug, Default, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord,
-)]
+#[derive(Builder, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(default)]
 #[builder(default, setter(into))]
 pub struct Column {
@@ -98,6 +96,28 @@ pub struct Column {
     pub unique: bool,
     pub not_null: bool,
     pub references: Vec<String>,
+}
+
+impl Default for Column {
+    fn default() -> Self {
+        Self {
+            id: Default::default(),
+            order: Default::default(),
+            table: Default::default(),
+            column: Default::default(),
+            label: Default::default(),
+            description: Default::default(),
+            sql_type: Default::default(),
+            sql_default: Default::default(),
+            nulltype: Default::default(),
+            datatype: "text".to_string(),
+            structure: Default::default(),
+            primary_key: Default::default(),
+            unique: Default::default(),
+            not_null: Default::default(),
+            references: Default::default(),
+        }
+    }
 }
 
 impl Column {
@@ -590,6 +610,8 @@ impl<'a> ColumnTable<'a> {
         let sql = format!(
             r#"
               SELECT
+                "_id",
+                "_order",
                 "table",
                 "column",
                 "label",
