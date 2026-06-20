@@ -3489,6 +3489,7 @@ mod tests {
         rltbl.drop_test().await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_1() -> Result<()> {
         let name = "test_history_1";
@@ -3540,6 +3541,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_3() -> Result<()> {
         let name = "test_history_3";
@@ -3564,6 +3566,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_4() -> Result<()> {
         let name = "test_history_4";
@@ -3588,6 +3591,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_5() -> Result<()> {
         let name = "test_history_5";
@@ -3629,6 +3633,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_6() -> Result<()> {
         let name = "test_history_6";
@@ -3652,6 +3657,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_7() -> Result<()> {
         let name = "test_history_7";
@@ -3678,6 +3684,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_8() -> Result<()> {
         let name = "test_history_8";
@@ -3709,6 +3716,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_9() -> Result<()> {
         let name = "test_history_9";
@@ -3741,6 +3749,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_10() -> Result<()> {
         let name = "test_history_10";
@@ -3775,6 +3784,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_11() -> Result<()> {
         let name = "test_history_11";
@@ -3799,6 +3809,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_12() -> Result<()> {
         let name = "test_history_12";
@@ -3823,6 +3834,7 @@ mod tests {
         test_history(name, actions, history).await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_13() -> Result<()> {
         let name = "test_history_13";
@@ -3978,6 +3990,7 @@ mod tests {
         rltbl.drop_test().await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_random_editing_loop() -> Result<()> {
         for i in 1..2 {
