@@ -703,12 +703,16 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
                 if row.id == *id {
                     for (col, db_value) in user_row.iter() {
                         if let Some(column) = self.column(col) {
-                            let db_type = db_kind.db_type(&column.sql_type).unwrap_or_default();
-                            let value = match db_type.convert(db_value) {
-                                Ok(db_value) => TsvValue::Regular(db_value),
-                                Err(_) => TsvValue::NotType(db_value.to_string()),
-                            };
-                            row.map.entry(column.id).insert_entry(value);
+                            if column.nulltype == "empty" && db_value.to_string() == "" {
+                                row.map.insert(column.id, TsvValue::Regular(DbValue::Null));
+                            } else {
+                                let db_type = db_kind.db_type(&column.sql_type).unwrap_or_default();
+                                let value = match db_type.convert(db_value) {
+                                    Ok(db_value) => TsvValue::Regular(db_value),
+                                    Err(_) => TsvValue::NotType(db_value.to_string()),
+                                };
+                                row.map.entry(column.id).insert_entry(value);
+                            }
                         }
                     }
                 }

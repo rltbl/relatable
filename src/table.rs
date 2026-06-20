@@ -248,7 +248,7 @@ impl Table {
         rltbl: &Relatable,
     ) -> Result<RowID> {
         let sql = format!(
-            r#"SELECT "_id" FROM "{table}" WHERE "_order" < (SELECT _order FROM "{table}" WHERE _id = $1)
+            r#"SELECT "_id" FROM "{table}_union" WHERE "_order" < (SELECT _order FROM "{table}_union" WHERE _id = $1)
                ORDER BY "_order" DESC LIMIT 1"#,
         );
         match rltbl.pool.query(&sql, [row_id]).await?.value() {
