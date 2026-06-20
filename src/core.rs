@@ -1198,7 +1198,7 @@ impl Relatable {
     }
 
     /// Record the given [ChangeSet] to the change and history tables.
-    pub async fn record_changeset(&self, changeset: &ChangeSet) -> Result<()> {
+    pub async fn record_changeset(&self, changeset: &ChangeSet) -> Result<RowID> {
         let user = changeset.user.clone();
         let action = changeset.action.to_string();
         let table = changeset.table.clone();
@@ -1237,7 +1237,27 @@ impl Relatable {
         );
         let content = to_value(&changeset.changes).unwrap_or_default();
         let params = params![user, action, &table, description, content.to_string()];
-        let _change_id: RowID = self.pool.query(&statement, params).await?.try_into()?;
+        let change_id: RowID = self.pool.query(&statement, params).await?.try_into()?;
+
+        for change in changeset.changes.clone() {
+            match change {
+                Change::Update {
+                    row, before, after, ..
+                } => {
+                    self.history_table()
+                        .append(rltbl::history::History {
+                            history_id: 0,
+                            change_id,
+                            table: changeset.table.to_string(),
+                            row,
+                            before,
+                            after,
+                        })
+                        .await?;
+                }
+                _ => (),
+            }
+        }
 
         // for change in &changeset.changes {
         //     match change {
@@ -1349,7 +1369,7 @@ impl Relatable {
         //     };
         // }
 
-        Ok(())
+        Ok(change_id)
     }
 
     /// Returns a vector of the names of the tables that have entries in the table table
@@ -2074,15 +2094,44 @@ impl Relatable {
         changeset.action = ChangeAction::Undo;
         for change in changeset.changes.iter() {
             match change {
-                Change::Update { .. } => todo!("undo update"),
+                Change::Update { row, column, .. } => {
+                    let histories = self.history_table().histories(change_id).await?;
+                    let pairs: Vec<(RowID, UserRow)> = histories
+                        .into_iter()
+                        .filter(|h| h.row == *row)
+                        .filter(|h| h.table == changeset.table)
+                        .map(|h| (h.row, user_row! { column => DbValue::from(h.before) }))
+                        .collect();
+                    self.get_table2(&changeset.table)
+                        .await?
+                        .update(&pairs)
+                        .await?;
+                }
                 Change::Add { row, .. } => {
                     self.get_table2(&changeset.table)
                         .await?
                         .delete(&[*row])
                         .await?;
                 }
-                Change::Move { .. } => todo!("undo move"),
-                Change::Delete { .. } => todo!("undo delete"),
+                Change::Move { row, .. } => {
+                    let histories = self.history_table().histories(change_id).await?;
+                    let pairs: Vec<(RowID, RowOrder)> = histories
+                        .into_iter()
+                        .filter(|h| h.row == *row)
+                        .filter(|h| h.table == changeset.table)
+                        .map(|h| (h.row, h.before.as_i64().unwrap_or_default()))
+                        .collect();
+                    self.get_table2(&changeset.table)
+                        .await?
+                        .move_to(&pairs)
+                        .await?;
+                }
+                Change::Delete { row, .. } => {
+                    self.get_table2(&changeset.table)
+                        .await?
+                        .undelete(&[*row])
+                        .await?;
+                }
             }
         }
         self.prepare_user_cursor(&changeset).await?;
@@ -2105,18 +2154,50 @@ impl Relatable {
                 Some(changeset) => changeset,
             };
         tracing::debug!("Last redoable action (ID {change_id}) for user {user} was {changeset:?}");
+        println!("Last redoable action (ID {change_id}) for user {user} was {changeset:?}");
         changeset.action = ChangeAction::Redo;
         for change in changeset.changes.iter() {
             match change {
-                Change::Update { .. } => todo!("redo update"),
+                Change::Update { row, column, .. } => {
+                    let histories = self.history_table().histories(change_id).await?;
+                    let pairs: Vec<(RowID, UserRow)> = histories
+                        .into_iter()
+                        .inspect(|h| println!("{h:?}"))
+                        .filter(|h| h.row == *row)
+                        .filter(|h| h.table == changeset.table)
+                        .map(|h| (h.row, user_row! { column => DbValue::from(h.before) }))
+                        .collect();
+                    println!("pairs {change_id} {row} {} {pairs:?}", changeset.table);
+                    self.get_table2(&changeset.table)
+                        .await?
+                        .update(&pairs)
+                        .await?;
+                }
                 Change::Add { row, .. } => {
                     self.get_table2(&changeset.table)
                         .await?
                         .undelete(&[*row])
                         .await?;
                 }
-                Change::Move { .. } => todo!("redo move"),
-                Change::Delete { .. } => todo!("redo delete"),
+                Change::Move { row, .. } => {
+                    let histories = self.history_table().histories(change_id).await?;
+                    let pairs: Vec<(RowID, RowOrder)> = histories
+                        .into_iter()
+                        .filter(|h| h.row == *row)
+                        .filter(|h| h.table == changeset.table)
+                        .map(|h| (h.row, h.before.as_i64().unwrap_or_default()))
+                        .collect();
+                    self.get_table2(&changeset.table)
+                        .await?
+                        .move_to(&pairs)
+                        .await?;
+                }
+                Change::Delete { row, .. } => {
+                    self.get_table2(&changeset.table)
+                        .await?
+                        .delete(&[*row])
+                        .await?;
+                }
             }
         }
         self.prepare_user_cursor(&changeset).await?;
@@ -2284,50 +2365,49 @@ impl Relatable {
     pub async fn set_value(
         &self,
         user: &str,
-        table: &str,
-        row: RowID,
+        table_name: &str,
+        row_id: RowID,
         column: &str,
         value: &JsonValue,
     ) -> Result<ChangeSet> {
         let schema = self.schema().await?;
-        if !schema.tables.contains_key(table) {
-            return Err(RelatableError::DataError(format!("No such table: {table}")).into());
+        if !schema.tables.contains_key(table_name) {
+            return Err(RelatableError::DataError(format!("No such table: {table_name}")).into());
         }
-        if schema.column(table, column).is_none() {
+        if schema.column(table_name, column).is_none() {
             return Err(RelatableError::DataError(format!("No such column: {column}")).into());
         }
-        let rows = self
-            .pool
-            .query(
-                &format!(r#"SELECT COUNT(1) FROM "{table}" WHERE _id = $1"#),
-                [row],
-            )
-            .await?;
-        if rows.len() == 0 {
-            return Err(RelatableError::DataError(format!("No such row: {row}")).into());
-        }
+        let table = self.get_table2(table_name).await?;
+        let row = table.get_row(row_id).await?;
+        let before = match row.get(column) {
+            Some(value) => value.clone(),
+            None => {
+                return Err(RelatableError::DataError(format!(
+                    "No such column: {column} for row {row:?}"
+                ))
+                .into())
+            }
+        };
 
-        let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#);
-        let before = self.pool.query(&sql, [row]).await?.value()?.clone();
-
-        self.get_table2(table)
-            .await?
-            .update(&[(row, user_row! {column => DbValue::from(value)})])
+        table
+            .update(&[(row_id, user_row! {column => DbValue::from(value)})])
             .await?;
 
-        // TODO: Store this change.
-        Ok(ChangeSet {
+        let changeset = ChangeSet {
             user: user.to_string(),
             action: ChangeAction::Do,
-            table: table.to_string(),
+            table: table_name.to_string(),
             description: "Set one value".to_string(),
             changes: vec![Change::Update {
-                row,
+                row: row_id,
                 column: column.to_string(),
-                before: before.into(),
+                before: before.clone().into(),
                 after: value.clone(),
             }],
-        })
+        };
+        self.prepare_user_cursor(&changeset).await?;
+        self.record_changeset(&changeset).await?;
+        Ok(changeset)
     }
 
     /// Update the database using the given [ChangeSet]
@@ -2599,24 +2679,21 @@ impl Relatable {
         if !schema.tables.contains_key(table_name) {
             return Err(RelatableError::DataError(format!("No such table: {table_name}")).into());
         }
-        let count = self
-            .pool
-            .query(
-                &format!(r#"SELECT COUNT(1) FROM "{table_name}" WHERE _id = $1"#),
-                [row_id],
-            )
-            .await?
-            .len();
-        if count == 0 {
-            return Ok(count as usize);
-        }
-        let num_deleted = self
-            ._delete_row(&ChangeAction::Do, table_name, user, row_id)
-            .await?;
-        if num_deleted > 0 {
-            self.commit_to_git().await?;
-        }
-        Ok(num_deleted)
+        self.get_table2(table_name).await?.delete(&[row_id]).await?;
+
+        let changeset = ChangeSet {
+            action: ChangeAction::Do,
+            table: table_name.to_string(),
+            user: user.to_string(),
+            description: "Delete one row".to_string(),
+            changes: vec![Change::Delete {
+                row: row_id,
+                after: Table::get_previous_row_id(table_name, row_id, self).await?,
+            }],
+        };
+        self.prepare_user_cursor(&changeset).await?;
+        self.record_changeset(&changeset).await?;
+        Ok(1)
     }
 
     /// Delete messages from the message table. Returns the number of messages deleted.
@@ -2725,14 +2802,42 @@ impl Relatable {
         user: &str,
         row_id: RowID,
         after_id: RowID,
-    ) -> Result<RowOrder> {
-        let new_order = self
-            ._move_and_record_row(&ChangeAction::Do, table_name, user, row_id, after_id)
+    ) -> Result<()> {
+        let table = self.get_table2(table_name).await?;
+        let previous_row = table.get_row(row_id).await?;
+        let previous_order = previous_row
+            .get("_order")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default() as RowOrder;
+        let from_after = previous_row
+            .get("_id")
+            .and_then(|v| v.as_i32())
+            .unwrap_or_default() as RowID;
+        let changeset = ChangeSet {
+            action: ChangeAction::Do,
+            table: table_name.to_string(),
+            user: user.to_string(),
+            description: "Move one row".to_string(),
+            changes: vec![Change::Move {
+                row: row_id,
+                from_after,
+                to_after: after_id,
+            }],
+        };
+        table.move_after(after_id, &[row_id]).await?;
+        self.prepare_user_cursor(&changeset).await?;
+        let change_id = self.record_changeset(&changeset).await?;
+        self.history_table()
+            .append(rltbl::history::History {
+                history_id: 0,
+                change_id,
+                table: table_name.to_string(),
+                row: row_id,
+                before: json!(previous_order),
+                after: JsonValue::Null,
+            })
             .await?;
-        if new_order != 0 {
-            self.commit_to_git().await?;
-        }
-        Ok(new_order)
+        Ok(())
     }
 
     /// Move a row to a different position in a given table
@@ -3489,7 +3594,6 @@ mod tests {
         rltbl.drop_test().await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_1() -> Result<()> {
         let name = "test_history_1";
@@ -3541,7 +3645,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_3() -> Result<()> {
         let name = "test_history_3";
@@ -3566,7 +3669,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_4() -> Result<()> {
         let name = "test_history_4";
@@ -3591,7 +3693,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_5() -> Result<()> {
         let name = "test_history_5";
@@ -3633,7 +3734,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_6() -> Result<()> {
         let name = "test_history_6";
@@ -3657,7 +3757,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_7() -> Result<()> {
         let name = "test_history_7";
@@ -3684,7 +3783,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_8() -> Result<()> {
         let name = "test_history_8";
@@ -3716,7 +3814,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_9() -> Result<()> {
         let name = "test_history_9";
@@ -3749,7 +3846,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_10() -> Result<()> {
         let name = "test_history_10";
@@ -3784,7 +3880,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_11() -> Result<()> {
         let name = "test_history_11";
@@ -3809,7 +3904,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_12() -> Result<()> {
         let name = "test_history_12";
@@ -3834,7 +3928,6 @@ mod tests {
         test_history(name, actions, history).await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_history_13() -> Result<()> {
         let name = "test_history_13";
@@ -3990,7 +4083,6 @@ mod tests {
         rltbl.drop_test().await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_random_editing_loop() -> Result<()> {
         for i in 1..2 {

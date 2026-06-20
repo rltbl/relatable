@@ -2,7 +2,7 @@ use crate::{self as rltbl, column::Column};
 use indexmap::IndexMap;
 use rltbl::{
     column::{Columns, SqlColumn},
-    core::{RelatableError, RowID, RowOrder, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
+    core::{RowID, RowOrder, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
 };
 use rltbl_db::{
     any::AnyPool,
@@ -343,6 +343,13 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         Ok(())
     }
 
+    async fn get_row(&self, id: RowID) -> Result<DbRow> {
+        let table_name = self.name();
+        let sql = format!(r#"SELECT * FROM "{table_name}_union" WHERE "_id" = $1;"#);
+        let rows = self.pool().query(&sql, [id]).await?;
+        Ok(rows.row()?.clone())
+    }
+
     /// Return UserRows with only the columns for this table,
     /// and none of the meta columns.
     fn sanitize_rows(&self, rows: UserRows) -> UserRows {
@@ -487,6 +494,7 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
     /// after a given RowID.
     async fn new_orders_after(&self, count: usize, after_id: RowID) -> Result<Vec<RowOrder>> {
         // TODO: Account for history/change table:
+        let table_name = self.name();
         let sql = format!(
             r#"SELECT _order
             FROM "{table_name}_union"
@@ -496,8 +504,7 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
                 WHERE _id = $1
             )
             ORDER BY _order
-            LIMIT 2"#,
-            table_name = self.name()
+            LIMIT 2"#
         );
         let mut orders: Vec<RowOrder> = self
             .pool()
@@ -506,12 +513,19 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .try_into_vec()
             .unwrap_or_default();
 
+        // If we didn't find an order, insert at the beginning.
         if orders.len() == 0 {
-            return Err(
-                RelatableError::DataError(format!("No orders found for {}", self.name())).into(),
-            );
+            let sql = format!(r#"SELECT MIN(_order) FROM "{table_name}_union" LIMIT 1"#,);
+            let min_order: RowOrder = self
+                .pool()
+                .query(&sql, ())
+                .await?
+                .try_into()
+                .unwrap_or_default();
+            orders = vec![0, min_order];
         }
 
+        // If we found only one order, append too end.
         if orders.len() == 1 {
             let max_order = orders.first().unwrap();
             let new_orders = (1..=count)
@@ -537,7 +551,8 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         Ok(new_orders)
     }
 
-    async fn reorder(&self, _previous_order: RowOrder, _count: usize) -> Result<usize> {
+    async fn reorder(&self, previous_order: RowOrder, count: usize) -> Result<usize> {
+        println!("REORDER: {previous_order} {count}");
         todo!("implement reorder");
     }
 

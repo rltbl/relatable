@@ -770,15 +770,10 @@ pub async fn move_row(cli: &Cli, table: &str, row: RowID, after_id: RowID) {
         .await
         .expect("Connect error");
     let user = get_username(&cli);
-    let new_order = rltbl
+    rltbl
         .move_row(table, &user, row, after_id)
         .await
         .expect("Failed to move row");
-    if new_order > 0 {
-        tracing::info!("Moved row {row} after row {after_id}");
-    } else {
-        std::process::exit(1);
-    }
 }
 
 /// Validate the given row in the given table

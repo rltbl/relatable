@@ -207,15 +207,10 @@ async fn main() {
                         "move" => {
                             let after_id = random_between(1, *table_size, &mut -1) as RowID;
                             let row = random_between(1, *table_size, &mut -1) as RowID;
-                            let new_order = rltbl
+                            rltbl
                                 .move_row(table, &user, row, after_id)
                                 .await
                                 .expect("Failed to move row within {table}");
-                            if new_order > 0 {
-                                tracing::info!("Moved row {row} after row {after_id} in {table}");
-                            } else {
-                                panic!("No changes made to {table}");
-                            }
                         }
                         operation => panic!("Unrecognized operation: {operation}"),
                     }
