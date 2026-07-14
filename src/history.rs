@@ -107,7 +107,7 @@ impl<'a> HistoryTable<'a> {
     pub async fn append(&self, history: History) -> Result<History> {
         let mut row: DbRow = history.into();
         row.map.shift_remove("history_id");
-        println!("append history as {row:?}");
+        // println!("append history as {row:?}");
         let columns: Vec<&str> = row.keys().map(|c| c.as_str()).collect();
         let rows: Vec<History> = self
             .pool()

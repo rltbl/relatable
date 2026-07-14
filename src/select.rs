@@ -1510,14 +1510,27 @@ impl Filter {
                 table,
                 column,
                 value,
-            } => Ok((
-                format!(
-                    r#"{lhs} = {sql_param}"#,
-                    lhs = generate_lhs(table, column),
-                    sql_param = sql_param.next()
-                ),
-                vec![value.clone()],
-            )),
+            } => {
+                if value.is_bool() {
+                    let value = match value.as_bool().unwrap() {
+                        true => "TRUE",
+                        false => "FALSE",
+                    };
+                    Ok((
+                        format!(r#"{lhs} = {value}"#, lhs = generate_lhs(table, column)),
+                        vec![],
+                    ))
+                } else {
+                    Ok((
+                        format!(
+                            r#"{lhs} = {sql_param}"#,
+                            lhs = generate_lhs(table, column),
+                            sql_param = sql_param.next()
+                        ),
+                        vec![value.clone()],
+                    ))
+                }
+            }
             Filter::NotEqual {
                 table,
                 column,

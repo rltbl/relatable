@@ -451,7 +451,8 @@ pub async fn print_table(
         .offset(offset);
 
     // We will use the default view to retrieve the data:
-    select.view_name = format!("{table_name}_default_view");
+    select.view_name = format!("{table_name}_text");
+    select.where_eq("_deleted", false).unwrap();
 
     match format.to_lowercase().as_str() {
         "json" => {

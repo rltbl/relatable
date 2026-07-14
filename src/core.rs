@@ -532,6 +532,7 @@ impl Relatable {
 
         // Fetch the data
         let (statement, parameters) = select.to_sql(&self.pool.kind())?;
+        // println!("{statement} {parameters:#?}");
         let params = parameters.clone();
         let db_rows = self.pool.query(&statement, params).await?;
         let count = db_rows.len();
@@ -1018,7 +1019,7 @@ impl Relatable {
         let result = Table::view_exists(table_name, "default", self).await?;
         let view = {
             if result {
-                format!("{table_name}_default_view")
+                format!("{table_name}_text")
             } else {
                 String::from("")
             }
@@ -2154,7 +2155,7 @@ impl Relatable {
                 Some(changeset) => changeset,
             };
         tracing::debug!("Last redoable action (ID {change_id}) for user {user} was {changeset:?}");
-        println!("Last redoable action (ID {change_id}) for user {user} was {changeset:?}");
+        // println!("Last redoable action (ID {change_id}) for user {user} was {changeset:?}");
         changeset.action = ChangeAction::Redo;
         for change in changeset.changes.iter() {
             match change {
@@ -2407,6 +2408,9 @@ impl Relatable {
         };
         self.prepare_user_cursor(&changeset).await?;
         self.record_changeset(&changeset).await?;
+        if changeset.changes.len() > 0 {
+            self.commit_to_git().await?;
+        }
         Ok(changeset)
     }
 
@@ -2596,6 +2600,14 @@ impl Relatable {
             .as_i32()
             .expect("ID is i32");
 
+        // This is a hack to preserve old history behaviour.
+        let after_id = match after_id {
+            Some(after_id) => after_id,
+            None => crate::table::Table::get_previous_row_id(table_name, row_id, &self)
+                .await
+                .expect("get after id"),
+        };
+
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with the new_row's id and position in the table:
         let changeset = ChangeSet {
@@ -2605,7 +2617,7 @@ impl Relatable {
             description: "Add one row".to_string(),
             changes: vec![Change::Add {
                 row: row_id,
-                after: after_id.unwrap_or_default(),
+                after: after_id,
             }],
         };
 
@@ -2809,10 +2821,12 @@ impl Relatable {
             .get("_order")
             .and_then(|v| v.as_i64())
             .unwrap_or_default() as RowOrder;
-        let from_after = previous_row
-            .get("_id")
-            .and_then(|v| v.as_i32())
-            .unwrap_or_default() as RowID;
+
+        // This is a hack to maintain old history list behaviour.
+        let from_after = crate::table::Table::get_previous_row_id(table_name, row_id, &self)
+            .await
+            .expect("get after id");
+
         let changeset = ChangeSet {
             action: ChangeAction::Do,
             table: table_name.to_string(),
