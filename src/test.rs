@@ -184,6 +184,7 @@ async fn main() {
                             let row_to_update = random_between(1, *table_size, &mut -1) as RowID;
                             let num_changes = rltbl
                                 .set_values(&ChangeSet {
+                                    change_id: 0,
                                     user,
                                     action: ChangeAction::Do,
                                     table: table.to_string(),

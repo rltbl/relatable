@@ -18,10 +18,12 @@ use serde_json::Value as JsonValue;
 /// A set of changes made by a user to a table.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChangeSet {
+    pub change_id: RowID,
     pub action: ChangeAction,
     pub table: String,
     pub user: String,
     pub description: String,
+    #[serde(rename = "content")]
     pub changes: Vec<Change>,
 }
 
@@ -250,9 +252,11 @@ impl<'a> ChangeTable<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::Relatable;
+
     use super::*;
     use pretty_assertions::assert_eq;
-    use rltbl_db::any::AnyPool;
+    use rltbl_db::{any::AnyPool, core::DbQuery};
 
     #[tokio::test]
     async fn test_ddl() {
@@ -270,5 +274,52 @@ mod tests {
 );"#,
             table.ddl()
         )
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_changeset_insert() {
+        let rltbl = Relatable::test("test_changeset_insert", false)
+            .await
+            .expect("create test database");
+        rltbl.user_table().get_or_insert("bar").await;
+        let changeset = ChangeSet {
+            change_id: 1,
+            action: ChangeAction::Do,
+            table: "foo".to_string(),
+            user: "bar".to_string(),
+            description: "baz".to_string(),
+            changes: Vec::new(),
+        };
+        let row = rltbl_db::serde::to_db_row(&changeset).expect("conver to row");
+        println!("row {row:#?}");
+        rltbl
+            .pool
+            .insert(
+                "change",
+                &[
+                    "change_id",
+                    "action",
+                    "table",
+                    "user",
+                    "description",
+                    "changes",
+                ],
+                &[&row],
+            )
+            .await
+            .expect("insert row");
+        let rows = rltbl
+            .pool
+            .query(
+                r#"SELECT * FROM change WHERE "user" = $1 ORDER BY change_id"#,
+                &["bar"],
+            )
+            .await
+            .expect("get one row");
+        let row = rows.row().expect("one row");
+        let result: ChangeSet = rltbl_db::serde::from_db_row(row).expect("convert to changeset");
+        print!("result {result:#?}");
+        assert!(false, "DONE");
     }
 }

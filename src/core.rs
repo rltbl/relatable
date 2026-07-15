@@ -1187,6 +1187,7 @@ impl Relatable {
                 Ok(Some((
                     change_id,
                     ChangeSet {
+                        change_id,
                         action: *action,
                         table,
                         user,
@@ -1462,6 +1463,7 @@ impl Relatable {
                 Ok(Some((
                     change_id,
                     ChangeSet {
+                        change_id,
                         action: ChangeAction::from_str(
                             change
                                 .get("action")
@@ -1512,6 +1514,7 @@ impl Relatable {
                 Ok(Some((
                     change_id,
                     ChangeSet {
+                        change_id,
                         action: ChangeAction::from_str(
                             change
                                 .get("action")
@@ -1538,6 +1541,40 @@ impl Relatable {
                 )))
             }
         }
+    }
+
+    /// Collect the user's undo/redo history.
+    pub async fn get_user_history2(&self, user: &str) -> Result<(Vec<ChangeSet>, Vec<ChangeSet>)> {
+        let sql = r#"SELECT * FROM change WHERE "user" = $1 ORDER BY change_id"#;
+        let rows = self.pool.query(sql, [user]).await?;
+        println!("rows {rows:#?}");
+        let changesets: Vec<ChangeSet> = self.pool.query(sql, [user]).await?.try_into_vec()?;
+
+        let mut undoable = Vec::new();
+        let mut redoable = Vec::new();
+
+        for changeset in changesets {
+            // println!("{:4} {:?}", change.action.to_string(), change.operation);
+            match changeset.action {
+                ChangeAction::Do => {
+                    undoable.push(changeset);
+                    redoable.clear();
+                }
+                ChangeAction::Undo => {
+                    undoable.pop();
+                    redoable.push(changeset);
+                }
+                ChangeAction::Redo => {
+                    redoable.pop();
+                    undoable.push(changeset);
+                }
+            }
+        }
+
+        undoable.reverse();
+        redoable.reverse();
+
+        Ok((undoable, redoable))
     }
 
     /// Return a [History] for the given user with at most `context` (or [HISTORY_MAX] if this
@@ -1901,17 +1938,6 @@ impl Relatable {
 
         let mut lines = Vec::new();
 
-        let history = self
-            .get_user_history(
-                username,
-                match context {
-                    0 => None,
-                    _ => Some(context),
-                },
-            )
-            .await
-            .expect("Could not get history");
-
         let (undoable_changes, mut redoable_changes) = (
             history.changes_done_stack.clone(),
             history.changes_undone_stack.clone(),
@@ -2069,6 +2095,7 @@ impl Relatable {
                         };
                     }
                     Ok(Some(ChangeSet {
+                        change_id,
                         action: changeset.action,
                         table: changeset.table.clone(),
                         user: changeset.user.clone(),
@@ -2341,6 +2368,7 @@ impl Relatable {
 
         let num_changes = actual_changes.len();
         let actual_changeset = ChangeSet {
+            change_id: changeset.change_id,
             action: changeset.action,
             table: changeset.table.clone(),
             user: changeset.user.clone(),
@@ -2395,6 +2423,7 @@ impl Relatable {
             .await?;
 
         let changeset = ChangeSet {
+            change_id: 0,
             user: user.to_string(),
             action: ChangeAction::Do,
             table: table_name.to_string(),
@@ -2545,6 +2574,7 @@ impl Relatable {
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with the new_row's id and position in the table:
         let changeset = ChangeSet {
+            change_id: 0,
             action: *action,
             table: table_name.to_string(),
             user: user.to_string(),
@@ -2611,6 +2641,7 @@ impl Relatable {
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // the addition of one new row with the new_row's id and position in the table:
         let changeset = ChangeSet {
+            change_id: 0,
             action: ChangeAction::Do,
             table: table_name.to_string(),
             user: user.to_string(),
@@ -2652,6 +2683,7 @@ impl Relatable {
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row with the given row number at the given table position has been deleted:
         let changeset = ChangeSet {
+            change_id: 0,
             action: *action,
             table: table_name.to_string(),
             user: user.to_string(),
@@ -2694,6 +2726,7 @@ impl Relatable {
         self.get_table2(table_name).await?.delete(&[row_id]).await?;
 
         let changeset = ChangeSet {
+            change_id: 0,
             action: ChangeAction::Do,
             table: table_name.to_string(),
             user: user.to_string(),
@@ -2782,6 +2815,7 @@ impl Relatable {
         // Prepare a changeset to be recorded, consisting of a single change record indicating
         // that a row has been displaced from somewhere to somewhere else.
         let changeset = ChangeSet {
+            change_id: 0,
             action: *action,
             table: table_name.to_string(),
             user: user.to_string(),
@@ -2828,6 +2862,7 @@ impl Relatable {
             .expect("get after id");
 
         let changeset = ChangeSet {
+            change_id: 0,
             action: ChangeAction::Do,
             table: table_name.to_string(),
             user: user.to_string(),
