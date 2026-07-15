@@ -25,8 +25,8 @@ use rltbl::{
 };
 use rltbl_db::{
     any::AnyPool,
-    core::{CachingStrategy, DbQuery},
-    db_kind::DbKind,
+    cache::CachingStrategy,
+    core::DbQuery,
     db_row,
     db_value::{DbRow, DbValue, IntoDbRow, JsonRow},
     params,
@@ -71,16 +71,17 @@ pub type RowOrder = i64;
 pub static ORDER_SQL_TYPE: &str = "BIGINT";
 
 /// Return the meta column definitions for this kind of SQL database.
-pub fn id_ddl(kind: &DbKind) -> String {
+pub fn id_ddl(kind: &str) -> String {
     match kind {
-        DbKind::SQLite => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        DbKind::PostgreSQL => "SERIAL PRIMARY KEY",
+        "SQLite" => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        "PostgreSQL" => "SERIAL PRIMARY KEY",
+        _ => unimplemented!(),
     }
     .to_string()
 }
 
 /// Return the meta column definitions for this kind of SQL database.
-pub fn meta_column_ddl(kind: &DbKind) -> String {
+pub fn meta_column_ddl(kind: &str) -> String {
     vec![
         format!("_id {}", id_ddl(kind)),
         format!("_order {ORDER_SQL_TYPE} UNIQUE"),
@@ -298,8 +299,8 @@ impl Relatable {
     /// - all of the datatypes from the "datatype" table
     // TODO: eliminate this old function.
     pub async fn _schema(&self) -> Result<Schema> {
-        let sql = match self.pool.kind() {
-            DbKind::SQLite => {
+        let sql = match self.pool.kind().name().as_str() {
+            "SQLite" => {
                 r#"SELECT
                        main.name AS "table",
                        tbl.path
@@ -309,7 +310,7 @@ impl Relatable {
                      AND main.name != 'sqlite_sequence'
                      AND main.name NOT LIKE '%_alt';"#
             }
-            DbKind::PostgreSQL => {
+            "PostgreSQL" => {
                 r#"SELECT
                        main.table_name AS "table",
                        tbl.path
@@ -321,6 +322,7 @@ impl Relatable {
                        WHERE "name" = 'search_path'
                    ) AND main.table_name NOT LIKE '%_alt';"#
             }
+            _ => unimplemented!(),
         };
         let tables: Vec<Table> = self
             .pool
@@ -333,9 +335,10 @@ impl Relatable {
             .map(|table: Table| (table.name.clone(), table))
             .collect::<IndexMap<String, Table>>();
 
-        let sql = match self.pool.kind() {
-            DbKind::SQLite => "SELECT name FROM sqlite_master WHERE type = 'view'",
-            DbKind::PostgreSQL => r#"SELECT table_name FROM information_schema.views;"#,
+        let sql = match self.pool.kind().name().as_str() {
+            "SQLite" => "SELECT name FROM sqlite_master WHERE type = 'view'",
+            "PostgreSQL" => r#"SELECT table_name FROM information_schema.views;"#,
+            _ => unimplemented!(),
         };
         let views = self.pool.query(sql, ()).await?.to_strings()?;
         for table in tables.values_mut() {
@@ -393,11 +396,12 @@ impl Relatable {
 
     /// Check that a table exists in the database.
     pub async fn table_exists(&self, table_name: &str) -> Result<bool> {
-        let sql = match self.pool.kind() {
-            DbKind::SQLite => "SELECT name FROM sqlite_master WHERE name = $1",
-            DbKind::PostgreSQL => {
+        let sql = match self.pool.kind().name().as_str() {
+            "SQLite" => "SELECT name FROM sqlite_master WHERE name = $1",
+            "PostgreSQL" => {
                 r#"SELECT table_name FROM information_schema.tables WHERE table_name = $1;"#
             }
+            _ => unimplemented!(),
         };
         // TODO: support Postgres
         let rows = self.pool.query(sql, [table_name]).await?;
@@ -410,11 +414,12 @@ impl Relatable {
             self.delete_message(table_name, &[], None, None, None)
                 .await?;
             // TODO: delete history and changes
-            let sql = match self.pool.kind() {
-                DbKind::SQLite => format!(r#"DROP TABLE "{table_name}""#),
-                DbKind::PostgreSQL => {
+            let sql = match self.pool.kind().name().as_str() {
+                "SQLite" => format!(r#"DROP TABLE "{table_name}""#),
+                "PostgreSQL" => {
                     format!(r#"DROP TABLE "{table_name}" CASCADE"#)
                 }
+                _ => unimplemented!(),
             };
             self.pool.execute_batch(&sql).await?;
             Ok(true)
@@ -531,7 +536,7 @@ impl Relatable {
             .collect::<Vec<Column>>();
 
         // Fetch the data
-        let (statement, parameters) = select.to_sql(&self.pool.kind())?;
+        let (statement, parameters) = select.to_sql(&self.pool.kind().name())?;
         // println!("{statement} {parameters:#?}");
         let params = parameters.clone();
         let db_rows = self.pool.query(&statement, params).await?;
@@ -599,7 +604,7 @@ impl Relatable {
     /// Use the given [Select] to fetch data from the database.
     pub async fn fetch_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
         tracing::trace!("Relatable::fetch_rows({select:?})");
-        let (statement, params) = select.to_sql(&self.pool.kind())?;
+        let (statement, params) = select.to_sql(&self.pool.kind().name())?;
         let rows = self.pool.query(&statement, params).await?.try_into_vec()?;
         Ok(rows)
     }
@@ -607,7 +612,7 @@ impl Relatable {
     /// Get the number of rows returned by this [Select] using the given caching strategy.
     pub async fn count(&self, select: &Select) -> Result<u64> {
         tracing::trace!("Relatable::count({select:?})");
-        let (statement, params) = select.to_sql_count(&self.pool.kind())?;
+        let (statement, params) = select.to_sql_count(&self.pool.kind().name())?;
         let count = self.pool.query(&statement, params).await?.try_into()?;
         Ok(count)
     }
@@ -654,7 +659,7 @@ impl Relatable {
 
             let sql = format!(
                 r#"DELETE FROM "table" WHERE "table" = {sql_param}"#,
-                sql_param = SqlParam::new(&db_kind).next(),
+                sql_param = SqlParam::new(&db_kind.name()).next(),
             );
             self.pool
                 .execute(&sql, [table_name])
@@ -663,7 +668,7 @@ impl Relatable {
         }
         let sql = format!(
             r#"INSERT INTO "table" ("table", "path") VALUES ({sql_params})"#,
-            sql_params = SqlParam::new(&db_kind).get_as_list(2)
+            sql_params = SqlParam::new(&db_kind.name()).get_as_list(2)
         );
         self.pool
             .execute(&sql, [table_name, path])
@@ -699,8 +704,14 @@ impl Relatable {
 
         // Generate the SQL statements needed to create the table and execute them:
         let datatypes = self.datatypes().await;
-        for sql in sql::generate_table_ddl(&table, &table_column_refs, &datatypes, force, &db_kind)
-            .expect("Error getting DDL")
+        for sql in sql::generate_table_ddl(
+            &table,
+            &table_column_refs,
+            &datatypes,
+            force,
+            &db_kind.name(),
+        )
+        .expect("Error getting DDL")
         {
             self.pool
                 .execute(&sql, ())
@@ -726,11 +737,12 @@ impl Relatable {
         let mut order: RowOrder = id as RowOrder * NEW_ORDER_MULTIPLIER;
         let sql_first_part = format!(r#"INSERT INTO "{table_name}" ({columns_line}) VALUES "#);
         let mut sql_value_parts = vec![];
-        let mut sql_param_gen = SqlParam::new(&self.pool.kind());
+        let mut sql_param_gen = SqlParam::new(&self.pool.kind().name());
         let mut param_values: Vec<DbValue> = Vec::new();
-        let max_params = match db_kind {
-            DbKind::SQLite => sql::MAX_PARAMS_SQLITE,
-            DbKind::PostgreSQL => sql::MAX_PARAMS_POSTGRES,
+        let max_params = match db_kind.name().as_str() {
+            "SQLite" => sql::MAX_PARAMS_SQLITE,
+            "PostgreSQL" => sql::MAX_PARAMS_POSTGRES,
+            _ => unimplemented!(),
         };
         while let Some(row) = records.next() {
             let row = row.expect("Error processing row");
@@ -1122,7 +1134,7 @@ impl Relatable {
         // Stage any modified table files that have a path in the table table:
         let sql = format!(
             r#"SELECT "path" FROM "table" WHERE "path" {is_not} NULL"#,
-            is_not = sql::is_not_clause(&self.pool.kind()),
+            is_not = sql::is_not_clause(&self.pool.kind().name()),
         );
         let paths = self.pool.query(&sql, ()).await?.to_strings()?;
         git::add(&paths)?;
@@ -1139,7 +1151,7 @@ impl Relatable {
         user: &str,
         action: &ChangeAction,
     ) -> Result<Option<(RowID, ChangeSet)>> {
-        let mut sql_param = SqlParam::new(&self.pool.kind());
+        let mut sql_param = SqlParam::new(&self.pool.kind().name());
         let sql = format!(
             r#"SELECT "change_id", "user", "table", "description", "content"
                FROM "change"
@@ -1235,7 +1247,7 @@ impl Relatable {
             r#"INSERT INTO change("user", "action", "table", "description", "content")
                VALUES ({sql_params})
                RETURNING change_id"#,
-            sql_params = SqlParam::new(&self.pool.kind()).get_as_list(5)
+            sql_params = SqlParam::new(&self.pool.kind().name()).get_as_list(5)
         );
         let content = to_value(&changeset.changes).unwrap_or_default();
         let params = params![user, action, &table, description, content.to_string()];
@@ -1686,7 +1698,7 @@ impl Relatable {
                  FROM "change"
                 WHERE "user" = {sql_param}
                 ORDER BY "change_id" DESC"#,
-            sql_param = SqlParam::new(&self.pool.kind()).next()
+            sql_param = SqlParam::new(&self.pool.kind().name()).next()
         );
         let history: Vec<JsonRow> = self
             .pool
@@ -1938,6 +1950,17 @@ impl Relatable {
 
         let mut lines = Vec::new();
 
+        let history = self
+            .get_user_history(
+                username,
+                match context {
+                    0 => None,
+                    _ => Some(context),
+                },
+            )
+            .await
+            .expect("Could not get history");
+
         let (undoable_changes, mut redoable_changes) = (
             history.changes_done_stack.clone(),
             history.changes_undone_stack.clone(),
@@ -2058,7 +2081,7 @@ impl Relatable {
                                 let sql = format!(
                                     r#"SELECT "before" FROM "history"
                                        WHERE "change_id" = {sql_param}"#,
-                                    sql_param = SqlParam::new(&self.pool.kind()).next()
+                                    sql_param = SqlParam::new(&self.pool.kind().name()).next()
                                 );
                                 let before = match self.pool.query(&sql, [change_id]).await?.value()
                                 {
@@ -2473,7 +2496,7 @@ impl Relatable {
                VALUES
                ({sql_params})
                RETURNING "message_id""#,
-            sql_params = SqlParam::new(&self.pool.kind()).get_as_list(8)
+            sql_params = SqlParam::new(&self.pool.kind().name()).get_as_list(8)
         );
         let params = params![
             user,
@@ -2701,7 +2724,7 @@ impl Relatable {
         let sql = format!(
             r#"DELETE FROM "{}" WHERE "_id" = {sql_param} RETURNING 1 AS "deleted""#,
             table.name,
-            sql_param = SqlParam::new(&self.pool.kind()).next()
+            sql_param = SqlParam::new(&self.pool.kind().name()).next()
         );
 
         // Delete any messages associated with the row
@@ -2754,7 +2777,7 @@ impl Relatable {
             "Relatable::delete_message({self:?}, {table:?}, {rows:?}, {column:?}, \
              {target_rule:?}, {target_user:?})"
         );
-        let mut sql_param = SqlParam::new(&self.pool.kind());
+        let mut sql_param = SqlParam::new(&self.pool.kind().name());
         let mut sql = format!(
             r#"DELETE FROM "message" WHERE "table" = {sql_param}"#,
             sql_param = sql_param.next()
@@ -2899,7 +2922,7 @@ impl Relatable {
             let sql = format!(
                 r#"SELECT "_order" FROM "{}" WHERE "_id" = {sql_param}"#,
                 table.name,
-                sql_param = SqlParam::new(&rltbl.pool.kind()).next()
+                sql_param = SqlParam::new(&rltbl.pool.kind().name()).next()
             );
             let rows = rltbl.pool.query(&sql, [row_id]).await?;
             if rows.is_empty() {
@@ -2949,7 +2972,7 @@ impl Relatable {
             let sql = format!(
                 r#"SELECT MIN("_order") AS "_order" FROM "{}" WHERE "_order" > {sql_param}"#,
                 table.name,
-                sql_param = SqlParam::new(&self.pool.kind()).next()
+                sql_param = SqlParam::new(&self.pool.kind().name()).next()
             );
             let rows = self.pool.query(&sql, [order_prev]).await?;
             if rows.is_empty() {
@@ -2993,7 +3016,7 @@ impl Relatable {
                 let upper_bound = (order_next as f32 / NEW_ORDER_MULTIPLIER as f32).ceil()
                     as RowOrder
                     * NEW_ORDER_MULTIPLIER;
-                let mut sql_param = SqlParam::new(&self.pool.kind());
+                let mut sql_param = SqlParam::new(&self.pool.kind().name());
                 let sql = format!(
                     r#"SELECT "_order"
                          FROM "{}"
@@ -3043,7 +3066,7 @@ impl Relatable {
                               SET "_order" = "_order" + 1
                             WHERE "_order" = {sql_param}"#,
                         table.name,
-                        sql_param = SqlParam::new(&self.pool.kind()).next()
+                        sql_param = SqlParam::new(&self.pool.kind().name()).next()
                     );
                     self.pool.execute(&sql, [current_order]).await?;
                 }
@@ -3058,7 +3081,7 @@ impl Relatable {
             table = table.name
         );
 
-        let mut sql_param = SqlParam::new(&self.pool.kind());
+        let mut sql_param = SqlParam::new(&self.pool.kind().name());
         let sql = format!(
             r#"UPDATE "{}" SET "_order" = {sql_param_1}
                WHERE "_id" = {sql_param_2}
@@ -3282,8 +3305,8 @@ mod tests {
         pub async fn test(name: &str, create_dir: bool) -> Result<Relatable> {
             let url = Self::test_url(name)?;
             let pool = AnyPool::connect(&url).await?;
-            let url = match pool.kind() {
-                DbKind::SQLite => {
+            let url = match pool.kind().name().as_str() {
+                "SQLite" => {
                     let dir: &std::path::Path =
                         FilePath::new("build")
                             .parent()
@@ -3296,13 +3319,14 @@ mod tests {
                     }
                     url
                 }
-                DbKind::PostgreSQL => {
+                "PostgreSQL" => {
                     pool.execute(&format!(r#"DROP DATABASE IF EXISTS "{name}""#), ())
                         .await?;
                     pool.execute(&format!(r#"CREATE DATABASE "{name}""#), ())
                         .await?;
                     format!("postgresql:///{name}")
                 }
+                _ => unimplemented!(),
             };
             let mut rltbl = Self::init(&true, Some(&url), &CachingStrategy::Trigger).await?;
             rltbl.test_database = Some(name.to_owned());
@@ -3330,18 +3354,19 @@ mod tests {
                     "No test database configured"
                 )))?;
             let url = Self::test_url(&name)?;
-            match AnyPool::connection_kind(&url)? {
-                DbKind::SQLite => {
+            match AnyPool::connection_kind(&url)?.name().as_str() {
+                "SQLite" => {
                     let file = FilePath::new(&url);
                     if file.exists() {
                         std::fs::remove_file(&file)?;
                     }
                 }
-                DbKind::PostgreSQL => {
+                "PostgreSQL" => {
                     let pool = AnyPool::connect(&url).await?;
                     pool.execute(&format!(r#"DROP DATABASE "{name}" WITH (FORCE)"#), ())
                         .await?;
                 }
+                _ => unimplemented!(),
             };
 
             if let Some(path) = self.test_dir {

@@ -1041,7 +1041,7 @@ mod tests {
         let rltbl = Relatable::init(
             &true,
             Some(":memory:"),
-            &rltbl_db::core::CachingStrategy::None,
+            &rltbl_db::cache::CachingStrategy::None,
         )
         .await?;
 

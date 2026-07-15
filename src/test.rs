@@ -5,7 +5,7 @@ use rltbl::{
     core::{Relatable, RowID, RLTBL_DEFAULT_DB},
     select::Select,
 };
-use rltbl_db::core::CachingStrategy;
+use rltbl_db::cache::CachingStrategy;
 
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;

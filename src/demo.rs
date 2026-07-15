@@ -2,7 +2,7 @@ use crate::{self as rltbl};
 use rltbl::{
     core::Relatable, data_table::DataTableBuilder, datatype::DatatypeBuilder, tsv_table::TsvTable,
 };
-use rltbl_db::{core::DbQuery, db_kind::DbKind, params};
+use rltbl_db::{core::DbQuery, params};
 
 use anyhow::Result;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
@@ -146,7 +146,7 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
 pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) -> Result<()> {
     tracing::trace!("create_demo_tableset({rltbl:?}, {force}, {size})");
     if *force {
-        if let DbKind::PostgreSQL = rltbl.pool.kind() {
+        if &rltbl.pool.kind().name() == "PostgreSQL" {
             rltbl
                 .pool
                 .execute(&format!(r#"DROP TABLE IF EXISTS "study" CASCADE"#), ())

@@ -12,7 +12,7 @@ use rltbl::{
     sql::{self},
     tsv_table::TsvTable,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery, db_kind::DbKind, serde::to_db_row};
+use rltbl_db::{any::AnyPool, core::DbQuery, serde::to_db_row};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -73,13 +73,14 @@ impl Table {
     /// Drop the given table in the database
     pub async fn drop_table(&mut self, rltbl: &Relatable) -> Result<()> {
         tracing::trace!("Table::drop_data_tables({self:?}, {rltbl:?})");
-        let sql = match rltbl.pool.kind() {
-            DbKind::SQLite => {
+        let sql = match rltbl.pool.kind().name().as_str() {
+            "SQLite" => {
                 format!(r#"DROP TABLE IF EXISTS "{}""#, self.name)
             }
-            DbKind::PostgreSQL => {
+            "PostgreSQL" => {
                 format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, self.name)
             }
+            _ => unimplemented!(),
         };
         tracing::info!("Dropped table '{}'", self.name);
         rltbl.pool.execute(&sql, ()).await?;
@@ -89,13 +90,13 @@ impl Table {
     /// Query the database through the given [Relatable] instance to determine whether the given
     /// table exists.
     pub async fn table_exists(table_name: &str, rltbl: &Relatable) -> Result<bool> {
-        let (sql, params) = match rltbl.pool.kind() {
-            DbKind::SQLite => (
+        let (sql, params) = match rltbl.pool.kind().name().as_str() {
+            "SQLite" => (
                 r#"SELECT 1 FROM "sqlite_master"
                        WHERE "type" = $1 AND name = $2 LIMIT 1"#,
                 ["table", table_name],
             ),
-            DbKind::PostgreSQL => (
+            "PostgreSQL" => (
                 r#"SELECT 1 FROM "information_schema"."tables"
                        WHERE "table_type" LIKE $1
                          AND "table_name" = $2
@@ -106,6 +107,7 @@ impl Table {
                          )"#,
                 ["%TABLE", table_name],
             ),
+            _ => unimplemented!(),
         };
         let rows = rltbl.pool.query(&sql, params).await?;
         if rows.len() == 0 {
@@ -117,8 +119,8 @@ impl Table {
 
     /// Determine whether a view of the given type exists for the table in the database.
     pub async fn view_exists(table: &str, view_type: &str, rltbl: &Relatable) -> Result<bool> {
-        let (statement, params) = match rltbl.pool.kind() {
-            DbKind::SQLite => (
+        let (statement, params) = match rltbl.pool.kind().name().as_str() {
+            "SQLite" => (
                 format!(
                     r#"SELECT 1
                            FROM sqlite_master
@@ -126,7 +128,7 @@ impl Table {
                 ),
                 vec![format!("{table}_{view_type}_view")],
             ),
-            DbKind::PostgreSQL => (
+            "PostgreSQL" => (
                 format!(
                     r#"SELECT 1
                            FROM "information_schema"."tables"
@@ -140,6 +142,7 @@ impl Table {
                 ),
                 vec![format!("{table}_{view_type}_view"), "VIEW".to_owned()],
             ),
+            _ => unimplemented!(),
         };
         match rltbl.pool.query(&statement, params).await?.len() {
             1 => Ok(true),
@@ -197,7 +200,7 @@ impl Table {
             id_col,
             order_col,
             &columns.data(),
-            &rltbl.pool.kind(),
+            &rltbl.pool.kind().name(),
         ) {
             rltbl.pool.execute(&sql, ()).await?;
         }
@@ -229,7 +232,7 @@ impl Table {
             id_col,
             order_col,
             &columns.data(),
-            &rltbl.pool.kind(),
+            &rltbl.pool.kind().name(),
         ) {
             rltbl.pool.execute(&sql, ()).await?;
         }

@@ -34,19 +34,19 @@ pub struct SqlColumn {
 }
 
 impl SqlColumn {
-    pub fn ddl(&self, kind: &DbKind) -> String {
+    pub fn ddl(&self, kind: &Box<dyn DbKind>) -> String {
         let mut parts = vec![format!(r#""{}""#, self.column)];
         let sql_type = match self.sql_type.to_uppercase().as_str() {
-            "SERIAL" => match kind {
-                DbKind::SQLite => "INTEGER".to_string(),
+            "SERIAL" => match kind.name().as_str() {
+                "SQLite" => "INTEGER".to_string(),
                 _ => self.sql_type.to_string(),
             },
             _ => self.sql_type.to_string(),
         };
         parts.push(sql_type);
         if self.primary_key {
-            match (kind, self.sql_type.to_uppercase().as_str()) {
-                (DbKind::SQLite, "SERIAL") => parts.push("PRIMARY KEY AUTOINCREMENT".to_string()),
+            match (kind.name().as_str(), self.sql_type.to_uppercase().as_str()) {
+                ("SQLite", "SERIAL") => parts.push("PRIMARY KEY AUTOINCREMENT".to_string()),
                 _ => parts.push("PRIMARY KEY".to_string()),
             }
         } else if self.unique {
@@ -173,7 +173,7 @@ impl Column {
         }
     }
 
-    pub fn ddl(&self, kind: &DbKind) -> String {
+    pub fn ddl(&self, kind: &Box<dyn DbKind>) -> String {
         let sql_column: SqlColumn = self.clone().into();
         sql_column.ddl(kind)
     }
@@ -252,7 +252,7 @@ impl Columns {
         self.list.iter().map(|c| c.id().to_string()).collect()
     }
 
-    pub fn ddl(&self, kind: &DbKind, table_name: &str) -> String {
+    pub fn ddl(&self, kind: &Box<dyn DbKind>, table_name: &str) -> String {
         let cols = self.list.iter().map(|col| col.ddl(kind)).join(",\n  ");
         format!(
             r#"CREATE TABLE "{table_name}" (
@@ -505,8 +505,8 @@ impl<'a> ColumnTable<'a> {
     /// merged with column configuration.
     fn get_sql(&self, tables: &[&str]) -> Result<String> {
         // TODO: Validate table names.
-        match self.pool.kind() {
-            DbKind::SQLite => {
+        match self.pool.kind().name().as_str() {
+            "SQLite" => {
                 // TODO: Improve this
                 let filter = if tables.len() > 0 {
                     format!(
@@ -545,7 +545,7 @@ impl<'a> ColumnTable<'a> {
                     self.name
                 ))
             }
-            DbKind::PostgreSQL => {
+            "PostgreSQL" => {
                 // TODO: Improve this
                 let filter = if tables.len() > 0 {
                     format!(
@@ -582,6 +582,7 @@ impl<'a> ColumnTable<'a> {
                     self.name
                 ))
             }
+            _ => unimplemented!(),
         }
     }
 

@@ -52,19 +52,19 @@ pub static MAX_PARAMS_SQLITE: usize = 32766;
 pub static MAX_PARAMS_POSTGRES: usize = 32766;
 
 /// Used to generate database-specific parameter placeholder strings for binding to SQL statements
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SqlParam {
     /// The kind of database the parameters will be generated for
-    pub kind: DbKind,
+    pub kind: String,
     /// The current parameter index, if applicable
     pub index: usize,
 }
 
 impl SqlParam {
     /// Create a new parameter for the given database kind
-    pub fn new(kind: &DbKind) -> Self {
+    pub fn new(kind: &str) -> Self {
         Self {
-            kind: *kind,
+            kind: kind.to_string(),
             index: 0,
         }
     }
@@ -72,12 +72,12 @@ impl SqlParam {
     /// Generate one parameter. If the database syntax involves an index, this is incremented
     /// automatically.
     pub fn next(&mut self) -> String {
-        match self.kind {
-            DbKind::PostgreSQL => {
+        match self.kind.as_str() {
+            "SQLite" => "?".to_string(),
+            _ => {
                 self.index += 1;
                 format!("${}", self.index)
             }
-            DbKind::SQLite => "?".to_string(),
         }
     }
 
@@ -112,7 +112,11 @@ impl SqlParam {
 /// include placeholders representing bound parameters, and (optionally) a vector with the
 /// parameter values corresponding to each placeholder, combine this information into an
 /// interpolated string that is then returned.
-pub fn interpolate_sql(sql: &str, params: Option<&JsonValue>, kind: &DbKind) -> Result<String> {
+pub fn interpolate_sql(
+    sql: &str,
+    params: Option<&JsonValue>,
+    kind: &impl DbKind,
+) -> Result<String> {
     tracing::trace!("interpolate_sql({sql}, {params:?}, {kind:?})");
     let params = match params {
         Some(JsonValue::Array(params)) => params.iter().collect::<Vec<_>>(),
@@ -127,9 +131,10 @@ pub fn interpolate_sql(sql: &str, params: Option<&JsonValue>, kind: &DbKind) -> 
     let mut saved_start = 0;
 
     let quotes = r#"('[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")"#;
-    let rx = match kind {
-        DbKind::SQLite => Regex::new(&format!(r#"{}|\B[?]\B"#, quotes))?,
-        DbKind::PostgreSQL => Regex::new(&format!(r#"{}|\B[$]\d+\b"#, quotes))?,
+    let rx = match kind.name().as_str() {
+        "SQLite" => Regex::new(&format!(r#"{}|\B[?]\B"#, quotes))?,
+        "PostgreSQL" => Regex::new(&format!(r#"{}|\B[$]\d+\b"#, quotes))?,
+        _ => unimplemented!(),
     };
 
     let mut param_index = 0;
@@ -186,30 +191,32 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 }
 
 /// Helper function to deal with alternative "IS" syntax for different SQL flavours
-pub fn is_clause(db_kind: &DbKind) -> String {
+pub fn is_clause(db_kind: &str) -> String {
     tracing::trace!("is_clause({db_kind:?})");
     match db_kind {
-        DbKind::SQLite => "IS".into(),
-        DbKind::PostgreSQL => "IS NOT DISTINCT FROM".into(),
+        "SQLite" => "IS".into(),
+        "PostgreSQL" => "IS NOT DISTINCT FROM".into(),
+        _ => unimplemented!(),
     }
 }
 
 /// Helper function to deal with alternative "IS NOT" syntax for different SQL flavours
-pub fn is_not_clause(db_kind: &DbKind) -> String {
+pub fn is_not_clause(db_kind: &str) -> String {
     tracing::trace!("is_not_clause({db_kind:?})");
     match db_kind {
-        DbKind::SQLite => "IS NOT".into(),
-        DbKind::PostgreSQL => "IS DISTINCT FROM".into(),
+        "SQLite" => "IS NOT".into(),
+        "PostgreSQL" => "IS DISTINCT FROM".into(),
+        _ => unimplemented!(),
     }
 }
 
 /// Generates a SQL clause to cast the column as text using the syntax appropriate for the given
 /// database kind.
-pub fn cast_column_as_text(column: &str, db_kind: &DbKind) -> String {
+pub fn cast_column_as_text(column: &str, db_kind: &str) -> String {
     tracing::trace!("cast_column_as_text({column}, {db_kind:?})");
     match db_kind {
-        DbKind::SQLite => format!(r#"CAST("{column}" AS TEXT)"#),
-        DbKind::PostgreSQL => format!(r#""{column}"::TEXT"#),
+        "PostgreSQL" => format!(r#""{column}"::TEXT"#),
+        _ => format!(r#"CAST("{column}" AS TEXT)"#),
     }
 }
 
@@ -217,9 +224,10 @@ pub fn cast_column_as_text(column: &str, db_kind: &DbKind) -> String {
 pub fn regexp_match(column: &str, sql_param: &mut SqlParam) -> String {
     tracing::trace!("regexp_match({column}, {sql_param:?})");
     let casted_column = cast_column_as_text(column, &sql_param.kind);
-    match &sql_param.kind {
-        DbKind::SQLite => format!(r#"regexp({}, {}) = 1"#, sql_param.next(), casted_column),
-        DbKind::PostgreSQL => format!(r#"{} ~ {}"#, casted_column, sql_param.next()),
+    match sql_param.kind.as_str() {
+        "SQLite" => format!(r#"regexp({}, {}) = 1"#, sql_param.next(), casted_column),
+        "PostgreSQL" => format!(r#"{} ~ {}"#, casted_column, sql_param.next()),
+        _ => unimplemented!(),
     }
 }
 
@@ -227,9 +235,10 @@ pub fn regexp_match(column: &str, sql_param: &mut SqlParam) -> String {
 pub fn regexp_mismatch(column: &str, sql_param: &mut SqlParam) -> String {
     tracing::trace!("regexp_mismatch({column}, {sql_param:?})");
     let casted_column = cast_column_as_text(column, &sql_param.kind);
-    match &sql_param.kind {
-        DbKind::SQLite => format!(r#"regexp({}, {}) = 0"#, sql_param.next(), casted_column),
-        DbKind::PostgreSQL => format!(r#"{} !~ {}"#, casted_column, sql_param.next()),
+    match sql_param.kind.as_str() {
+        "SQLite" => format!(r#"regexp({}, {}) = 0"#, sql_param.next(), casted_column),
+        "PostgreSQL" => format!(r#"{} !~ {}"#, casted_column, sql_param.next()),
+        _ => unimplemented!(),
     }
 }
 
@@ -244,7 +253,7 @@ pub fn generate_table_ddl(
     columns: &[&Column],
     datatypes: &Datatypes,
     force: bool,
-    db_kind: &DbKind,
+    db_kind: &str,
 ) -> Result<Vec<String>> {
     if table.has_meta {
         for col in columns {
@@ -291,10 +300,9 @@ pub fn generate_table_ddl(
 
     if force {
         match db_kind {
-            DbKind::PostgreSQL => {
-                ddl.push(format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, table.name))
-            }
-            DbKind::SQLite => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}""#, table.name)),
+            "PostgreSQL" => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, table.name)),
+            "SQLite" => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}""#, table.name)),
+            _ => unimplemented!(),
         }
     }
 
@@ -315,12 +323,12 @@ pub(crate) fn generate_default_view_ddl(
     id_col: &str,
     order_col: &str,
     columns: &Vec<&Column>,
-    kind: &DbKind,
+    kind: &str,
 ) -> Vec<String> {
     let view_name = format!("{table_name}_default_view");
     // Note that '?' parameters are not allowed in views so we must hard code them:
     match kind {
-        DbKind::SQLite => vec![
+        "SQLite" => vec![
             format!(r#"DROP VIEW IF EXISTS "{}""#, view_name),
             format!(
                 r#"CREATE VIEW "{view}" AS
@@ -372,7 +380,7 @@ pub(crate) fn generate_default_view_ddl(
                     .join(", "),
             ),
         ],
-        DbKind::PostgreSQL => vec![format!(
+        "PostgreSQL" => vec![format!(
             r#"CREATE OR REPLACE VIEW "{view}" AS
                  SELECT
                    "{id_col}" AS _id,
@@ -415,6 +423,7 @@ pub(crate) fn generate_default_view_ddl(
                 .collect::<Vec<_>>()
                 .join(", "),
         )],
+        _ => unimplemented!(),
     }
 }
 
@@ -570,7 +579,7 @@ pub(crate) fn generate_text_view_ddl(
     id_col: &str,
     order_col: &str,
     columns: &Vec<&Column>,
-    kind: &DbKind,
+    kind: &str,
 ) -> Vec<String> {
     tracing::trace!(
         "generate_text_view_ddl({table_name}, {id_col}, {order_col}, {columns:?}, {kind:?})"
@@ -587,7 +596,7 @@ pub(crate) fn generate_text_view_ddl(
             let column_cast = {
                 let (flag_opt, width_opt, precision_opt, format_type) =
                     split_sprintf_format(&format);
-                if *kind == DbKind::SQLite {
+                if kind == "SQLite" {
                     let dt_format = format!(
                         "%{flag_opt}{width_opt}{precision_opt}{format_type}",
                         precision_opt = match precision_opt.as_str() {
