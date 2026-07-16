@@ -261,59 +261,6 @@ impl Columns {
         )
     }
 
-    pub fn view(&self, view_name: &str, source_name: &str) -> String {
-        let columns = self
-            .list
-            .iter()
-            .map(|c| {
-                if c.column == c.id() {
-                    c.column.clone()
-                } else {
-                    format!(r#""{id}" AS "{name}""#, id = c.id(), name = c.column)
-                }
-            })
-            .collect::<Vec<String>>()
-            .join(", ");
-        format!(r#"CREATE VIEW "{view_name}" AS SELECT {columns} FROM "{source_name}";"#,)
-    }
-
-    /// Create a union view of the regular and alternate tables.
-    pub fn union_view(&self, view_name: &str, table_name: &str) -> String {
-        let regular_columns = self
-            .list
-            .iter()
-            .filter(|c| c.column != "_deleted")
-            .map(|c| {
-                if c.column == c.id() {
-                    c.column.clone()
-                } else if c.column.ends_with("_text") {
-                    format!(r#"NULL AS "{name}""#, name = c.column)
-                } else {
-                    format!(r#""{id}" AS "{name}""#, id = c.id(), name = c.column)
-                }
-            })
-            .collect::<Vec<String>>()
-            .join(", ");
-        let alternate_columns = self
-            .list
-            .iter()
-            .map(|c| {
-                if c.column == c.id() {
-                    c.column.clone()
-                } else {
-                    format!(r#""{id}" AS "{name}""#, id = c.id(), name = c.column)
-                }
-            })
-            .collect::<Vec<String>>()
-            .join(", ");
-        format!(
-            r#"CREATE VIEW "{view_name}" AS
-            SELECT {regular_columns} FROM "{table_name}"
-            UNION ALL
-            SELECT {alternate_columns} FROM "{table_name}_alt";"#
-        )
-    }
-
     /// Return all the "meta" columns, starting with "_".
     pub fn meta(&self) -> Vec<&Column> {
         self.list.iter().filter(|col| col.is_meta()).collect()

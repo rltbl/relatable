@@ -255,8 +255,11 @@ async fn get_tableset(
         Err(error) => match error.downcast_ref() {
             Some(RelatableError::ConfigError(e)) => match e.as_str() {
                 "empty tableset" => {
-                    let mut table = rltbl.get_table(select.table_name.as_str()).await.unwrap();
-                    table.ensure_default_view_created(&rltbl).await.unwrap();
+                    let table = rltbl
+                        .get_table_old(select.table_name.as_str())
+                        .await
+                        .unwrap();
+                    // table.ensure_default_view_created(&rltbl).await.unwrap();
                     let columns = match rltbl.column_table().get(&[&table.name]).await {
                         Ok(columns) => columns.into(),
                         Err(error) => return get_500(&error),
@@ -390,7 +393,7 @@ async fn get_row_menu(
     tracing::info!("get_row_menu({table_name}, {row_id})");
     let username = get_username(session);
     let site = rltbl.get_site(&username).await;
-    let table = match rltbl.get_table(&table_name).await {
+    let table = match rltbl.get_table_old(&table_name).await {
         Ok(table) => table,
         Err(error) => return get_404(&error),
     };
@@ -461,7 +464,7 @@ async fn get_cell_menu(
     tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
     let username = get_username(session);
     let site = rltbl.get_site(&username).await;
-    let table = match rltbl.get_table(&table_name).await {
+    let table = match rltbl.get_table_old(&table_name).await {
         Ok(table) => table,
         Err(error) => return get_404(&error),
     };

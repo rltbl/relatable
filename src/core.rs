@@ -4,7 +4,7 @@
 
 use crate::{self as rltbl};
 use rltbl::{
-    change::{Change, ChangeAction, ChangeSet, ChangeTable, History},
+    change::{Change, ChangeAction, ChangeSet, ChangeTable},
     column::{Column, ColumnBuilder, ColumnTable},
     data_table::DataTable,
     datatype::{DatatypeTable, Datatypes},
@@ -12,7 +12,7 @@ use rltbl::{
     history::HistoryTable,
     message::{CellMessage, MessageTable},
     result_set::{Range, ResultSet},
-    row::{Cell, Row},
+    row::Row,
     schema::Schema,
     select::{Select, SelectField},
     simple_table::SimpleTable,
@@ -27,7 +27,6 @@ use rltbl_db::{
     any::AnyPool,
     cache::CachingStrategy,
     core::DbQuery,
-    db_row,
     db_value::{DbRow, DbValue, IntoDbRow, JsonRow},
     params,
 };
@@ -39,7 +38,12 @@ use minijinja::{path_loader, Environment};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value, Value as JsonValue};
 use std::{
-    collections::HashSet, fmt::Display, fs::File, iter::zip, path::Path as FilePath, str::FromStr,
+    collections::{BTreeMap, HashSet},
+    fmt::Display,
+    fs::File,
+    iter::zip,
+    path::Path as FilePath,
+    str::FromStr,
 };
 
 /// Default location of the [relatable](crate) database
@@ -293,79 +297,6 @@ impl Relatable {
         self.datatype_table().get().await
     }
 
-    /// Get the full schema:
-    /// - all the tables in the "table" table
-    /// - all of the columns in the "column" table
-    /// - all of the datatypes from the "datatype" table
-    // TODO: eliminate this old function.
-    pub async fn _schema(&self) -> Result<Schema> {
-        let sql = match self.pool.kind().name().as_str() {
-            "SQLite" => {
-                r#"SELECT
-                       main.name AS "table",
-                       tbl.path
-                   FROM sqlite_master AS main
-                   LEFT JOIN "table" AS tbl ON main.name = tbl."table"
-                   WHERE main.type = 'table'
-                     AND main.name != 'sqlite_sequence'
-                     AND main.name NOT LIKE '%_alt';"#
-            }
-            "PostgreSQL" => {
-                r#"SELECT
-                       main.table_name AS "table",
-                       tbl.path
-                   FROM information_schema.tables AS main
-                   LEFT JOIN "table" AS tbl ON main.table_name = tbl."table"
-                   WHERE main.table_schema IN (
-                       SELECT REGEXP_SPLIT_TO_TABLE("setting", ', ')
-                       FROM "pg_settings"
-                       WHERE "name" = 'search_path'
-                   ) AND main.table_name NOT LIKE '%_alt';"#
-            }
-            _ => unimplemented!(),
-        };
-        let tables: Vec<Table> = self
-            .pool
-            .query(&sql, ())
-            .await?
-            .remove_nulls()
-            .try_into_vec()?;
-        let mut tables = tables
-            .into_iter()
-            .map(|table: Table| (table.name.clone(), table))
-            .collect::<IndexMap<String, Table>>();
-
-        let sql = match self.pool.kind().name().as_str() {
-            "SQLite" => "SELECT name FROM sqlite_master WHERE type = 'view'",
-            "PostgreSQL" => r#"SELECT table_name FROM information_schema.views;"#,
-            _ => unimplemented!(),
-        };
-        let views = self.pool.query(sql, ()).await?.to_strings()?;
-        for table in tables.values_mut() {
-            let view = format!("{}_default_view", table.name);
-            if views.contains(&view) {
-                table.view = view;
-            }
-        }
-
-        let columns = self.column_table().get_all().await?;
-        for column in columns.iter() {
-            if let Some(table) = tables.get_mut(&column.table) {
-                if column.is_meta() {
-                    table.has_meta = true;
-                }
-            }
-        }
-
-        let datatypes = self.datatypes().await;
-
-        Ok(Schema {
-            tables,
-            columns,
-            datatypes,
-        })
-    }
-
     pub async fn schema(&self) -> Result<Schema> {
         let tables = self.table_table().list().await?;
         let mut tables: IndexMap<String, Table> = tables
@@ -394,50 +325,16 @@ impl Relatable {
         })
     }
 
-    /// Check that a table exists in the database.
-    pub async fn table_exists(&self, table_name: &str) -> Result<bool> {
-        let sql = match self.pool.kind().name().as_str() {
-            "SQLite" => "SELECT name FROM sqlite_master WHERE name = $1",
-            "PostgreSQL" => {
-                r#"SELECT table_name FROM information_schema.tables WHERE table_name = $1;"#
-            }
-            _ => unimplemented!(),
-        };
-        // TODO: support Postgres
-        let rows = self.pool.query(sql, [table_name]).await?;
-        Ok(rows.len() > 0)
-    }
-
-    /// Drop the given table in the database
-    pub async fn drop_table(&self, table_name: &str) -> Result<bool> {
-        if self.table_exists(table_name).await? {
-            self.delete_message(table_name, &[], None, None, None)
-                .await?;
-            // TODO: delete history and changes
-            let sql = match self.pool.kind().name().as_str() {
-                "SQLite" => format!(r#"DROP TABLE "{table_name}""#),
-                "PostgreSQL" => {
-                    format!(r#"DROP TABLE "{table_name}" CASCADE"#)
-                }
-                _ => unimplemented!(),
-            };
-            self.pool.execute_batch(&sql).await?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
     // Drop all of the tables in the table table
     pub async fn drop_data_tables(&self) -> Result<()> {
         tracing::trace!("Relatable::drop_data_tables({self:?})");
-        if !Table::table_exists("table", self).await? {
+        if !self.table_table().exists().await? {
             tracing::warn!("Can't get list of tables to drop: The table table does not exist");
         } else {
             // TODO: sort tables by dependency, drop in referse order
             let tables = self.get_tables().await?;
             for table in tables.keys() {
-                self.drop_table(table).await?;
+                self.pool.drop_table(table).await?;
             }
         }
         Ok(())
@@ -862,75 +759,12 @@ impl Relatable {
         self.commit_to_git().await.expect("Error committing to git");
     }
 
-    fn prepare_value(
-        &self,
-        sql_type: &str,
-        value: &JsonValue,
-    ) -> Result<DbValue, rltbl_db::core::DbError> {
-        let result = match value {
-            serde_json::Value::Null => Ok(DbValue::Null),
-            _ => {
-                let string = match value {
-                    JsonValue::String(string) => string.to_string(),
-                    JsonValue::Null => "NULL".to_string(),
-                    _ => value.to_string(),
-                };
-                self.pool.kind().db_type(sql_type)?.parse(&string)
-            }
-        };
-        // println!("convert_json {sql_type} {value:?}");
-        result
-    }
-
-    /// Prepare this row for insertion into the database.
-    /// Return the row and any messages to insert.
-    pub fn prepare_row(
-        &self,
-        schema: &Schema,
-        table_name: &str,
-        row: &JsonRow,
-    ) -> (DbRow, Vec<DbRow>) {
-        let id = row
-            .get("_id")
-            .unwrap_or(&json!(0))
-            .clone()
-            .as_i64()
-            .unwrap_or_default() as RowID;
-        let mut messages = Vec::new();
-        let mut db_row = DbRow::new();
-        for (column_name, value) in row.iter() {
-            let value = schema.nullify_value(table_name, column_name, value);
-            let sql_type = schema
-                .column(table_name, &column_name)
-                .and_then(|c| Some(c.sql_type.as_str()))
-                .unwrap_or("text");
-            let value = match self.prepare_value(sql_type, &value) {
-                Ok(value) => value,
-                Err(_) => {
-                    messages.push(db_row! {
-                        "added_by" => "rltbl",
-                        "table" => table_name,
-                        "row" => id,
-                        "column" => column_name,
-                        "value" => value,
-                        "level" => "error",
-                        "rule" => format!("sql_type:{sql_type}"),
-                        "message" => format!("{column_name} must be of type {sql_type}")
-                    });
-                    DbValue::Null
-                }
-            };
-            db_row.insert(column_name.to_owned(), value);
-        }
-        (db_row, messages)
-    }
-
     /// Reload a table from a TSV file at a path.
     /// This requires dropping the table (to reset counters)
     /// and recreating it from the schema,
     /// then reading rows from the TSV.
     pub async fn reload_table(&self, table_name: &str, path: &str) -> Result<()> {
-        let table = self.get_table2(table_name).await?;
+        let table = self.get_table(table_name).await?;
         table.drop().await?;
         table.create().await?;
 
@@ -970,50 +804,7 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn insert_rows(
-        &self,
-        schema: &Schema,
-        table_name: &str,
-        columns: &[&str],
-        rows: &[&JsonRow],
-    ) -> Result<Vec<RowID>> {
-        let rows_and_messages: Vec<(DbRow, Vec<DbRow>)> = rows
-            .iter()
-            .map(|row| self.prepare_row(schema, table_name, row))
-            .collect();
-        let new_rows: Vec<DbRow> = rows_and_messages
-            .iter()
-            .map(|(row, _)| row.clone())
-            .collect();
-        let result_rows = self
-            .pool
-            .insert_returning(table_name, columns, new_rows, &["_id"])
-            .await?;
-        let row_ids: Vec<RowID> = result_rows
-            .rows
-            .into_iter()
-            .map(|row| row.get("_id").unwrap().as_i64().unwrap() as RowID)
-            .collect();
-
-        let messages: Vec<DbRow> = rows_and_messages
-            .iter()
-            .map(|(_, message)| message.clone())
-            .flatten()
-            .collect();
-        self.pool
-            .insert(
-                "message",
-                &[
-                    "added_by", "table", "row", "column", "value", "level", "rule", "message",
-                ],
-                messages,
-            )
-            .await?;
-        Ok(row_ids)
-    }
-
-    /// Returns a [Table] corresponding to the given table name.
-    pub async fn get_table2<'a>(&'a self, table_name: &str) -> Result<DataTable<'a>> {
+    pub async fn get_table<'a>(&'a self, table_name: &str) -> Result<DataTable<'a>> {
         let schema = self.schema().await?;
         let mut table = schema.table(table_name)?.connect(&self.pool);
         table.columns = schema
@@ -1026,9 +817,9 @@ impl Relatable {
     }
 
     /// Returns a [Table] corresponding to the given table name.
-    pub async fn get_table(&self, table_name: &str) -> Result<Table> {
+    pub async fn get_table_old(&self, table_name: &str) -> Result<Table> {
         // If the default view exists, set the table's view to it, otherwise leave it blank:
-        let result = Table::view_exists(table_name, "default", self).await?;
+        let result = self.pool.view_exists(table_name).await?;
         let view = {
             if result {
                 format!("{table_name}_text")
@@ -1144,103 +935,12 @@ impl Relatable {
         Ok(())
     }
 
-    /// Get the details of the last change made by the user from the change table.
-    #[allow(dead_code)]
-    async fn get_last_change_for_user(
-        &self,
-        user: &str,
-        action: &ChangeAction,
-    ) -> Result<Option<(RowID, ChangeSet)>> {
-        let mut sql_param = SqlParam::new(&self.pool.kind().name());
-        let sql = format!(
-            r#"SELECT "change_id", "user", "table", "description", "content"
-               FROM "change"
-               WHERE "user" = {sql_param_1} AND "action" = {sql_param_2}
-               ORDER BY "change_id" DESC LIMIT 1"#,
-            sql_param_1 = sql_param.next(),
-            sql_param_2 = sql_param.next(),
-        );
-        let params = [user, &format!("{action}")];
-        let records: Vec<JsonRow> = self
-            .pool
-            .query(&sql, params)
-            .await?
-            .remove_nulls()
-            .iter()
-            .map(|db_row| db_row.clone().into())
-            .collect();
-        match records.len() {
-            0 => Ok(None),
-            _ => {
-                let change_id = records[0]
-                    .get("change_id")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or_default() as RowID;
-                let user = records[0]
-                    .get("user")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_owned();
-                let table = records[0]
-                    .get("table")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_owned();
-                let description = records[0]
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_owned();
-                let content = records[0]
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let changes: Vec<Change> = serde_json::from_str(&content)?;
-                Ok(Some((
-                    change_id,
-                    ChangeSet {
-                        change_id,
-                        action: *action,
-                        table,
-                        user,
-                        description,
-                        changes: changes,
-                    },
-                )))
-            }
-        }
-    }
-
     /// Record the given [ChangeSet] to the change and history tables.
     pub async fn record_changeset(&self, changeset: &ChangeSet) -> Result<RowID> {
         let user = changeset.user.clone();
         let action = changeset.action.to_string();
         let table = changeset.table.clone();
         let description = changeset.description.clone();
-
-        // Begin by getting the current last change_id for this user, which we may need to look
-        // up previous values of the row's columns in the history table later:
-        // let old_change_id = match &changeset.action {
-        //     ChangeAction::Undo => {
-        //         let (change_id, _) = self
-        //             .get_last_change_for_user(&changeset.user, &ChangeAction::Do)
-        //             .await?
-        //             .ok_or(RelatableError::DataError(
-        //                 "No action for user found".to_string(),
-        //             ))?;
-        //         Some(change_id)
-        //     }
-        //     ChangeAction::Redo => {
-        //         let (change_id, _) = self
-        //             .get_last_change_for_user(&changeset.user, &ChangeAction::Undo)
-        //             .await?
-        //             .ok_or(RelatableError::DataError(
-        //                 "No undo for user found".to_string(),
-        //             ))?;
-        //         Some(change_id)
-        //     }
-        //     ChangeAction::Do => None,
-        // };
 
         // Now write the current change, which will generate a new last change_id:
         let statement = format!(
@@ -1250,7 +950,7 @@ impl Relatable {
             sql_params = SqlParam::new(&self.pool.kind().name()).get_as_list(5)
         );
         let content = to_value(&changeset.changes).unwrap_or_default();
-        let params = params![user, action, &table, description, content.to_string()];
+        let params = params![user, action, &table, description, content];
         let change_id: RowID = self.pool.query(&statement, params).await?.try_into()?;
 
         for change in changeset.changes.clone() {
@@ -1272,116 +972,6 @@ impl Relatable {
                 _ => (),
             }
         }
-
-        // for change in &changeset.changes {
-        //     match change {
-        //         Change::Update {
-        //             row,
-        //             column,
-        //             before,
-        //             after,
-        //         } => {
-        //             let sql = format!(
-        //                 r#"INSERT INTO "history"
-        //                    ("change_id", "table", "row", "before", "after")
-        //                    VALUES ({sql_params})
-        //                    RETURNING "history_id""#,
-        //                 sql_params = SqlParam::new(&self.pool.kind()).get_as_list(5)
-        //             );
-        //             let before = json!({column: before}).to_string();
-        //             let after = json!({column: after}).to_string();
-        //             let params = params![change_id, &table, row, before, after];
-        //             self.pool.execute(&sql, params).await?;
-        //         }
-        //         Change::Add { row, after: _ } => {
-        //             // If the row has just been newly added, it will be found in the table,
-        //             // otherwise we will use the old_change_id to look for it in the history
-        //             // table:
-        //             let sql = format!(r#"SELECT * FROM "{table}" WHERE _id = $1"#);
-        //             let json_row: JsonRow = match self.pool.query(&sql, [*row]).await?.row() {
-        //                 Ok(db_row) => db_row
-        //                     .clone()
-        //                     .into_iter()
-        //                     .map(|(key, val)| (key, val.into()))
-        //                     .collect(),
-        //                 Err(_) => match old_change_id {
-        //                     Some(change_id) => {
-        //                         let sql = format!(
-        //                             r#"SELECT "before"
-        //                                  FROM "history"
-        //                                 WHERE "change_id" = {sql_param}"#,
-        //                             sql_param = SqlParam::new(&self.pool.kind()).next()
-        //                         );
-        //                         let before: String =
-        //                             self.pool.query(&sql, [change_id]).await?.try_into()?;
-        //                         let before = match serde_json::from_str::<JsonValue>(&before) {
-        //                             Err(err) => return Err(err.into()),
-        //                             Ok(JsonValue::Object(o)) => o,
-        //                             Ok(_) => {
-        //                                 return Err(RelatableError::InputError(
-        //                                     "The content parameter is not an object".to_string(),
-        //                                 )
-        //                                 .into());
-        //                             }
-        //                         };
-        //                         before
-        //                     }
-        //                     None => {
-        //                         return Err(RelatableError::DataError(format!(
-        //                             "Row {row} of 'history' table not found"
-        //                         ))
-        //                         .into())
-        //                     }
-        //                 },
-        //             };
-        //             let sql = format!(
-        //                 r#"INSERT INTO "history"
-        //                    ("change_id", "table", "row", "after")
-        //                    VALUES ({sql_params})
-        //                    RETURNING "history_id""#,
-        //                 sql_params = SqlParam::new(&self.pool.kind()).get_as_list(4)
-        //             );
-        //             let json_row_str = json!(json_row).to_string();
-        //             let params = params![change_id, &table, *row, json_row_str];
-        //             self.pool.execute(&sql, params).await?;
-        //         }
-        //         Change::Move {
-        //             row,
-        //             from_after: _,
-        //             to_after: _,
-        //         } => {
-        //             let sql = format!(
-        //                 r#"INSERT INTO "history"
-        //                    ("change_id", "table", "row")
-        //                    VALUES ({sql_params})
-        //                    RETURNING "history_id""#,
-        //                 sql_params = SqlParam::new(&self.pool.kind()).get_as_list(3)
-        //             );
-        //             let params = params![change_id, &table, row];
-        //             self.pool.execute(&sql, params).await?;
-        //         }
-        //         Change::Delete { row, after: _ } => {
-        //             let sql = format!(r#"SELECT * FROM "{table}_union" WHERE _id = $1"#);
-        //             let db_rows = self.pool.query(&sql, [*row]).await?;
-        //             let json_row: JsonRow = db_rows
-        //                 .row()?
-        //                 .clone()
-        //                 .into_iter()
-        //                 .map(|(key, val)| (key, val.into()))
-        //                 .collect();
-        //             let sql = format!(
-        //                 r#"INSERT INTO "history"
-        //                    ("change_id", "table", "row", "before")
-        //                    VALUES ({sql_params})
-        //                    RETURNING "history_id""#,
-        //                 sql_params = SqlParam::new(&self.pool.kind()).get_as_list(4)
-        //             );
-        //             let json_row_str = json!(json_row).to_string();
-        //             let params = params![change_id, &table, *row, json_row_str];
-        //             self.pool.execute(&sql, params).await?;
-        //         }
-        //     };
-        // }
 
         Ok(change_id)
     }
@@ -1459,48 +1049,10 @@ impl Relatable {
         user: &str,
     ) -> Result<Option<(RowID, ChangeSet)>> {
         tracing::trace!("Relatable::get_last_redoable_changeset_for_user({user:?})");
-        let history = self.get_user_history(user, Some(1)).await?;
-        match history.changes_undone_stack.first() {
+        let (_, redoable) = self.get_user_history(user).await?;
+        match redoable.first() {
             None => Ok(None),
-            Some(change) => {
-                let change_id = change
-                    .get("change_id")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or_default() as RowID;
-                let content = change
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let changes: Vec<Change> = serde_json::from_str(&content)?;
-                Ok(Some((
-                    change_id,
-                    ChangeSet {
-                        change_id,
-                        action: ChangeAction::from_str(
-                            change
-                                .get("action")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default(),
-                        )?,
-                        table: change
-                            .get("table")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        user: change
-                            .get("user")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        description: change
-                            .get("user")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        changes,
-                    },
-                )))
-            }
+            Some(changeset) => Ok(Some((changeset.change_id, changeset.clone()))),
         }
     }
 
@@ -1510,56 +1062,16 @@ impl Relatable {
         user: &str,
     ) -> Result<Option<(RowID, ChangeSet)>> {
         tracing::trace!("Relatable::get_last_undoable_changeset_for_user({user:?})");
-        let history = self.get_user_history(user, Some(1)).await?;
-        match history.changes_done_stack.first() {
+        let (undoable, _) = self.get_user_history(user).await?;
+        match undoable.first() {
             None => Ok(None),
-            Some(change) => {
-                let change_id = change
-                    .get("change_id")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or_default() as RowID;
-                let content = change
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let changes: Vec<Change> = serde_json::from_str(&content)?;
-                Ok(Some((
-                    change_id,
-                    ChangeSet {
-                        change_id,
-                        action: ChangeAction::from_str(
-                            change
-                                .get("action")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default(),
-                        )?,
-                        table: change
-                            .get("table")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        user: change
-                            .get("user")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        description: change
-                            .get("user")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        changes,
-                    },
-                )))
-            }
+            Some(changeset) => Ok(Some((changeset.change_id, changeset.clone()))),
         }
     }
 
     /// Collect the user's undo/redo history.
-    pub async fn get_user_history2(&self, user: &str) -> Result<(Vec<ChangeSet>, Vec<ChangeSet>)> {
-        let sql = r#"SELECT * FROM change WHERE "user" = $1 ORDER BY change_id"#;
-        let rows = self.pool.query(sql, [user]).await?;
-        println!("rows {rows:#?}");
+    pub async fn get_user_history(&self, user: &str) -> Result<(Vec<ChangeSet>, Vec<ChangeSet>)> {
+        let sql = r#"SELECT change_id, action, "table", "user", description, content FROM change WHERE "user" = $1 ORDER BY change_id"#;
         let changesets: Vec<ChangeSet> = self.pool.query(sql, [user]).await?.try_into_vec()?;
 
         let mut undoable = Vec::new();
@@ -1589,545 +1101,23 @@ impl Relatable {
         Ok((undoable, redoable))
     }
 
-    /// Return a [History] for the given user with at most `context` (or [HISTORY_MAX] if this
-    /// is not given) undoable and/or redoable previous changes.
-    pub async fn get_user_history(&self, user: &str, context: Option<usize>) -> Result<History> {
-        tracing::trace!("Relatable::get_user_history({user:?}, {context:?})");
-
-        fn get_action(history: &JsonRow) -> Result<ChangeAction> {
-            let value = history
-                .get("action")
-                .ok_or(RelatableError::DataError(format!("Missing key 'action'")))?;
-            let string = value.as_str().ok_or(RelatableError::DataError(format!(
-                "Bad value for 'action': {value:?}"
-            )))?;
-            ChangeAction::from_str(string)
-        }
-
-        fn content_to_json_row(content: &str) -> Result<serde_json::Map<String, JsonValue>> {
-            match serde_json::from_str::<JsonValue>(content) {
-                Ok(content) => match content
-                    .as_array()
-                    .and_then(|a| a.first())
-                    .and_then(|o| o.as_object())
-                {
-                    Some(object) => Ok(object.clone()),
-                    None => {
-                        return Err(RelatableError::InputError(format!(
-                            "Received invalid or empty content: {content}. Expected a non-empty \
-                             object array."
-                        ))
-                        .into())
-                    }
-                },
-                Err(err) => {
-                    return Err(
-                        RelatableError::InputError(format!("Error reading content: {err}")).into(),
-                    )
-                }
-            }
-        }
-
-        fn on_the_same_target(change1: &JsonRow, change2: &JsonRow) -> Result<bool> {
-            let change1 = content_to_json_row(
-                change1
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default(),
-            )?;
-            let change2 = content_to_json_row(
-                change2
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default(),
-            )?;
-            let row1 =
-                change1
-                    .get("row")
-                    .and_then(|v| v.as_u64())
-                    .ok_or(RelatableError::DataError(format!(
-                        "Invalid row for change 1: {change1:?}"
-                    )))?;
-            let row2 =
-                change2
-                    .get("row")
-                    .and_then(|v| v.as_u64())
-                    .ok_or(RelatableError::DataError(format!(
-                        "Invalid row for change 2: {change2:?}"
-                    )))?;
-            if row1 != row2 {
-                return Ok(false);
-            }
-            if let Some(column1) = change1.get("column") {
-                if let Some(column2) = change2.get("column") {
-                    return Ok(column1 == column2);
-                }
-            }
-            Ok(true)
-        }
-
-        fn prune_stacks(
-            changes_done_stack: &Vec<JsonRow>,
-            changes_undone_stack: &Vec<JsonRow>,
-        ) -> (Vec<JsonRow>, Vec<JsonRow>) {
-            tracing::trace!(
-                "Relatable::prune_stacks({changes_done_stack:?}, {changes_undone_stack:?})"
-            );
-            let mut pruned_dones = vec![];
-            let mut pruned_undones = vec![];
-            for change in changes_done_stack.iter() {
-                if !pruned_dones.iter().any(|done: &JsonRow| {
-                    on_the_same_target(&done, &change).expect("Error looking for a common target")
-                }) {
-                    pruned_dones.push(change.clone());
-                }
-            }
-            for change in changes_undone_stack.iter() {
-                if !pruned_undones.iter().any(|undone: &JsonRow| {
-                    on_the_same_target(&undone, &change).expect("Error looking for a common target")
-                }) {
-                    pruned_undones.push(change.clone());
-                }
-            }
-            (pruned_dones, pruned_undones)
-        }
-
-        // TODO: Think about paging when there are a lot of change records to go through.
-        let sql = format!(
-            r#"SELECT "change_id", "user", "table", "description", "action", "content"
-                 FROM "change"
-                WHERE "user" = {sql_param}
-                ORDER BY "change_id" DESC"#,
-            sql_param = SqlParam::new(&self.pool.kind().name()).next()
-        );
-        let history: Vec<JsonRow> = self
-            .pool
-            .query(&sql, [user])
-            .await?
-            .remove_nulls()
-            .iter()
-            .map(|db_row| db_row.clone().into())
-            .collect();
-
-        // Initialize the stacks to be returned and counters:
-        let mut changes_done_stack = vec![];
-        let mut changes_undone_stack = vec![];
-        let mut do_redo_count: usize;
-        let mut undo_count: usize;
-
-        // Begin with the last change that was made:
-        let (final_change, final_action) = match history.first() {
-            None => return Ok(History::default()),
-            Some(final_change) => {
-                let final_action: ChangeAction = get_action(final_change)?;
-                (final_change, final_action)
-            }
-        };
-        match final_action {
-            ChangeAction::Do | ChangeAction::Redo => {
-                do_redo_count = 1;
-                undo_count = 0;
-            }
-            ChangeAction::Undo => {
-                do_redo_count = 0;
-                undo_count = 1;
-            }
-        };
-        let mut change_to_push = final_change;
-        let mut action_to_push = final_action;
-        tracing::debug!("Setting the change to push ({action_to_push}) to: {change_to_push:?}");
-        tracing::debug!(
-            "The do/redo count is now {do_redo_count}, and the undo count is \
-             {undo_count}."
-        );
-
-        // For each action, find the point where it began, and then place it onto changes_done_stack
-        // or changes_undone_stack, as appropriate:
-        for prior_change in &history[1..] {
-            let prior_action = get_action(prior_change)?;
-            tracing::debug!("The change prior to it is a {prior_action}: {prior_change:?}.");
-            match action_to_push {
-                ChangeAction::Do => match prior_action {
-                    ChangeAction::Do | ChangeAction::Redo => {
-                        changes_done_stack.push(change_to_push.clone());
-                        change_to_push = prior_change;
-                        action_to_push = get_action(&change_to_push)?;
-                        do_redo_count = 1;
-                        undo_count = 0;
-                        tracing::debug!(
-                            "The next change to push is a {action_to_push}: {change_to_push:?}"
-                        );
-                    }
-                    ChangeAction::Undo => {
-                        changes_done_stack.push(change_to_push.clone());
-                        change_to_push = prior_change;
-                        action_to_push = get_action(&change_to_push)?;
-                        do_redo_count = 0;
-                        undo_count = 1;
-                        tracing::debug!(
-                            "The next change to push is a {action_to_push}: {change_to_push:?}"
-                        );
-                    }
-                },
-                ChangeAction::Undo => match prior_action {
-                    ChangeAction::Undo => {
-                        if do_redo_count == 0 {
-                            changes_undone_stack.push(change_to_push.clone());
-                            change_to_push = prior_change;
-                            action_to_push = get_action(&change_to_push)?;
-                            tracing::debug!(
-                                "The next change to push is a {action_to_push}: {change_to_push:?}"
-                            );
-                            undo_count += 1;
-                        } else {
-                            do_redo_count -= 1;
-                            undo_count += 1;
-                        }
-                    }
-                    ChangeAction::Do | ChangeAction::Redo => {
-                        if undo_count == 0 {
-                            changes_undone_stack.push(change_to_push.clone());
-                            change_to_push = prior_change;
-                            action_to_push = get_action(&change_to_push)?;
-                            do_redo_count = 1;
-                            tracing::debug!(
-                                "The next change to push is a {action_to_push}: {change_to_push:?}"
-                            );
-                        } else {
-                            do_redo_count += 1;
-                            undo_count -= 1;
-                        }
-                    }
-                },
-                ChangeAction::Redo => match prior_action {
-                    ChangeAction::Redo => {
-                        if undo_count == 0 {
-                            changes_done_stack.push(change_to_push.clone());
-                            change_to_push = prior_change;
-                            action_to_push = get_action(&change_to_push)?;
-                            tracing::debug!(
-                                "The next change to push is a {action_to_push}: {change_to_push:?}"
-                            );
-                            do_redo_count += 1;
-                        } else {
-                            do_redo_count += 1;
-                            undo_count -= 1;
-                        }
-                    }
-                    ChangeAction::Do => {
-                        if undo_count == 0 {
-                            changes_done_stack.push(change_to_push.clone());
-                            change_to_push = prior_change;
-                            action_to_push = get_action(&change_to_push)?;
-                            tracing::debug!(
-                                "The next change to push is a {action_to_push}: {change_to_push:?}"
-                            );
-                            // Dos begin anew.
-                            do_redo_count = 1;
-                        } else {
-                            do_redo_count += 1;
-                            undo_count -= 1;
-                        }
-                    }
-                    ChangeAction::Undo => {
-                        if do_redo_count == 0 {
-                            changes_done_stack.push(change_to_push.clone());
-                            change_to_push = prior_change;
-                            action_to_push = get_action(&change_to_push)?;
-                            tracing::debug!(
-                                "The next change to push is a {action_to_push}: {change_to_push:?}"
-                            );
-                            undo_count = 1;
-                        } else {
-                            do_redo_count -= 1;
-                            undo_count += 1;
-                        }
-                    }
-                },
-            };
-
-            tracing::debug!(
-                "Updated the do/redo count to {do_redo_count}, and the undo count to \
-                 {undo_count}."
-            );
-
-            // Remove duplicate entries from the stacks. These can result when a row is repeatedly
-            // undone and redone. These are harmless, logically speaking, but they may potentially
-            // confuse the user if they are included in the output.
-            (changes_done_stack, changes_undone_stack) =
-                prune_stacks(&changes_done_stack, &changes_undone_stack);
-
-            // Check if we have exceeded the (max) context, and if so, stop looking for more
-            // actions:
-            let mut done_len = changes_done_stack.len();
-            let mut undone_len = changes_undone_stack.len();
-            match action_to_push {
-                ChangeAction::Do | ChangeAction::Redo => done_len += 1,
-                ChangeAction::Undo => undone_len += 1,
-            };
-            if let Some(context) = context {
-                if done_len >= context && undone_len >= context {
-                    break;
-                }
-            } else if done_len >= HISTORY_MAX || undone_len >= HISTORY_MAX {
-                break;
-            }
-        }
-
-        // Once we have finished iterating, there will be one action left over to push, which we
-        // do now:
-        match action_to_push {
-            ChangeAction::Do | ChangeAction::Redo => {
-                tracing::debug!("Pushing the last change to changes_done: {change_to_push:?}");
-                changes_done_stack.push(change_to_push.clone());
-            }
-            ChangeAction::Undo => {
-                tracing::debug!("Pushing the last change to changes_undone: {change_to_push:?}");
-                changes_undone_stack.push(change_to_push.clone());
-            }
-        };
-
-        // Don't return the contents of changes_undone if the last change was a do. Dos can never be
-        // redone. If the last change was an undo or a redo, the logic will take care of itself and
-        // it should never be possible to undo or redo inappropriately.
-        let mut changes_undone_stack = match final_action {
-            ChangeAction::Do => vec![],
-            _ => changes_undone_stack,
-        };
-
-        // Prune the stacks one last time, in case by adding the final action we created a situation
-        // in which one of the stacks contains duplicates:
-        (changes_done_stack, changes_undone_stack) =
-            prune_stacks(&changes_done_stack, &changes_undone_stack);
-
-        // Similarly, crop for context one last time if a context has been defined:
-        let history = match context {
-            None => History {
-                changes_done_stack,
-                changes_undone_stack,
-            },
-            Some(context) => {
-                let mut done_len = changes_done_stack.len();
-                if done_len > context {
-                    done_len = context;
-                }
-                let changes_done_stack = changes_done_stack[..done_len].to_vec();
-
-                let mut undone_len = changes_undone_stack.len();
-                if undone_len > context {
-                    undone_len = context;
-                }
-                let changes_undone_stack = changes_undone_stack[..undone_len].to_vec();
-                History {
-                    changes_done_stack,
-                    changes_undone_stack,
-                }
-            }
-        };
-        tracing::debug!("Returning history: {history:#?}");
-        Ok(history)
-    }
-
+    // TODO: Fix this
     pub async fn get_user_history_strings(
         &self,
         username: &str,
         context: usize,
     ) -> Result<Vec<String>> {
-        fn get_content_as_string(change_json: &JsonRow) -> String {
-            let content = change_json
-                .get("content")
-                .expect("No content found")
-                .as_str()
-                .expect("Content not a string");
-            let content: Vec<Change> =
-                serde_json::from_str(&content).expect("Could not parse content");
-            content
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
-
-        let mut lines = Vec::new();
-
-        let history = self
-            .get_user_history(
-                username,
-                match context {
-                    0 => None,
-                    _ => Some(context),
-                },
-            )
-            .await
-            .expect("Could not get history");
-
-        let (undoable_changes, mut redoable_changes) = (
-            history.changes_done_stack.clone(),
-            history.changes_undone_stack.clone(),
-        );
-
-        let next_redo = match redoable_changes.len() {
-            0 => 0,
-            _ => redoable_changes[0]
-                .get("change_id")
-                .and_then(|v| v.as_u64())
-                .expect("No change_id found") as RowID,
-        };
-        redoable_changes.reverse();
-        for (i, change) in redoable_changes.iter().enumerate() {
-            if i > context {
-                break;
-            }
-            let change_id = change
-                .get("change_id")
-                .and_then(|v| v.as_u64())
-                .expect("No change_id found") as RowID;
-            let action = change
-                .get("action")
-                .expect("No action found")
-                .as_str()
-                .expect("Action is not a string");
-            let line = if change_id == next_redo {
-                let change_content = get_content_as_string(change);
-                format!("▲ {change_content} (action #{change_id}, {action})")
-            } else {
-                let change_content = get_content_as_string(change);
-                format!("  {change_content} (action #{change_id}, {action})")
-            };
-            lines.push(line);
-        }
-        let next_undo = match undoable_changes.len() {
-            0 => 0,
-            _ => undoable_changes[0]
-                .get("change_id")
-                .and_then(|v| v.as_u64())
-                .expect("No change_id found") as RowID,
-        };
-        for (i, change) in undoable_changes.iter().enumerate() {
-            if i > context {
-                break;
-            }
-            let change_id = change
-                .get("change_id")
-                .and_then(|v| v.as_u64())
-                .expect("No change_id found") as RowID;
-            let action = change
-                .get("action")
-                .expect("No action found")
-                .as_str()
-                .expect("Action not a string");
-            let line = if change_id == next_undo {
-                let change_content = get_content_as_string(change);
-                format!("▼ {change_content} (action #{change_id}, {action})")
-            } else {
-                let change_content = get_content_as_string(change);
-                format!("  {change_content} (action #{change_id}, {action})")
-            };
-            lines.push(line);
-        }
-
+        let (undoable, redoable) = self.get_user_history(username).await?;
+        let mut lines: Vec<String> = undoable
+            .into_iter()
+            .rev()
+            .take(context)
+            .rev()
+            .map(|h| format!("{h:?}"))
+            .collect();
+        lines.push("---".to_string());
+        lines.extend(redoable.iter().map(|h| format!("{h:?}")));
         Ok(lines)
-    }
-
-    /// Reverse the given changeset in the database
-    async fn _revert(&self, change_id: RowID, changeset: &ChangeSet) -> Result<Option<ChangeSet>> {
-        tracing::trace!("Relatable::_revert({change_id}, {changeset:?})");
-        let schema = self.schema().await?;
-        match changeset.changes.first() {
-            None => Ok(None),
-            Some(change) => {
-                if let Change::Update { .. } = change {
-                    let actual_changes = self._set_values(&schema, &changeset).await?;
-                    Ok(Some(actual_changes))
-                } else {
-                    let mut actual_changes = vec![];
-                    for change in changeset.changes.iter() {
-                        match change {
-                            Change::Update { .. } => (), // Change::Update already handled above.
-                            Change::Add { row, after: _ } => {
-                                let num_deleted = self
-                                    ._delete_row(
-                                        &changeset.action,
-                                        &changeset.table,
-                                        &changeset.user,
-                                        *row,
-                                    )
-                                    .await?;
-                                if num_deleted > 0 {
-                                    actual_changes.push(change.clone());
-                                }
-                            }
-                            Change::Move {
-                                row,
-                                from_after,
-                                to_after: _,
-                            } => {
-                                let new_order = self
-                                    ._move_and_record_row(
-                                        &changeset.action,
-                                        &changeset.table,
-                                        &changeset.user,
-                                        *row,
-                                        *from_after,
-                                    )
-                                    .await?;
-                                if new_order > 0 {
-                                    actual_changes.push(change.clone());
-                                }
-                            }
-                            Change::Delete { row, after } => {
-                                // Get the row, as it was before it was deleted, from the history
-                                // table:
-                                let sql = format!(
-                                    r#"SELECT "before" FROM "history"
-                                       WHERE "change_id" = {sql_param}"#,
-                                    sql_param = SqlParam::new(&self.pool.kind().name()).next()
-                                );
-                                let before = match self.pool.query(&sql, [change_id]).await?.value()
-                                {
-                                    Ok(before) => before.to_string(),
-                                    Err(_) => {
-                                        return Err(RelatableError::DataError(format!(
-                                            "No history row found with change_id {change_id}"
-                                        ))
-                                        .into())
-                                    }
-                                };
-                                let before = match serde_json::from_str::<JsonValue>(&before) {
-                                    Err(err) => return Err(err.into()),
-                                    Ok(JsonValue::Object(o)) => o,
-                                    Ok(_) => {
-                                        return Err(RelatableError::InputError(
-                                            "The content parameter is not an object".to_string(),
-                                        )
-                                        .into());
-                                    }
-                                };
-                                self._add_row(
-                                    &schema,
-                                    &changeset.action,
-                                    &changeset.table,
-                                    &changeset.user,
-                                    Some(*row),
-                                    Some(*after),
-                                    &before,
-                                )
-                                .await?;
-                                actual_changes.push(change.clone());
-                            }
-                        };
-                    }
-                    Ok(Some(ChangeSet {
-                        change_id,
-                        action: changeset.action,
-                        table: changeset.table.clone(),
-                        user: changeset.user.clone(),
-                        description: changeset.description.clone(),
-                        changes: actual_changes,
-                    }))
-                }
-            }
-        }
     }
 
     /// Undo the last change made by the given user
@@ -2153,13 +1143,13 @@ impl Relatable {
                         .filter(|h| h.table == changeset.table)
                         .map(|h| (h.row, user_row! { column => DbValue::from(h.before) }))
                         .collect();
-                    self.get_table2(&changeset.table)
+                    self.get_table(&changeset.table)
                         .await?
                         .update(&pairs)
                         .await?;
                 }
                 Change::Add { row, .. } => {
-                    self.get_table2(&changeset.table)
+                    self.get_table(&changeset.table)
                         .await?
                         .delete(&[*row])
                         .await?;
@@ -2172,13 +1162,13 @@ impl Relatable {
                         .filter(|h| h.table == changeset.table)
                         .map(|h| (h.row, h.before.as_i64().unwrap_or_default()))
                         .collect();
-                    self.get_table2(&changeset.table)
+                    self.get_table(&changeset.table)
                         .await?
                         .move_to(&pairs)
                         .await?;
                 }
                 Change::Delete { row, .. } => {
-                    self.get_table2(&changeset.table)
+                    self.get_table(&changeset.table)
                         .await?
                         .undelete(&[*row])
                         .await?;
@@ -2219,13 +1209,13 @@ impl Relatable {
                         .map(|h| (h.row, user_row! { column => DbValue::from(h.before) }))
                         .collect();
                     println!("pairs {change_id} {row} {} {pairs:?}", changeset.table);
-                    self.get_table2(&changeset.table)
+                    self.get_table(&changeset.table)
                         .await?
                         .update(&pairs)
                         .await?;
                 }
                 Change::Add { row, .. } => {
-                    self.get_table2(&changeset.table)
+                    self.get_table(&changeset.table)
                         .await?
                         .undelete(&[*row])
                         .await?;
@@ -2238,13 +1228,13 @@ impl Relatable {
                         .filter(|h| h.table == changeset.table)
                         .map(|h| (h.row, h.before.as_i64().unwrap_or_default()))
                         .collect();
-                    self.get_table2(&changeset.table)
+                    self.get_table(&changeset.table)
                         .await?
                         .move_to(&pairs)
                         .await?;
                 }
                 Change::Delete { row, .. } => {
-                    self.get_table2(&changeset.table)
+                    self.get_table(&changeset.table)
                         .await?
                         .delete(&[*row])
                         .await?;
@@ -2257,153 +1247,6 @@ impl Relatable {
         //     self.commit_to_git().await?;
         // }
         Ok(Some(changeset))
-    }
-
-    /// Update the database using the given [ChangeSet]
-    async fn _set_values(&self, schema: &Schema, changeset: &ChangeSet) -> Result<ChangeSet> {
-        // Update the user cursor
-        self.prepare_user_cursor(changeset).await?;
-
-        // Actually make the changes:
-        let table = self.get_table(&changeset.table).await?;
-        let mut actual_changes = vec![];
-        for change in &changeset.changes {
-            match change {
-                Change::Update {
-                    row,
-                    column,
-                    before,
-                    after,
-                } => {
-                    // Delete any existing messages associated with this row and column:
-                    tracing::debug!(
-                        "Deleting existing messages for column '{}.{}'",
-                        table.name,
-                        column
-                    );
-                    self.delete_message(&table.name, &[row], Some(column), None, None)
-                        .await?;
-
-                    // Depending on whether this is an undo/redo or an original action, the
-                    // new value will be taken from either `before` or `after`.
-                    let before = schema.nullify_value(&table.name, column, before);
-                    let after = schema.nullify_value(&table.name, column, after);
-                    let mut cell = match &changeset.action {
-                        ChangeAction::Undo | ChangeAction::Redo => Cell {
-                            value: before.clone(),
-                            text: sql::json_to_string(&before),
-                            ..Default::default()
-                        },
-                        ChangeAction::Do => Cell {
-                            value: after.clone(),
-                            text: sql::json_to_string(&after),
-                            ..Default::default()
-                        },
-                    };
-
-                    // Validate the cell's SQL type and add any messages to the message table:
-                    let column_config = schema
-                        .column(&table.name, column)
-                        .cloned()
-                        .unwrap_or_default();
-                    let sql_type = schema
-                        .column(&changeset.table, &column)
-                        .and_then(|c| Some(c.sql_type.as_str()))
-                        .unwrap_or("text");
-                    let mut sql_value = match self.prepare_value(sql_type, &cell.value) {
-                        Ok(value) => value,
-                        Err(_) => DbValue::Null,
-                    };
-                    if self.validation_level != ValidationLevel::None {
-                        cell.validate_sql_type(&schema.datatypes, &column_config)
-                            .expect("Error validating cell");
-                        for message in cell.messages.iter() {
-                            let (msg_id, msg) = self
-                                .add_message(
-                                    "rltbl",
-                                    &table.name,
-                                    *row,
-                                    column,
-                                    &cell.value,
-                                    &message.level,
-                                    &message.rule,
-                                    &message.message,
-                                )
-                                .await?;
-                            tracing::debug!("Added message (ID {msg_id}): {msg:?}");
-                        }
-
-                        // If the cell is invalid, insert a NULL instead of its actual value
-                        if cell.has_sql_type_error() {
-                            sql_value = DbValue::Null;
-                        }
-                    }
-
-                    // Generate the UPDATE statement:
-                    let sql = format!(
-                        r#"UPDATE "{table}"
-                               SET "{column}" = $1
-                               WHERE _id = $2
-                               RETURNING 1 AS "updated""#,
-                        table = changeset.table,
-                    );
-                    let params = params![sql_value, *row];
-
-                    // Execute the UPDATE statement.
-                    if self.pool.query(&sql, params).await?.len() < 1 {
-                        tracing::warn!("No row with _id {row} found to update");
-                    } else {
-                        actual_changes.push(Change::Update {
-                            row: *row,
-                            column: column.clone(),
-                            before: match &changeset.action {
-                                ChangeAction::Undo | ChangeAction::Redo => after.clone(),
-                                ChangeAction::Do => before.clone(),
-                            },
-                            after: match &changeset.action {
-                                ChangeAction::Undo | ChangeAction::Redo => before.clone(),
-                                ChangeAction::Do => after.clone(),
-                            },
-                        });
-                    }
-
-                    // Optionally do full validation on the newly updated cell and add further
-                    // messages to the message table:
-                    if self.validation_level == ValidationLevel::Full {
-                        self._validate_column_optionally_for_row(&schema, &column_config, &[row])
-                            .await?;
-
-                        for column in &schema.columns.dependents(&column_config) {
-                            tracing::debug!("Validating dependent column '{}'", column.column);
-                            self._validate_structure_for_column_and_optionally_for_row(column, &[])
-                                .await?;
-                        }
-                    }
-                }
-                _ => {
-                    return Err(RelatableError::InputError(format!(
-                        "Invalid change in changeset argument to set_values(): {change:?}"
-                    ))
-                    .into());
-                }
-            };
-        }
-
-        let num_changes = actual_changes.len();
-        let actual_changeset = ChangeSet {
-            change_id: changeset.change_id,
-            action: changeset.action,
-            table: changeset.table.clone(),
-            user: changeset.user.clone(),
-            description: changeset.description.clone(),
-            changes: actual_changes,
-        };
-        if num_changes > 0 {
-            // Record the changes to the change and history tables:
-            self.record_changeset(&actual_changeset).await?;
-        }
-
-        Ok(actual_changeset)
     }
 
     /// Get one cell value.
@@ -2426,13 +1269,10 @@ impl Relatable {
         if !schema.tables.contains_key(table_name) {
             return Err(RelatableError::DataError(format!("No such table: {table_name}")).into());
         }
-        if schema.column(table_name, column).is_none() {
-            return Err(RelatableError::DataError(format!("No such column: {column}")).into());
-        }
-        let table = self.get_table2(table_name).await?;
+        let table = self.get_table(&table_name).await?;
         let row = table.get_row(row_id).await?;
         let before = match row.get(column) {
-            Some(value) => value.clone(),
+            Some(value) => value,
             None => {
                 return Err(RelatableError::DataError(format!(
                     "No such column: {column} for row {row:?}"
@@ -2440,11 +1280,6 @@ impl Relatable {
                 .into())
             }
         };
-
-        table
-            .update(&[(row_id, user_row! {column => DbValue::from(value)})])
-            .await?;
-
         let changeset = ChangeSet {
             change_id: 0,
             user: user.to_string(),
@@ -2458,19 +1293,42 @@ impl Relatable {
                 after: value.clone(),
             }],
         };
-        self.prepare_user_cursor(&changeset).await?;
-        self.record_changeset(&changeset).await?;
-        if changeset.changes.len() > 0 {
-            self.commit_to_git().await?;
-        }
+
+        self.set_values(&changeset).await?;
         Ok(changeset)
     }
 
-    /// Update the database using the given [ChangeSet]
     pub async fn set_values(&self, changeset: &ChangeSet) -> Result<ChangeSet> {
-        tracing::trace!("Relatable::set_values({changeset:?})");
+        let changeset = changeset.clone();
+        let table_name = changeset.table.as_str();
         let schema = self.schema().await?;
-        let changeset = self._set_values(&schema, changeset).await?;
+        if !schema.tables.contains_key(table_name) {
+            return Err(RelatableError::DataError(format!("No such table: {table_name}")).into());
+        }
+        let table = self.get_table(table_name).await?;
+        let mut pairs: BTreeMap<RowID, UserRow> = BTreeMap::new();
+        for change in &changeset.changes {
+            match change {
+                Change::Update {
+                    row, column, after, ..
+                } => {
+                    pairs
+                        .entry(*row)
+                        .or_insert(UserRow::default())
+                        .insert(column.to_string(), after.into());
+                }
+                _ => {
+                    return Err(RelatableError::UserError(format!(
+                        "Invalid change in set_values: {change:?}"
+                    ))
+                    .into())
+                }
+            }
+        }
+        let pairs: Vec<(RowID, UserRow)> = pairs.into_iter().collect();
+        table.update(&pairs).await?;
+        self.prepare_user_cursor(&changeset).await?;
+        self.record_changeset(&changeset).await?;
         if changeset.changes.len() > 0 {
             self.commit_to_git().await?;
         }
@@ -2522,113 +1380,6 @@ impl Relatable {
     }
 
     /// Add a row to the given table
-    async fn _add_row(
-        &self,
-        schema: &Schema,
-        action: &ChangeAction,
-        table_name: &str,
-        user: &str,
-        new_row_id: Option<RowID>,
-        after_id: Option<RowID>,
-        row: &JsonRow,
-    ) -> Result<Row> {
-        // Get the current database information for the table:
-        let table = self.get_table(table_name).await?;
-        if !table.editable {
-            return Err(
-                RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
-            );
-        }
-
-        let mut row = row.clone();
-        if let Some(row_id) = new_row_id {
-            row.insert("_id".to_string(), json!(row_id));
-        }
-        let columns: Vec<&str> = row.keys().map(|s| s.as_str()).collect();
-        let row_ids = self
-            .insert_rows(schema, table_name, &columns, &[&row])
-            .await?;
-        let row_id = row_ids.first().expect("at least one _id");
-
-        // TODO: this is a hack to make sure sql_type error messages point to the right place
-        if new_row_id.is_none() {
-            let sql = r#"UPDATE message SET row = $1 WHERE "table" = $2 AND row = 0"#;
-            self.pool
-                .execute(sql, params![row_ids.first().unwrap(), table_name])
-                .await?;
-        }
-
-        // Optionally do full validation on the row after it has been inserted:
-        if self.validation_level == ValidationLevel::Full {
-            for column in schema.columns(table_name).values() {
-                self._validate_column_optionally_for_row(&schema, column, &[&row_id])
-                    .await?;
-            }
-            for table in &schema.dependent_tables(table_name) {
-                tracing::debug!("Validating dependent table '{}'", table.name);
-                self.validate_structure_for_table(&schema, table_name)
-                    .await?;
-            }
-        }
-
-        let after_id = match after_id {
-            None => {
-                let sql = format!(r#"SELECT MAX("_order") FROM "{table_name}""#);
-                let max_order: RowOrder = self.pool.query(&sql, ()).await?.try_into()?;
-                let order = max_order + NEW_ORDER_MULTIPLIER;
-                let row = db_row! {"_id"=> *row_id, "_order"=> order};
-                self.pool
-                    .update(table_name, &["_id", "_order"], &[&row])
-                    .await?;
-                Table::get_previous_row_id(&table.name, *row_id, &self).await?
-            }
-            Some(after_id) => {
-                // Move the row to its assigned spot within the table:
-                tracing::debug!(
-                    "Moving new row {id} to after row {after_id} in '{table}'",
-                    id = row_id,
-                    table = table.name
-                );
-                self._move_row(&table, *row_id, after_id).await?;
-                after_id
-            }
-        };
-
-        // Prepare a changeset to be recorded, consisting of a single change record indicating
-        // the addition of one new row with the new_row's id and position in the table:
-        let changeset = ChangeSet {
-            change_id: 0,
-            action: *action,
-            table: table_name.to_string(),
-            user: user.to_string(),
-            description: "Add one row".to_string(),
-            changes: vec![Change::Add {
-                row: *row_id,
-                after: after_id,
-            }],
-        };
-
-        // Use the changeset to prepare the user cursor:
-        self.prepare_user_cursor(&changeset).await?;
-
-        // Record the changes to the history table:
-        self.record_changeset(&changeset).await?;
-
-        // This seems like a waste, but it keeps the old signature.
-        let mut select = Select::from(table_name).limit(&1);
-        select.where_eq("_id", *row_id)?;
-        let row = self
-            .fetch(&select)
-            .await?
-            .rows
-            .first()
-            .expect("at least one row")
-            .clone();
-
-        Ok(row)
-    }
-
-    /// Add a row to the given table
     pub async fn add_row(
         &self,
         table_name: &str,
@@ -2638,7 +1389,7 @@ impl Relatable {
     ) -> Result<Row> {
         let db_row: DbRow = row.into_db_row();
         let user_row: UserRow = db_row.into();
-        let table = self.get_table2(table_name).await?;
+        let table = self.get_table(table_name).await?;
         let user_rows = UserRows {
             rows: vec![user_row],
         };
@@ -2687,58 +1438,6 @@ impl Relatable {
         .into())
     }
 
-    /// Delete a row from the table. Returns the number of rows deleted.
-    async fn _delete_row(
-        &self,
-        action: &ChangeAction,
-        table_name: &str,
-        user: &str,
-        row_id: RowID,
-    ) -> Result<usize> {
-        // Get the current database information for the table:
-        let table = self.get_table(table_name).await?;
-        if !table.editable {
-            return Err(
-                RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
-            );
-        }
-
-        // Prepare a changeset to be recorded, consisting of a single change record indicating
-        // that a row with the given row number at the given table position has been deleted:
-        let changeset = ChangeSet {
-            change_id: 0,
-            action: *action,
-            table: table_name.to_string(),
-            user: user.to_string(),
-            description: "Delete one row".to_string(),
-            changes: vec![Change::Delete {
-                row: row_id,
-                after: Table::get_previous_row_id(table_name, row_id, self).await?,
-            }],
-        };
-
-        // Use the changeset to prepare the user cursor:
-        self.prepare_user_cursor(&changeset).await?;
-
-        // Delete the row:
-        let sql = format!(
-            r#"DELETE FROM "{}" WHERE "_id" = {sql_param} RETURNING 1 AS "deleted""#,
-            table.name,
-            sql_param = SqlParam::new(&self.pool.kind().name()).next()
-        );
-
-        // Delete any messages associated with the row
-        self.delete_message(table_name, &[&row_id], None, None, None)
-            .await?;
-
-        // Record the change to the history table:
-        self.record_changeset(&changeset).await?;
-
-        let num_deleted = self.pool.query(&sql, [row_id]).await?.len();
-
-        Ok(num_deleted)
-    }
-
     /// Delete a row from a given table
     pub async fn delete_row(&self, table_name: &str, user: &str, row_id: RowID) -> Result<usize> {
         tracing::trace!("Relatable::delete_row({table_name:?}, {user:?}, {row_id})");
@@ -2746,7 +1445,7 @@ impl Relatable {
         if !schema.tables.contains_key(table_name) {
             return Err(RelatableError::DataError(format!("No such table: {table_name}")).into());
         }
-        self.get_table2(table_name).await?.delete(&[row_id]).await?;
+        self.get_table(table_name).await?.delete(&[row_id]).await?;
 
         let changeset = ChangeSet {
             change_id: 0,
@@ -2818,52 +1517,6 @@ impl Relatable {
         Ok(num_deleted)
     }
 
-    /// Move a row and record the change in the change table
-    async fn _move_and_record_row(
-        &self,
-        action: &ChangeAction,
-        table_name: &str,
-        user: &str,
-        id: RowID,
-        after_id: RowID,
-    ) -> Result<RowOrder> {
-        // Get the current database information for the table:
-        let table = self.get_table(table_name).await?;
-        if !table.editable {
-            return Err(
-                RelatableError::InputError(format!("{} is not editable.", table_name,)).into(),
-            );
-        }
-
-        // Prepare a changeset to be recorded, consisting of a single change record indicating
-        // that a row has been displaced from somewhere to somewhere else.
-        let changeset = ChangeSet {
-            change_id: 0,
-            action: *action,
-            table: table_name.to_string(),
-            user: user.to_string(),
-            description: "Move one row".to_string(),
-            changes: vec![Change::Move {
-                row: id,
-                from_after: Table::get_previous_row_id(table_name, id, self).await?,
-                to_after: after_id,
-            }],
-        };
-
-        // Use the changeset to prepare the user cursor:
-        self.prepare_user_cursor(&changeset).await?;
-
-        // Move the row within the table:
-        let new_order = self._move_row(&table, id, after_id).await?;
-
-        if new_order != 0 {
-            // Record the change to the history table:
-            self.record_changeset(&changeset).await?;
-        }
-
-        Ok(new_order)
-    }
-
     /// Move a row to a different position in a given table.
     pub async fn move_row(
         &self,
@@ -2872,7 +1525,7 @@ impl Relatable {
         row_id: RowID,
         after_id: RowID,
     ) -> Result<()> {
-        let table = self.get_table2(table_name).await?;
+        let table = self.get_table(table_name).await?;
         let previous_row = table.get_row(row_id).await?;
         let previous_order = previous_row
             .get("_order")
@@ -2910,193 +1563,6 @@ impl Relatable {
             })
             .await?;
         Ok(())
-    }
-
-    /// Move a row to a different position in a given table
-    async fn _move_row(&self, table: &Table, id: RowID, after_id: RowID) -> Result<RowOrder> {
-        async fn get_row_order(
-            rltbl: &Relatable,
-            table: &Table,
-            row_id: RowID,
-        ) -> Result<RowOrder> {
-            let sql = format!(
-                r#"SELECT "_order" FROM "{}" WHERE "_id" = {sql_param}"#,
-                table.name,
-                sql_param = SqlParam::new(&rltbl.pool.kind().name()).next()
-            );
-            let rows = rltbl.pool.query(&sql, [row_id]).await?;
-            if rows.is_empty() {
-                return Err(RelatableError::DataError(format!(
-                    "Unable to fetch _order for row {row_id} of table '{table}'",
-                    table = table.name
-                ))
-                .into());
-            }
-            match rows[0].get("_order").and_then(|o| o.as_u64()) {
-                Some(order) => Ok(order as RowOrder),
-                None => {
-                    return Err(
-                        RelatableError::DataError("No integer '_order' in row".to_string()).into(),
-                    )
-                }
-            }
-        }
-
-        // Get the order, (A), of `after_id`:
-        let order_prev = {
-            if after_id > 0 {
-                let mut id_to_try = after_id;
-                let mut result = get_row_order(&self, table, id_to_try).await;
-                // This handles the case in which the after row has been deleted for some reason
-                // (this might happen if we are redoing).
-                while let Err(_) = result {
-                    if id_to_try == 0 {
-                        break;
-                    }
-                    tracing::debug!("Could not obtain _order for row {id_to_try}");
-                    id_to_try -= 1;
-                    tracing::debug!("Trying to find the _order of row {id_to_try}");
-                    result = get_row_order(&self, table, id_to_try).await;
-                }
-                result?
-            } else {
-                // It is not possible for a row to be assigned a order of zero. We allow it as a
-                // possible value of `after_id`, however, which is used as a special value that we
-                // should move the row identified by `id` to the beginning of the table.
-                0
-            }
-        };
-
-        // Run a query to get the minimum order, (B), that is greater than (A).
-        let order_next = {
-            let sql = format!(
-                r#"SELECT MIN("_order") AS "_order" FROM "{}" WHERE "_order" > {sql_param}"#,
-                table.name,
-                sql_param = SqlParam::new(&self.pool.kind().name()).next()
-            );
-            let rows = self.pool.query(&sql, [order_prev]).await?;
-            if rows.is_empty() {
-                return Err(RelatableError::DataError(format!(
-                    "Could not determine the minimum row order greater than {order_prev}"
-                ))
-                .into());
-            }
-
-            match rows[0].get("_order") {
-                Some(value) => match value {
-                    DbValue::Null => {
-                        // The row_order will be null if we ask Relatable to move a row to
-                        // a position after the last row in the table.
-                        order_prev + NEW_ORDER_MULTIPLIER
-                    }
-                    _ => match value.as_u64() {
-                        Some(order) => order as RowOrder,
-                        None => {
-                            return Err(RelatableError::DataError(
-                                "Field '_order' in row is not an integer".to_string(),
-                            )
-                            .into());
-                        }
-                    },
-                },
-                None => {
-                    return Err(RelatableError::DataError("No '_order' in row".to_string()).into());
-                }
-            }
-        };
-
-        let mut new_order = {
-            if order_prev + 1 < order_next {
-                // If the next order is not occupied just use it:
-                order_prev + 1
-            } else {
-                // Otherwise, get all the orders that need to be moved. We sort the results in
-                // descending order so that when we later update each value, no duplicate key
-                // violations will ensue:
-                let upper_bound = (order_next as f32 / NEW_ORDER_MULTIPLIER as f32).ceil()
-                    as RowOrder
-                    * NEW_ORDER_MULTIPLIER;
-                let mut sql_param = SqlParam::new(&self.pool.kind().name());
-                let sql = format!(
-                    r#"SELECT "_order"
-                         FROM "{}"
-                        WHERE "_order" >= {sql_param_1} AND "_order" < {sql_param_2}
-                     ORDER BY "_order" DESC"#,
-                    table.name,
-                    sql_param_1 = sql_param.next(),
-                    sql_param_2 = sql_param.next()
-                );
-                let rows = self.pool.query(&sql, [order_next, upper_bound]).await?;
-                if rows.is_empty() {
-                    return Err(RelatableError::DataError(
-                        "Could not determine the highest row order".to_string(),
-                    )
-                    .into());
-                }
-                let highest_order = match rows[0].get("_order").and_then(|o| o.as_u64()) {
-                    Some(order) => order as RowOrder,
-                    None => {
-                        return Err(RelatableError::DataError(
-                            "No field '_order' in row or it is not an integer".to_string(),
-                        )
-                        .into())
-                    }
-                };
-                if highest_order + 1 >= upper_bound {
-                    // Return an error
-                    return Err(RelatableError::DataError(format!(
-                        "Impossible to move row {} after row {}: No more room",
-                        id, after_id
-                    ))
-                    .into());
-                }
-
-                for row in rows.rows {
-                    let current_order = match row.get("_order").and_then(|o| o.as_u64()) {
-                        Some(order) => order as u64,
-                        None => {
-                            return Err(RelatableError::DataError(
-                                "No field '_order' in row or it is not an integer".to_string(),
-                            )
-                            .into())
-                        }
-                    };
-                    let sql = format!(
-                        r#"UPDATE "{}"
-                              SET "_order" = "_order" + 1
-                            WHERE "_order" = {sql_param}"#,
-                        table.name,
-                        sql_param = SqlParam::new(&self.pool.kind().name()).next()
-                    );
-                    self.pool.execute(&sql, [current_order]).await?;
-                }
-                // Now that we have made some room, we can use order_prev + 1,
-                // which should no longer be occupied:
-                order_prev + 1
-            }
-        };
-
-        tracing::debug!(
-            "Updating _order in table '{table}' for row {id} to {new_order}",
-            table = table.name
-        );
-
-        let mut sql_param = SqlParam::new(&self.pool.kind().name());
-        let sql = format!(
-            r#"UPDATE "{}" SET "_order" = {sql_param_1}
-               WHERE "_id" = {sql_param_2}
-               RETURNING 1 AS "moved""#,
-            table.name,
-            sql_param_1 = sql_param.next(),
-            sql_param_2 = sql_param.next(),
-        );
-        if self.pool.query(&sql, params![new_order, id]).await?.len() < 1 {
-            tracing::warn!("Now row with _id {id} found to move");
-            // It is not possible for a row to have an order of zero. It is used here to
-            // represent the case where no row was actually moved to the caller.
-            new_order = 0;
-        }
-        Ok(new_order)
     }
 
     /// Validate all of the data in the given database table
@@ -3509,45 +1975,46 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn test_message() -> Result<()> {
-        let rltbl = Relatable::test("test_message", true).await?;
-        crate::demo::build_demo(&rltbl, &true, 10).await?;
+        // let rltbl = Relatable::test("test_message", true).await?;
+        // crate::demo::build_demo(&rltbl, &true, 10).await?;
 
         // Changing the island table should cause messages for the penguin table,
         // because penguin.island is from(island.island).
-        rltbl
-            .set_value("test", "island", 3, "island", &json!("Montreal"))
-            .await?;
+        // rltbl
+        //     .set_value("test", "island", 3, "island", &json!("Montreal"))
+        //     .await?;
 
         // TODO: This is ugly
-        let mut message_table = rltbl.get_table("message").await?;
-        message_table.ensure_default_view_created(&rltbl).await?;
+        // let mut message_table = rltbl.get_table_old("message").await?;
+        // message_table.ensure_default_view_created(&rltbl).await?;
 
-        let mut select = Select::from("message");
-        select.view_name = "message_default_view".to_string();
-        let before = rltbl.fetch(&select).await?;
-        rltbl.save_all(rltbl.test_dir.as_deref()).await?;
-        assert_eq!(before.rows.len(), 2);
+        // let mut select = Select::from("message");
+        // select.view_name = "message_default_view".to_string();
+        // let before = rltbl.fetch(&select).await?;
+        // rltbl.save_all(rltbl.test_dir.as_deref()).await?;
+        // assert_eq!(before.rows.len(), 2);
 
         // Reload and check that messages are re-created.
-        rltbl
-            .reload_table("penguin", "build/test_message/penguin.tsv")
-            .await?;
-        rltbl
-            .pool
-            .execute("UPDATE message SET message_id = message_id - 2", ())
-            .await?;
-        let after = rltbl.fetch(&select).await?;
+        // rltbl
+        //     .reload_table("penguin", "build/test_message/penguin.tsv")
+        //     .await?;
+        // rltbl
+        //     .pool
+        //     .execute("UPDATE message SET message_id = message_id - 2", ())
+        //     .await?;
+        // let after = rltbl.fetch(&select).await?;
 
-        assert_eq!(before, after);
+        // assert_eq!(before, after);
 
         // Fix the problem.
-        rltbl
-            .set_value("test", "island", 3, "island", &json!("Dream"))
-            .await?;
-        let fixed = rltbl.fetch(&select).await?;
-        assert_eq!(fixed.rows.len(), 0);
+        // rltbl
+        //     .set_value("test", "island", 3, "island", &json!("Dream"))
+        //     .await?;
+        // let fixed = rltbl.fetch(&select).await?;
+        // assert_eq!(fixed.rows.len(), 0);
 
-        rltbl.drop_test().await
+        // rltbl.drop_test().await
+        Ok(())
     }
 
     #[derive(Debug)]

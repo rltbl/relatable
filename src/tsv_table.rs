@@ -314,6 +314,12 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
     }
 
     /// Create all SQL tables and views for this TsvTable.
+    async fn exists(&self) -> Result<bool> {
+        let result = self.pool().table_exists(&self.name()).await?;
+        Ok(result)
+    }
+
+    /// Create all SQL tables and views for this TsvTable.
     async fn create(&self) -> Result<()> {
         self.pool().execute_batch(&self.ddl()).await?;
         Ok(())

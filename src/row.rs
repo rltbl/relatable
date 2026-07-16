@@ -5,15 +5,12 @@
 use crate as rltbl;
 use rltbl::{
     column::Column,
-    core::{Relatable, RelatableError, RowID, RowOrder},
+    core::{RelatableError, RowID, RowOrder},
     datatype::Datatypes,
     message::CellMessage,
     schema::Schema,
 };
-use rltbl_db::{
-    db_row,
-    db_value::{DbRow, IntoDbRow, IntoDbRows, JsonRow},
-};
+use rltbl_db::db_value::{DbRow, IntoDbRow, IntoDbRows, JsonRow};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -36,52 +33,6 @@ impl Row {
     pub fn to_strings(&self) -> Vec<String> {
         tracing::trace!("Row::to_strings()");
         self.cells.values().map(|cell| cell.text.clone()).collect()
-    }
-
-    /// Validate this row, which belongs to the given [Table],
-    /// and add any resulting validation [messages](Message) to the message table
-    pub async fn validate_sql_types(
-        &mut self,
-        schema: &Schema,
-        table_name: &str,
-        rltbl: &Relatable,
-    ) -> Result<&Self> {
-        for (column_name, cell) in self.cells.iter_mut() {
-            let column = schema
-                .column(table_name, column_name.as_str())
-                .cloned()
-                .unwrap_or_default();
-            cell.validate_sql_type(&schema.datatypes, &column)?;
-            for message in cell.messages.iter() {
-                let (msg_id, msg) = rltbl
-                    .add_message(
-                        "rltbl",
-                        table_name,
-                        self.id,
-                        column_name,
-                        &cell.value,
-                        &message.level,
-                        &message.rule,
-                        &message.message,
-                    )
-                    .await?;
-                tracing::debug!("Added message (ID {msg_id}): {msg:?}");
-            }
-        }
-
-        Ok(self)
-    }
-
-    // TODO: handle validation
-    pub fn regular(&self) -> Option<DbRow> {
-        let mut db_row = db_row! {
-            "_id" => self.id,
-            "_order" => self.order,
-        };
-        for (column, cell) in self.cells.clone() {
-            db_row.insert(column, cell.value.into());
-        }
-        Some(db_row)
     }
 }
 
@@ -334,10 +285,6 @@ impl Rows {
         let row = db_row.into();
         self.rows.push(row);
         Ok(self.rows.last().unwrap())
-    }
-
-    pub fn regular(&self) -> Vec<DbRow> {
-        self.rows.iter().filter_map(|row| row.regular()).collect()
     }
 }
 

@@ -488,7 +488,6 @@ impl Select {
         ))
         .unwrap();
 
-        #[allow(dependency_on_unit_never_type_fallback)]
         fn parse_as_value(value: &str) -> Result<DbValue> {
             // TODO: Move this to rltbl_db?
             if let Ok(signed) = value.parse::<i64>() {
@@ -496,7 +495,7 @@ impl Select {
             } else if let Ok(float) = value.parse::<f64>() {
                 Ok(DbValue::from(float))
             } else if value.starts_with("\"") {
-                let value = serde_json::from_str(&value)?;
+                let value: JsonValue = serde_json::from_str(value)?;
                 Ok(DbValue::from(value))
             } else {
                 let value: JsonValue = serde_json::from_str(&format!(r#""{value}""#))?;
