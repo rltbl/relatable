@@ -2017,7 +2017,7 @@ mod tests {
         Ok(())
     }
 
-    #[derive(Debug)]
+    #[derive(Clone, Debug)]
     enum Act {
         // user, table, after_id, row
         Add(String, String, RowID, JsonValue),
@@ -2120,7 +2120,8 @@ mod tests {
         let rltbl = Relatable::test(name, false).await?;
         crate::demo::build_demo(&rltbl, &true, 10).await?;
 
-        let select = Select::from("penguin");
+        let mut select = Select::from("penguin");
+        select.view_name = "penguin_text".to_string();
         let before = rltbl.fetch(&select).await?;
 
         run(&rltbl, &actions).await?;
@@ -2135,360 +2136,425 @@ mod tests {
         rltbl.drop_test().await
     }
 
+    #[derive(Debug)]
+    struct TestBuilder {
+        name: String,
+        user: String,
+        table: String,
+        steps: Vec<Act>,
+        history: Vec<String>,
+    }
+
+    impl TestBuilder {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                user: String::new(),
+                table: String::new(),
+                steps: Vec::new(),
+                history: Vec::new(),
+            }
+        }
+
+        fn user(&mut self, user: &str) -> &mut Self {
+            self.user = user.to_string();
+            self
+        }
+
+        fn table(&mut self, table: &str) -> &mut Self {
+            self.table = table.to_string();
+            self
+        }
+
+        fn history(&mut self, lines: Vec<&str>) -> &mut Self {
+            self.history = lines.iter().map(|s| s.to_string()).collect();
+            self
+        }
+
+        fn append(&mut self, row: JsonValue) -> &mut Self {
+            self.steps.push(Act::add(&self.user, &self.table, -1, row));
+            self
+        }
+
+        fn delete(&mut self, row_id: RowID) -> &mut Self {
+            self.steps
+                .push(Act::delete(&self.user, &self.table, row_id));
+            self
+        }
+
+        fn set(&mut self, row_id: RowID, column: &str, value: JsonValue) -> &mut Self {
+            self.steps
+                .push(Act::set(&self.user, &self.table, row_id, column, value));
+            self
+        }
+
+        fn r#move(&mut self, before: RowID, after: RowID) -> &mut Self {
+            self.steps
+                .push(Act::r#move(&self.user, &self.table, before, after));
+            self
+        }
+
+        fn undo(&mut self) -> &mut Self {
+            self.steps.push(Act::undo(&self.user));
+            self
+        }
+
+        fn redo(&mut self) -> &mut Self {
+            self.steps.push(Act::redo(&self.user));
+            self
+        }
+
+        async fn run(&self) -> Result<()> {
+            test_history(
+                &self.name,
+                self.steps.clone(),
+                self.history.iter().map(|s| s.as_str()).collect(),
+            )
+            .await
+        }
+    }
+
     #[tokio::test]
     async fn test_history_1() -> Result<()> {
-        let name = "test_history_1";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::add(u, t, -1, json!({"species": "FOO", "sample_number": 25})),
-            Act::undo(u),
-            Act::redo(u),
-            Act::delete(u, t, 6),
-            Act::set(u, t, 4, "sample_number", json!(26)),
-            Act::r#move(u, t, 1, 8),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Move row 1 from after row 8 to after row 0 (action #7, undo)",
-            "  Update 'sample_number' in row 4 from 26 to 4 (action #8, undo)",
-            "  Add row 6 after row 5 (action #9, undo)",
-            "▲ Delete row 11 (action #10, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_1")
+            .user("test")
+            .table("penguin")
+            .append(json!({"species": "FOO", "sample_number": 25}))
+            .undo()
+            .redo()
+            .delete(6)
+            .set(4, "sample_number", json!(26))
+            .r#move(1, 8)
+            .undo()
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Move row 1 from after row 8 to after row 0 (action #7, undo)",
+                "  Update 'sample_number' in row 4 from 26 to 4 (action #8, undo)",
+                "  Add row 6 after row 5 (action #9, undo)",
+                "▲ Delete row 11 (action #10, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_2() -> Result<()> {
-        let name = "test_history_2";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::add(u, t, -1, json!({"species": "FOO"})),
-            Act::add(u, t, -1, json!({"species": "BAR"})),
-            Act::add(u, t, -1, json!({"species": "KEW"})),
-            Act::undo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Delete row 13 (action #8, undo)",
-            "  Delete row 12 (action #9, undo)",
-            "▲ Delete row 11 (action #10, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_2")
+            .user("test")
+            .table("penguin")
+            .append(json!({"species": "FOO"}))
+            .append(json!({"species": "BAR"}))
+            .append(json!({"species": "KEW"}))
+            .undo()
+            .redo()
+            .undo()
+            .redo()
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Delete row 13 (action #8, undo)",
+                "  Delete row 12 (action #9, undo)",
+                "▲ Delete row 11 (action #10, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_3() -> Result<()> {
-        let name = "test_history_3";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::add(u, t, -1, json!({"species": "FOO"})),
-            Act::add(u, t, -1, json!({"species": "BAR"})),
-            Act::add(u, t, -1, json!({"species": "KEW"})),
-            Act::undo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::r#move(u, t, 12, 1),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Delete row 12 (action #9, undo)",
-            "▲ Delete row 11 (action #10, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_3")
+            .user("test")
+            .table("penguin")
+            .append(json!({"species": "FOO"}))
+            .append(json!({"species": "BAR"}))
+            .append(json!({"species": "KEW"}))
+            .undo()
+            .undo()
+            .redo()
+            .r#move(12, 1)
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Delete row 12 (action #9, undo)",
+                "▲ Delete row 11 (action #10, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_4() -> Result<()> {
-        let name = "test_history_4";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::add(u, t, -1, json!({"species": "FOO"})),
-            Act::undo(u),
-            Act::r#move(u, t, 4, 9),
-            Act::undo(u),
-            Act::redo(u),
-            Act::r#move(u, t, 3, 1),
-            Act::r#move(u, t, 4, 2),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Move row 3 from after row 1 to after row 2 (action #9, undo)",
-            "▲ Move row 4 from after row 9 to after row 3 (action #10, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_4")
+            .user("test")
+            .table("penguin")
+            .append(json!({"species": "FOO"}))
+            .undo()
+            .r#move(4, 9)
+            .undo()
+            .redo()
+            .r#move(3, 1)
+            .r#move(4, 2)
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Move row 3 from after row 1 to after row 2 (action #9, undo)",
+                "▲ Move row 4 from after row 9 to after row 3 (action #10, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_5() -> Result<()> {
-        let name = "test_history_5";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::add(u, t, -1, json!({"species": "FOO"})),
-            Act::add(u, t, -1, json!({"species": "BAR"})),
-            Act::add(u, t, -1, json!({"species": "KEW"})),
-            Act::undo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::redo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Delete row 13 (action #24, undo)",
-            "  Delete row 12 (action #25, undo)",
-            "▲ Delete row 11 (action #26, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_5")
+            .user("test")
+            .table("penguin")
+            .append(json!({"species": "FOO"}))
+            .append(json!({"species": "BAR"}))
+            .append(json!({"species": "KEW"}))
+            .undo()
+            .redo()
+            .undo()
+            .undo()
+            .redo()
+            .redo()
+            .undo()
+            .undo()
+            .undo()
+            .redo()
+            .redo()
+            .redo()
+            .undo()
+            .undo()
+            .undo()
+            .redo()
+            .redo()
+            .undo()
+            .redo()
+            .redo()
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Delete row 13 (action #24, undo)",
+                "  Delete row 12 (action #25, undo)",
+                "▲ Delete row 11 (action #26, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_6() -> Result<()> {
-        let name = "test_history_6";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::add(u, t, -1, json!({"species": "FOO"})),
-            Act::r#move(u, t, 9, 7),
-            Act::undo(u),
-            Act::set(u, t, 4, "island", json!("Enderby")),
-            Act::delete(u, t, 9),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Add row 9 after row 8 (action #6, undo)",
-            "  Update 'island' in row 4 from Enderby to Biscoe (action #7, undo)",
-            "▲ Delete row 11 (action #8, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_6")
+            .user("test")
+            .table("penguin")
+            .append(json!({"species": "FOO"}))
+            .r#move(9, 7)
+            .undo()
+            .set(4, "island", json!("Enderby"))
+            .delete(9)
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Add row 9 after row 8 (action #6, undo)",
+                "  Update 'island' in row 4 from Enderby to Biscoe (action #7, undo)",
+                "▲ Delete row 11 (action #8, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_7() -> Result<()> {
-        let name = "test_history_7";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::set(u, t, 4, "island", json!("Enderby")),
-            Act::undo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::delete(u, t, 9),
-            Act::set(u, t, 3, "species", json!("Godzilla")),
-            Act::undo(u),
-            Act::redo(u),
-            Act::r#move(u, t, 3, 5),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
+        TestBuilder::new("test_history_7")
+            .user("test")
+            .table("penguin")
+            .set(4, "island", json!("Enderby"))
+            .undo()
+            .redo()
+            .undo()
+            .delete(9)
+            .set(3, "species", json!("Godzilla"))
+            .undo()
+            .redo()
+            .r#move(3, 5)
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
             "  Update 'species' in row 3 from Godzilla to Pygoscelis adeliae (action #11, undo)",
             "▲ Add row 9 after row 8 (action #12, undo)",
-        ];
-        test_history(name, actions, history).await
+        ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_8() -> Result<()> {
-        let name = "test_history_8";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::delete(u, t, 5),
-            Act::undo(u),
-            Act::delete(u, t, 10),
-            Act::undo(u),
-            Act::redo(u),
-            Act::r#move(u, t, 9, 7),
-            Act::r#move(u, t, 4, 8),
-            Act::undo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Move row 4 from after row 8 to after row 3 (action #14, undo)",
-            "  Move row 9 from after row 7 to after row 8 (action #15, undo)",
-            "▲ Add row 10 after row 9 (action #16, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_8")
+            .user("test")
+            .table("penguin")
+            .delete(5)
+            .undo()
+            .delete(10)
+            .undo()
+            .redo()
+            .r#move(9, 7)
+            .r#move(4, 8)
+            .undo()
+            .redo()
+            .undo()
+            .undo()
+            .redo()
+            .redo()
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Move row 4 from after row 8 to after row 3 (action #14, undo)",
+                "  Move row 9 from after row 7 to after row 8 (action #15, undo)",
+                "▲ Add row 10 after row 9 (action #16, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_9() -> Result<()> {
-        let name = "test_history_9";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::delete(u, t, 1),
-            Act::undo(u),
-            Act::delete(u, t, 3),
-            Act::delete(u, t, 7),
-            Act::undo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Add row 7 after row 6 (action #17, undo)",
-            "▲ Add row 3 after row 2 (action #18, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_9")
+            .user("test")
+            .table("penguin")
+            .delete(1)
+            .undo()
+            .delete(3)
+            .delete(7)
+            .undo()
+            .undo()
+            .redo()
+            .undo()
+            .redo()
+            .redo()
+            .undo()
+            .undo()
+            .redo()
+            .redo()
+            .undo()
+            .redo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Add row 7 after row 6 (action #17, undo)",
+                "▲ Add row 3 after row 2 (action #18, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_10() -> Result<()> {
-        let name = "test_history_10";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::add(u, t, -1, json!({"species": "FOO"})),
-            Act::undo(u),
-            Act::redo(u),
-            Act::delete(u, t, 6),
-            Act::set(u, t, 4, "island", json!("Enderby")),
-            Act::r#move(u, t, 1, 8),
-            Act::undo(u), // Undo move row
-            Act::undo(u), // Undo set value
-            Act::undo(u), // Undo delete row
-            Act::undo(u), // Undo add row
-            Act::redo(u),
-            Act::redo(u),
-            Act::redo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Move row 1 from after row 8 to after row 0 (action #15, undo)",
-            "  Update 'island' in row 4 from Enderby to Biscoe (action #16, undo)",
-            "  Add row 6 after row 5 (action #17, undo)",
-            "▲ Delete row 11 (action #18, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_10")
+            .user("test")
+            .table("penguin")
+            .append(json!({"species": "FOO"}))
+            .undo()
+            .redo()
+            .delete(6)
+            .set(4, "island", json!("Enderby"))
+            .r#move(1, 8)
+            .undo() // Undo move row
+            .undo() // Undo set value
+            .undo() // Undo delete row
+            .undo() // Undo add row
+            .redo()
+            .redo()
+            .redo()
+            .redo()
+            .undo()
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Move row 1 from after row 8 to after row 0 (action #15, undo)",
+                "  Update 'island' in row 4 from Enderby to Biscoe (action #16, undo)",
+                "  Add row 6 after row 5 (action #17, undo)",
+                "▲ Delete row 11 (action #18, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_11() -> Result<()> {
-        let name = "test_history_11";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::add(u, t, -1, json!({"species": "FOO"})),
-            Act::add(u, t, -1, json!({"species": "BAR"})),
-            Act::add(u, t, -1, json!({"species": "KEW"})),
-            Act::undo(u),
-            Act::undo(u),
-            Act::redo(u),
-            Act::r#move(u, t, 12, 1),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Delete row 12 (action #9, undo)",
-            "▲ Delete row 11 (action #10, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_11")
+            .user("test")
+            .table("penguin")
+            .append(json!({"species": "FOO"}))
+            .append(json!({"species": "BAR"}))
+            .append(json!({"species": "KEW"}))
+            .undo()
+            .undo()
+            .redo()
+            .r#move(12, 1)
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Delete row 12 (action #9, undo)",
+                "▲ Delete row 11 (action #10, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_12() -> Result<()> {
-        let name = "test_history_12";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::add(u, t, -1, json!({"species": "FOO"})),
-            Act::undo(u),
-            Act::r#move(u, t, 4, 9),
-            Act::undo(u),
-            Act::redo(u),
-            Act::r#move(u, t, 3, 1),
-            Act::r#move(u, t, 4, 2),
-            Act::undo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Move row 3 from after row 1 to after row 2 (action #9, undo)",
-            "▲ Move row 4 from after row 9 to after row 3 (action #10, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_12")
+            .user("test")
+            .table("penguin")
+            .append(json!({"species": "FOO"}))
+            .undo()
+            .r#move(4, 9)
+            .undo()
+            .redo()
+            .r#move(3, 1)
+            .r#move(4, 2)
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Move row 3 from after row 1 to after row 2 (action #9, undo)",
+                "▲ Move row 4 from after row 9 to after row 3 (action #10, undo)",
+            ])
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_13() -> Result<()> {
-        let name = "test_history_13";
-        let u = "test";
-        let t = "penguin";
-        let actions = vec![
-            Act::delete(u, t, 6),
-            Act::undo(u),
-            Act::redo(u),
-            Act::delete(u, t, 9),
-            Act::undo(u),
-            Act::redo(u),
-            Act::undo(u),
-            Act::undo(u),
-        ];
-        let history = vec![
-            "  Add row 9 after row 8 (action #7, undo)",
-            "▲ Add row 6 after row 5 (action #8, undo)",
-        ];
-        test_history(name, actions, history).await
+        TestBuilder::new("test_history_13")
+            .user("test")
+            .table("penguin")
+            .delete(6)
+            .undo()
+            .redo()
+            .delete(9)
+            .undo()
+            .redo()
+            .undo()
+            .undo()
+            .history(vec![
+                "  Add row 9 after row 8 (action #7, undo)",
+                "▲ Add row 6 after row 5 (action #8, undo)",
+            ])
+            .run()
+            .await
     }
 
     /// Generate a vector of random API calls.
