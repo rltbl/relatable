@@ -863,7 +863,7 @@ impl Relatable {
             writer.write_record(header_row.clone())?;
 
             let sql = format!(
-                r#"SELECT {columns} FROM "{table_name}_text" WHERE "_deleted" = FALSE ORDER BY "_order""#,
+                r#"SELECT {columns} FROM "{table_name}_text" ORDER BY "_order""#,
                 columns = header_row
                     .iter()
                     .map(|c| format!(r#""{c}""#))

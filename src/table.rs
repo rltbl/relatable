@@ -221,10 +221,13 @@ CREATE TABLE "table_alt" (
   "path" TEXT
 );
 CREATE VIEW "table_union" AS
-SELECT "_id", "_order", FALSE AS "_deleted", "table", "path" FROM "table"
-UNION ALL
-SELECT "_id", "_order", "_deleted", "table", "path" FROM "table_alt";
-CREATE VIEW "table_text" AS SELECT "_id", "_order", "_deleted", "table", "path" FROM "table_union";"#,
+  SELECT "_id", "_order", FALSE AS "_deleted", "table", "path" FROM "table"
+  UNION ALL
+  SELECT "_id", "_order", "_deleted", "table", "path" FROM "table_alt";
+CREATE VIEW "table_text" AS
+  SELECT "_id", "_order", "_deleted", "table", "path"
+  FROM "table_union"
+  WHERE "_deleted" = FALSE;"#,
             table.ddl()
         )
     }

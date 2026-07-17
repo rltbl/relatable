@@ -270,9 +270,9 @@ pub trait TsvTable {
         let alternate_columns = self.alternate_view_columns().join(", ");
         format!(
             r#"CREATE VIEW "{view_name}_union" AS
-SELECT {regular_columns} FROM "{table_id}"
-UNION ALL
-SELECT {alternate_columns} FROM "{table_id}_alt";"#,
+  SELECT {regular_columns} FROM "{table_id}"
+  UNION ALL
+  SELECT {alternate_columns} FROM "{table_id}_alt";"#,
         )
     }
 
@@ -292,7 +292,10 @@ SELECT {alternate_columns} FROM "{table_id}_alt";"#,
             .collect::<Vec<String>>()
             .join(", ");
         format!(
-            r#"CREATE VIEW "{view_name}_text" AS SELECT "_id", "_order", "_deleted", {columns} FROM "{view_name}_union";"#
+            r#"CREATE VIEW "{view_name}_text" AS
+  SELECT "_id", "_order", "_deleted", {columns}
+  FROM "{view_name}_union"
+  WHERE "_deleted" = FALSE;"#
         )
     }
 
@@ -1086,13 +1089,16 @@ mod tests {
         );
         assert_eq!(
             r#"CREATE VIEW "island_union" AS
-SELECT "_id", "_order", FALSE AS "_deleted", "c1" AS "island_id", NULL AS "island_id_text", "c2" AS "island" FROM "t0"
-UNION ALL
-SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id_text", "c2" AS "island" FROM "t0_alt";"#,
+  SELECT "_id", "_order", FALSE AS "_deleted", "c1" AS "island_id", NULL AS "island_id_text", "c2" AS "island" FROM "t0"
+  UNION ALL
+  SELECT "_id", "_order", "_deleted", "c1" AS "island_id", "c1_text" AS "island_id_text", "c2" AS "island" FROM "t0_alt";"#,
             table.union_view_ddl()
         );
         assert_eq!(
-            r#"CREATE VIEW "island_text" AS SELECT "_id", "_order", "_deleted", COALESCE(CAST("island_id" AS TEXT), "island_id_text") AS "island_id", "island" FROM "island_union";"#,
+            r#"CREATE VIEW "island_text" AS
+  SELECT "_id", "_order", "_deleted", COALESCE(CAST("island_id" AS TEXT), "island_id_text") AS "island_id", "island"
+  FROM "island_union"
+  WHERE "_deleted" = FALSE;"#,
             table.text_view_ddl()
         );
 

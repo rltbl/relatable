@@ -503,10 +503,13 @@ CREATE TABLE "datatype_alt" (
   "description" TEXT
 );
 CREATE VIEW "datatype_union" AS
-SELECT "_id", "_order", FALSE AS "_deleted", "datatype", "parent", "condition", "sql_type", "format", "description" FROM "datatype"
-UNION ALL
-SELECT "_id", "_order", "_deleted", "datatype", "parent", "condition", "sql_type", "format", "description" FROM "datatype_alt";
-CREATE VIEW "datatype_text" AS SELECT "_id", "_order", "_deleted", "datatype", "parent", "condition", "sql_type", "format", "description" FROM "datatype_union";"#,
+  SELECT "_id", "_order", FALSE AS "_deleted", "datatype", "parent", "condition", "sql_type", "format", "description" FROM "datatype"
+  UNION ALL
+  SELECT "_id", "_order", "_deleted", "datatype", "parent", "condition", "sql_type", "format", "description" FROM "datatype_alt";
+CREATE VIEW "datatype_text" AS
+  SELECT "_id", "_order", "_deleted", "datatype", "parent", "condition", "sql_type", "format", "description"
+  FROM "datatype_union"
+  WHERE "_deleted" = FALSE;"#,
             table.ddl()
         )
     }
