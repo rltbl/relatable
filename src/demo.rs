@@ -118,7 +118,7 @@ pub async fn create_island_table(rltbl: &Relatable, force: bool) -> Result<()> {
 
 /// Create the datatype table for the demonstration database
 pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Result<()> {
-    let datatype_table = rltbl.datatype_table();
+    let datatype_table = rltbl.datatype_table().await?;
     if *force {
         datatype_table.drop().await?;
         datatype_table.init().await?;

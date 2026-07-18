@@ -260,8 +260,11 @@ async fn get_tableset(
                         .await
                         .unwrap();
                     // table.ensure_default_view_created(&rltbl).await.unwrap();
-                    let columns = match rltbl.column_table().get(&[&table.name]).await {
-                        Ok(columns) => columns.into(),
+                    let columns = match rltbl.column_table().await {
+                        Ok(ct) => match ct.get(&[&table.name]).await {
+                            Ok(columns) => columns.into(),
+                            Err(error) => return get_500(&error),
+                        },
                         Err(error) => return get_500(&error),
                     };
                     ResultSet {

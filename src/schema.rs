@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use crate as rltbl;
+use crate::{self as rltbl, column::ColumnBuilder};
 use rltbl::{
     column::{Column, Columns},
     core::RelatableError,
@@ -14,17 +14,163 @@ use rltbl::{
 };
 
 use anyhow::Result;
-use indexmap::IndexMap;
+use indexmap::{indexmap, IndexMap};
 use itertools::Itertools;
 use rltbl_db::db_value::JsonRow;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Schema {
     pub tables: IndexMap<String, Table>,
     pub columns: Columns,
     pub datatypes: Datatypes,
+}
+
+impl Default for Schema {
+    fn default() -> Self {
+        Self {
+            tables: indexmap! {
+                "table".to_string() => Table {
+                    name: "table".to_string(),
+                    id: 1,
+                    order: 1000,
+                    path: "src/schema/table.tsv".to_string(),
+                    view: String::new(),
+                    editable: true,
+                    has_meta: true
+                },
+                "column".to_string() => Table {
+                    name: "column".to_string(),
+                    id: 2,
+                    order: 2000,
+                    path: "src/schema/column.tsv".to_string(),
+                    view: String::new(),
+                    editable: true,
+                    has_meta: true
+                },
+                "datatype".to_string() => Table {
+                    name: "datatype".to_string(),
+                    id: 3,
+                    order: 3000,
+                    path: "src/schema/datatype.tsv".to_string(),
+                    view: String::new(),
+                    editable: true,
+                    has_meta: true
+                },
+            },
+            columns: vec![
+                // table
+                ColumnBuilder::new("table", "table")
+                    .id(1)
+                    .description("the name of this table")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("table", "path")
+                    .id(2)
+                    .description("the path to the source of this file")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                // column
+                ColumnBuilder::new("column", "table")
+                    .id(3)
+                    .description("the table for this column")
+                    .datatype("word")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "column")
+                    .id(4)
+                    .description("the name of this column")
+                    .datatype("word")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "label")
+                    .id(5)
+                    .description("the label of this column")
+                    .datatype("trimmed_line")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "nulltype")
+                    .id(6)
+                    .description("the null type of this column")
+                    .datatype("word")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "datatype")
+                    .id(7)
+                    .description("the datatype of this column")
+                    .datatype("word")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "structure")
+                    .id(8)
+                    .description("the structure of this column")
+                    .datatype("trimmed_line")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("column", "description")
+                    .id(9)
+                    .description("the description of this column")
+                    .datatype("trimmed_line")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                // datatype
+                ColumnBuilder::new("datatype", "datatype")
+                    .id(10)
+                    .description("the name of this datatype")
+                    .datatype("word")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("datatype", "parent")
+                    .id(11)
+                    .description("the parent datatype")
+                    .datatype("word")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("datatype", "condition")
+                    .id(12)
+                    .description("the validation condition")
+                    .datatype("trimmed_line")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("datatype", "sql_type")
+                    .id(13)
+                    .description("the validation condition")
+                    .datatype("trimmed_line")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("datatype", "format")
+                    .id(14)
+                    .description("the SQL type for this datatype")
+                    .datatype("word")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+                ColumnBuilder::new("datatype", "description")
+                    .id(15)
+                    .description("the description of this datatype")
+                    .datatype("trimmed_line")
+                    .sql_type("TEXT")
+                    .build()
+                    .unwrap(),
+            ]
+            .into(),
+            datatypes: Datatypes::default(),
+        }
+    }
 }
 
 impl Schema {

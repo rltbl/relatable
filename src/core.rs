@@ -248,9 +248,9 @@ impl Relatable {
         rltbl.change_table().create().await?;
         rltbl.history_table().create().await?;
         rltbl.message_table().create().await?;
-        rltbl.table_table().init().await?;
-        rltbl.column_table().init().await?;
-        rltbl.datatype_table().init().await?;
+        rltbl.table_table().await?.init().await?;
+        rltbl.column_table().await?.init().await?;
+        rltbl.datatype_table().await?.init().await?;
 
         Ok(rltbl)
     }
@@ -275,37 +275,63 @@ impl Relatable {
         MessageTable::connect(&self.pool)
     }
 
-    /// Get the message table
-    pub fn table_table(&self) -> TableTable<'_> {
-        TableTable::connect(&self.pool)
+    /// Get the table table
+    pub async fn table_table(&self) -> Result<TableTable<'_>> {
+        let table = self.get_table("table").await?;
+        Ok(TableTable::from(table))
     }
 
     /// Get the column table for this Relatable instance.
-    pub fn column_table(&self) -> ColumnTable<'_> {
-        ColumnTable::connect(&self.pool)
+    pub async fn column_table(&self) -> Result<ColumnTable<'_>> {
+        let table = self.get_table("column").await?;
+        Ok(ColumnTable::from(table))
     }
 
     /// Get the datatype table for this Relatable instance.
-    pub fn datatype_table(&self) -> DatatypeTable<'_> {
-        DatatypeTable::connect(&self.pool)
+    pub async fn datatype_table(&self) -> Result<DatatypeTable<'_>> {
+        let table = self.get_table("datatype").await?;
+        Ok(DatatypeTable::from(table))
     }
 
     // TODO: Continue from here.
 
     /// Get all the defined datatypes.
     pub async fn datatypes(&self) -> Datatypes {
-        self.datatype_table().get().await
+        match self.datatype_table().await {
+            Ok(datatype_table) => datatype_table.get().await,
+            Err(_) => Datatypes::default(),
+        }
     }
 
     pub async fn schema(&self) -> Result<Schema> {
-        let tables = self.table_table().list().await?;
+        let table_table = Table {
+            name: "table".to_string(),
+            ..Default::default()
+        };
+        let table_table = table_table.connect(&self.pool);
+        let table_table = TableTable::from(table_table);
+        let tables = match table_table.list().await {
+            Ok(tables) => tables,
+            Err(_) => return Ok(Schema::default()),
+        };
+
         let mut tables: IndexMap<String, Table> = tables
             .into_iter()
             .map(|t| (t.name.to_string(), t))
             .collect();
 
-        let table_names: Vec<&str> = tables.keys().map(|k| k.as_str()).collect();
-        let mut columns = self.column_table().get_configured(&table_names).await?;
+        let mut columns = if let Some(column_table) = tables.get("column") {
+            let column_table = column_table.connect(&self.pool);
+            let column_table = ColumnTable::from(column_table);
+            let table_names: Vec<&str> = tables.keys().map(|k| k.as_str()).collect();
+            match column_table.get_configured(&table_names).await {
+                Ok(columns) => columns,
+                Err(_) => return Ok(Schema::default()),
+            }
+        } else {
+            return Ok(Schema::default());
+        };
+
         for column in columns.iter() {
             if let Some(table) = tables.get_mut(&column.table) {
                 if column.is_meta() {
@@ -314,21 +340,29 @@ impl Relatable {
             }
         }
 
-        let datatypes = self.datatypes().await;
+        let datatypes = if let Some(datatype_table) = tables.get("datatype") {
+            let datatype_table = datatype_table.connect(&self.pool);
+            let datatype_table = DatatypeTable::from(datatype_table);
+            datatype_table.get().await
+        } else {
+            Datatypes::default()
+        };
 
         columns.sql_types(&datatypes);
 
-        Ok(Schema {
+        let schema = Schema {
             tables,
             columns,
             datatypes,
-        })
+        };
+
+        Ok(schema)
     }
 
     // Drop all of the tables in the table table
     pub async fn drop_data_tables(&self) -> Result<()> {
         tracing::trace!("Relatable::drop_data_tables({self:?})");
-        if !self.table_table().exists().await? {
+        if !self.table_table().await?.exists().await? {
             tracing::warn!("Can't get list of tables to drop: The table table does not exist");
         } else {
             // TODO: sort tables by dependency, drop in referse order
@@ -342,9 +376,9 @@ impl Relatable {
 
     // Drop all of the meta tables
     pub async fn drop_meta_tables(&self) -> Result<()> {
-        self.datatype_table().drop().await?;
-        self.column_table().drop().await?;
-        self.table_table().drop().await?;
+        self.datatype_table().await?.drop().await?;
+        self.column_table().await?.drop().await?;
+        self.table_table().await?.drop().await?;
         self.message_table().drop().await?;
         self.history_table().drop().await?;
         self.change_table().drop().await?;
@@ -580,6 +614,8 @@ impl Relatable {
         };
         let configured_columns: Vec<Column> = self
             .column_table()
+            .await
+            .expect("get column table")
             .get_configured(&[table_name])
             .await
             .expect("get columns for this table")

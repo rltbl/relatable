@@ -2,16 +2,11 @@
 //!
 //! This is [relatable](crate) (rltbl::[table](crate::table)).
 
-use std::{collections::BTreeSet, iter::zip, path::Path};
+use std::{collections::BTreeSet, ops::Deref, path::Path};
 
-use crate::{
-    self as rltbl,
-    data_table::DataTableBuilder,
-    tsv_table::{InnerRows, UserRows},
-};
-use async_trait::async_trait;
+use crate::{self as rltbl, data_table::DataTableBuilder, schema::Schema, tsv_table::UserRows};
 use rltbl::{
-    column::{ColumnBuilder, Columns},
+    column::Columns,
     core::{Relatable, RowID, RowOrder},
     data_table::DataTable,
     tsv_table::TsvTable,
@@ -103,81 +98,28 @@ impl Table {
 
 /// Represents the special "table" table.
 pub struct TableTable<'a> {
-    name: String,
-    id: RowID,
-    pool: &'a AnyPool,
+    table: DataTable<'a>,
 }
 
-#[async_trait]
-impl<'a> TsvTable for TableTable<'a> {
-    fn name(&self) -> String {
-        self.name.clone()
-    }
+impl<'a> Deref for TableTable<'a> {
+    type Target = DataTable<'a>;
 
-    fn id(&self) -> String {
-        format!("t{}", self.id)
-    }
-
-    fn pool(&self) -> &AnyPool {
-        self.pool
-    }
-
-    fn columns(&self) -> Columns {
-        // TODO: both should be unique
-        vec![
-            ColumnBuilder::new(&self.name, "table")
-                .id(1)
-                .description("the name of this table")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "path")
-                .id(2)
-                .description("the path to the source of this file")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-        ]
-        .into()
-    }
-
-    async fn append(&self, rows: UserRows) -> Result<InnerRows> {
-        let rows = self.sanitize_rows(rows);
-        let mut rows = self.rows(rows).await?;
-        let new_orders = self.new_orders(rows.rows.len()).await?;
-        for (order, row) in zip(new_orders, rows.rows.iter_mut()) {
-            row.order = order;
-        }
-        self.insert_ordered(&mut rows).await?;
-        Ok(rows.inner())
+    fn deref(&self) -> &Self::Target {
+        &self.table
     }
 }
 
 impl<'a> TableTable<'a> {
-    /// Create a new instance of UserTable from an AnyPool.
-    pub fn connect(pool: &'a AnyPool) -> Self {
-        Self {
-            name: "table".to_owned(),
-            id: 1,
-            pool,
-        }
+    pub fn from(table: DataTable<'a>) -> Self {
+        Self { table }
     }
 
     /// Create the default table table.
     pub async fn init(&self) -> Result<()> {
         let path = "src/schema/table.tsv";
         let mut builder = DataTableBuilder::from_path(path);
-        builder.table_id(1).first_column_id(1);
-        builder
-            .column("table")
-            .description("the name of the table")
-            .datatype("text")
-            .sql_type("TEXT");
-        builder
-            .column("path")
-            .description("the path to the TSV file")
-            .datatype("text")
-            .sql_type("TEXT");
+        builder.table_id(1);
+        builder.columns(Schema::default().columns("table"));
         builder.row(params!["table", "src/schema/table.tsv"])?;
         builder.row(params!["column", "src/schema/column.tsv"])?;
         builder.row(params!["datatype", "src/schema/datatype.tsv"])?;

@@ -631,7 +631,7 @@ pub async fn prompt_for_json_message(
     row: RowID,
     column: &str,
 ) -> Result<JsonRow> {
-    let columns: Vec<_> = rltbl.column_table().get(&["message"]).await?.into();
+    let columns: Vec<_> = rltbl.column_table().await?.get(&["message"]).await?.into();
     let columns = columns
         .iter()
         .filter(|c| !["message_id", "added_by"].contains(&c.column.as_str()))
@@ -664,6 +664,7 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
     tracing::trace!("prompt_for_json_row({rltbl:?}, {table_name})");
     let columns: Vec<String> = rltbl
         .column_table()
+        .await?
         .get(&[table_name])
         .await?
         .iter()

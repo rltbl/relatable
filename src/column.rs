@@ -2,15 +2,19 @@
 //!
 //! This is [relatable](crate) (rltbl::[column](crate::column)).
 
-use crate::{self as rltbl, data_table::DataTableBuilder, tsv_table::UserRows};
+use crate::{
+    self as rltbl,
+    data_table::{DataTable, DataTableBuilder},
+    schema::Schema,
+    tsv_table::UserRows,
+};
 use rltbl::{
     core::{RowID, RowOrder},
-    datatype::{DatatypeTable, Datatypes},
+    datatype::Datatypes,
     structure::{Structure, Structures},
-    table::TableTable,
     tsv_table::TsvTable,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery, db_kind::DbKind, db_value::DbRow, serde::to_db_row};
+use rltbl_db::{core::DbQuery, db_kind::DbKind, db_value::DbRow, serde::to_db_row};
 
 use anyhow::Result;
 use derive_builder::Builder;
@@ -328,154 +332,32 @@ impl Columns {
 }
 
 /// Represents the special "column" table.
+#[derive(Debug)]
 pub struct ColumnTable<'a> {
-    // This table_name is "column" by default.
-    name: String,
-    id: RowID,
-    pool: &'a AnyPool,
+    table: DataTable<'a>,
 }
 
-impl<'a> TsvTable for ColumnTable<'a> {
-    fn name(&self) -> String {
-        self.name.clone()
-    }
+impl<'a> Deref for ColumnTable<'a> {
+    type Target = DataTable<'a>;
 
-    fn id(&self) -> String {
-        format!("t{}", self.id)
-    }
-
-    fn pool(&self) -> &AnyPool {
-        self.pool
-    }
-
-    fn columns(&self) -> Columns {
-        vec![
-            ColumnBuilder::new(&self.name, "table")
-                .id(3)
-                .description("the table for this column")
-                .datatype("word")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "column")
-                .id(4)
-                .description("the name of this column")
-                .datatype("word")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "label")
-                .id(5)
-                .description("the label of this column")
-                .datatype("trimmed_line")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "nulltype")
-                .id(6)
-                .description("the null type of this column")
-                .datatype("word")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "datatype")
-                .id(7)
-                .description("the datatype of this column")
-                .datatype("word")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "structure")
-                .id(8)
-                .description("the structure of this column")
-                .datatype("trimmed_line")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "description")
-                .id(9)
-                .description("the description of this column")
-                .datatype("trimmed_line")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-        ]
-        .into()
+    fn deref(&self) -> &Self::Target {
+        &self.table
     }
 }
 
 impl<'a> ColumnTable<'a> {
-    /// Create a new instance of ColumnTable from an AnyPool.
-    pub fn connect(pool: &'a AnyPool) -> Self {
-        Self {
-            name: "column".to_owned(),
-            id: 2,
-            pool,
-        }
+    pub fn from(table: DataTable<'a>) -> Self {
+        Self { table }
     }
 
     /// Create the default column table.
     pub async fn init(&self) -> Result<()> {
         let path = "src/schema/column.tsv";
         let mut builder = DataTableBuilder::from_path(path);
-        builder.table_id(2).first_column_id(3);
-        builder
-            .column("table")
-            .description("the table for this column")
-            .datatype("word")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("column")
-            .description("the name of this column")
-            .datatype("word")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("label")
-            .description("the label of this column")
-            .datatype("trimmed_line")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("nulltype")
-            .description("the null type of this column")
-            .datatype("word")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("datatype")
-            .description("the datatype of this column")
-            .datatype("word")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("structure")
-            .description("the structure of this column")
-            .datatype("trimmed_line")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("description")
-            .description("the description of this column")
-            .datatype("trimmed_line")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
+        builder.table_id(2);
+        builder.columns(Schema::default().columns("column"));
 
-        let mut columns = vec![];
-        let table = TableTable::connect(self.pool());
-        columns.extend(table.columns().iter().cloned());
-        columns.extend(self.columns().iter().cloned());
-        let table = DatatypeTable::connect(self.pool());
-        columns.extend(table.columns().iter().cloned());
-        for column in columns {
+        for column in Schema::default().columns.iter() {
             builder.to_row(&column)?;
         }
 
@@ -509,6 +391,7 @@ impl<'a> ColumnTable<'a> {
             .get_configured(&table_names)
             .await?
             .iter()
+            // .inspect(|c| println!("COL {c:?}"))
             .filter_map(|c| {
                 column_names
                     .get(&(c.table.clone(), c.column.clone()))
@@ -641,10 +524,9 @@ impl<'a> ColumnTable<'a> {
                 "nulltype",
                 "datatype",
                 "structure"
-              FROM "{}"
+              FROM "column"
               WHERE "table" IN({})
             "#,
-            self.name,
             tables
                 .iter()
                 .map(|t| format!("'{t}'"))

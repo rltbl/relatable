@@ -2,15 +2,19 @@
 //!
 //! This is [relatable](crate) (rltbl::[datatype](crate::datatype)).
 
-use crate::{self as rltbl, data_table::DataTableBuilder, tsv_table::UserRows};
+use crate::{
+    self as rltbl,
+    data_table::{DataTable, DataTableBuilder},
+    schema::Schema,
+    tsv_table::UserRows,
+};
 use rltbl::{
-    column::{Column, ColumnBuilder, Columns},
+    column::Column,
     core::{Relatable, RowID, RowOrder},
     sql::{self, SqlParam},
     tsv_table::TsvTable,
 };
 use rltbl_db::{
-    any::AnyPool,
     core::DbQuery,
     db_value::{DbRow, DbValue},
     serde::to_db_row,
@@ -355,132 +359,28 @@ impl Datatypes {
 
 /// Represents the special "datatype" table.
 pub struct DatatypeTable<'a> {
-    // This table_name is "datatype" by default.
-    name: String,
-    id: RowID,
-    pool: &'a AnyPool,
+    table: DataTable<'a>,
 }
 
-impl<'a> TsvTable for DatatypeTable<'a> {
-    fn name(&self) -> String {
-        self.name.clone()
-    }
+impl<'a> Deref for DatatypeTable<'a> {
+    type Target = DataTable<'a>;
 
-    fn id(&self) -> String {
-        format!("t{}", self.id)
-    }
-
-    fn pool(&self) -> &AnyPool {
-        self.pool
-    }
-
-    fn columns(&self) -> Columns {
-        vec![
-            ColumnBuilder::new(&self.name, "datatype")
-                .id(10)
-                .description("the name of this datatype")
-                .datatype("word")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "parent")
-                .id(11)
-                .description("the parent datatype")
-                .datatype("word")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "condition")
-                .id(12)
-                .description("the validation condition")
-                .datatype("trimmed_line")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "sql_type")
-                .id(13)
-                .description("the validation condition")
-                .datatype("trimmed_line")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "format")
-                .id(14)
-                .description("the SQL type for this datatype")
-                .datatype("word")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(&self.name, "description")
-                .id(15)
-                .description("the description of this datatype")
-                .datatype("trimmed_line")
-                .sql_type("TEXT")
-                .build()
-                .unwrap(),
-        ]
-        .into()
+    fn deref(&self) -> &Self::Target {
+        &self.table
     }
 }
 
 impl<'a> DatatypeTable<'a> {
-    /// Create a new instance of DatatypeTable from an AnyPool.
-    pub fn connect(pool: &'a AnyPool) -> Self {
-        Self {
-            name: "datatype".to_owned(),
-            id: 3,
-            pool,
-        }
+    pub fn from(table: DataTable<'a>) -> Self {
+        Self { table }
     }
 
     /// Create tables and fill with default rows.
     pub async fn init(&self) -> Result<()> {
         let path = "src/schema/datatype.tsv";
         let mut builder = DataTableBuilder::from_path(path);
-        builder.table_id(3).first_column_id(10);
-        builder
-            .column("datatype")
-            .description("the name of this datatype")
-            .datatype("word")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("parent")
-            .description("the parent datatype")
-            .datatype("word")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("condition")
-            .description("the validation condition")
-            .datatype("trimmed_line")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("sql_type")
-            .description("the validation condition")
-            .datatype("trimmed_line")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("format")
-            .description("the SQL type for this datatype")
-            .datatype("word")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-        builder
-            .column("description")
-            .description("the description of this datatype")
-            .datatype("trimmed_line")
-            .sql_type("TEXT")
-            .build()
-            .unwrap();
-
+        builder.table_id(3);
+        builder.columns(Schema::default().columns("datatype"));
         let datatypes: Vec<Datatype> = Datatypes::builtins()
             .values()
             .into_iter()
@@ -559,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn test_add() -> Result<()> {
         let rltbl = Relatable::test("test_datatype_add", false).await?;
-        let table = rltbl.datatype_table();
+        let table = rltbl.datatype_table().await?;
 
         let test = DatatypeBuilder::new("test")
             .description("test datatype")
@@ -584,7 +484,7 @@ mod tests {
     async fn test_priority() -> Result<()> {
         // built-ins take priority over rows from the table
         let rltbl = Relatable::test("test_datatype_priority", false).await?;
-        let table = rltbl.datatype_table();
+        let table = rltbl.datatype_table().await?;
 
         rltbl
             .pool

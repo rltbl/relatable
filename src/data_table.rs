@@ -39,11 +39,15 @@ impl<'a> TsvTable for DataTable<'a> {
     }
 }
 
+enum ColumnOrBuilder {
+    Column(Column),
+    Builder(ColumnBuilder),
+}
+
 pub struct DataTableBuilder {
     table: Table,
     table_id: RowID,
-    first_column_id: RowID,
-    column_builders: IndexMap<String, ColumnBuilder>,
+    columns: IndexMap<String, ColumnOrBuilder>,
     rows: Vec<UserRow>,
     force: bool,
 }
@@ -53,8 +57,7 @@ impl DataTableBuilder {
         Self {
             table: Table::from_path(path),
             table_id: 1,
-            first_column_id: 1,
-            column_builders: IndexMap::new(),
+            columns: IndexMap::new(),
             rows: vec![],
             force: false,
         }
@@ -71,18 +74,24 @@ impl DataTableBuilder {
         self
     }
 
-    pub fn first_column_id(&mut self, id: RowID) -> &mut Self {
-        self.first_column_id = id;
+    pub fn columns(&mut self, columns: IndexMap<&String, &Column>) -> &mut Self {
+        self.columns = columns
+            .into_iter()
+            .map(|(k, v)| (k.clone(), ColumnOrBuilder::Column(v.clone())))
+            .collect();
         self
     }
 
     /// Create a ColumnBuilder for this table.
     pub fn column(&mut self, column_name: &str) -> &mut ColumnBuilder {
-        self.column_builders.insert(
+        self.columns.insert(
             column_name.to_string(),
-            ColumnBuilder::new(&self.table.name, column_name),
+            ColumnOrBuilder::Builder(ColumnBuilder::new(&self.table.name, column_name)),
         );
-        self.column_builders.get_mut(column_name).unwrap()
+        match self.columns.get_mut(column_name).unwrap() {
+            ColumnOrBuilder::Column(_) => unreachable!(),
+            ColumnOrBuilder::Builder(column_builder) => column_builder,
+        }
     }
 
     /// Create a row for this table from a list of values that can be turned into DbValues.
@@ -93,16 +102,16 @@ impl DataTableBuilder {
             }
             rltbl_db::db_value::DbParams::Positional(db_values) => db_values,
         };
-        if self.column_builders.len() != values.len() {
+        if self.columns.len() != values.len() {
             return Err(RelatableError::DataError(format!(
                 "Expected {} values but found {}",
-                self.column_builders.len(),
+                self.columns.len(),
                 values.len()
             ))
             .into());
         }
         let db_row = UserRow {
-            map: zip(self.column_builders.keys(), values)
+            map: zip(self.columns.keys(), values)
                 .map(|(k, v)| (k.to_string(), v))
                 .collect(),
         };
@@ -113,7 +122,7 @@ impl DataTableBuilder {
     pub fn to_row(&mut self, row: &impl Serialize) -> Result<&mut UserRow> {
         let row = to_db_row(row)?;
         let mut map = IndexMap::new();
-        for key in self.column_builders.keys() {
+        for key in self.columns.keys() {
             if let Some(value) = row.get(key) {
                 map.insert(key.to_string(), value);
             }
@@ -126,9 +135,11 @@ impl DataTableBuilder {
     /// Given a database pool, create a DataTable.
     pub fn connect<'a>(self, pool: &'a AnyPool) -> Result<DataTable<'a>> {
         let mut columns = Vec::new();
-        for (i, column_builder) in self.column_builders.values().enumerate() {
-            let id = self.first_column_id + i as RowID;
-            let column = column_builder.clone().id(id).build()?;
+        for column in self.columns.values() {
+            let column = match column {
+                ColumnOrBuilder::Column(column) => column.clone(),
+                ColumnOrBuilder::Builder(column_builder) => column_builder.clone().build()?,
+            };
             columns.push(column);
         }
         for row in self.rows {
@@ -160,11 +171,11 @@ impl DataTableBuilder {
         let force = self.force;
         let rows = UserRows { rows: self.rows };
         self.rows = Vec::new(); // move rows
-        let new_table = rltbl.table_table().add(self.table.clone()).await?;
+        let new_table = rltbl.table_table().await?.add(self.table.clone()).await?;
         let mut table = self.build(rltbl).await?;
         table.id = new_table.id;
         let refs: Vec<&Column> = table.columns.iter().collect();
-        table.columns = rltbl.column_table().add(&refs).await?.into();
+        table.columns = rltbl.column_table().await?.add(&refs).await?.into();
         if force {
             table.drop().await?;
         }
