@@ -5,13 +5,15 @@ use rltbl::{
     table::Table,
     tsv_table::{TsvTable, UserRow, UserRows},
 };
-use rltbl_db::{any::AnyPool, db_value::IntoDbParams};
+use rltbl_db::{any::AnyPool, db_value::IntoDbParams, serde::to_db_row};
 
 use anyhow::Result;
 use indexmap::IndexMap;
+use serde::Serialize;
 use std::iter::zip;
 
 /// Represents the special "table" table.
+#[derive(Debug)]
 pub struct DataTable<'a> {
     pub name: String,
     pub id: RowID,
@@ -39,6 +41,8 @@ impl<'a> TsvTable for DataTable<'a> {
 
 pub struct DataTableBuilder {
     table: Table,
+    table_id: RowID,
+    first_column_id: RowID,
     column_builders: IndexMap<String, ColumnBuilder>,
     rows: Vec<UserRow>,
     force: bool,
@@ -48,6 +52,8 @@ impl DataTableBuilder {
     pub fn from_path(path: &str) -> Self {
         Self {
             table: Table::from_path(path),
+            table_id: 1,
+            first_column_id: 1,
             column_builders: IndexMap::new(),
             rows: vec![],
             force: false,
@@ -57,6 +63,16 @@ impl DataTableBuilder {
     /// When true (default false), drop this table before creating.
     pub fn force(&mut self, force: bool) -> &mut Self {
         self.force = force;
+        self
+    }
+
+    pub fn table_id(&mut self, id: RowID) -> &mut Self {
+        self.table_id = id;
+        self
+    }
+
+    pub fn first_column_id(&mut self, id: RowID) -> &mut Self {
+        self.first_column_id = id;
         self
     }
 
@@ -94,11 +110,25 @@ impl DataTableBuilder {
         Ok(self.rows.last_mut().unwrap())
     }
 
+    pub fn to_row(&mut self, row: &impl Serialize) -> Result<&mut UserRow> {
+        let row = to_db_row(row)?;
+        let mut map = IndexMap::new();
+        for key in self.column_builders.keys() {
+            if let Some(value) = row.get(key) {
+                map.insert(key.to_string(), value);
+            }
+        }
+        let db_row = UserRow { map };
+        self.rows.push(db_row);
+        Ok(self.rows.last_mut().unwrap())
+    }
+
     /// Given a database pool, create a DataTable.
     pub fn connect<'a>(self, pool: &'a AnyPool) -> Result<DataTable<'a>> {
         let mut columns = Vec::new();
-        for column_builder in self.column_builders.values() {
-            let column = column_builder.build()?;
+        for (i, column_builder) in self.column_builders.values().enumerate() {
+            let id = self.first_column_id + i as RowID;
+            let column = column_builder.clone().id(id).build()?;
             columns.push(column);
         }
         for row in self.rows {
@@ -129,7 +159,7 @@ impl DataTableBuilder {
     pub async fn create<'a>(mut self, rltbl: &'a Relatable) -> Result<DataTable<'a>> {
         let force = self.force;
         let rows = UserRows { rows: self.rows };
-        self.rows = Vec::new();
+        self.rows = Vec::new(); // move rows
         let new_table = rltbl.table_table().add(self.table.clone()).await?;
         let mut table = self.build(rltbl).await?;
         table.id = new_table.id;
@@ -141,6 +171,24 @@ impl DataTableBuilder {
         table.create().await?;
         table.append(rows).await?;
         Ok(table)
+    }
+
+    // Create just this table, without changing the schema tables.
+    pub async fn create_table<'a>(mut self, pool: &'a AnyPool) -> Result<()> {
+        let force = self.force;
+        let rows = UserRows { rows: self.rows };
+        let id = self.table_id;
+        self.rows = Vec::new();
+        let mut table = self.connect(pool)?;
+        table.id = id;
+        if force {
+            table.drop().await?;
+        }
+        table.create().await?;
+        if rows.rows.len() > 0 {
+            table.append(rows).await?;
+        }
+        Ok(())
     }
 }
 

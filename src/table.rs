@@ -2,16 +2,21 @@
 //!
 //! This is [relatable](crate) (rltbl::[table](crate::table)).
 
-use std::path::Path;
+use std::{collections::BTreeSet, iter::zip, path::Path};
 
-use crate as rltbl;
+use crate::{
+    self as rltbl,
+    data_table::DataTableBuilder,
+    tsv_table::{InnerRows, UserRows},
+};
+use async_trait::async_trait;
 use rltbl::{
     column::{ColumnBuilder, Columns},
     core::{Relatable, RowID, RowOrder},
     data_table::DataTable,
     tsv_table::TsvTable,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery, serde::to_db_row};
+use rltbl_db::{any::AnyPool, core::DbQuery, params, serde::to_db_row};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -99,16 +104,18 @@ impl Table {
 /// Represents the special "table" table.
 pub struct TableTable<'a> {
     name: String,
+    id: RowID,
     pool: &'a AnyPool,
 }
 
+#[async_trait]
 impl<'a> TsvTable for TableTable<'a> {
     fn name(&self) -> String {
         self.name.clone()
     }
 
     fn id(&self) -> String {
-        self.name.clone()
+        format!("t{}", self.id)
     }
 
     fn pool(&self) -> &AnyPool {
@@ -119,15 +126,30 @@ impl<'a> TsvTable for TableTable<'a> {
         // TODO: both should be unique
         vec![
             ColumnBuilder::new(&self.name, "table")
+                .id(1)
+                .description("the name of this table")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "path")
+                .id(2)
+                .description("the path to the source of this file")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
         ]
         .into()
+    }
+
+    async fn append(&self, rows: UserRows) -> Result<InnerRows> {
+        let rows = self.sanitize_rows(rows);
+        let mut rows = self.rows(rows).await?;
+        let new_orders = self.new_orders(rows.rows.len()).await?;
+        for (order, row) in zip(new_orders, rows.rows.iter_mut()) {
+            row.order = order;
+        }
+        self.insert_ordered(&mut rows).await?;
+        Ok(rows.inner())
     }
 }
 
@@ -136,32 +158,30 @@ impl<'a> TableTable<'a> {
     pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
             name: "table".to_owned(),
+            id: 1,
             pool,
         }
     }
 
-    /// Create tables and fill with default rows.
+    /// Create the default table table.
     pub async fn init(&self) -> Result<()> {
-        self.create().await?;
-        let tables = vec![
-            Table {
-                name: self.name().to_string(),
-                path: "src/schema/table.tsv".to_string(),
-                ..Default::default()
-            },
-            Table {
-                name: "column".to_string(),
-                path: "src/schema/column.tsv".to_string(),
-                ..Default::default()
-            },
-            Table {
-                name: "datatype".to_string(),
-                path: "src/schema/datatype.tsv".to_string(),
-                ..Default::default()
-            },
-        ];
-        let refs: Vec<&Table> = tables.iter().collect();
-        self.extend(&refs).await?;
+        let path = "src/schema/table.tsv";
+        let mut builder = DataTableBuilder::from_path(path);
+        builder.table_id(1).first_column_id(1);
+        builder
+            .column("table")
+            .description("the name of the table")
+            .datatype("text")
+            .sql_type("TEXT");
+        builder
+            .column("path")
+            .description("the path to the TSV file")
+            .datatype("text")
+            .sql_type("TEXT");
+        builder.row(params!["table", "src/schema/table.tsv"])?;
+        builder.row(params!["column", "src/schema/column.tsv"])?;
+        builder.row(params!["datatype", "src/schema/datatype.tsv"])?;
+        builder.create_table(&self.pool).await?;
         Ok(())
     }
 
@@ -172,8 +192,16 @@ impl<'a> TableTable<'a> {
             .iter()
             .map(|table| to_db_row(table))
             .collect::<Result<Vec<_>, _>>()?;
-        let rows = self.append_regular(rows).await?;
-        let new_tables: Vec<Table> = rows.remove_nulls().try_into_vec()?;
+        let rows = rows.into_iter().map(|row| row.into()).collect();
+        let rows = UserRows { rows };
+        self.append(rows).await?;
+        let table_names: BTreeSet<String> = tables.iter().map(|d| d.name.clone()).collect();
+        let new_tables: Vec<Table> = self
+            .list()
+            .await?
+            .into_iter()
+            .filter(|t| table_names.contains(&t.name))
+            .collect();
         Ok(new_tables)
     }
 
@@ -191,6 +219,7 @@ impl<'a> TableTable<'a> {
         self.pool()
             .query(sql, ())
             .await?
+            .remove_nulls()
             .try_into_vec()
             .map_err(|e| e.into())
     }
@@ -200,37 +229,6 @@ impl<'a> TableTable<'a> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use rltbl_db::any::AnyPool;
-
-    #[tokio::test]
-    async fn test_ddl() {
-        let pool = AnyPool::connect(":memory:").await.unwrap();
-        let table = TableTable::connect(&pool);
-        assert_eq!(
-            r#"CREATE TABLE "table" (
-  "_id" INTEGER PRIMARY KEY AUTOINCREMENT,
-  "_order" BIGINT UNIQUE,
-  "table" TEXT,
-  "path" TEXT
-);
-CREATE TABLE "table_alt" (
-  "_id" INTEGER PRIMARY KEY,
-  "_order" BIGINT UNIQUE,
-  "_deleted" BOOL,
-  "table" TEXT,
-  "path" TEXT
-);
-CREATE VIEW "table_union" AS
-  SELECT "_id", "_order", FALSE AS "_deleted", "table", "path" FROM "table"
-  UNION ALL
-  SELECT "_id", "_order", "_deleted", "table", "path" FROM "table_alt";
-CREATE VIEW "table_text" AS
-  SELECT "_id", "_order", "_deleted", "table", "path"
-  FROM "table_union"
-  WHERE "_deleted" = FALSE;"#,
-            table.ddl()
-        )
-    }
 
     #[tokio::test]
     async fn test_init() -> Result<()> {

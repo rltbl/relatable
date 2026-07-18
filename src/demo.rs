@@ -121,8 +121,8 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
     let datatype_table = rltbl.datatype_table();
     if *force {
         datatype_table.drop().await?;
+        datatype_table.init().await?;
     }
-    datatype_table.init().await?;
     datatype_table
         .add(&[
             &DatatypeBuilder::new("decimal")

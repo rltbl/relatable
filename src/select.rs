@@ -3036,7 +3036,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         //   / B \
         // A       B2C - D
         //   \ C /
-        let insert_sql = r#"INSERT INTO "table"("table") VALUES
+        let insert_sql = r#"INSERT INTO "t1"("c1") VALUES
 ('A'), ('B'), ('C'), ('B2C'), ('D')"#;
         rltbl.pool.execute(insert_sql, ()).await.unwrap();
 

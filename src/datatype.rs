@@ -2,20 +2,28 @@
 //!
 //! This is [relatable](crate) (rltbl::[datatype](crate::datatype)).
 
-use crate as rltbl;
+use crate::{self as rltbl, data_table::DataTableBuilder, tsv_table::UserRows};
 use rltbl::{
     column::{Column, ColumnBuilder, Columns},
     core::{Relatable, RowID, RowOrder},
     sql::{self, SqlParam},
     tsv_table::TsvTable,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery, db_value::DbValue, serde::to_db_row};
+use rltbl_db::{
+    any::AnyPool,
+    core::DbQuery,
+    db_value::{DbRow, DbValue},
+    serde::to_db_row,
+};
 
 use anyhow::Result;
 use derive_builder::Builder;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::ops::{Deref, DerefMut};
+use std::{
+    collections::BTreeSet,
+    ops::{Deref, DerefMut},
+};
 
 /// Represents a column's datatype
 #[derive(Builder, Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Ord, Eq)]
@@ -349,6 +357,7 @@ impl Datatypes {
 pub struct DatatypeTable<'a> {
     // This table_name is "datatype" by default.
     name: String,
+    id: RowID,
     pool: &'a AnyPool,
 }
 
@@ -358,7 +367,7 @@ impl<'a> TsvTable for DatatypeTable<'a> {
     }
 
     fn id(&self) -> String {
-        self.name.clone()
+        format!("t{}", self.id)
     }
 
     fn pool(&self) -> &AnyPool {
@@ -368,36 +377,42 @@ impl<'a> TsvTable for DatatypeTable<'a> {
     fn columns(&self) -> Columns {
         vec![
             ColumnBuilder::new(&self.name, "datatype")
+                .id(10)
                 .description("the name of this datatype")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "parent")
+                .id(11)
                 .description("the parent datatype")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "condition")
+                .id(12)
                 .description("the validation condition")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "sql_type")
+                .id(13)
                 .description("the validation condition")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "format")
+                .id(14)
                 .description("the SQL type for this datatype")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "description")
+                .id(15)
                 .description("the description of this datatype")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
@@ -413,39 +428,91 @@ impl<'a> DatatypeTable<'a> {
     pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
             name: "datatype".to_owned(),
+            id: 3,
             pool,
         }
     }
 
     /// Create tables and fill with default rows.
     pub async fn init(&self) -> Result<()> {
-        self.create().await?;
+        let path = "src/schema/datatype.tsv";
+        let mut builder = DataTableBuilder::from_path(path);
+        builder.table_id(3).first_column_id(10);
+        builder
+            .column("datatype")
+            .description("the name of this datatype")
+            .datatype("word")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("parent")
+            .description("the parent datatype")
+            .datatype("word")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("condition")
+            .description("the validation condition")
+            .datatype("trimmed_line")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("sql_type")
+            .description("the validation condition")
+            .datatype("trimmed_line")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("format")
+            .description("the SQL type for this datatype")
+            .datatype("word")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("description")
+            .description("the description of this datatype")
+            .datatype("trimmed_line")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+
         let datatypes: Vec<Datatype> = Datatypes::builtins()
             .values()
             .into_iter()
             .cloned()
             .collect();
-        let refs: Vec<&Datatype> = datatypes.iter().collect();
-        self.add(&refs).await?;
+        for datatype in datatypes {
+            builder.to_row(&datatype)?;
+        }
+
+        builder.create_table(&self.pool).await?;
         Ok(())
     }
 
     /// Insert these datatypes into the "datatype" table,
     /// returning the results.
     pub async fn add(&self, datatypes: &[&Datatype]) -> Result<Vec<Datatype>> {
-        let new_orders = self.new_orders(datatypes.len()).await?;
-        let rows = datatypes
-            .into_iter()
-            .cloned()
-            .zip(new_orders)
-            .map(|(datatype, order)| {
-                let mut datatype = datatype.clone();
-                datatype.order = order;
-                to_db_row(&datatype)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let rows = self.insert_regular(rows).await?;
-        let new_datatypes: Vec<Datatype> = rows.remove_nulls().try_into_vec()?;
+        let rows: Vec<DbRow> = datatypes
+            .iter()
+            .map(|d| to_db_row(d))
+            .collect::<Result<Vec<DbRow>, _>>()?;
+        let rows = rows.into_iter().map(|row| row.into()).collect();
+        let rows = UserRows { rows };
+        self.append(rows).await?;
+        let datatype_names: BTreeSet<String> =
+            datatypes.iter().map(|d| d.datatype.clone()).collect();
+        let new_datatypes: Vec<Datatype> = self
+            .get()
+            .await
+            .iter()
+            .filter(|(k, _)| datatype_names.contains(k.as_str()))
+            .map(|(_, v)| v.clone())
+            .collect();
         Ok(new_datatypes)
     }
 
@@ -474,45 +541,6 @@ impl<'a> DatatypeTable<'a> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use rltbl_db::any::AnyPool;
-
-    #[tokio::test]
-    async fn test_ddl() {
-        let pool = AnyPool::connect(":memory:").await.unwrap();
-        let table = DatatypeTable::connect(&pool);
-        assert_eq!(
-            r#"CREATE TABLE "datatype" (
-  "_id" INTEGER PRIMARY KEY AUTOINCREMENT,
-  "_order" BIGINT UNIQUE,
-  "datatype" TEXT,
-  "parent" TEXT,
-  "condition" TEXT,
-  "sql_type" TEXT,
-  "format" TEXT,
-  "description" TEXT
-);
-CREATE TABLE "datatype_alt" (
-  "_id" INTEGER PRIMARY KEY,
-  "_order" BIGINT UNIQUE,
-  "_deleted" BOOL,
-  "datatype" TEXT,
-  "parent" TEXT,
-  "condition" TEXT,
-  "sql_type" TEXT,
-  "format" TEXT,
-  "description" TEXT
-);
-CREATE VIEW "datatype_union" AS
-  SELECT "_id", "_order", FALSE AS "_deleted", "datatype", "parent", "condition", "sql_type", "format", "description" FROM "datatype"
-  UNION ALL
-  SELECT "_id", "_order", "_deleted", "datatype", "parent", "condition", "sql_type", "format", "description" FROM "datatype_alt";
-CREATE VIEW "datatype_text" AS
-  SELECT "_id", "_order", "_deleted", "datatype", "parent", "condition", "sql_type", "format", "description"
-  FROM "datatype_union"
-  WHERE "_deleted" = FALSE;"#,
-            table.ddl()
-        )
-    }
 
     #[tokio::test]
     async fn test_init() -> Result<()> {
@@ -560,10 +588,7 @@ CREATE VIEW "datatype_text" AS
 
         rltbl
             .pool
-            .execute(
-                "UPDATE datatype SET description = 'FOO' WHERE datatype = 'text'",
-                (),
-            )
+            .execute("UPDATE t3 SET c15 = 'FOO' WHERE c10 = 'text'", ())
             .await?;
         assert_eq!(
             Datatypes::builtins().get("text").unwrap(),

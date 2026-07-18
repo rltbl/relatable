@@ -1389,10 +1389,10 @@ impl Relatable {
     ) -> Result<Row> {
         let db_row: DbRow = row.into_db_row();
         let user_row: UserRow = db_row.into();
-        let table = self.get_table(table_name).await?;
         let user_rows = UserRows {
             rows: vec![user_row],
         };
+        let table = self.get_table(table_name).await?;
         let inner_rows = match after_id {
             Some(after_id) => table.insert(after_id, user_rows).await?,
             None => table.append(user_rows).await?,
@@ -2116,24 +2116,16 @@ mod tests {
         Ok(())
     }
 
-    async fn test_history(name: &str, actions: Vec<Act>, _history: Vec<&str>) -> Result<()> {
-        let rltbl = Relatable::test(name, false).await?;
-        crate::demo::build_demo(&rltbl, &true, 10).await?;
+    #[derive(Debug)]
+    struct TestStep {
+        act: Act,
+        history: Option<Vec<String>>,
+    }
 
-        let mut select = Select::from("penguin");
-        select.view_name = "penguin_text".to_string();
-        let before = rltbl.fetch(&select).await?;
-
-        run(&rltbl, &actions).await?;
-
-        let after = rltbl.fetch(&select).await?;
-        // TODO: better to compare result sets
-        assert_eq!(before.to_tsv(), after.to_tsv());
-
-        // WARN: Ignoring tests for history messages.
-        // assert_eq!(rltbl.get_user_history_strings("test", 5).await?, history);
-
-        rltbl.drop_test().await
+    impl TestStep {
+        fn new(act: Act) -> Self {
+            Self { act, history: None }
+        }
     }
 
     #[derive(Debug)]
@@ -2141,84 +2133,128 @@ mod tests {
         name: String,
         user: String,
         table: String,
-        steps: Vec<Act>,
-        history: Vec<String>,
+        penguin: usize,
+        steps: Vec<TestStep>,
     }
 
     impl TestBuilder {
         fn new(name: &str) -> Self {
             Self {
                 name: name.to_string(),
-                user: String::new(),
+                user: "test".to_string(),
                 table: String::new(),
+                penguin: 0,
                 steps: Vec::new(),
-                history: Vec::new(),
             }
         }
 
+        fn penguin(&mut self, size: usize) -> &mut Self {
+            self.table = "penguin".to_string();
+            self.penguin = size;
+            self
+        }
+
+        #[allow(dead_code)]
         fn user(&mut self, user: &str) -> &mut Self {
             self.user = user.to_string();
             self
         }
 
+        #[allow(dead_code)]
         fn table(&mut self, table: &str) -> &mut Self {
             self.table = table.to_string();
             self
         }
 
         fn history(&mut self, lines: Vec<&str>) -> &mut Self {
-            self.history = lines.iter().map(|s| s.to_string()).collect();
+            let lines = lines.iter().map(|s| s.to_string()).collect();
+            self.steps.last_mut().unwrap().history = Some(lines);
             self
         }
 
         fn append(&mut self, row: JsonValue) -> &mut Self {
-            self.steps.push(Act::add(&self.user, &self.table, -1, row));
+            let act = Act::add(&self.user, &self.table, -1, row);
+            let step = TestStep::new(act);
+            self.steps.push(step);
             self
         }
 
         fn delete(&mut self, row_id: RowID) -> &mut Self {
-            self.steps
-                .push(Act::delete(&self.user, &self.table, row_id));
+            let act = Act::delete(&self.user, &self.table, row_id);
+            let step = TestStep::new(act);
+            self.steps.push(step);
             self
         }
 
         fn set(&mut self, row_id: RowID, column: &str, value: JsonValue) -> &mut Self {
-            self.steps
-                .push(Act::set(&self.user, &self.table, row_id, column, value));
+            let act = Act::set(&self.user, &self.table, row_id, column, value);
+            let step = TestStep::new(act);
+            self.steps.push(step);
             self
         }
 
         fn r#move(&mut self, before: RowID, after: RowID) -> &mut Self {
-            self.steps
-                .push(Act::r#move(&self.user, &self.table, before, after));
+            let act = Act::r#move(&self.user, &self.table, before, after);
+            let step = TestStep::new(act);
+            self.steps.push(step);
             self
         }
 
         fn undo(&mut self) -> &mut Self {
-            self.steps.push(Act::undo(&self.user));
+            let act = Act::undo(&self.user);
+            let step = TestStep::new(act);
+            self.steps.push(step);
             self
         }
 
         fn redo(&mut self) -> &mut Self {
-            self.steps.push(Act::redo(&self.user));
+            let act = Act::redo(&self.user);
+            let step = TestStep::new(act);
+            self.steps.push(step);
             self
         }
 
         async fn run(&self) -> Result<()> {
-            test_history(
-                &self.name,
-                self.steps.clone(),
-                self.history.iter().map(|s| s.as_str()).collect(),
-            )
-            .await
+            let rltbl = Relatable::test(&self.name, false).await?;
+
+            if self.penguin > 0 {
+                crate::demo::build_demo(&rltbl, &true, self.penguin).await?;
+            }
+
+            let mut select = Select::from(&self.table);
+            select.view_name = format!("{}_text", &self.table);
+            let before = rltbl.fetch(&select).await?;
+
+            let actions: Vec<Act> = self.steps.iter().map(|s| s.act.clone()).collect();
+            // TODO: test history at each step
+            run(&rltbl, &actions).await?;
+
+            let after = rltbl.fetch(&select).await?;
+            // TODO: better to compare result sets
+            assert_eq!(before.to_tsv(), after.to_tsv());
+
+            // WARN: Ignoring tests for history messages.
+            // assert_eq!(rltbl.get_user_history_strings("test", 5).await?, history);
+
+            // rltbl.drop_test().await
+            Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn test_history_0() -> Result<()> {
+        TestBuilder::new("test_history_0")
+            .table("table")
+            .append(json!({"table": "test"}))
+            .undo()
+            .run()
+            .await
     }
 
     #[tokio::test]
     async fn test_history_1() -> Result<()> {
         TestBuilder::new("test_history_1")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .append(json!({"species": "FOO", "sample_number": 25}))
             .undo()
             .redo()
@@ -2242,8 +2278,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_2() -> Result<()> {
         TestBuilder::new("test_history_2")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .append(json!({"species": "FOO"}))
             .append(json!({"species": "BAR"}))
             .append(json!({"species": "KEW"}))
@@ -2266,8 +2301,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_3() -> Result<()> {
         TestBuilder::new("test_history_3")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .append(json!({"species": "FOO"}))
             .append(json!({"species": "BAR"}))
             .append(json!({"species": "KEW"}))
@@ -2289,8 +2323,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_4() -> Result<()> {
         TestBuilder::new("test_history_4")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .append(json!({"species": "FOO"}))
             .undo()
             .r#move(4, 9)
@@ -2312,8 +2345,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_5() -> Result<()> {
         TestBuilder::new("test_history_5")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .append(json!({"species": "FOO"}))
             .append(json!({"species": "BAR"}))
             .append(json!({"species": "KEW"}))
@@ -2352,8 +2384,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_6() -> Result<()> {
         TestBuilder::new("test_history_6")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .append(json!({"species": "FOO"}))
             .r#move(9, 7)
             .undo()
@@ -2374,8 +2405,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_7() -> Result<()> {
         TestBuilder::new("test_history_7")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .set(4, "island", json!("Enderby"))
             .undo()
             .redo()
@@ -2399,8 +2429,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_8() -> Result<()> {
         TestBuilder::new("test_history_8")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .delete(5)
             .undo()
             .delete(10)
@@ -2429,8 +2458,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_9() -> Result<()> {
         TestBuilder::new("test_history_9")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .delete(1)
             .undo()
             .delete(3)
@@ -2460,8 +2488,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_10() -> Result<()> {
         TestBuilder::new("test_history_10")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .append(json!({"species": "FOO"}))
             .undo()
             .redo()
@@ -2493,8 +2520,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_11() -> Result<()> {
         TestBuilder::new("test_history_11")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .append(json!({"species": "FOO"}))
             .append(json!({"species": "BAR"}))
             .append(json!({"species": "KEW"}))
@@ -2516,8 +2542,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_12() -> Result<()> {
         TestBuilder::new("test_history_12")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .append(json!({"species": "FOO"}))
             .undo()
             .r#move(4, 9)
@@ -2539,8 +2564,7 @@ mod tests {
     #[tokio::test]
     async fn test_history_13() -> Result<()> {
         TestBuilder::new("test_history_13")
-            .user("test")
-            .table("penguin")
+            .penguin(10)
             .delete(6)
             .undo()
             .redo()

@@ -293,7 +293,7 @@ pub trait TsvTable {
             .join(", ");
         format!(
             r#"CREATE VIEW "{view_name}_text" AS
-  SELECT "_id", "_order", "_deleted", {columns}
+  SELECT "_id", "_order", {columns}
   FROM "{view_name}_union"
   WHERE "_deleted" = FALSE;"#
         )
@@ -442,7 +442,7 @@ pub trait TsvTable {
         Ok(())
     }
 
-    /// Gievn UserRows or DbRows,
+    /// Given UserRows or DbRows, return constrained TsvRows.
     async fn rows(&self, rows: impl IntoDbRows + Send) -> Result<TsvRows> {
         let mut rows = self.type_rows(rows);
         self.constrain(&mut rows).await?;
@@ -1096,7 +1096,7 @@ mod tests {
         );
         assert_eq!(
             r#"CREATE VIEW "island_text" AS
-  SELECT "_id", "_order", "_deleted", COALESCE(CAST("island_id" AS TEXT), "island_id_text") AS "island_id", "island"
+  SELECT "_id", "_order", COALESCE(CAST("island_id" AS TEXT), "island_id_text") AS "island_id", "island"
   FROM "island_union"
   WHERE "_deleted" = FALSE;"#,
             table.text_view_ddl()
@@ -1112,6 +1112,8 @@ mod tests {
         builder.column("island_id").datatype("integer");
         builder.column("island");
         let table = builder.create(&rltbl).await?;
+
+        println!("{:#?}", table.columns());
 
         assert_eq!(
             vec![vec![

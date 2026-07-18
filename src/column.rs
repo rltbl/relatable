@@ -2,7 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[column](crate::column)).
 
-use crate as rltbl;
+use crate::{self as rltbl, data_table::DataTableBuilder, tsv_table::UserRows};
 use rltbl::{
     core::{RowID, RowOrder},
     datatype::{DatatypeTable, Datatypes},
@@ -10,7 +10,7 @@ use rltbl::{
     table::TableTable,
     tsv_table::TsvTable,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery, db_kind::DbKind, serde::to_db_row};
+use rltbl_db::{any::AnyPool, core::DbQuery, db_kind::DbKind, db_value::DbRow, serde::to_db_row};
 
 use anyhow::Result;
 use derive_builder::Builder;
@@ -18,7 +18,7 @@ use indexmap::IndexMap;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     ops::{Deref, DerefMut},
 };
 
@@ -331,6 +331,7 @@ impl Columns {
 pub struct ColumnTable<'a> {
     // This table_name is "column" by default.
     name: String,
+    id: RowID,
     pool: &'a AnyPool,
 }
 
@@ -340,7 +341,7 @@ impl<'a> TsvTable for ColumnTable<'a> {
     }
 
     fn id(&self) -> String {
-        self.name.clone()
+        format!("t{}", self.id)
     }
 
     fn pool(&self) -> &AnyPool {
@@ -350,42 +351,49 @@ impl<'a> TsvTable for ColumnTable<'a> {
     fn columns(&self) -> Columns {
         vec![
             ColumnBuilder::new(&self.name, "table")
+                .id(3)
                 .description("the table for this column")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "column")
+                .id(4)
                 .description("the name of this column")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "label")
+                .id(5)
                 .description("the label of this column")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "nulltype")
+                .id(6)
                 .description("the null type of this column")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "datatype")
+                .id(7)
                 .description("the datatype of this column")
                 .datatype("word")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "structure")
+                .id(8)
                 .description("the structure of this column")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(&self.name, "description")
+                .id(9)
                 .description("the description of this column")
                 .datatype("trimmed_line")
                 .sql_type("TEXT")
@@ -401,50 +409,116 @@ impl<'a> ColumnTable<'a> {
     pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
             name: "column".to_owned(),
+            id: 2,
             pool,
         }
     }
 
-    /// Create tables and fill with default rows.
+    /// Create the default column table.
     pub async fn init(&self) -> Result<()> {
-        self.create().await?;
-        let mut columns = vec![];
+        let path = "src/schema/column.tsv";
+        let mut builder = DataTableBuilder::from_path(path);
+        builder.table_id(2).first_column_id(3);
+        builder
+            .column("table")
+            .description("the table for this column")
+            .datatype("word")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("column")
+            .description("the name of this column")
+            .datatype("word")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("label")
+            .description("the label of this column")
+            .datatype("trimmed_line")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("nulltype")
+            .description("the null type of this column")
+            .datatype("word")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("datatype")
+            .description("the datatype of this column")
+            .datatype("word")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("structure")
+            .description("the structure of this column")
+            .datatype("trimmed_line")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
+        builder
+            .column("description")
+            .description("the description of this column")
+            .datatype("trimmed_line")
+            .sql_type("TEXT")
+            .build()
+            .unwrap();
 
+        let mut columns = vec![];
         let table = TableTable::connect(self.pool());
         columns.extend(table.columns().iter().cloned());
         columns.extend(self.columns().iter().cloned());
         let table = DatatypeTable::connect(self.pool());
         columns.extend(table.columns().iter().cloned());
+        for column in columns {
+            builder.to_row(&column)?;
+        }
 
-        let refs: Vec<&Column> = columns.iter().collect();
-        self.add(&refs).await?;
+        builder.create_table(&self.pool).await?;
+
         Ok(())
     }
 
     /// Insert these columns into the "column" table,
     /// returning the results.
     pub async fn add(&self, columns: &[&Column]) -> Result<Vec<Column>> {
-        let new_orders = self.new_orders(columns.len()).await?;
-        let rows = columns
-            .into_iter()
-            .cloned()
-            .zip(new_orders)
-            .map(|(column, order)| {
-                let mut column = column.clone();
-                column.order = order;
-                to_db_row(&column)
+        // println!("column add {columns:?}");
+        let rows: Vec<DbRow> = columns
+            .iter()
+            .map(|d| to_db_row(d))
+            .collect::<Result<Vec<DbRow>, _>>()?;
+        let rows = rows.into_iter().map(|row| row.into()).collect();
+        let rows = UserRows { rows };
+        self.append(rows).await?;
+        let column_names: BTreeMap<(String, String), String> = columns
+            .iter()
+            .map(|c| {
+                (
+                    (c.table.to_string(), c.column.to_string()),
+                    c.sql_type.to_string(),
+                )
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        let rows = self.insert_regular(rows).await?;
-        let mut new_columns: Vec<Column> = rows.remove_nulls().try_into_vec()?;
-        for new_column in new_columns.iter_mut() {
-            for old_column in columns {
-                if old_column.column == new_column.column {
-                    new_column.sql_type = old_column.sql_type.clone();
-                    break;
-                }
-            }
-        }
+            .collect();
+        let table_names: Vec<&str> = column_names.iter().map(|((t, _), _)| t.as_str()).collect();
+        let new_columns: Vec<Column> = self
+            .get_configured(&table_names)
+            .await?
+            .iter()
+            .filter_map(|c| {
+                column_names
+                    .get(&(c.table.clone(), c.column.clone()))
+                    .and_then(|sql_type| {
+                        let mut c = c.clone();
+                        c.sql_type = sql_type.to_string();
+                        Some(c)
+                    })
+            })
+            .collect();
         Ok(new_columns)
     }
 
@@ -592,47 +666,6 @@ mod tests {
     use super::*;
     use crate::core::Relatable;
     use pretty_assertions::assert_eq;
-    use rltbl_db::any::AnyPool;
-
-    #[tokio::test]
-    async fn test_ddl() {
-        let pool = AnyPool::connect(":memory:").await.unwrap();
-        let table = ColumnTable::connect(&pool);
-        assert_eq!(
-            r#"CREATE TABLE "column" (
-  "_id" INTEGER PRIMARY KEY AUTOINCREMENT,
-  "_order" BIGINT UNIQUE,
-  "table" TEXT,
-  "column" TEXT,
-  "label" TEXT,
-  "nulltype" TEXT,
-  "datatype" TEXT,
-  "structure" TEXT,
-  "description" TEXT
-);
-CREATE TABLE "column_alt" (
-  "_id" INTEGER PRIMARY KEY,
-  "_order" BIGINT UNIQUE,
-  "_deleted" BOOL,
-  "table" TEXT,
-  "column" TEXT,
-  "label" TEXT,
-  "nulltype" TEXT,
-  "datatype" TEXT,
-  "structure" TEXT,
-  "description" TEXT
-);
-CREATE VIEW "column_union" AS
-  SELECT "_id", "_order", FALSE AS "_deleted", "table", "column", "label", "nulltype", "datatype", "structure", "description" FROM "column"
-  UNION ALL
-  SELECT "_id", "_order", "_deleted", "table", "column", "label", "nulltype", "datatype", "structure", "description" FROM "column_alt";
-CREATE VIEW "column_text" AS
-  SELECT "_id", "_order", "_deleted", "table", "column", "label", "nulltype", "datatype", "structure", "description"
-  FROM "column_union"
-  WHERE "_deleted" = FALSE;"#,
-            table.ddl()
-        )
-    }
 
     #[tokio::test]
     async fn test_init() -> Result<()> {
