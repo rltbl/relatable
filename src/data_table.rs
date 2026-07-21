@@ -53,6 +53,17 @@ pub struct DataTableBuilder {
 }
 
 impl DataTableBuilder {
+    pub fn from(table: Table) -> Self {
+        let table_id = table.id;
+        Self {
+            table,
+            table_id,
+            columns: IndexMap::new(),
+            rows: vec![],
+            force: false,
+        }
+    }
+
     pub fn from_path(path: &str) -> Self {
         Self {
             table: Table::from_path(path),

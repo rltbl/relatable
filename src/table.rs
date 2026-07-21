@@ -4,7 +4,12 @@
 
 use std::{collections::BTreeSet, ops::Deref, path::Path};
 
-use crate::{self as rltbl, data_table::DataTableBuilder, schema::Schema, tsv_table::UserRows};
+use crate::{
+    self as rltbl,
+    data_table::DataTableBuilder,
+    schema::Schema,
+    tsv_table::{UserRow, UserRows},
+};
 use rltbl::{
     column::Columns,
     core::{Relatable, RowID, RowOrder},
@@ -96,6 +101,36 @@ impl Table {
     }
 }
 
+// impl TryInto<UserRows> for Vec<Table> {
+//     type Error = RelatableError;
+
+//     fn try_into(self) -> std::result::Result<UserRows, Self::Error> {
+//         let rows = self
+//             .iter()
+//             .map(|t| rltbl_db::serde::to_db_row(t))
+//             .collect::<Result<Vec<DbRow>, DbError>>()
+//             .map_err(|e| {
+//                 RelatableError::DataError(format!(
+//                     "Vec<Table> struct could not be converted into UserRows: {e}"
+//                 ))
+//             })?;
+//         Ok(UserRows {
+//             rows: rows.into_iter().map(|r| UserRow { map: r.map }).collect(),
+//         })
+//     }
+// }
+
+impl From<Vec<Table>> for UserRows {
+    fn from(value: Vec<Table>) -> Self {
+        let rows: Vec<UserRow> = value
+            .iter()
+            .map(|t| rltbl_db::serde::to_db_row(t).expect("convert Table to DbRow"))
+            .map(|r| UserRow { map: r.map })
+            .collect();
+        UserRows { rows }
+    }
+}
+
 /// Represents the special "table" table.
 pub struct TableTable<'a> {
     table: DataTable<'a>,
@@ -127,6 +162,47 @@ impl<'a> TableTable<'a> {
         Ok(())
     }
 
+    async fn create_tables(&self, tables: Vec<Table>) -> Result<Vec<Table>> {
+        for table in &tables {
+            // println!("inserting table {table:?}");
+            DataTableBuilder::from(table.clone())
+                .create_table(self.pool)
+                .await?;
+        }
+        Ok(tables)
+    }
+
+    /// Insert UserRows or Tables into this table, returning valid tables inserted.
+    pub async fn insert(&self, after_id: RowID, rows: impl Into<UserRows>) -> Result<Vec<Table>> {
+        let rows: UserRows = rows.into();
+        let tsv_rows = self.table.insert(after_id, rows).await?;
+        let tables = self.select_by_id(&tsv_rows.ids()).await?;
+        self.create_tables(tables).await
+    }
+
+    /// Append UserRows or Tables into this table, returning valid tables inserted.
+    pub async fn append(&self, rows: impl Into<UserRows>) -> Result<Vec<Table>> {
+        let rows: UserRows = rows.into();
+        let tsv_rows = self.table.append(rows).await?;
+        let tables = self.select_by_id(&tsv_rows.ids()).await?;
+        self.create_tables(tables).await
+    }
+
+    pub async fn select_by_id(&self, ids: &[RowID]) -> Result<Vec<Table>> {
+        let ids = ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<String>>()
+            .join(", ");
+        let sql = format!(r#"SELECT * FROM "table_union" WHERE _id IN ({ids}) ORDER BY _order;"#);
+        self.pool()
+            .query(&sql, ())
+            .await?
+            .remove_nulls()
+            .try_into_vec()
+            .map_err(|e| e.into())
+    }
+
     /// Insert these tables into the "table" table,
     /// returning the results.
     pub async fn extend(&self, tables: &[&Table]) -> Result<Vec<Table>> {
@@ -136,7 +212,7 @@ impl<'a> TableTable<'a> {
             .collect::<Result<Vec<_>, _>>()?;
         let rows = rows.into_iter().map(|row| row.into()).collect();
         let rows = UserRows { rows };
-        self.append(rows).await?;
+        self.table.append(rows).await?;
         let table_names: BTreeSet<String> = tables.iter().map(|d| d.name.clone()).collect();
         let new_tables: Vec<Table> = self
             .list()
@@ -183,6 +259,32 @@ mod tests {
             .try_into()?;
         assert_eq!(count, 3);
 
+        rltbl.drop_test().await
+    }
+
+    #[tokio::test]
+    async fn test_table_insert() -> Result<()> {
+        let rltbl = Relatable::test("test_table_insert", false).await?;
+        let table_table = rltbl.table_table().await?;
+
+        let table = Table::from_path("foo/bar.tsv");
+        let result = table_table.insert(0, vec![table]).await?;
+        assert_eq!(
+            vec![Table {
+                name: "bar".to_string(),
+                id: 4,
+                order: 500,
+                path: "foo/bar.tsv".to_string(),
+                view: String::new(),
+                editable: true,
+                has_meta: true
+            }],
+            result
+        );
+
+        assert!(rltbl.get_table("bar").await.is_ok(), "created bar table");
+
+        // assert!(false, "DONE");
         rltbl.drop_test().await
     }
 }

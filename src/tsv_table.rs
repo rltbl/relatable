@@ -278,7 +278,7 @@ pub trait TsvTable {
 
     fn text_view_ddl(&self) -> String {
         let view_name = self.name();
-        let columns = self
+        let mut columns: Vec<String> = self
             .columns()
             .iter()
             .map(|c| {
@@ -289,11 +289,13 @@ pub trait TsvTable {
                     format!(r#""{name}""#)
                 }
             })
-            .collect::<Vec<String>>()
-            .join(", ");
+            .collect();
+        columns.insert(0, r#""_id""#.to_string());
+        columns.insert(1, r#""_order""#.to_string());
+        let columns = columns.join(", ");
         format!(
             r#"CREATE VIEW "{view_name}_text" AS
-  SELECT "_id", "_order", {columns}
+  SELECT {columns}
   FROM "{view_name}_union"
   WHERE "_deleted" = FALSE;"#
         )
@@ -328,13 +330,37 @@ pub trait TsvTable {
         Ok(())
     }
 
+    /// Create SQL views for this TsvTable.
+    async fn create_views(&self) -> Result<()> {
+        println!("create views");
+        let mut ddls = Vec::new();
+
+        // Create regular and alternate views.
+        if self.name() != self.id() {
+            ddls.push(self.regular_view_ddl());
+            ddls.push(self.alternate_view_ddl());
+        }
+
+        // Create union and text views.
+        ddls.push(self.union_view_ddl());
+        ddls.push(self.text_view_ddl());
+
+        self.pool().execute_batch(&ddls.join("\n")).await?;
+        Ok(())
+    }
+
     /// Drop all tables and views for this TsvTable.
     async fn drop(&self) -> Result<()> {
+        self.drop_views().await?;
+
         let table_names = vec![format!("{}_alt", self.id()), self.id()];
         for table_name in table_names {
             self.pool().drop_table(&table_name).await?;
         }
+        Ok(())
+    }
 
+    async fn drop_views(&self) -> Result<()> {
         let mut view_names = vec![
             format!("{}_text", self.name()),
             format!("{}_union", self.name()),
@@ -348,10 +374,8 @@ pub trait TsvTable {
         for view_name in view_names {
             self.pool().drop_view(&view_name).await?;
         }
-
         Ok(())
     }
-
     async fn get_row(&self, id: RowID) -> Result<DbRow> {
         let table_name = self.name();
         let sql = format!(r#"SELECT * FROM "{table_name}_union" WHERE "_id" = $1;"#);
@@ -566,7 +590,7 @@ pub trait TsvTable {
     }
 
     /// Append a set of DbRows to the table, returning the new rows.
-    async fn append(&self, rows: UserRows) -> Result<InnerRows> {
+    async fn append(&self, rows: UserRows) -> Result<TsvRows> {
         let rows = self.sanitize_rows(rows);
         let mut rows = self.rows(rows).await?;
         let new_orders = self.new_orders(rows.rows.len()).await?;
@@ -574,10 +598,10 @@ pub trait TsvTable {
             row.order = order;
         }
         self.insert_ordered(&mut rows).await?;
-        Ok(rows.inner())
+        Ok(rows)
     }
 
-    async fn insert(&self, after_id: RowID, rows: UserRows) -> Result<InnerRows> {
+    async fn insert(&self, after_id: RowID, rows: UserRows) -> Result<TsvRows> {
         let rows = self.sanitize_rows(rows);
         let mut rows = self.rows(rows).await?;
         let new_orders = self.new_orders_after(rows.rows.len(), after_id).await?;
@@ -585,7 +609,7 @@ pub trait TsvTable {
             row.order = order;
         }
         self.insert_ordered(&mut rows).await?;
-        Ok(rows.inner())
+        Ok(rows)
     }
 
     /// Insert ordered rows,
@@ -984,6 +1008,11 @@ impl From<Vec<TsvRow>> for TsvRows {
 }
 
 impl TsvRows {
+    /// Return all the row IDs.
+    pub fn ids(&self) -> Vec<RowID> {
+        self.rows.iter().map(|r| r.id).collect()
+    }
+
     /// Get a vector of InnerRows.
     pub fn inner(&self) -> InnerRows {
         self.rows.iter().map(|row| row.inner()).collect()

@@ -1185,6 +1185,22 @@ impl Relatable {
                         .await?;
                 }
                 Change::Add { row, .. } => {
+                    // Special actions for schema tables
+                    match changeset.table.as_str() {
+                        "table" => {
+                            if let Some(table) = self
+                                .table_table()
+                                .await?
+                                .select_by_id(&[*row])
+                                .await?
+                                .first()
+                            {
+                                let table = self.get_table(&table.name).await?;
+                                table.drop_views().await?;
+                            }
+                        }
+                        _ => (),
+                    };
                     self.get_table(&changeset.table)
                         .await?
                         .delete(&[*row])
@@ -1251,6 +1267,22 @@ impl Relatable {
                         .await?;
                 }
                 Change::Add { row, .. } => {
+                    // Special actions for schema tables
+                    match changeset.table.as_str() {
+                        "table" => {
+                            if let Some(table) = self
+                                .table_table()
+                                .await?
+                                .select_by_id(&[*row])
+                                .await?
+                                .first()
+                            {
+                                let table = self.get_table(&table.name).await?;
+                                table.create_views().await?;
+                            }
+                        }
+                        _ => (),
+                    };
                     self.get_table(&changeset.table)
                         .await?
                         .undelete(&[*row])
@@ -1428,17 +1460,31 @@ impl Relatable {
         let user_rows = UserRows {
             rows: vec![user_row],
         };
+
         let table = self.get_table(table_name).await?;
-        let inner_rows = match after_id {
+        let tsv_rows = match after_id {
             Some(after_id) => table.insert(after_id, user_rows).await?,
             None => table.append(user_rows).await?,
         };
-        let inner_row = inner_rows.first().expect("one row was added");
-        let row_id = inner_row
-            .get("_id")
-            .expect("row has ID")
-            .as_i32()
-            .expect("ID is i32");
+        let tsv_row = tsv_rows.rows.first().expect("one row was added");
+        let row_id = tsv_row.id;
+
+        // Special actions for schema tables.
+        match table_name {
+            "table" => {
+                if let Some(table) = self
+                    .table_table()
+                    .await?
+                    .select_by_id(&[row_id])
+                    .await?
+                    .first()
+                {
+                    let table = self.get_table(&table.name).await?;
+                    table.create().await?;
+                }
+            }
+            _ => (),
+        };
 
         // This is a hack to preserve old history behaviour.
         let after_id = match after_id {
@@ -1469,7 +1515,7 @@ impl Relatable {
         self.record_changeset(&changeset).await?;
 
         Ok(DbRow {
-            map: inner_rows.first().unwrap().clone(),
+            map: tsv_row.inner(),
         }
         .into())
     }
@@ -2167,21 +2213,29 @@ mod tests {
     #[derive(Debug)]
     struct TestBuilder {
         name: String,
+        drop: bool,
         user: String,
         table: String,
         penguin: usize,
         steps: Vec<TestStep>,
     }
 
+    #[allow(dead_code)]
     impl TestBuilder {
         fn new(name: &str) -> Self {
             Self {
                 name: name.to_string(),
+                drop: true,
                 user: "test".to_string(),
                 table: String::new(),
                 penguin: 0,
                 steps: Vec::new(),
             }
+        }
+
+        fn drop(&mut self, drop: bool) -> &mut Self {
+            self.drop = drop;
+            self
         }
 
         fn penguin(&mut self, size: usize) -> &mut Self {
@@ -2272,17 +2326,22 @@ mod tests {
             // WARN: Ignoring tests for history messages.
             // assert_eq!(rltbl.get_user_history_strings("test", 5).await?, history);
 
-            // rltbl.drop_test().await
+            if self.drop {
+                rltbl.drop_test().await?;
+            }
             Ok(())
         }
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_history_0() -> Result<()> {
         TestBuilder::new("test_history_0")
             .table("table")
             .append(json!({"table": "test"}))
             .undo()
+            // .redo()
+            // .drop(false)
             .run()
             .await
     }
