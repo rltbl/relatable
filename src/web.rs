@@ -584,13 +584,23 @@ async fn add_row(
     }
     let json_row = JsonRow::new();
     match rltbl.add_row(&table, &username, after_id, &json_row).await {
-        Ok(row) => {
+        Ok(history) => {
             // tracing::info!("Added row {row:?}");
+            let order = match history.changes.first().expect("changes to exist") {
+                crate::change::NewChange::InsertRows { rows, .. } => rows
+                    .first()
+                    .expect("one row")
+                    .get("_order")
+                    .expect("a row order")
+                    .as_i64()
+                    .expect("row order as i64"),
+                _ => unreachable!(),
+            };
             let offset: u64 = rltbl
                 .pool
                 .query(
                     &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= $1"#,),
-                    [row.order],
+                    [order],
                 )
                 .await
                 .expect("Get count")

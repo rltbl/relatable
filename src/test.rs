@@ -169,7 +169,7 @@ async fn main() {
                     match random_op() {
                         "add" => {
                             let after_id = random_between(1, *table_size, &mut -1) as RowID;
-                            let row = rltbl
+                            let history = rltbl
                                 .add_row(
                                     table,
                                     &user,
@@ -178,7 +178,13 @@ async fn main() {
                                 )
                                 .await
                                 .unwrap();
-                            tracing::info!("Added row {} (order {}) to {table}", row.id, row.order);
+                            let row = match history.changes.first().expect("changes to exist") {
+                                rltbl::change::NewChange::InsertRows { rows, .. } => {
+                                    rows.first().expect("one row")
+                                }
+                                _ => unreachable!(),
+                            };
+                            tracing::info!("Added row {row:?} to {table}");
                         }
                         "update" => {
                             let row_to_update = random_between(1, *table_size, &mut -1) as RowID;

@@ -754,11 +754,11 @@ pub async fn add_row(
     }
 
     let user = get_username(&cli);
-    let row = rltbl
+    rltbl
         .add_row(table, &user, after_id, &json_row)
         .await
         .expect("Error adding row");
-    tracing::info!("Added row {}", row.order);
+    // tracing::info!("Added row {}", row.order);
 }
 
 /// Move the given row after the row whose id is `after_id`.
@@ -826,14 +826,19 @@ pub async fn delete_row(cli: &Cli, table: &str, row: RowID) {
         .await
         .expect("Connect error");
     let user = get_username(&cli);
-    let num_deleted = rltbl
+    let history = rltbl
         .delete_row(table, &user, row)
         .await
         .expect("Failed to delete row");
-    if num_deleted > 0 {
-        tracing::info!("Deleted row {row}");
-    } else {
-        std::process::exit(1);
+    match history.changes.first().expect("at least one change") {
+        crate::change::NewChange::DeleteRows { row_ids, .. } => {
+            if row_ids.len() > 0 {
+                tracing::info!("Deleted row {row}");
+            } else {
+                std::process::exit(1);
+            }
+        }
+        _ => (),
     }
 }
 

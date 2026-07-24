@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use crate::{self as rltbl, column::ColumnBuilder};
+use crate::{self as rltbl, column::ColumnBuilder, core::ColumnID};
 use rltbl::{
     column::{Column, Columns},
     core::RelatableError,
@@ -188,6 +188,10 @@ impl Schema {
             .filter(|col| &col.table == table_name)
             .filter(|col| &col.column == column_name)
             .nth(0)
+    }
+
+    pub fn column_by_id(&self, column_id: ColumnID) -> Option<&Column> {
+        self.columns.iter().filter(|col| col.id == column_id).nth(0)
     }
 
     /// Get the columns for the given table as a map from column name to column.

@@ -1,4 +1,4 @@
-use crate::{self as rltbl, column::Column};
+use crate::{self as rltbl, column::Column, core::ColumnID};
 use indexmap::IndexMap;
 use rltbl::{
     column::{Columns, SqlColumn},
@@ -376,11 +376,78 @@ pub trait TsvTable {
         }
         Ok(())
     }
+
+    async fn add_columns(&self, columns: &[&Column]) -> Result<()> {
+        let mut regular = Vec::new();
+        let mut alternate = Vec::new();
+        for column in columns {
+            let ddl = column.ddl(&self.pool().kind());
+            let line = format!("  ADD COLUMN {ddl}");
+            regular.push(line.clone());
+            alternate.push(line);
+            if column.sql_type.to_uppercase() != "TEXT" {
+                let alt = format!(r#"  ADD COLUMN "c{}_text" TEXT"#, column.id);
+                alternate.push(alt);
+            }
+        }
+
+        // Regular table
+        let sql = regular.join(",\n");
+        let sql = format!(
+            r#"ALTER TABLE "{}"
+  {sql};"#,
+            self.id()
+        );
+        self.pool().execute(&sql, ()).await?;
+
+        // Alternate table
+        let sql = alternate.join(",\n");
+        let sql = format!(
+            r#"ALTER TABLE "{}_alt"
+  {sql};"#,
+            self.id()
+        );
+        self.pool().execute(&sql, ()).await?;
+
+        self.drop_views().await?;
+        self.create_views().await?;
+        Ok(())
+    }
+
     async fn get_row(&self, id: RowID) -> Result<DbRow> {
         let table_name = self.name();
         let sql = format!(r#"SELECT * FROM "{table_name}_union" WHERE "_id" = $1;"#);
         let rows = self.pool().query(&sql, [id]).await?;
         Ok(rows.row()?.clone())
+    }
+
+    async fn get_orders(&self, row_ids: &[RowID]) -> Result<Vec<(RowID, RowOrder)>> {
+        let table_name = self.name();
+        let ids = row_ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<String>>()
+            .join(", ");
+        let sql =
+            format!(r#"SELECT "_id", "_order" FROM "{table_name}_union" WHERE "_id" IN({ids});"#);
+        let rows = self.pool().query(&sql, ()).await?;
+        let rows = rows
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.get("_id")
+                        .expect("a row ID")
+                        .as_i32()
+                        .expect("valid row ID"),
+                    row.get("_order")
+                        .expect("a row order")
+                        .as_i64()
+                        .expect("value row order"),
+                )
+            })
+            .collect();
+        Ok(rows)
     }
 
     /// Return UserRows with only the columns for this table,
@@ -824,12 +891,13 @@ pub trait TsvTable {
         Ok(())
     }
 
-    async fn move_after(&self, after_id: RowID, ids: &[RowID]) -> Result<()> {
+    async fn move_after(&self, after_id: RowID, ids: &[RowID]) -> Result<Vec<(RowID, RowOrder)>> {
         let new_orders = self.new_orders_after(ids.len(), after_id).await?;
         let pairs: Vec<(RowID, RowOrder)> = zip(ids, new_orders)
             .map(|(id, order)| (*id, order))
             .collect();
-        self.move_to(&pairs).await
+        self.move_to(&pairs).await?;
+        Ok(pairs)
     }
 
     async fn move_to(&self, pairs: &[(RowID, RowOrder)]) -> Result<()> {
@@ -929,7 +997,7 @@ pub struct TsvRow {
     pub id: RowID,
     pub order: RowOrder,
     pub deleted: bool,
-    pub map: IndexMap<RowID, TsvValue>,
+    pub map: IndexMap<ColumnID, TsvValue>,
 }
 
 impl TsvRow {

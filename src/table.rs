@@ -232,8 +232,7 @@ impl<'a> TableTable<'a> {
     }
 
     pub async fn list(&self) -> Result<Vec<Table>> {
-        // TODO: Handle the alternate table.
-        let sql = r#"SELECT * FROM "table" ORDER BY _order;"#;
+        let sql = r#"SELECT * FROM "table_union" ORDER BY _order;"#;
         self.pool()
             .query(sql, ())
             .await?

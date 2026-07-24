@@ -1,6 +1,10 @@
 use std::{fmt::Display, str::FromStr};
 
-use crate as rltbl;
+use crate::{
+    self as rltbl,
+    core::{ColumnID, TableID},
+    tsv_table::InnerRows,
+};
 use rltbl::{
     column::{ColumnBuilder, Columns},
     core::{RelatableError, RowID},
@@ -161,6 +165,44 @@ pub enum Change {
         after: RowID,
     },
 }
+
+/// A change to a table in the database
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum NewChange {
+    InsertRows {
+        table_id: TableID,
+        rows: InnerRows,
+        after_id: RowID,
+    },
+    DeleteRows {
+        table_id: TableID,
+        row_ids: Vec<RowID>,
+    },
+    DeleteTables {
+        table_ids: Vec<TableID>,
+        column_ids: Vec<ColumnID>,
+    },
+    MoveRows {
+        table_id: i32,
+        row_ids: Vec<RowID>,
+        after_id: RowID,
+    },
+    UpdateRows {
+        table_id: TableID,
+        rows: InnerRows,
+    },
+}
+
+// fn serialize_inner_rows<S>(x: &TsvRows, s: S) -> Result<S::Ok, S::Error>
+// where
+//     S: serde::Serializer,
+// {
+//     let inner = x.inner();
+//     let mut ser = s.serialize_seq(Some(inner.len()))?;
+//     ser.serialize_entry("$oid", &x.inner())?;
+//     ser.end()
+// }
 
 /// Describes a history of changes that have been done and undone.
 #[derive(Default, Debug, Serialize, Deserialize)]
