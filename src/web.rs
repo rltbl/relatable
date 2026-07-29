@@ -606,7 +606,7 @@ async fn add_row(
         return forbid().into();
     }
     let json_row = JsonRow::new();
-    match rltbl.add_row(&table, &username, after_id, &json_row).await {
+    match rltbl.add_row(&username, &table, after_id, &json_row).await {
         Ok(history) => {
             // tracing::info!("Added row {row:?}");
             let order = match history.changes.first().expect("changes to exist") {
@@ -648,7 +648,7 @@ async fn delete_row(
 
     let username = get_username(session);
     let prev = previous_row_id(&rltbl, &table, &row_id).await;
-    match rltbl.delete_row(&table, &username, row_id).await {
+    match rltbl.delete_row(&username, &table, row_id).await {
         Ok(_) => {
             let offset: u64 = rltbl
                 .pool

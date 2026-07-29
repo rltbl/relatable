@@ -171,8 +171,8 @@ async fn main() {
                             let after_id = random_between(1, *table_size, &mut -1) as RowID;
                             let history = rltbl
                                 .add_row(
-                                    table,
                                     &user,
+                                    table,
                                     Some(after_id),
                                     &json!({"study_name": "FAKE123"}).as_object().unwrap(),
                                 )
@@ -215,7 +215,7 @@ async fn main() {
                             let after_id = random_between(1, *table_size, &mut -1) as RowID;
                             let row = random_between(1, *table_size, &mut -1) as RowID;
                             rltbl
-                                .move_row(table, &user, row, after_id)
+                                .move_row(&user, table, row, after_id)
                                 .await
                                 .expect("Failed to move row within {table}");
                         }

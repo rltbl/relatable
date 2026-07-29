@@ -755,7 +755,7 @@ pub async fn add_row(
 
     let user = get_username(&cli);
     rltbl
-        .add_row(table, &user, after_id, &json_row)
+        .add_row(&user, table, after_id, &json_row)
         .await
         .expect("Error adding row");
     // tracing::info!("Added row {}", row.order);
@@ -769,7 +769,7 @@ pub async fn move_row(cli: &Cli, table: &str, row: RowID, after_id: RowID) {
         .expect("Connect error");
     let user = get_username(&cli);
     rltbl
-        .move_row(table, &user, row, after_id)
+        .move_row(&user, table, row, after_id)
         .await
         .expect("Failed to move row");
 }
@@ -827,7 +827,7 @@ pub async fn delete_row(cli: &Cli, table: &str, row: RowID) {
         .expect("Connect error");
     let user = get_username(&cli);
     let history = rltbl
-        .delete_row(table, &user, row)
+        .delete_row(&user, table, row)
         .await
         .expect("Failed to delete row");
     match history.changes.first().expect("at least one change") {

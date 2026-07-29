@@ -1722,8 +1722,8 @@ impl Relatable {
     /// Add a row to the given table
     pub async fn add_row(
         &self,
-        table: &str,
         user: &str,
+        table: &str,
         after_id: Option<RowID>,
         row: &JsonRow,
     ) -> Result<History> {
@@ -1836,7 +1836,7 @@ impl Relatable {
         Ok(())
     }
 
-    pub async fn delete_row(&self, table_name: &str, user: &str, row_id: RowID) -> Result<History> {
+    pub async fn delete_row(&self, user: &str, table_name: &str, row_id: RowID) -> Result<History> {
         let row_ids = vec![row_id];
         self.delete_rows(table_name, user, &row_ids).await
     }
@@ -1950,18 +1950,18 @@ impl Relatable {
     /// Move a row to a different position in a given table.
     pub async fn move_row(
         &self,
-        table_name: &str,
         user: &str,
+        table_name: &str,
         row_id: RowID,
         after_id: RowID,
     ) -> Result<History> {
-        self.move_rows(table_name, user, &[row_id], after_id).await
+        self.move_rows(user, table_name, &[row_id], after_id).await
     }
 
     pub async fn move_rows(
         &self,
-        table_name: &str,
         user: &str,
+        table_name: &str,
         row_ids: &[RowID],
         after_id: RowID,
     ) -> Result<History> {
@@ -2377,7 +2377,7 @@ mod tests {
 
         // Note that TEXT cells will NULL values will be reloaded as empty strings.
         let row = json!({"study_name": "", "sample_number": 20, "island": ""});
-        rltbl.add_row(t, u, None, &row.as_object().unwrap()).await?;
+        rltbl.add_row(u, t, None, &row.as_object().unwrap()).await?;
         assert_eq!(
             rltbl.get_value(t, 2, "island").await?,
             JsonValue::String(String::new())
@@ -2502,8 +2502,8 @@ mod tests {
                 Act::Add(user, table, row, value) => {
                     rltbl
                         .add_row(
-                            &table,
                             &user,
+                            &table,
                             if *row < 1 { None } else { Some(*row) },
                             value.as_object().expect("valid JSON"),
                         )
@@ -2512,7 +2512,7 @@ mod tests {
                 }
                 Act::Delete(user, table, row) => {
                     rltbl
-                        .delete_row(&table, &user, *row)
+                        .delete_row(&user, &table, *row)
                         .await
                         .expect("delete row");
                 }
@@ -2524,7 +2524,7 @@ mod tests {
                 }
                 Act::Move(user, table, before, after) => {
                     rltbl
-                        .move_row(&table, &user, *before, *after)
+                        .move_row(&user, &table, *before, *after)
                         .await
                         .expect("move row");
                 }
