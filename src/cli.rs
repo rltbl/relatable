@@ -2,7 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[cli](crate::cli))
 
-use crate as rltbl;
+use crate::{self as rltbl, tsv_table::TsvTable};
 use rltbl::{
     core::{Relatable, RowID, ValidationLevel},
     select::{Format, Select},
@@ -16,9 +16,8 @@ use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use colored::Colorize;
 use promptly::prompt_opt;
-use regex::Regex;
 use serde_json::{json, to_string_pretty, Value as JsonValue};
-use std::{io, io::Write, path::Path};
+use std::{io, io::Write};
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";
@@ -921,19 +920,8 @@ pub async fn load_tables(
 /// Load the table at the given path
 pub async fn load_table(cli: &Cli, path: &str, force: bool, rltbl: &Relatable) {
     tracing::trace!("load_table({cli:?}, {path}, {force}, {rltbl:?})");
-    // We will use this pattern to normalize the table name:
-    let pattern = Regex::new(r#"[^0-9a-zA-Z_]+"#).expect("Invalid regex pattern");
-    let table = Path::new(path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .expect("Error writing to path");
-    let table = pattern.replace_all(table, "_").to_string();
-    // Now replace any trailing or leading underscores:
-    let table = table.trim_end_matches("_");
-    let table = table.trim_start_matches("_");
-
-    rltbl.load_table(&table, path, force).await;
-    tracing::info!("Loaded table '{table}'");
+    let table = rltbl.load_table(path, force).await.expect("load table");
+    tracing::info!("Loaded table '{}'", table.name());
 }
 
 /// Save all of the tables to their configured locations, or to save_dir if it is given.

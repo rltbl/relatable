@@ -2,11 +2,11 @@
 //!
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
-use crate as rltbl;
+use crate::{self as rltbl, data_table::DataTableBuilder};
 use rltbl::{
     change::NewChange,
     change::{Change, ChangeAction, ChangeSet, ChangeTable},
-    column::{Column, ColumnBuilder, ColumnTable},
+    column::{Column, ColumnTable},
     data_table::DataTable,
     datatype::{DatatypeTable, Datatypes},
     git,
@@ -592,8 +592,8 @@ impl Relatable {
     /// Loads the given table from the given path. When `force` is set to true, deletes any
     /// existing table of the same name in the database first. When `validate` is set to true,
     /// Validates each row before loading it. Note that this function may panic.
-    pub async fn load_table(&self, table_name: &str, path: &str, force: bool) {
-        tracing::trace!("Relatable::load_table({table_name:?}, {path:?}, {force})");
+    pub async fn load_table<'a>(&self, path: &str, force: bool) -> Result<DataTable<'_>> {
+        tracing::trace!("Relatable::load_table({path:?}, {force})");
         // Read the records from the given TSV file:
         let mut rdr = ReaderBuilder::new()
             .has_headers(false)
@@ -601,8 +601,6 @@ impl Relatable {
             .from_reader(File::open(path).expect(&format!("Unable to open '{path}'")));
         let mut records = rdr.records();
 
-        // Extract the headers from the first line of the file, which we will need for the CREATE
-        // TABLE statement:
         let headers = {
             let headers = match records.next() {
                 None => panic!("'{path}' is empty"),
@@ -613,233 +611,27 @@ impl Relatable {
             };
             for header in &headers {
                 if header.trim().is_empty() {
-                    panic!("One or more of the header fields is empty for table '{table_name}'");
+                    panic!("One or more of the header fields is empty for table '{path}'");
                 }
             }
             headers
         };
 
-        let db_kind = self.pool.kind();
-
-        // Add an entry corresponding to the table being loaded to the table table:
-        if force {
-            // Delete any messages associated with the table and then delete the table:
-            self.delete_message(table_name, &[], None, None, None)
-                .await
-                .expect("Error deleting messages");
-
-            let sql = format!(
-                r#"DELETE FROM "table" WHERE "table" = {sql_param}"#,
-                sql_param = SqlParam::new(&db_kind.name()).next(),
-            );
-            self.pool
-                .execute(&sql, [table_name])
-                .await
-                .expect("Error deleting from table table");
+        let mut builder = DataTableBuilder::from_path(path);
+        builder.force(force);
+        for header in &headers {
+            builder.column(header);
         }
-        let sql = format!(
-            r#"INSERT INTO "table" ("table", "path") VALUES ({sql_params})"#,
-            sql_params = SqlParam::new(&db_kind.name()).get_as_list(2)
-        );
-        self.pool
-            .execute(&sql, [table_name, path])
-            .await
-            .expect("Error inserting to table table");
-        tracing::debug!("Table {table_name} (path: {path}) added to table table");
+        let table = builder.create(self).await?;
 
-        // Initialize a new table struct and collect its columns configuration:
-        let table = Table {
-            name: table_name.to_string(),
-            ..Default::default()
-        };
-        let configured_columns: Vec<Column> = self
-            .column_table()
-            .await
-            .expect("get column table")
-            .get_configured(&[table_name])
-            .await
-            .expect("get columns for this table")
-            .into();
-        let table_columns = headers
-            .iter()
-            .map(|header| {
-                match configured_columns
-                    .iter()
-                    .filter(|col| header == &col.column || header == &col.label)
-                    .nth(0)
-                {
-                    Some(col) => col.clone(),
-                    None => ColumnBuilder::new(table_name, header).build().unwrap(),
-                }
-            })
-            .collect::<Vec<Column>>();
-        let table_column_refs: Vec<&Column> = table_columns.iter().collect();
-
-        // Generate the SQL statements needed to create the table and execute them:
-        let datatypes = self.datatypes().await;
-        for sql in sql::generate_table_ddl(
-            &table,
-            &table_column_refs,
-            &datatypes,
-            force,
-            &db_kind.name(),
-        )
-        .expect("Error getting DDL")
-        {
-            self.pool
-                .execute(&sql, ())
-                .await
-                .expect("Error creating table");
-        }
-
-        // Insert the data into the table:
-        let schema = self.schema().await.expect("schema with new table");
-        let mut columns = vec!["_id".to_string(), "_order".to_string()];
-        columns.append(
-            &mut headers
-                .iter()
-                .map(|k| format!(r#"{k}"#))
-                .collect::<Vec<_>>(),
-        );
-        let columns_line = columns
-            .iter()
-            .map(|k| format!(r#""{k}""#))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut id: RowID = 1;
-        let mut order: RowOrder = id as RowOrder * NEW_ORDER_MULTIPLIER;
-        let sql_first_part = format!(r#"INSERT INTO "{table_name}" ({columns_line}) VALUES "#);
-        let mut sql_value_parts = vec![];
-        let mut sql_param_gen = SqlParam::new(&self.pool.kind().name());
-        let mut param_values: Vec<DbValue> = Vec::new();
-        let max_params = match db_kind.name().as_str() {
-            "SQLite" => sql::MAX_PARAMS_SQLITE,
-            "PostgreSQL" => sql::MAX_PARAMS_POSTGRES,
-            _ => unimplemented!(),
-        };
-        while let Some(row) = records.next() {
-            let row = row.expect("Error processing row");
-            // We add 2 here because of _id and _order:
-            if (param_values.len() + row.len() + 2) >= max_params {
-                let sql = format!(
-                    "{sql_first_part} {sql_value_part}",
-                    sql_value_part = sql_value_parts.join(", ")
-                );
-                self.pool
-                    .execute(&sql, param_values.clone())
-                    .await
-                    .expect("Error inserting to table");
-                tracing::info!(
-                    "{num_rows} rows loaded to table {table_name}",
-                    num_rows = id - 1
-                );
-                param_values.clear();
-                sql_value_parts.clear();
-                sql_param_gen.reset()
-            }
-
-            let mut sql_params = vec![];
-            param_values.push(id.into());
-            sql_params.push(sql_param_gen.next());
-            param_values.push(order.into());
-            sql_params.push(sql_param_gen.next());
-            let sql_params = {
-                for (i, value) in row.iter().enumerate() {
-                    let (column, nulltype) = {
-                        // We add 2 here because of _id and _order:
-                        let column = match columns.get(i + 2) {
-                            Some(column) => column,
-                            None => panic!("Unable to retrieve column {}", i + 2),
-                        };
-                        let nulltype = schema
-                            .column(table_name, column)
-                            .expect(&format!("Column '{column}' not found"))
-                            .nulltype
-                            .to_owned();
-                        (column, nulltype)
-                    };
-                    if nulltype == "empty" && value == "" {
-                        sql_params.push("NULL".to_string());
-                    } else {
-                        if nulltype != "" && nulltype != "empty" {
-                            tracing::warn!("Nulltype '{nulltype}' not supported",);
-                        }
-
-                        let sql_type = schema
-                            .column(table_name, column)
-                            .expect(&format!("Column '{column}' not found"))
-                            .sql_type
-                            .clone();
-                        let param_value = match self
-                            .pool
-                            .kind()
-                            .db_type(&sql_type)
-                            .and_then(|t| t.parse(value))
-                        {
-                            Ok(param_value) => param_value,
-                            Err(_) => {
-                                self.add_message(
-                                    "rltbl",
-                                    &table.name,
-                                    id,
-                                    column,
-                                    &serde_json::Value::String(value.to_string()),
-                                    "error",
-                                    "parse",
-                                    &format!("Could not parse {sql_type} from '{value}'"),
-                                )
-                                .await
-                                .expect("Error adding message");
-                                DbValue::Null
-                            }
-                        };
-                        sql_params.push(sql_param_gen.next());
-                        param_values.push(param_value);
-                    };
-                }
-                sql_params.join(", ")
-            };
-            // Add two extra SQL_PARAM for _id and _order:
-            sql_value_parts.push(format!("({sql_params})"));
-            id += 1;
-            order += NEW_ORDER_MULTIPLIER;
-        }
-        if param_values.len() > 0 {
-            let sql = format!(
-                "{sql_first_part} {sql_value_part}",
-                sql_value_part = sql_value_parts.join(", ")
-            );
-            self.pool
-                .execute(&sql, param_values)
-                .await
-                .expect(&format!("Error inserting to {table_name}"));
-            tracing::info!(
-                "{num_rows} rows loaded to table {table_name}",
-                num_rows = id - 1
-            );
-        }
-
-        if self.validation_level == ValidationLevel::Full {
-            self.validate_table(&table_name)
-                .await
-                .expect("Error validating table");
-            let dependent_tables = schema.dependent_tables(table_name);
-            for table in &dependent_tables {
-                tracing::debug!("Validating dependent table '{}'", table.name);
-                self.validate_structure_for_table(&schema, table_name)
-                    .await
-                    .expect("Error validating table");
-            }
-        }
-
-        self.commit_to_git().await.expect("Error committing to git");
+        self.reload_table(&table.name(), path).await
     }
 
     /// Reload a table from a TSV file at a path.
     /// This requires dropping the table (to reset counters)
     /// and recreating it from the schema,
     /// then reading rows from the TSV.
-    pub async fn reload_table(&self, table_name: &str, path: &str) -> Result<()> {
+    pub async fn reload_table<'a>(&self, table_name: &str, path: &str) -> Result<DataTable<'_>> {
         let table = self.get_table(table_name).await?;
         table.drop().await?;
         table.create().await?;
@@ -878,7 +670,7 @@ impl Relatable {
             }
         }
 
-        Ok(())
+        Ok(table)
     }
 
     pub async fn get_table<'a>(&'a self, table_name: &str) -> Result<DataTable<'a>> {
