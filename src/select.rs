@@ -98,6 +98,7 @@ impl Select {
         query_params.shift_remove("order");
 
         fn value_as_type(sql_type: &str, column: &str, value: &str) -> DbValue {
+            tracing::debug!("value_as_type: {sql_type} {column} {value}");
             fn try_parse_as_int(value: &str) -> DbValue {
                 match value.parse::<i64>() {
                     Ok(signed) => DbValue::from(signed),

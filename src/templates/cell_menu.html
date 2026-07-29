@@ -1,12 +1,12 @@
 <ul class="dropdown-menu" style="display: inline-block; position: relative">
   <li>
-    <a class="dropdown-item" href="./{{table.name}}?{{table.name}}.{{column}}=eq.{{cell.text}}">
+    <a class="dropdown-item" href="./{{table.table}}?{{table.table}}.{{column}}=eq.{{cell.text}}">
       <i class="bi bi-funnel-fill"></i>
       Filter for this value
     </a>
   </li>
   <li>
-    <a class="dropdown-item" href="./{{table.name}}?{{table.name}}.{{column}}=not_eq.{{cell.text}}">
+    <a class="dropdown-item" href="./{{table.table}}?{{table.table}}.{{column}}=not_eq.{{cell.text}}">
       <i class="bi bi-funnel"></i>
       Excude this value
     </a>
@@ -15,19 +15,19 @@
     <hr class="dropdown-divider">
   </li>
   <li>
-    <a class="dropdown-item" href="{{site.root}}/add-row-before/{{table.name}}/{{row.id}}">
+    <a class="dropdown-item" href="{{site.root}}/add-row-before/{{table.table}}/{{row.id}}">
       <i class="bi bi-plus"></i>
       Insert 1 row above
     </a>
   </li>
   <li>
-    <a class="dropdown-item" href="{{site.root}}/add-row-after/{{table.name}}/{{row.id}}">
+    <a class="dropdown-item" href="{{site.root}}/add-row-after/{{table.table}}/{{row.id}}">
       <i class="bi bi-plus"></i>
       Insert 1 row below
     </a>
   </li>
   <li>
-    <a class="dropdown-item" href="{{site.root}}/delete-row/{{table.name}}/{{row.id}}">
+    <a class="dropdown-item" href="{{site.root}}/delete-row/{{table.table}}/{{row.id}}">
       <i class="bi bi-trash"></i>
       Delete row
     </a>

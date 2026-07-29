@@ -4,7 +4,7 @@ use rltbl::{
     core::RowID,
     simple_table::SimpleTable,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery, serde::to_db_row};
+use rltbl_db::{any::AnyPool, core::DbQuery, db_value::DbValue, params, serde::to_db_row};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -92,7 +92,7 @@ impl<'a> SimpleTable for UserTable<'a> {
                 .build()
                 .unwrap(),
             ColumnBuilder::new(self.table_name(), "cursor")
-                .sql_type("TEXT")
+                .sql_type("JSON")
                 .build()
                 .unwrap(),
             ColumnBuilder::new(self.table_name(), "datetime")
@@ -115,46 +115,45 @@ impl<'a> UserTable<'a> {
     }
 
     /// Get a user by name, or create an entry for that name.
-    pub async fn get_or_insert(&self, username: &str) -> UserCursor {
+    pub async fn get(&self, username: &str) -> Option<UserCursor> {
         // TODO: Handle datetime natively?
         let sql = r#"SELECT name, color, cursor, CAST(datetime AS TEXT) AS datetime FROM "user" WHERE name = $1 LIMIT 1"#;
-        let mut users: Vec<UserCursor> = self
-            .pool
-            .query(sql, &[username])
-            .await
-            .unwrap_or_default()
-            .try_into_vec()
-            .unwrap_or_default();
-        if users.len() > 0 {
-            return users.pop().unwrap();
+        let rows = self.pool.query(sql, &[username]).await.unwrap_or_default();
+        if rows.rows.is_empty() {
+            return None;
+        }
+        let mut users: Vec<UserCursor> = rows.try_into_vec().unwrap_or_default();
+        if users.is_empty() {
+            panic!("user could not be parsed");
+        }
+        users.pop()
+    }
+
+    /// Get a user by name, or create an entry for that name.
+    pub async fn get_or_insert(&self, username: &str) -> UserCursor {
+        if let Some(user) = self.get(username).await {
+            return user;
         }
         let user = UserCursor::new(username);
-        let mut row = to_db_row(&user).unwrap();
-        // TODO: Fix this hack.
-        row.insert(
-            "cursor".to_string(),
-            rltbl_db::db_value::DbValue::Text(serde_json::to_string(&user.cursor).unwrap()),
-        );
+        let row = to_db_row(&user).unwrap();
         self.pool
             .insert("user", &["name", "color", "cursor"], &[&row])
             .await
             .unwrap();
-        user
+        self.get(username).await.expect("newly created user")
     }
 
     /// Updates the cursor field in the user table for the user associated with the given
     /// changeset.
     pub async fn update_cursor(&self, username: &str, cursor: &Cursor) -> Result<()> {
+        let value = to_value(&cursor).unwrap_or_default();
         let sql = format!(
             r#"UPDATE "user"
                SET "cursor" = $1, "datetime" = CURRENT_TIMESTAMP
                WHERE "name" = $2"#,
         );
         self.pool
-            .execute(
-                &sql,
-                &[&to_value(cursor).unwrap_or_default().to_string(), username],
-            )
+            .execute(&sql, params![DbValue::Json(value), username])
             .await?;
         Ok(())
     }
@@ -184,6 +183,8 @@ impl<'a> UserTable<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::Relatable;
+
     use super::*;
     use anyhow::Result;
     use pretty_assertions::assert_eq;
@@ -198,7 +199,7 @@ mod tests {
             r#"CREATE TABLE "user" (
   "name" TEXT PRIMARY KEY,
   "color" TEXT,
-  "cursor" TEXT,
+  "cursor" JSON,
   "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );"#,
             table.ddl()
@@ -222,5 +223,27 @@ mod tests {
         assert_eq!(serde_json::from_str::<UserCursor>(&string)?, user_cursor,);
         assert_eq!(serde_json::to_string(&user_cursor)?, string,);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_user_insert() -> Result<()> {
+        let rltbl = Relatable::test("test_user_insert", true).await?;
+        let table = rltbl.user_table();
+
+        let user1 = table.get_or_insert("foo").await;
+        let user2 = table.get_or_insert("foo").await;
+        assert_eq!(user1, user2);
+
+        let cursor = Cursor {
+            table: "penguin".to_string(),
+            row: 2,
+            column: "species".to_string(),
+        };
+        table.update_cursor("foo", &cursor).await?;
+        let user3 = table.get_or_insert("foo").await;
+        assert_ne!(user1, user3);
+
+        // assert!(false, "DONE");
+        rltbl.drop_test().await
     }
 }

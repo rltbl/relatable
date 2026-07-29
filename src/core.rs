@@ -457,7 +457,7 @@ impl Relatable {
             .tables
             .get(table_name)
             .ok_or(RelatableError::MissingError(format!(
-                "Missing table {} {schema:?}",
+                "Missing table {}",
                 select.table_name
             )))?
             .clone();

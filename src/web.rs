@@ -176,7 +176,7 @@ async fn get_table(
 async fn post_table(
     State(rltbl): State<Arc<Relatable>>,
     Path(path): Path<String>,
-    _session: Session<SessionNullPool>,
+    session: Session<SessionNullPool>,
     ExtractJson(changeset): ExtractJson<ChangeSet>,
 ) -> Response<Body> {
     tracing::info!("post_table([rltbl], {path}, {changeset:?})");
@@ -196,7 +196,7 @@ async fn post_table(
 
     // WARN: We need to check that the user matches!
     // let user = changeset.user.clone();
-    // let username = get_username(session);
+    let username = get_username(session);
     // if username != user {
     //     return get_500(
     //         &RelatableError::InputError(format!(
@@ -206,7 +206,33 @@ async fn post_table(
     //     );
     // }
 
-    match rltbl.set_values(&changeset).await {
+    // TODO: This is a hack to maintain old behaviour.
+
+    if changeset.changes.len() != 1 {
+        return get_500(
+            &RelatableError::InputError(format!("Only 1 change currently supported in post_table"))
+                .into(),
+        );
+    }
+    let change = changeset.changes.first().unwrap();
+    let (row_id, column_name, value) = match change {
+        crate::change::Change::Update {
+            row, column, after, ..
+        } => (row, column, after),
+        _ => {
+            return get_500(
+                &RelatableError::InputError(format!(
+                    "Only Update changes currently supported in post_table"
+                ))
+                .into(),
+            )
+        }
+    };
+
+    match rltbl
+        .set_value(&username, &table, *row_id, column_name, value)
+        .await
+    {
         Ok(_) => "POST successful".into_response(),
         Err(error) => get_500(&error),
     }
@@ -369,20 +395,9 @@ async fn post_cursor(
     session: Session<SessionNullPool>,
     ExtractJson(cursor): ExtractJson<Cursor>,
 ) -> Response<Body> {
-    // tracing::info!("post_cursor({cursor:?})");
     let username = get_username(session);
     tracing::debug!("post_cursor({cursor:?}, {username})");
-    let cursor = json!(cursor);
-    let cursor = format!("{cursor}");
-    let sql = r#"UPDATE "user"
-       SET "cursor" = $1,
-           "datetime" = CURRENT_TIMESTAMP
-       WHERE "name" = $2"#;
-    match rltbl
-        .pool
-        .execute(&sql, [json!(cursor).to_string(), username])
-        .await
-    {
+    match rltbl.user_table().update_cursor(&username, &cursor).await {
         Ok(_) => "Cursor updated".into_response(),
         Err(_) => "Cursor update failed".into_response(),
     }
@@ -517,11 +532,15 @@ async fn get_cell_options(
         .expect("Get column values")
         .rows
         .iter()
-        .map(|value| {
-            json!({
+        .filter_map(|row| match row.get("value") {
+            Some(value) => {
+                let value = value.to_string();
+                Some(json!({
                     "value": value,
                     "label": value,
-            })
+                }))
+            }
+            None => None,
         })
         .collect();
     Json(json!(values)).into_response()
@@ -529,17 +548,20 @@ async fn get_cell_options(
 
 async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &RowID) -> RowID {
     let sql = format!(
-        r#"SELECT "_id", MAX("_order") FROM "{table}"
-        WHERE "_order" < (SELECT "_order" FROM "{table}" WHERE _id = $1)"#,
+        r#"SELECT "_id", MAX("_order")
+        FROM "{table}_union"
+        WHERE "_order" < (SELECT "_order" FROM "{table}_union" WHERE _id = $1)
+        LIMIT 1"#,
     );
-    let row_id: RowID = rltbl
+    rltbl
         .pool
         .query(&sql, [*row_id])
         .await
-        .expect("Get previous row")
-        .try_into()
-        .unwrap_or_default();
-    row_id
+        .unwrap_or_default()
+        .rows
+        .first()
+        .and_then(|row| row.get("_id").and_then(|i| i.as_i32()))
+        .unwrap_or_default()
 }
 
 async fn add_row_before(
@@ -579,6 +601,7 @@ async fn add_row(
     table: &str,
     after_id: Option<RowID>,
 ) -> Response<Body> {
+    tracing::debug!("add_row({username}, {table}, {after_id:?})");
     if rltbl.readonly {
         return forbid().into();
     }

@@ -184,7 +184,7 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   const grid = rltbl.grid || { freezeColumns: 0 };
   const result = rltbl.result;
   const user = site.user.name;
-  const table = result.table.name;
+  const table = result.table.table;
   const height = grid_args.height;
 
   const [numRows, setNumRows] = React.useState(result.range.total);
@@ -335,12 +335,12 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
   }, [site, rltbl.page.path, table, columns, numRows, updateCursors, dataRef, gridRef]);
 
   // Poll for new data.
-  React.useEffect(() => {
-    if (site.editable === true) {
-      const interval = setInterval(pollData, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [site.editable, pollData, dataRef]);
+  // React.useEffect(() => {
+  //   if (site.editable === true) {
+  //     const interval = setInterval(pollData, 5000);
+  //     return () => clearInterval(interval);
+  //   }
+  // }, [site.editable, pollData, dataRef]);
 
   // Scroll to offset
   React.useEffect(() => {
@@ -496,11 +496,12 @@ export default function Grid(grid_args: { rltbl: any, height: number }) {
       onCellEdited(entry.location, entry.value, dataRef.current[entry.location[1]]);
     }
     const body = {
+      change_id: 0,
       action: "Do",
       table: table,
       user: user,
       description: "Set one value",
-      changes: changes
+      content: changes
     };
     // console.log("onCellsEdited body", body);
     try {

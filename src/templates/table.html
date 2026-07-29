@@ -11,7 +11,7 @@
 
 {% block content %}
 <div class="float-end mt-1">
-  <a class="btn btn-outline-primary" href="{{site.root}}/{{page.path}}/{{table.name}}">
+  <a class="btn btn-outline-primary" href="{{site.root}}/{{page.path}}/{{table.table}}">
     <i class="bi bi-funnel"></i>
     Clear Filters
   </a>
@@ -26,12 +26,12 @@
       {% endfor %}
     </ul>
   </div>
-  <a class="btn btn-outline-primary" href="{{site.root}}/add-row/{{table.name}}">
+  <a class="btn btn-outline-primary" href="{{site.root}}/add-row/{{table.table}}">
     <i class="bi bi-plus"></i>
     Append Row
   </a>
 </div>
-<h1>{{ table.name }}</h1>
+<h1>{{ table.table }}</h1>
 
 {% if page.tabs %}
 <ul class="nav nav-tabs mb-2">
@@ -98,7 +98,7 @@
 
 
   // Example: Use an autocomplete dropdown for 'penguin.island' column.
-  const table = {{result.table.name | tojson}};
+  const table = {{result.table.table | tojson}};
   var columns = {{result.columns | tojson}};
   for (var i = 0; i < columns.length; i++) {
     var column_name = columns[i].column;
@@ -119,10 +119,14 @@
 
   window.rltbl.loadOptions = (row, column, inputValue, callback) => {
     const url = `{{site.root}}/cell-options/${table}/${row}/${column}?input=${inputValue}`;
+    console.log("load options", url);
     const response = fetch(url)
       .catch(e => console.log("loadOptions", e))
       .then(response => response.json())
-      .then(data => callback(data));
+      .then(data => {
+        console.log("loaded data", data);
+        callback(data);
+      });
   };
 
   document.body.addEventListener("click", function (e) {
@@ -162,7 +166,7 @@
     if (e.target.id === "filter-column") {
       e.preventDefault();
       if (e.submitter.id === "filter-clear") {
-        document.location = '{{site.root}}/{{page.path}}/{{table.name}}';
+        document.location = '{{site.root}}/{{page.path}}/{{table.table}}';
       } else {
         const column = document.getElementById("filter-value").name;
         var operator = document.getElementById("filter-operator").value;

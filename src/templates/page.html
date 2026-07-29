@@ -59,7 +59,7 @@
               {{ site.user.name }}
             </a>
             <form class="dropdown-menu dropdown-menu-end" action="{{site.root}}/sign-in" method="POST">
-              <input type="hidden" name="redirect" value="{{site.root}}/table/{{table.name}}">
+              <input type="hidden" name="redirect" value="{{site.root}}/table/{{table.table}}">
               <button class="dropdown-item" type="submit">
                 <i class="bi bi-box-arrow-right"></i>
                 Sign out
@@ -80,7 +80,7 @@
                     aria-label="Username">
                 </div>
                 <div class="col-auto">
-                  <input type="hidden" name="redirect" value="{{site.root}}/table/{{table.name}}">
+                  <input type="hidden" name="redirect" value="{{site.root}}/table/{{table.table}}">
                   <button class="btn btn-success" type="submit">
                     <i class="bi bi-box-arrow-in-right"></i>
                     Sign in
