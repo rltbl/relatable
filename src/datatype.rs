@@ -80,6 +80,7 @@ impl Datatype {
         rows: &[&RowID],
         rltbl: &Relatable,
     ) -> Result<bool> {
+        tracing::debug!("validate {self:?} {column:?} {rows:?}");
         let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
         let mut messages_were_added = false;
         match self.condition.as_str() {
@@ -198,7 +199,14 @@ impl Datatype {
                 let re = regex::Regex::new(r"^match\((.+?)\)$")?;
                 if let Some(captures) = re.captures(condition) {
                     let condition = &captures[1];
-                    let condition = unquoted_re.replace(&condition, "$unquoted");
+                    let mut condition = unquoted_re.replace(&condition, "$unquoted").to_string();
+                    // WARN: This is a hack.
+                    if !condition.contains("^") {
+                        condition = format!("^{condition}");
+                    }
+                    if !condition.contains("$") {
+                        condition = format!("{condition}$");
+                    }
                     let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind().name());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
@@ -209,15 +217,14 @@ impl Datatype {
                              {sql_param_1} AS "table",
                              "_id" AS "row",
                              {sql_param_2} AS "column",
-                             {casted_column} AS "value",
+                             "{column_name}" AS "value",
                              'error' AS "level",
                              {sql_param_3} AS "rule",
                              {sql_param_4} AS "message"
-                           FROM "{table_name}"
+                           FROM "{table_name}_text"
                            WHERE {match_condition}"#,
                         table_name = column.table,
-                        casted_column =
-                            sql::cast_column_as_text(&column.column, &rltbl.pool.kind().name()),
+                        column_name = column.column,
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
@@ -242,9 +249,9 @@ impl Datatype {
                         params.extend(rows.iter().map(|row| DbValue::from(**row)));
                     }
                     sql.push_str(r#" RETURNING 1 AS "inserted""#);
-                    // TODO: re-enable this!
-                    // let rows = rltbl.pool.query(&sql, params).await?;
-                    // messages_were_added = rows.len() > 0;
+                    // tracing::debug!("running {sql} with {params:?}");
+                    let rows = rltbl.pool.query(&sql, params).await?;
+                    messages_were_added = rows.len() > 0;
                 }
             }
             invalid => tracing::warn!("Unrecognized datatype condition '{invalid}'"),

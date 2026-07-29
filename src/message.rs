@@ -4,8 +4,13 @@ use rltbl::{
     core::{RowID, ID_SQL_TYPE},
     simple_table::SimpleTable,
 };
-use rltbl_db::{any::AnyPool, db_value::JsonValue};
+use rltbl_db::{
+    any::AnyPool,
+    core::DbQuery,
+    db_value::{IntoDbParams, JsonValue},
+};
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 /// Represents a validation message for a cell.
@@ -107,6 +112,19 @@ impl<'a> MessageTable<'a> {
             table_name: "message".to_owned(),
             pool,
         }
+    }
+
+    pub async fn get(&self, filters: &str, params: impl IntoDbParams) -> Result<Vec<Message>> {
+        let mut sql = format!("SELECT * FROM message");
+        if filters.trim() != "" {
+            sql = format!("{sql} WHERE {filters}");
+        }
+        let messages = self
+            .pool
+            .query(&sql, params.into_db_params())
+            .await?
+            .try_into_vec()?;
+        Ok(messages)
     }
 }
 

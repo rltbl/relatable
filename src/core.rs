@@ -2,7 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
-use crate::{self as rltbl, user_row};
+use crate as rltbl;
 use rltbl::{
     change::NewChange,
     change::{Change, ChangeAction, ChangeSet, ChangeTable},
@@ -24,6 +24,7 @@ use rltbl::{
     table::{Table, TableTable},
     tsv_table::{ColumnName, TsvTable, UserRow, UserRows},
     user::UserTable,
+    user_row,
 };
 use rltbl_db::{
     any::AnyPool,
@@ -396,6 +397,8 @@ impl Relatable {
         self.column_table().await?.drop().await?;
         self.table_table().await?.drop().await?;
         self.message_table().drop().await?;
+        self.previous_order_table().drop().await?;
+        self.previous_value_table().drop().await?;
         self.history_table().drop().await?;
         self.change_table().drop().await?;
         self.user_table().drop().await?;
@@ -450,17 +453,35 @@ impl Relatable {
 
     /// Use the given [Select] to fetch data from the database.
     pub async fn fetch(&self, select: &Select) -> Result<ResultSet> {
+        let mut select = select.clone();
         let schema = self.schema().await?;
 
-        let table_name = &select.table_name;
-        let table = schema
-            .tables
-            .get(table_name)
-            .ok_or(RelatableError::MissingError(format!(
-                "Missing table {}",
-                select.table_name
-            )))?
-            .clone();
+        let table_name = &select.table_name.clone();
+        let table = match table_name.as_str() {
+            "message" => Table {
+                name: "message".to_string(),
+                editable: false,
+                has_meta: false,
+                ..Default::default()
+            },
+            _ => schema
+                .tables
+                .get(table_name)
+                .ok_or(RelatableError::MissingError(format!(
+                    "Missing table {} for {select:?}",
+                    select.table_name
+                )))?
+                .clone(),
+        };
+
+        match table_name.as_str() {
+            "message" => {
+                if select.order_by.is_empty() {
+                    select.order_by("message_id");
+                }
+            }
+            _ => select.view_name = format!("{table_name}_text"),
+        };
 
         // TODO: Replace default_view and text_view stuff.
         // if select.view_name == format!("{}_default_view", table.name) || select.view_name == "" {
@@ -475,12 +496,15 @@ impl Relatable {
         //     table.set_view(self, "default").await?;
         // }
 
-        let mut columns = schema
-            .columns(table_name)
-            .into_iter()
-            .map(|(_, v)| v.clone())
-            .filter(|col| col.is_data())
-            .collect::<Vec<Column>>();
+        let mut columns = match table_name.as_str() {
+            "message" => self.message_table().columns().into(),
+            _ => schema
+                .columns(table_name)
+                .into_iter()
+                .map(|(_, v)| v.clone())
+                .filter(|col| col.is_data())
+                .collect::<Vec<Column>>(),
+        };
 
         // Fetch the data
         let (statement, parameters) = select.to_sql(&self.pool.kind().name())?;
@@ -840,18 +864,19 @@ impl Relatable {
         let rows = UserRows { rows };
         table.append(rows).await?;
 
-        // if self.validation_level == ValidationLevel::Full {
-        //     self.validate_table(&table_name)
-        //         .await
-        //         .expect("Error validating table");
-        //     let dependent_tables = schema.dependent_tables(table_name);
-        //     for table in &dependent_tables {
-        //         tracing::debug!("Validating dependent table '{}'", table.name);
-        //         self.validate_structure_for_table(&schema, table_name)
-        //             .await
-        //             .expect("Error validating table");
-        //     }
-        // }
+        if self.validation_level == ValidationLevel::Full {
+            let schema = self.schema().await?;
+            self.validate_table(&table_name)
+                .await
+                .expect("Error validating table");
+            let dependent_tables = schema.dependent_tables(table_name);
+            for table in &dependent_tables {
+                tracing::debug!("Validating dependent table '{}'", table.name);
+                self.validate_structure_for_table(&schema, table_name)
+                    .await
+                    .expect("Error validating table");
+            }
+        }
 
         Ok(())
     }
@@ -1635,6 +1660,20 @@ impl Relatable {
         self.previous_value_table()
             .extend(history.history_id, table.id, &previous)
             .await?;
+
+        // Optionally do full validation on the newly updated cell and add further
+        // messages to the message table:
+        if self.validation_level == ValidationLevel::Full {
+            tracing::debug!("validating {table_name} {column_name} {row_id}");
+            self._validate_column_optionally_for_row(&schema, &column, &[&row_id])
+                .await?;
+            for dep_column in schema.columns.dependents(column) {
+                println!("Validating dependent column '{}'", dep_column.column);
+                self._validate_structure_for_column_and_optionally_for_row(dep_column, &[])
+                    .await?;
+            }
+        }
+
         Ok(history)
     }
 
@@ -1755,9 +1794,31 @@ impl Relatable {
             // date,
             action: ChangeAction::Do,
             target: None,
-            changes: vec![change],
+            changes: vec![change.clone()],
         };
-        self.record(history).await
+        let history = self.record(history).await?;
+
+        // Optionally do full validation on the newly updated cell and add further
+        // messages to the message table:
+        if self.validation_level == ValidationLevel::Full {
+            let row_ids: Vec<RowID> = match change {
+                NewChange::InsertRows { rows, .. } => rows
+                    .iter()
+                    .filter_map(|row| row.get("_id").and_then(|i| i.as_i32()))
+                    .collect(),
+                _ => unreachable!(),
+            };
+            let refs: Vec<&RowID> = row_ids.iter().collect();
+            self.validate_rows(&table_name, &refs).await?;
+            let schema = self.schema().await?;
+            for table in schema.dependent_tables(table_name) {
+                println!("Validating dependent table '{}'", table.name);
+                self.validate_structure_for_table(&schema, &table.name)
+                    .await?;
+            }
+        }
+
+        Ok(history)
     }
 
     // Insert rows without considering the user or history.
@@ -2048,6 +2109,16 @@ impl Relatable {
         let schema = self.schema().await?;
         for column in schema.columns(table_name).values() {
             self._validate_column_optionally_for_row(&schema, column, &[row_id])
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Validate the given row of the given table
+    pub async fn validate_rows(&self, table_name: &str, row_ids: &[&RowID]) -> Result<()> {
+        let schema = self.schema().await?;
+        for column in schema.columns(table_name).values() {
+            self._validate_column_optionally_for_row(&schema, column, row_ids)
                 .await?;
         }
         Ok(())
@@ -2396,49 +2467,46 @@ mod tests {
         rltbl.drop_test().await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_message() -> Result<()> {
-        // let rltbl = Relatable::test("test_message", true).await?;
-        // crate::demo::build_demo(&rltbl, &true, 10).await?;
+        let rltbl = Relatable::test("test_message", true).await?;
+        crate::demo::build_demo(&rltbl, &true, 10).await?;
 
         // Changing the island table should cause messages for the penguin table,
         // because penguin.island is from(island.island).
-        // rltbl
-        //     .set_value("test", "island", 3, "island", &json!("Montreal"))
-        //     .await?;
+        rltbl
+            .set_value("test", "island", 3, "island", &json!("Montreal"))
+            .await?;
 
         // TODO: This is ugly
         // let mut message_table = rltbl.get_table_old("message").await?;
         // message_table.ensure_default_view_created(&rltbl).await?;
+        let message_table = rltbl.message_table();
 
-        // let mut select = Select::from("message");
-        // select.view_name = "message_default_view".to_string();
-        // let before = rltbl.fetch(&select).await?;
-        // rltbl.save_all(rltbl.test_dir.as_deref()).await?;
-        // assert_eq!(before.rows.len(), 2);
+        let before = message_table.get("", ()).await?;
+        assert_eq!(before.len(), 2);
 
         // Reload and check that messages are re-created.
-        // rltbl
-        //     .reload_table("penguin", "build/test_message/penguin.tsv")
-        //     .await?;
-        // rltbl
-        //     .pool
-        //     .execute("UPDATE message SET message_id = message_id - 2", ())
-        //     .await?;
-        // let after = rltbl.fetch(&select).await?;
+        rltbl.save_all(rltbl.test_dir.as_deref()).await?;
+        rltbl
+            .reload_table("penguin", "build/test_message/penguin.tsv")
+            .await?;
+        rltbl
+            .pool
+            .execute("UPDATE message SET message_id = message_id - 2", ())
+            .await?;
 
-        // assert_eq!(before, after);
+        let after = message_table.get("", ()).await?;
+        assert_eq!(before, after);
 
         // Fix the problem.
-        // rltbl
-        //     .set_value("test", "island", 3, "island", &json!("Dream"))
-        //     .await?;
-        // let fixed = rltbl.fetch(&select).await?;
-        // assert_eq!(fixed.rows.len(), 0);
+        rltbl
+            .set_value("test", "island", 3, "island", &json!("Dream"))
+            .await?;
+        let fixed = message_table.get("", ()).await?;
+        assert_eq!(fixed.len(), 0);
 
-        // rltbl.drop_test().await
-        Ok(())
+        rltbl.drop_test().await
     }
 
     #[derive(Clone, Debug)]

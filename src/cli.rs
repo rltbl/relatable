@@ -441,14 +441,11 @@ pub async fn print_table(
         .expect("Error initializing a relatable instance");
 
     // Initialize a Select struct using the table struct:
-    let mut select = Select::from(table_name)
+    let select = Select::from(table_name)
         .filters(filters)
         .expect("Error constructing Select from filters")
         .limit(limit)
         .offset(offset);
-
-    // We will use the text view to retrieve the data:
-    select.view_name = format!("{table_name}_text");
 
     match format.to_lowercase().as_str() {
         "json" => {
