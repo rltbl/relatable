@@ -92,22 +92,7 @@ perf_test_timeout = 9.5
 perf_test_size = 100000
 
 ### SQLite performance (rusqlite and sqlx)
-.PHONY: test_caching_sqlite test_caching_postgres test_caching_memory test_caching test_perf_sqlite test_perf_tokio_postgres
-
-test_caching_sqlite: debug
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching trigger -vv test-read-perf 100 100 10 5 --force
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching truncate -vv test-read-perf 100 100 10 5 --force
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching truncate_all -vv test-read-perf 100 100 10 5 --force
-
-test_caching_postgres: debug
-	target/debug/rltbl_test --database $(PG_DB) --caching trigger -vv test-read-perf 100 100 10 5 --force
-	target/debug/rltbl_test --database $(PG_DB) --caching truncate -vv test-read-perf 100 100 10 5 --force
-	target/debug/rltbl_test --database $(PG_DB) --caching truncate_all -vv test-read-perf 100 100 10 5 --force
-
-test_caching_memory: debug
-	target/debug/rltbl_test --database $(SQLITE_DB) --caching memory:100 -vv test-read-perf 100 100 10 5 --force
-
-test_caching: test_caching_sqlite test_caching_postgres test_caching_memory
+.PHONY: test_perf_sqlite test_perf_tokio_postgres
 
 test_perf_sqlite: release | test/perf/tsv
 	target/release/rltbl --database $(SQLITE_DB) demo --size $(perf_test_size) --force
@@ -130,9 +115,9 @@ test_perf_tokio_postgres: release | test/perf/tsv
 ### Combined tests
 .PHONY: test test_all test_rusqlite test_tokio_postgres
 
-test_rusqlite: src/resources/main.js src/resources/main.css test_tesh_doc test_perf_sqlite test_caching_sqlite
+test_rusqlite: src/resources/main.js src/resources/main.css test_tesh_doc test_perf_sqlite
 
-test_tokio_postgres: src/resources/main.js src/resources/main.css test_tesh_doc_postgres test_perf_tokio_postgres test_caching_postgres
+test_tokio_postgres: src/resources/main.js src/resources/main.css test_tesh_doc_postgres test_perf_tokio_postgres
 
 # test: test_rusqlite
 # test: cargo_test test_tesh_doc test_tesh_doc_postgres
