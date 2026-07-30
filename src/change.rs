@@ -1,14 +1,13 @@
-use std::{fmt::Display, str::FromStr};
+use std::{collections::HashMap, fmt::Display, str::FromStr};
 
-use crate::{
-    self as rltbl,
-    core::{ColumnID, TableID},
-    tsv_table::InnerRows,
-};
+use crate as rltbl;
 use rltbl::{
     column::{ColumnBuilder, Columns},
+    core::{ColumnID, TableID},
     core::{RelatableError, RowID},
     simple_table::SimpleTable,
+    table::Table,
+    tsv_table::InnerRows,
     user::Cursor,
 };
 use rltbl_db::{any::AnyPool, db_value::JsonRow};
@@ -192,6 +191,59 @@ pub enum NewChange {
         table_id: TableID,
         rows: InnerRows,
     },
+}
+
+impl NewChange {
+    pub fn render(&self, tables: &HashMap<TableID, Table>) -> String {
+        let no_change = "No change".to_string();
+        match self {
+            NewChange::InsertRows { table_id, rows, .. } => match tables.get(table_id) {
+                Some(table) => format!(
+                    r#"Insert {} row{} into "{}" table"#,
+                    rows.len(),
+                    if rows.len() == 1 { "" } else { "s" },
+                    table.name
+                ),
+                None => no_change,
+            },
+            NewChange::DeleteRows { table_id, row_ids } => match tables.get(table_id) {
+                Some(table) => format!(
+                    r#"Delete {} row{} from "{}" table"#,
+                    row_ids.len(),
+                    if row_ids.len() == 1 { "" } else { "s" },
+                    table.name
+                ),
+                None => no_change,
+            },
+            NewChange::DeleteTables { table_ids, .. } => match table_ids.first() {
+                Some(table_id) => match tables.get(table_id) {
+                    Some(table) => format!(r#"Delete "{}" table"#, table.name),
+                    None => no_change,
+                },
+                None => no_change,
+            },
+            NewChange::MoveRows {
+                table_id, row_ids, ..
+            } => match tables.get(table_id) {
+                Some(table) => format!(
+                    r#"Move {} row{} in "{}" table"#,
+                    row_ids.len(),
+                    if row_ids.len() == 1 { "" } else { "s" },
+                    table.name
+                ),
+                None => no_change,
+            },
+            NewChange::UpdateRows { table_id, rows } => match tables.get(table_id) {
+                Some(table) => format!(
+                    r#"Update {} row{} in "{}" table"#,
+                    rows.len(),
+                    if rows.len() == 1 { "" } else { "s" },
+                    table.name
+                ),
+                None => no_change,
+            },
+        }
+    }
 }
 
 // fn serialize_inner_rows<S>(x: &TsvRows, s: S) -> Result<S::Ok, S::Error>

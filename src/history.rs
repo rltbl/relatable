@@ -1,12 +1,13 @@
-use crate::{
-    self as rltbl,
-    change::{ChangeAction, NewChange},
-    core::{ColumnID, RowOrder, TableID, ORDER_SQL_TYPE},
-};
+use std::collections::HashMap;
+
+use crate as rltbl;
 use rltbl::{
+    change::{ChangeAction, NewChange},
     column::{ColumnBuilder, Columns},
+    core::{ColumnID, RowOrder, TableID, ORDER_SQL_TYPE},
     core::{RowID, ID_SQL_TYPE},
     simple_table::SimpleTable,
+    table::Table,
 };
 use rltbl_db::{
     any::AnyPool,
@@ -26,6 +27,15 @@ pub struct History {
     pub action: ChangeAction,
     pub target: Option<RowID>,
     pub changes: Vec<NewChange>,
+}
+
+impl History {
+    pub fn render(&self, tables: &HashMap<TableID, Table>) -> String {
+        match self.changes.first() {
+            Some(change) => change.render(tables),
+            None => "No change".to_string(),
+        }
+    }
 }
 
 /// Represents the special "history" table.

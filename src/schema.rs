@@ -4,7 +4,11 @@
 
 use std::collections::HashSet;
 
-use crate::{self as rltbl, column::ColumnBuilder, core::ColumnID};
+use crate::{
+    self as rltbl,
+    column::ColumnBuilder,
+    core::{ColumnID, TableID},
+};
 use rltbl::{
     column::{Column, Columns},
     core::RelatableError,
@@ -181,6 +185,12 @@ impl Schema {
             .ok_or(RelatableError::MissingError(format!("No such table {table_name}")).into())
     }
 
+    pub fn table_by_id(&self, table_id: TableID) -> Option<&Table> {
+        self.tables
+            .values()
+            .filter(|table| table.id == table_id)
+            .nth(0)
+    }
     /// Get a column for a table, if it exists.
     pub fn column(&self, table_name: &str, column_name: &str) -> Option<&Column> {
         self.columns

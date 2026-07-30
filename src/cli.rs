@@ -548,10 +548,10 @@ pub async fn print_history(cli: &Cli, context: usize) {
         .await
         .expect("Could not get history");
     for line in lines {
-        if line.starts_with(" ") {
-            println!("{}", line);
-        } else {
+        if line.starts_with("▲") || line.starts_with("▼") {
             println!("{}", Style::new().bold().paint(line));
+        } else {
+            println!("{}", line);
         }
     }
 }

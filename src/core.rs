@@ -41,7 +41,7 @@ use minijinja::{path_loader, Environment};
 use serde::{Deserialize, Serialize};
 use serde_json::{to_value, Value as JsonValue};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
     fs::File,
     iter::zip,
@@ -512,7 +512,7 @@ impl Relatable {
         let params = parameters.clone();
         let db_rows = self.pool.query(&statement, params).await?;
         let count = db_rows.len();
-        tracing::info!("Fetched {count} rows");
+        tracing::info!("Fetched {count} rows for {select:?}");
 
         // Filter out the table's columns that do not occur in the select:
         if select.select.len() > 0 {
@@ -1005,6 +1005,40 @@ impl Relatable {
         Ok((undoable, redoable))
     }
 
+    /// Collect the user's undo/redo history,
+    /// including the changes from the target of an undo or redo.
+    /// This is specifically useful for printing the history.
+    pub async fn get_user_history_2(&self, user: &str) -> Result<(Vec<History>, Vec<History>)> {
+        let sql = r#"SELECT * FROM history WHERE "user" = $1 ORDER BY history_id"#;
+        let histories: Vec<History> = self.pool.query(sql, [user]).await?.try_into_vec()?;
+
+        let mut undoable = Vec::new();
+        let mut redoable = Vec::new();
+
+        for history in histories {
+            // println!("{:4} {:?}", change.action.to_string(), change.operation);
+            match history.action {
+                ChangeAction::Do => {
+                    undoable.push(history);
+                    redoable.clear();
+                }
+                ChangeAction::Undo => {
+                    let history = undoable.pop().expect("undo stack not empty");
+                    redoable.push(history);
+                }
+                ChangeAction::Redo => {
+                    let history = redoable.pop().expect("redoable stack not empty");
+                    undoable.push(history);
+                }
+            }
+        }
+
+        undoable.reverse();
+        redoable.reverse();
+
+        Ok((undoable, redoable))
+    }
+
     /// Find the original change (Do) for a Do, Undo, or Redo.
     async fn original_history(&self, history: &History) -> Result<History> {
         if history.target.is_none() {
@@ -1037,16 +1071,39 @@ impl Relatable {
         username: &str,
         context: usize,
     ) -> Result<Vec<String>> {
-        let (undoable, redoable) = self.get_user_history(username).await?;
+        let tables = self.table_table().await?.list().await?;
+        let tables: HashMap<TableID, Table> = tables.into_iter().map(|t| (t.id, t)).collect();
+        // println!("tables {tables:?}");
+        let (undoable, redoable) = self.get_user_history_2(username).await?;
         let mut lines: Vec<String> = undoable
-            .into_iter()
-            .rev()
+            .iter()
             .take(context)
             .rev()
-            .map(|h| format!("{h:?}"))
+            .map(|h| h.render(&tables))
             .collect();
-        lines.push("---".to_string());
-        lines.extend(redoable.iter().map(|h| format!("{h:?}")));
+        if undoable.len() > 0 {
+            lines.push(format!(
+                "▲ {} change{} can be undone",
+                undoable.len(),
+                if undoable.len() == 1 { "" } else { "s" }
+            ));
+        }
+        if redoable.len() > 0 {
+            lines.push(format!(
+                "▼ {} change{} can be redone",
+                redoable.len(),
+                if redoable.len() == 1 { "" } else { "s" }
+            ));
+            lines.extend(
+                redoable
+                    .iter()
+                    // .inspect(|h| println!("redo {h:?}"))
+                    .map(|h| h.render(&tables)),
+            );
+        }
+        if lines.is_empty() {
+            lines.push("No changes".to_string());
+        }
         Ok(lines)
     }
 
@@ -1092,7 +1149,7 @@ impl Relatable {
                         .previous_value_table()
                         .get_by_history_id(undoable.history_id)
                         .await?;
-                    println!("undo {previous_values:?}");
+                    // println!("undo {previous_values:?}");
                     let mut table_pairs: IndexMap<TableID, IndexMap<RowID, UserRow>> =
                         IndexMap::new();
                     for previous_value in previous_values {
@@ -1108,9 +1165,14 @@ impl Relatable {
                                 .insert(column_name, previous_value.value);
                         }
                     }
-                    for (table, pairs) in table_pairs {
+                    for (table_id, pairs) in table_pairs {
                         let pairs: Vec<(RowID, UserRow)> = pairs.into_iter().collect();
-                        self.get_table_by_id(table).await?.update(&pairs).await?;
+                        let row_ids: Vec<&RowID> = pairs.iter().map(|(id, _)| id).collect();
+                        let table = self.get_table_by_id(table_id).await?;
+                        self.delete_message(&table.name(), &row_ids, None, None, None)
+                            .await?;
+                        table.update(&pairs).await?;
+                        // TODO: re-validate
                     }
                 }
                 NewChange::MoveRows { .. } => {
@@ -1251,7 +1313,7 @@ impl Relatable {
                         .into_iter()
                         .map(|pv| (pv.row_id, pv.column_id, pv.value))
                         .collect();
-                    println!("redo {triples:?}");
+                    // println!("redo {triples:?}");
                     let pairs: Vec<(i32, UserRow)> = rows
                         .iter()
                         .map(|row| {
@@ -1275,10 +1337,12 @@ impl Relatable {
                             (id, user_row)
                         })
                         .collect();
-                    self.get_table_by_id(*table_id)
-                        .await?
-                        .update(&pairs)
+                    let row_ids: Vec<&RowID> = pairs.iter().map(|(id, _)| id).collect();
+                    let table = self.get_table_by_id(*table_id).await?;
+                    self.delete_message(&table.name(), &row_ids, None, None, None)
                         .await?;
+                    table.update(&pairs).await?;
+                    // TODO: re-validate
                     self.previous_value_table()
                         .extend(history.history_id, *table_id, &triples)
                         .await?;
@@ -1429,6 +1493,11 @@ impl Relatable {
         let user_row = user_row! { column_name => new_value.clone() };
         let pairs = [(row_id, user_row)];
 
+        // If we're changing the name of a table, drop views first.
+        if table_name == "table" && column_name == "table" {
+            table.drop_views().await?;
+        }
+
         table.update(&pairs).await?;
 
         let inner_row = indexmap! {
@@ -1453,6 +1522,29 @@ impl Relatable {
             .extend(history.history_id, table.id, &previous)
             .await?;
 
+        // TODO: also undo/redo these changes
+        match table.name.as_str() {
+            "table" => {
+                if column_name == "table" {
+                    // TODO: rename in the column table
+                    table.create_views().await?;
+                }
+            }
+            "column" => {
+                let row = self.column_table().await?.get_row(row_id).await?;
+                if let Some(table_name) = row.get("table").and_then(|v| Some(v.to_string())) {
+                    if let Ok(target) = self.get_table(&table_name).await {
+                        target.drop_views().await?;
+                        target.create_views().await?;
+                    }
+                }
+            }
+            _ => (),
+        }
+
+        self.delete_message(table_name, &[&row_id], Some(column_name), None, None)
+            .await?;
+
         // Optionally do full validation on the newly updated cell and add further
         // messages to the message table:
         if self.validation_level == ValidationLevel::Full {
@@ -1460,7 +1552,6 @@ impl Relatable {
             self._validate_column_optionally_for_row(&schema, &column, &[&row_id])
                 .await?;
             for dep_column in schema.columns.dependents(column) {
-                println!("Validating dependent column '{}'", dep_column.column);
                 self._validate_structure_for_column_and_optionally_for_row(dep_column, &[])
                     .await?;
             }
@@ -1604,7 +1695,6 @@ impl Relatable {
             self.validate_rows(&table_name, &refs).await?;
             let schema = self.schema().await?;
             for table in schema.dependent_tables(table_name) {
-                println!("Validating dependent table '{}'", table.name);
                 self.validate_structure_for_table(&schema, &table.name)
                     .await?;
             }
@@ -2517,16 +2607,23 @@ mod tests {
             select.view_name = format!("{}_text", &self.table);
             let before = rltbl.fetch(&select).await.unwrap_or_default();
 
-            let actions: Vec<Act> = self.steps.iter().map(|s| s.act.clone()).collect();
-            // TODO: test history at each step
-            run(&rltbl, &actions).await?;
+            for step in &self.steps {
+                let actions: Vec<Act> = vec![step.act.clone()];
+                run(&rltbl, &actions).await?;
+                if let Some(expected) = &step.history {
+                    let actual = rltbl.get_user_history_strings(&self.user, 100).await?;
+                    assert_eq!(expected, &actual, "compare histories");
+                }
+            }
 
             let after = rltbl.fetch(&select).await?;
-            // TODO: better to compare result sets
-            assert_eq!(before.to_tsv(), after.to_tsv());
 
-            // WARN: Ignoring tests for history messages.
-            // assert_eq!(rltbl.get_user_history_strings("test", 5).await?, history);
+            // TODO: better to compare result sets
+            assert_eq!(
+                before.to_tsv(),
+                after.to_tsv(),
+                "compare TSV before and after"
+            );
 
             if self.drop {
                 rltbl.drop_test().await?;
@@ -2549,7 +2646,14 @@ mod tests {
             // .undo()
             // .redo()
             // .undo()
-            .drop(false)
+            // .drop(false)
+            .history(vec![
+                "Insert 1 row into \"table\" table",
+                "Insert 1 row into \"column\" table",
+                "Insert 1 row into \"test\" table",
+                "Delete \"test\" table",
+                "▲ 4 changes can be undone",
+            ])
             .run()
             .await
     }
@@ -2564,15 +2668,23 @@ mod tests {
             .delete(6)
             .set(4, "sample_number", json!(26))
             .r#move(1, 8)
+            .history(vec![
+                "Insert 1 row into \"penguin\" table",
+                "Delete 1 row from \"penguin\" table",
+                "Update 1 row in \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
+                "▲ 4 changes can be undone",
+            ])
             .undo()
             .undo()
             .undo()
             .undo()
             .history(vec![
-                "  Move row 1 from after row 8 to after row 0 (action #7, undo)",
-                "  Update 'sample_number' in row 4 from 26 to 4 (action #8, undo)",
-                "  Add row 6 after row 5 (action #9, undo)",
-                "▲ Delete row 11 (action #10, undo)",
+                "▼ 4 changes can be redone",
+                "Insert 1 row into \"penguin\" table",
+                "Delete 1 row from \"penguin\" table",
+                "Update 1 row in \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
             ])
             .run()
             .await
@@ -2593,9 +2705,10 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Delete row 13 (action #8, undo)",
-                "  Delete row 12 (action #9, undo)",
-                "▲ Delete row 11 (action #10, undo)",
+                "▼ 3 changes can be redone",
+                "Insert 1 row into \"penguin\" table",
+                "Insert 1 row into \"penguin\" table",
+                "Insert 1 row into \"penguin\" table",
             ])
             .run()
             .await
@@ -2616,8 +2729,10 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Delete row 12 (action #9, undo)",
-                "▲ Delete row 11 (action #10, undo)",
+                "▼ 3 changes can be redone",
+                "Insert 1 row into \"penguin\" table",
+                "Insert 1 row into \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
             ])
             .run()
             .await
@@ -2638,8 +2753,10 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Move row 3 from after row 1 to after row 2 (action #9, undo)",
-                "▲ Move row 4 from after row 9 to after row 3 (action #10, undo)",
+                "▼ 3 changes can be redone",
+                "Move 1 row in \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
             ])
             .run()
             .await
@@ -2676,9 +2793,10 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Delete row 13 (action #24, undo)",
-                "  Delete row 12 (action #25, undo)",
-                "▲ Delete row 11 (action #26, undo)",
+                "▼ 3 changes can be redone",
+                "Insert 1 row into \"penguin\" table",
+                "Insert 1 row into \"penguin\" table",
+                "Insert 1 row into \"penguin\" table",
             ])
             .run()
             .await
@@ -2697,9 +2815,10 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Add row 9 after row 8 (action #6, undo)",
-                "  Update 'island' in row 4 from Enderby to Biscoe (action #7, undo)",
-                "▲ Delete row 11 (action #8, undo)",
+                "▼ 3 changes can be redone",
+                "Insert 1 row into \"penguin\" table",
+                "Update 1 row in \"penguin\" table",
+                "Delete 1 row from \"penguin\" table",
             ])
             .run()
             .await
@@ -2713,18 +2832,20 @@ mod tests {
             .undo()
             .redo()
             .undo()
-            //     .delete(9)
-            //     .set(3, "species", json!("Godzilla"))
-            //     .undo()
-            //     .redo()
-            //     .r#move(3, 5)
-            //     .undo()
-            //     .undo()
-            //     .undo()
-            //     .history(vec![
-            //     "  Update 'species' in row 3 from Godzilla to Pygoscelis adeliae (action #11, undo)",
-            //     "▲ Add row 9 after row 8 (action #12, undo)",
-            // ])
+            .delete(9)
+            .set(3, "species", json!("Godzilla"))
+            .undo()
+            .redo()
+            .r#move(3, 5)
+            .undo()
+            .undo()
+            .undo()
+            .history(vec![
+                "▼ 3 changes can be redone",
+                "Delete 1 row from \"penguin\" table",
+                "Update 1 row in \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
+            ])
             .run()
             .await
     }
@@ -2750,9 +2871,10 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Move row 4 from after row 8 to after row 3 (action #14, undo)",
-                "  Move row 9 from after row 7 to after row 8 (action #15, undo)",
-                "▲ Add row 10 after row 9 (action #16, undo)",
+                "▼ 3 changes can be redone",
+                "Delete 1 row from \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
             ])
             .run()
             .await
@@ -2781,8 +2903,9 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Add row 7 after row 6 (action #17, undo)",
-                "▲ Add row 3 after row 2 (action #18, undo)",
+                "▼ 2 changes can be redone",
+                "Delete 1 row from \"penguin\" table",
+                "Delete 1 row from \"penguin\" table",
             ])
             .run()
             .await
@@ -2811,10 +2934,11 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Move row 1 from after row 8 to after row 0 (action #15, undo)",
-                "  Update 'island' in row 4 from Enderby to Biscoe (action #16, undo)",
-                "  Add row 6 after row 5 (action #17, undo)",
-                "▲ Delete row 11 (action #18, undo)",
+                "▼ 4 changes can be redone",
+                "Insert 1 row into \"penguin\" table",
+                "Delete 1 row from \"penguin\" table",
+                "Update 1 row in \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
             ])
             .run()
             .await
@@ -2835,8 +2959,10 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Delete row 12 (action #9, undo)",
-                "▲ Delete row 11 (action #10, undo)",
+                "▼ 3 changes can be redone",
+                "Insert 1 row into \"penguin\" table",
+                "Insert 1 row into \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
             ])
             .run()
             .await
@@ -2857,8 +2983,10 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Move row 3 from after row 1 to after row 2 (action #9, undo)",
-                "▲ Move row 4 from after row 9 to after row 3 (action #10, undo)",
+                "▼ 3 changes can be redone",
+                "Move 1 row in \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
+                "Move 1 row in \"penguin\" table",
             ])
             .run()
             .await
@@ -2877,8 +3005,9 @@ mod tests {
             .undo()
             .undo()
             .history(vec![
-                "  Add row 9 after row 8 (action #7, undo)",
-                "▲ Add row 6 after row 5 (action #8, undo)",
+                "▼ 2 changes can be redone",
+                "Delete 1 row from \"penguin\" table",
+                "Delete 1 row from \"penguin\" table",
             ])
             .run()
             .await
