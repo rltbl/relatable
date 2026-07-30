@@ -104,7 +104,7 @@ impl Datatype {
                              'error' AS "level",
                              {sql_param_3} AS "rule",
                              {sql_param_4} AS "message"
-                           FROM "{table_name}"
+                           FROM "{table_name}_union"
                            WHERE {casted_column} != {sql_param_5}"#,
                         table_name = column.table,
                         casted_column =
@@ -160,7 +160,7 @@ impl Datatype {
                              'error' AS "level",
                              {sql_param_3} AS "rule",
                              {sql_param_4} AS "message"
-                           FROM "{table_name}"
+                           FROM "{table_name}_union"
                            WHERE {casted_column} NOT IN ({sql_param_5})"#,
                         table_name = column.table,
                         casted_column =

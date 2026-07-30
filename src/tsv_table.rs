@@ -277,7 +277,7 @@ pub trait TsvTable {
     }
 
     fn text_view_ddl(&self) -> String {
-        let view_name = self.name();
+        let table_name = self.name();
         let mut columns: Vec<String> = self
             .columns()
             .iter()
@@ -293,10 +293,48 @@ pub trait TsvTable {
         columns.insert(0, r#""_id""#.to_string());
         columns.insert(1, r#""_order""#.to_string());
         let columns = columns.join(", ");
+        let message = match self.pool().kind().name().as_str() {
+            "SQLite" => format!(
+                r#"(
+    SELECT
+      NULLIF(
+        JSON_GROUP_ARRAY(
+          JSON_OBJECT(
+            'column', "column",
+            'value', "value",
+            'level', "level",
+            'rule', "rule",
+            'message', "message"
+          )
+        ),
+        '[]'
+      ) AS "_message"
+      FROM "message"
+      WHERE "table" = '{table_name}'
+      AND "row" = "_id"
+      ORDER BY "column", "message_id"
+    ) AS "_message""#
+            ),
+            // TODO: Shouldn't have to cast to TEXT.
+            "PostgreSQL" => format!(
+                r#"(
+    SELECT json_agg(m.*)::TEXT AS json_agg FROM (
+      SELECT "message"."column",
+              "message"."value",
+              "message"."level",
+              "message"."rule",
+              "message"."message"
+      FROM "message"
+      WHERE "message"."table" = '{table_name}' AND "message"."row" = "_id"
+      ORDER BY "message"."column", "message"."message_id") m
+    ) AS "_message""#
+            ),
+            _ => unimplemented!(),
+        };
         format!(
-            r#"CREATE VIEW "{view_name}_text" AS
-  SELECT {columns}
-  FROM "{view_name}_union"
+            r#"CREATE VIEW "{table_name}_text" AS
+  SELECT {columns}, {message}
+  FROM "{table_name}_union"
   WHERE "_deleted" = FALSE;"#
         )
     }
@@ -1193,12 +1231,29 @@ mod tests {
         );
         assert_eq!(
             r#"CREATE VIEW "island_text" AS
-  SELECT "_id", "_order", COALESCE(CAST("island_id" AS TEXT), "island_id_text") AS "island_id", "island"
+  SELECT "_id", "_order", COALESCE(CAST("island_id" AS TEXT), "island_id_text") AS "island_id", "island", (
+    SELECT
+      NULLIF(
+        JSON_GROUP_ARRAY(
+          JSON_OBJECT(
+            'column', "column",
+            'value', "value",
+            'level', "level",
+            'rule', "rule",
+            'message', "message"
+          )
+        ),
+        '[]'
+      ) AS "_message"
+      FROM "message"
+      WHERE "table" = 'island'
+      AND "row" = "_id"
+      ORDER BY "column", "message_id"
+    ) AS "_message"
   FROM "island_union"
   WHERE "_deleted" = FALSE;"#,
             table.text_view_ddl()
         );
-
         Ok(())
     }
 

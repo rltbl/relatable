@@ -66,7 +66,7 @@ impl Structure {
                          'error' AS "level",
                          {sql_param_3} AS "rule",
                          {sql_param_4} AS "message"
-                       FROM "{c_table}"
+                       FROM "{c_table}_union"
                        WHERE "{c_column}" NOT IN (
                            SELECT "{s_column}" FROM "{s_table}"
                        )"#,

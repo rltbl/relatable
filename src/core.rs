@@ -2328,7 +2328,7 @@ mod tests {
             JsonValue::String(String::new())
         );
 
-        // Note that TEXT cells will NULL values will be reloaded as empty strings.
+        // Note that TEXT cells with NULL values will be reloaded as empty strings.
         let row = json!({"study_name": "", "sample_number": 20, "island": ""});
         rltbl.add_row(u, t, None, &row.as_object().unwrap()).await?;
         assert_eq!(
