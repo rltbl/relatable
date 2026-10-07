@@ -31,6 +31,7 @@ use std::{
 
 /// Represents a column's datatype
 #[derive(Builder, Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Ord, Eq)]
+#[serde(default)]
 #[builder(default, setter(into))]
 pub struct Datatype {
     #[serde(rename = "_id")]
@@ -431,7 +432,7 @@ impl<'a> DatatypeTable<'a> {
             .pool
             .query(&format!(r#"SELECT * FROM "{}""#, self.name), ())
             .await
-            .and_then(|db_rows| db_rows.try_into_vec())
+            .and_then(|db_rows| db_rows.remove_nulls().try_into_vec())
             .unwrap_or_default();
         let mut map = datatypes
             .into_iter()
