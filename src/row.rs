@@ -10,7 +10,7 @@ use rltbl::{
     message::CellMessage,
     schema::Schema,
 };
-use rltbl_db::db_value::{DbRow, IntoDbRow, IntoDbRows, JsonRow};
+use rltbl_db::{JsonRow, Row as DbRow, Rows as DbRows};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -263,22 +263,20 @@ pub struct Rows {
 }
 
 impl Rows {
-    pub fn new(schema: Schema, table: &str, rows: impl IntoDbRows + Send) -> Result<Rows> {
+    pub fn new(schema: Schema, table: &str, db_rows: DbRows) -> Result<Rows> {
         // TODO: check schema for table
         let mut new_rows = Rows {
             schema,
             table_name: table.to_string(),
             ..Default::default()
         };
-        let rows = rows.into_db_rows();
-        for row in rows.iter() {
-            new_rows.add(row)?;
+        for db_row in db_rows.iter() {
+            new_rows.add(db_row)?;
         }
         Ok(new_rows)
     }
 
-    pub fn add(&mut self, row: impl IntoDbRow + Send) -> Result<&Row> {
-        let db_row = row.into_db_row();
+    pub fn add(&mut self, db_row: &DbRow) -> Result<&Row> {
         // TODO: Check columns, corerce types
         // for key in db_row.keys() {
         // }

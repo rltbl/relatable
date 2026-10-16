@@ -5,7 +5,7 @@ use rltbl::{
     table::Table,
     tsv_table::{TsvTable, UserRow, UserRows},
 };
-use rltbl_db::{any::AnyPool, db_value::IntoDbParams, serde::to_db_row};
+use rltbl_db::{AnyPool, IntoValues, Row as DbRow, Value as DbValue};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -106,13 +106,8 @@ impl DataTableBuilder {
     }
 
     /// Create a row for this table from a list of values that can be turned into DbValues.
-    pub fn row(&mut self, values: impl IntoDbParams) -> Result<&mut UserRow> {
-        let values = match values.into_db_params() {
-            rltbl_db::db_value::DbParams::None => {
-                return Err(RelatableError::DataError(format!("Row requires values")).into());
-            }
-            rltbl_db::db_value::DbParams::Positional(db_values) => db_values,
-        };
+    pub fn row(&mut self, values: impl IntoValues) -> Result<&mut UserRow> {
+        let values: Vec<DbValue> = values.into_values()?.collect();
         if self.columns.len() != values.len() {
             return Err(RelatableError::DataError(format!(
                 "Expected {} values but found {}",
@@ -131,11 +126,11 @@ impl DataTableBuilder {
     }
 
     pub fn to_row(&mut self, row: &impl Serialize) -> Result<&mut UserRow> {
-        let row = to_db_row(row)?;
+        let row: DbRow = rltbl_db::serde::to_row(row)?;
         let mut map = IndexMap::new();
         for key in self.columns.keys() {
             if let Some(value) = row.get(key) {
-                map.insert(key.to_string(), value);
+                map.insert(key.to_string(), value.clone());
             }
         }
         let db_row = UserRow { map };
@@ -220,7 +215,7 @@ mod tests {
 
     use super::*;
     use anyhow::Result;
-    use rltbl_db::params;
+    use rltbl_db::values;
 
     #[tokio::test]
     async fn test_data_table_builder() -> Result<()> {
@@ -229,7 +224,7 @@ mod tests {
         let mut builder = DataTableBuilder::from_path("island.tsv");
         builder.column("island_id").datatype("integer");
         builder.column("island");
-        builder.row(params![1, "Torgersen"])?;
+        builder.row(values![1, "Torgersen"])?;
         builder.row(["foo", "Biscoe"])?;
         builder.create(&rltbl).await?;
 

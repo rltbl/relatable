@@ -120,7 +120,7 @@ test_rusqlite: src/resources/main.js src/resources/main.css test_tesh_doc test_p
 test_tokio_postgres: src/resources/main.js src/resources/main.css test_tesh_doc_postgres test_perf_tokio_postgres
 
 # test: test_rusqlite
-# test: cargo_test test_tesh_doc test_tesh_doc_postgres
-test: cargo_test test_rusqlite test_tokio_postgres
+test: cargo_test test_tesh_doc test_tesh_doc_postgres
+# test: cargo_test test_rusqlite test_tokio_postgres
 
 test_all: test_rusqlite test_tokio_postgres

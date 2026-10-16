@@ -8,7 +8,7 @@ use rltbl::{
     core::{Relatable, RelatableError, RowID},
     sql::SqlParam,
 };
-use rltbl_db::{core::DbQuery, db_value::DbValue};
+use rltbl_db::Value as DbValue;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -52,7 +52,7 @@ impl Structure {
                 };
                 let s_table = unquoted_re.replace(&s_table, "$unquoted").to_string();
                 let s_column = unquoted_re.replace(&s_column, "$unquoted").to_string();
-                let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind().name());
+                let mut sql_param_gen = SqlParam::new(&rltbl.pool.syntax().name());
                 let mut sql = format!(
                     r#"INSERT INTO "message"
                          ("added_by", "table", "row", "column", "value", "level", "rule",

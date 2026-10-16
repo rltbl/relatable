@@ -9,11 +9,7 @@ use rltbl::{
     simple_table::SimpleTable,
     table::Table,
 };
-use rltbl_db::{
-    any::AnyPool,
-    core::{DbError, DbQuery},
-    db_value::{DbRow, DbValue},
-};
+use rltbl_db::{to_row, AnyPool, Row as DbRow, Value as DbValue};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -93,13 +89,12 @@ impl<'a> HistoryTable<'a> {
     }
 
     pub async fn append(&self, history: History) -> Result<History> {
-        let mut row: DbRow = rltbl_db::serde::to_db_row(&history)?;
+        let mut row: DbRow = to_row(&history)?;
         row.map.shift_remove("history_id");
-        // println!("append history as {row:?}");
         let columns: Vec<&str> = row.keys().map(|c| c.as_str()).collect();
         let rows: Vec<History> = self
             .pool()
-            .insert_returning(&self.table_name, &columns, &[&row], &[])
+            .insert_returning(&self.table_name, &columns, [&row], &[])
             .await?
             .try_into_vec()?;
         Ok(rows.first().unwrap().clone())
@@ -182,8 +177,8 @@ impl<'a> PreviousValueTable<'a> {
                 column_id,
                 value,
             })
-            .map(|po| rltbl_db::serde::to_db_row(&po))
-            .collect::<Result<Vec<DbRow>, DbError>>()?;
+            .map(|r| to_row(&r))
+            .collect::<Result<Vec<DbRow>, _>>()?;
         let columns = ["history_id", "table_id", "row_id", "column_id", "value"];
         let pos: Vec<PreviousValue> = self
             .pool()
@@ -270,8 +265,8 @@ impl<'a> PreviousOrderTable<'a> {
                 row_id,
                 order,
             })
-            .map(|po| rltbl_db::serde::to_db_row(&po))
-            .collect::<Result<Vec<DbRow>, DbError>>()?;
+            .map(|r| to_row(&r))
+            .collect::<Result<Vec<DbRow>, _>>()?;
         let columns = ["history_id", "table_id", "row_id", "order"];
         let pos: Vec<PreviousOrder> = self
             .pool()
@@ -292,7 +287,7 @@ impl<'a> PreviousOrderTable<'a> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use rltbl_db::any::AnyPool;
+    use rltbl_db::AnyPool;
 
     #[tokio::test]
     async fn test_history_ddl() {

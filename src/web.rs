@@ -12,7 +12,7 @@ use rltbl::{
     select::{joined_query, Format, QueryParams, Select},
     user::Cursor,
 };
-use rltbl_db::{cache::CachingStrategy, core::DbQuery, db_value::JsonRow};
+use rltbl_db::{CachingStrategy, JsonRow};
 
 use std::io::Write;
 
@@ -627,7 +627,7 @@ async fn add_row(
                 )
                 .await
                 .expect("Get count")
-                .try_into()
+                .try_into_value()
                 .unwrap_or_default();
             let url = format!("{}/table/{table}?offset={offset}", rltbl.root);
             return Redirect::temporary(url.as_str()).into_response();
@@ -661,7 +661,7 @@ async fn delete_row(
                 )
                 .await
                 .expect("Get count")
-                .try_into()
+                .try_into_value()
                 .unwrap_or_default();
             let url = format!("{}/table/{table}?offset={offset}", rltbl.root);
             Redirect::temporary(url.as_str()).into_response()

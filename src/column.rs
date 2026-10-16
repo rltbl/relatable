@@ -14,7 +14,7 @@ use rltbl::{
     structure::{Structure, Structures},
     tsv_table::TsvTable,
 };
-use rltbl_db::{core::DbQuery, db_kind::DbKind, db_value::DbRow, serde::to_db_row};
+use rltbl_db::{to_row, Row as DbRow, Syntax as DbSyntax};
 
 use anyhow::Result;
 use derive_builder::Builder;
@@ -38,10 +38,10 @@ pub struct SqlColumn {
 }
 
 impl SqlColumn {
-    pub fn ddl(&self, kind: &Box<dyn DbKind>) -> String {
+    pub fn ddl(&self, syntax: &dyn DbSyntax) -> String {
         let mut parts = vec![format!(r#""{}""#, self.column)];
         let sql_type = match self.sql_type.to_uppercase().as_str() {
-            "SERIAL" => match kind.name().as_str() {
+            "SERIAL" => match syntax.name() {
                 "SQLite" => "INTEGER".to_string(),
                 _ => self.sql_type.to_string(),
             },
@@ -49,7 +49,7 @@ impl SqlColumn {
         };
         parts.push(sql_type);
         if self.primary_key {
-            match (kind.name().as_str(), self.sql_type.to_uppercase().as_str()) {
+            match (syntax.name(), self.sql_type.to_uppercase().as_str()) {
                 ("SQLite", "SERIAL") => parts.push("PRIMARY KEY AUTOINCREMENT".to_string()),
                 _ => parts.push("PRIMARY KEY".to_string()),
             }
@@ -177,9 +177,9 @@ impl Column {
         }
     }
 
-    pub fn ddl(&self, kind: &Box<dyn DbKind>) -> String {
+    pub fn ddl(&self, syntax: &dyn DbSyntax) -> String {
         let sql_column: SqlColumn = self.clone().into();
-        sql_column.ddl(kind)
+        sql_column.ddl(syntax)
     }
 }
 
@@ -256,8 +256,8 @@ impl Columns {
         self.list.iter().map(|c| c.id().to_string()).collect()
     }
 
-    pub fn ddl(&self, kind: &Box<dyn DbKind>, table_name: &str) -> String {
-        let cols = self.list.iter().map(|col| col.ddl(kind)).join(",\n  ");
+    pub fn ddl(&self, syntax: &dyn DbSyntax, table_name: &str) -> String {
+        let cols = self.list.iter().map(|col| col.ddl(syntax)).join(",\n  ");
         format!(
             r#"CREATE TABLE "{table_name}" (
   {cols}
@@ -372,7 +372,7 @@ impl<'a> ColumnTable<'a> {
         // println!("column add {columns:?}");
         let rows: Vec<DbRow> = columns
             .iter()
-            .map(|d| to_db_row(d))
+            .map(|c| to_row(c))
             .collect::<Result<Vec<DbRow>, _>>()?;
         let rows = rows.into_iter().map(|row| row.into()).collect();
         let rows = UserRows { rows };
@@ -409,7 +409,7 @@ impl<'a> ColumnTable<'a> {
     /// merged with column configuration.
     fn get_sql(&self, tables: &[&str]) -> Result<String> {
         // TODO: Validate table names.
-        match self.pool.kind().name().as_str() {
+        match self.pool.syntax().name() {
             "SQLite" => {
                 // TODO: Improve this
                 let filter = if tables.len() > 0 {
@@ -557,7 +557,7 @@ mod tests {
             .pool
             .query(r#"SELECT count(1) FROM "column""#, ())
             .await?
-            .try_into()?;
+            .try_into_value()?;
         assert_eq!(count, 15);
 
         rltbl.drop_test().await

@@ -2,7 +2,7 @@ use crate::{self as rltbl};
 use rltbl::{
     core::Relatable, data_table::DataTableBuilder, datatype::DatatypeBuilder, tsv_table::TsvTable,
 };
-use rltbl_db::{core::DbQuery, params};
+use rltbl_db::values;
 
 use anyhow::Result;
 use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
@@ -85,7 +85,7 @@ pub async fn create_penguin_table(
         let bill_depth = Decimal::try_from(bill_depth).unwrap();
         let body_mass = rng.random_range(1000..5000);
 
-        builder.row(params![
+        builder.row(values![
             study_name,
             sample_number,
             species,
@@ -108,9 +108,9 @@ pub async fn create_island_table(rltbl: &Relatable, force: bool) -> Result<()> {
     let mut builder = DataTableBuilder::from_path("island.tsv");
     builder.column("island_id").datatype("integer");
     builder.column("island");
-    builder.row(params![1, "Torgersen"])?;
-    builder.row(params![2, "Biscoe"])?;
-    builder.row(params![3, "Dream"])?;
+    builder.row(values![1, "Torgersen"])?;
+    builder.row(values![2, "Biscoe"])?;
+    builder.row(values![3, "Dream"])?;
     builder.force(force);
     builder.create(&rltbl).await?;
     Ok(())
@@ -146,7 +146,7 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
 pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) -> Result<()> {
     tracing::trace!("create_demo_tableset({rltbl:?}, {force}, {size})");
     if *force {
-        if &rltbl.pool.kind().name() == "PostgreSQL" {
+        if rltbl.pool.syntax().name() == "PostgreSQL" {
             rltbl
                 .pool
                 .execute(&format!(r#"DROP TABLE IF EXISTS "study" CASCADE"#), ())

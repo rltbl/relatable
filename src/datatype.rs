@@ -14,11 +14,7 @@ use rltbl::{
     sql::{self, SqlParam},
     tsv_table::TsvTable,
 };
-use rltbl_db::{
-    core::DbQuery,
-    db_value::{DbRow, DbValue},
-    serde::to_db_row,
-};
+use rltbl_db::{to_row, Row as DbRow, Value as DbValue};
 
 use anyhow::Result;
 use derive_builder::Builder;
@@ -91,7 +87,7 @@ impl Datatype {
                 if let Some(captures) = re.captures(condition) {
                     let condition = &captures[1];
                     let condition = unquoted_re.replace(&condition, "$unquoted");
-                    let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind().name());
+                    let mut sql_param_gen = SqlParam::new(&rltbl.pool.syntax().name());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",
@@ -109,7 +105,7 @@ impl Datatype {
                            WHERE {casted_column} != {sql_param_5}"#,
                         table_name = column.table,
                         casted_column =
-                            sql::cast_column_as_text(&column.column, &rltbl.pool.kind().name()),
+                            sql::cast_column_as_text(&column.column, &rltbl.pool.syntax().name()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
@@ -147,7 +143,7 @@ impl Datatype {
                         .split(condition_list_str)
                         .map(|item| unquoted_re.replace(item, "$unquoted"))
                         .collect::<Vec<_>>();
-                    let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind().name());
+                    let mut sql_param_gen = SqlParam::new(&rltbl.pool.syntax().name());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",
@@ -165,7 +161,7 @@ impl Datatype {
                            WHERE {casted_column} NOT IN ({sql_param_5})"#,
                         table_name = column.table,
                         casted_column =
-                            sql::cast_column_as_text(&column.column, &rltbl.pool.kind().name()),
+                            sql::cast_column_as_text(&column.column, &rltbl.pool.syntax().name()),
                         sql_param_1 = sql_param_gen.next(),
                         sql_param_2 = sql_param_gen.next(),
                         sql_param_3 = sql_param_gen.next(),
@@ -208,7 +204,7 @@ impl Datatype {
                     if !condition.contains("$") {
                         condition = format!("{condition}$");
                     }
-                    let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind().name());
+                    let mut sql_param_gen = SqlParam::new(&rltbl.pool.syntax().name());
                     let mut sql = format!(
                         r#"INSERT INTO "message"
                              ("added_by", "table", "row", "column", "value", "level", "rule",
@@ -407,7 +403,7 @@ impl<'a> DatatypeTable<'a> {
     pub async fn add(&self, datatypes: &[&Datatype]) -> Result<Vec<Datatype>> {
         let rows: Vec<DbRow> = datatypes
             .iter()
-            .map(|d| to_db_row(d))
+            .map(|d| to_row(d))
             .collect::<Result<Vec<DbRow>, _>>()?;
         let rows = rows.into_iter().map(|row| row.into()).collect();
         let rows = UserRows { rows };
@@ -458,7 +454,7 @@ mod tests {
             .pool
             .query("SELECT count(1) FROM datatype", ())
             .await?
-            .try_into()?;
+            .try_into_value()?;
         assert_eq!(count, Datatypes::builtins().len() as u64);
 
         rltbl.drop_test().await
@@ -481,7 +477,7 @@ mod tests {
             .pool
             .query("SELECT count(1) FROM datatype", ())
             .await?
-            .try_into()?;
+            .try_into_value()?;
         assert_eq!(count as usize, Datatypes::builtins().len() + 1);
         assert_eq!(&test, table.get().await.get("test").unwrap());
 

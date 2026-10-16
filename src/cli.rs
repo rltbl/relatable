@@ -8,7 +8,7 @@ use rltbl::{
     select::{Format, Select},
     web::{serve, serve_cgi},
 };
-use rltbl_db::{cache::CachingStrategy, core::DbQuery, db_value::JsonRow};
+use rltbl_db::{CachingStrategy, JsonRow};
 
 use ansi_term::Style;
 use anyhow::Result;

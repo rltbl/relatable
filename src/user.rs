@@ -4,7 +4,7 @@ use rltbl::{
     core::RowID,
     simple_table::SimpleTable,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery, db_value::DbValue, params, serde::to_db_row};
+use rltbl_db::{to_row, values, AnyPool, Row as DbRow, Value as DbValue};
 
 use anyhow::Result;
 use indexmap::IndexMap;
@@ -119,6 +119,7 @@ impl<'a> UserTable<'a> {
         // TODO: Handle datetime natively?
         let sql = r#"SELECT name, color, cursor, CAST(datetime AS TEXT) AS datetime FROM "user" WHERE name = $1 LIMIT 1"#;
         let rows = self.pool.query(sql, &[username]).await.unwrap_or_default();
+        println!("User.get {rows:?}");
         if rows.rows.is_empty() {
             return None;
         }
@@ -135,9 +136,9 @@ impl<'a> UserTable<'a> {
             return user;
         }
         let user = UserCursor::new(username);
-        let row = to_db_row(&user).unwrap();
+        let row: DbRow = to_row(&user).expect("valid user row");
         self.pool
-            .insert("user", &["name", "color", "cursor"], &[&row])
+            .insert("user", &["name", "color", "cursor"], [&row])
             .await
             .unwrap();
         self.get(username).await.expect("newly created user")
@@ -153,7 +154,7 @@ impl<'a> UserTable<'a> {
                WHERE "name" = $2"#,
         );
         self.pool
-            .execute(&sql, params![DbValue::Json(value), username])
+            .execute(&sql, values![DbValue::Json(value), username])
             .await?;
         Ok(())
     }
@@ -188,7 +189,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use pretty_assertions::assert_eq;
-    use rltbl_db::any::AnyPool;
+    use rltbl_db::AnyPool;
     use serde_json;
 
     #[tokio::test]

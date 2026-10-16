@@ -1,6 +1,6 @@
 use crate as rltbl;
 use rltbl::{column::Column, datatype::Datatype, row::Row, select::Select, table::Table};
-use rltbl_db::db_value::DbValue;
+use rltbl_db::Value as DbValue;
 
 use colored::Colorize;
 use csv::{QuoteStyle, Writer, WriterBuilder};

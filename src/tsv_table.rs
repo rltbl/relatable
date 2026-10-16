@@ -4,12 +4,7 @@ use rltbl::{
     column::{Columns, SqlColumn},
     core::{RowID, RowOrder, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
 };
-use rltbl_db::{
-    any::AnyPool,
-    core::DbQuery,
-    db_row,
-    db_value::{DbRow, DbRows, DbValue, IntoDbRow, IntoDbRows},
-};
+use rltbl_db::{row as db_row, AnyPool, Row as DbRow, Rows as DbRows, Value as DbValue};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -43,12 +38,6 @@ impl DerefMut for UserRow {
     }
 }
 
-impl IntoDbRow for UserRow {
-    fn into_db_row(self) -> DbRow {
-        self.into()
-    }
-}
-
 impl Into<DbRow> for UserRow {
     fn into(self) -> DbRow {
         DbRow { map: self.map }
@@ -64,14 +53,6 @@ impl From<DbRow> for UserRow {
 #[derive(Clone, Debug)]
 pub struct UserRows {
     pub rows: Vec<UserRow>,
-}
-
-impl IntoDbRows for UserRows {
-    fn into_db_rows(self) -> DbRows {
-        DbRows {
-            rows: self.rows.into_iter().map(|row| row.into()).collect(),
-        }
-    }
 }
 
 /// A row as Relatable sees it, using column ID strings, e.g. "c14".
@@ -160,7 +141,7 @@ pub trait TsvTable {
         let cols = self
             .regular_table_columns()
             .iter()
-            .map(|col| col.ddl(&self.pool().kind()))
+            .map(|col| col.ddl(self.pool().syntax()))
             .collect::<Vec<String>>()
             .join(",\n  ");
         format!(
@@ -179,7 +160,7 @@ pub trait TsvTable {
         let cols = self
             .alternate_table_columns()
             .iter()
-            .map(|col| col.ddl(&self.pool().kind()))
+            .map(|col| col.ddl(self.pool().syntax()))
             .collect::<Vec<String>>()
             .join(",\n  ");
         format!(
@@ -293,7 +274,7 @@ pub trait TsvTable {
         columns.insert(0, r#""_id""#.to_string());
         columns.insert(1, r#""_order""#.to_string());
         let columns = columns.join(", ");
-        let message = match self.pool().kind().name().as_str() {
+        let message = match self.pool().syntax().name() {
             "SQLite" => format!(
                 r#"(
     SELECT
@@ -419,7 +400,7 @@ pub trait TsvTable {
         let mut regular = Vec::new();
         let mut alternate = Vec::new();
         for column in columns {
-            let ddl = column.ddl(&self.pool().kind());
+            let ddl = column.ddl(self.pool().syntax());
             let line = format!("  ADD COLUMN {ddl}");
             regular.push(line.clone());
             alternate.push(line);
@@ -490,8 +471,8 @@ pub trait TsvTable {
 
     /// Return UserRows with only the columns for this table,
     /// and none of the meta columns.
-    fn sanitize_rows(&self, rows: UserRows) -> UserRows {
-        UserRows {
+    fn sanitize_rows(&self, rows: UserRows) -> DbRows {
+        DbRows {
             rows: rows
                 .rows
                 .into_iter()
@@ -502,9 +483,9 @@ pub trait TsvTable {
 
     /// Return a UserRow with only the columns for this table,
     /// and none of the meta columns.
-    fn sanitize_row(&self, row: UserRow) -> UserRow {
+    fn sanitize_row(&self, row: UserRow) -> DbRow {
         let column_names = self.column_names();
-        UserRow {
+        DbRow {
             map: row
                 .map
                 .into_iter()
@@ -514,18 +495,16 @@ pub trait TsvTable {
     }
 
     /// Convert DbRows into TsvRows.
-    fn type_rows(&self, rows: impl IntoDbRows + Send) -> TsvRows {
-        rows.into_db_rows()
-            .iter()
+    fn type_rows(&self, rows: DbRows) -> TsvRows {
+        rows.iter()
             .map(|db_row| self.type_row(db_row))
             .collect::<Vec<TsvRow>>()
             .into()
     }
 
     /// Convert a DbRow into a TsvRow.
-    fn type_row(&self, row: impl IntoDbRow + Send) -> TsvRow {
-        let row = row.into_db_row();
-        let db_kind = self.pool().kind();
+    fn type_row(&self, row: &DbRow) -> TsvRow {
+        let syntax = self.pool().syntax();
         let id = row.get("_id").and_then(|i| i.as_i32()).unwrap_or_default();
         let order = row
             .get("_order")
@@ -542,7 +521,7 @@ pub trait TsvTable {
                 if column.nulltype == "empty" && db_value.to_string() == "" {
                     map.insert(column.id, TsvValue::Regular(DbValue::Null));
                 } else {
-                    let db_type = db_kind.db_type(&column.sql_type).unwrap_or_default();
+                    let db_type = syntax.sql_type(&column.sql_type).unwrap_or_default();
                     let value = match db_type.convert(&db_value) {
                         Ok(db_value) => TsvValue::Regular(db_value),
                         Err(_) => TsvValue::NotType(db_value.to_string()),
@@ -571,8 +550,8 @@ pub trait TsvTable {
         Ok(())
     }
 
-    /// Given UserRows or DbRows, return constrained TsvRows.
-    async fn rows(&self, rows: impl IntoDbRows + Send) -> Result<TsvRows> {
+    /// Given DbRows, return constrained TsvRows.
+    async fn rows(&self, rows: DbRows) -> Result<TsvRows> {
         let mut rows = self.type_rows(rows);
         self.constrain(&mut rows).await?;
         Ok(rows)
@@ -619,7 +598,7 @@ pub trait TsvTable {
             .pool()
             .query(&sql, ())
             .await?
-            .try_into()
+            .try_into_value()
             .unwrap_or_default();
         let new_orders = (1..=count)
             .into_iter()
@@ -648,8 +627,7 @@ pub trait TsvTable {
             .pool()
             .query(&sql, &[after_id])
             .await?
-            .try_into_vec()
-            .unwrap_or_default();
+            .try_into_values()?;
 
         // If we didn't find an order, insert at the beginning.
         if orders.len() == 0 {
@@ -658,7 +636,7 @@ pub trait TsvTable {
                 .pool()
                 .query(&sql, ())
                 .await?
-                .try_into()
+                .try_into_value()
                 .unwrap_or_default();
             orders = vec![0, min_order];
         }
@@ -707,12 +685,17 @@ pub trait TsvTable {
     }
 
     async fn insert(&self, after_id: RowID, rows: UserRows) -> Result<TsvRows> {
+        println!("UserRows {rows:?}");
         let rows = self.sanitize_rows(rows);
+        println!("sanitized {rows:?}");
         let mut rows = self.rows(rows).await?;
+        println!("tsv rows {rows:?}");
         let new_orders = self.new_orders_after(rows.rows.len(), after_id).await?;
+        println!("new orders {new_orders:?}");
         for (order, row) in zip(new_orders, rows.rows.iter_mut()) {
             row.order = order;
         }
+        println!("updated rows {rows:?}");
         self.insert_ordered(&mut rows).await?;
         Ok(rows)
     }
@@ -723,7 +706,7 @@ pub trait TsvTable {
     async fn insert_ordered(&self, rows: &mut TsvRows) -> Result<()> {
         // insert the rows and get IDs
         let db_rows = self.insertable(&rows).await?;
-        let new_rows = self.insert_regular(&db_rows).await?;
+        let new_rows = self.insert_regular(db_rows).await?;
 
         // Collect the ids
         for (row, new_row) in zip(rows.rows.iter_mut(), new_rows.rows) {
@@ -742,7 +725,7 @@ pub trait TsvTable {
                 .iter()
                 .map(|r| r.get("_id").unwrap().as_i32().unwrap())
                 .collect();
-            let kind = self.pool().kind();
+            let kind = self.pool().syntax();
             let prefix = kind.param_prefix();
             let params = alternate_ids
                 .iter()
@@ -762,7 +745,7 @@ pub trait TsvTable {
             let refs: Vec<&str> = column_names.iter().map(|s| s.as_str()).collect();
             self.pool().execute(&sql, alternate_ids).await?;
             self.pool()
-                .insert(&format!("{}_alt", self.id()), &refs, alternate_rows)
+                .insert(&format!("{}_alt", self.id()), &refs, alternate_rows.iter())
                 .await?;
         }
 
@@ -849,7 +832,7 @@ pub trait TsvTable {
         let mut rows = self.rows(db_rows).await?;
 
         // Update rows from pairs.
-        let db_kind = self.pool().kind();
+        let syntax = self.pool().syntax();
         for (id, user_row) in pairs {
             let user_row = self.sanitize_row(user_row.clone());
             for row in rows.rows.iter_mut() {
@@ -859,7 +842,7 @@ pub trait TsvTable {
                             if column.nulltype == "empty" && db_value.to_string() == "" {
                                 row.map.insert(column.id, TsvValue::Regular(DbValue::Null));
                             } else {
-                                let db_type = db_kind.db_type(&column.sql_type).unwrap_or_default();
+                                let db_type = syntax.sql_type(&column.sql_type).unwrap_or_default();
                                 let value = match db_type.convert(db_value) {
                                     Ok(db_value) => TsvValue::Regular(db_value),
                                     Err(_) => TsvValue::NotType(db_value.to_string()),
@@ -953,8 +936,8 @@ pub trait TsvTable {
     }
 
     /// Append rows to the regular table.
-    async fn append_regular(&self, rows: impl IntoDbRows + Send) -> Result<DbRows> {
-        let mut rows = rows.into_db_rows();
+    async fn append_regular(&self, rows: DbRows) -> Result<DbRows> {
+        let mut rows = rows.clone();
         let new_orders = self.new_orders(rows.len()).await?;
         for (row, order) in zip(rows.iter_mut(), new_orders) {
             row.insert("_order".to_string(), order.into());
@@ -963,7 +946,7 @@ pub trait TsvTable {
     }
 
     /// Insert rows to the regular table.
-    async fn insert_regular(&self, rows: impl IntoDbRows + Send) -> Result<DbRows> {
+    async fn insert_regular(&self, rows: DbRows) -> Result<DbRows> {
         let mut column_names = self.columns().ids();
         column_names.insert(0, "_order".to_string());
         // TODO: resolve column IDs
@@ -971,7 +954,7 @@ pub trait TsvTable {
         let refs: Vec<&str> = column_names.iter().map(|x| x.as_str()).collect();
         let new_rows = self
             .pool()
-            .insert_returning(&self.id(), &refs, rows, &[])
+            .insert_returning(&self.id(), &refs, rows.iter(), &[])
             .await?;
         Ok(new_rows)
     }
@@ -1057,7 +1040,7 @@ impl TsvRow {
     pub fn inner(&self) -> InnerRow {
         let mut db_row = self.base_row();
         for (k, v) in self.map.iter() {
-            db_row.insert(format!("c{k}"), v.into())
+            db_row.insert(format!("c{k}"), v.into());
         }
         db_row.map
     }
@@ -1068,7 +1051,9 @@ impl TsvRow {
         let mut db_row = self.base_row();
         for (key, value) in self.map.iter() {
             match value {
-                TsvValue::Regular(db_value) => db_row.insert(format!("c{key}"), db_value.clone()),
+                TsvValue::Regular(db_value) => {
+                    db_row.insert(format!("c{key}"), db_value.clone());
+                }
                 _ => return None,
             }
         }
@@ -1087,13 +1072,13 @@ impl TsvRow {
                 | TsvValue::NotNotNull(db_value)
                 | TsvValue::NotUnique(db_value)
                 | TsvValue::NotForeign(db_value) => {
-                    db_row.insert(format!("c{key}"), db_value.clone())
+                    db_row.insert(format!("c{key}"), db_value.clone());
                 }
                 TsvValue::NotType(text) => {
                     if text == "" {
-                        db_row.insert(format!("c{key}_text"), DbValue::Null)
+                        db_row.insert(format!("c{key}_text"), DbValue::Null);
                     } else {
-                        db_row.insert(format!("c{key}_text"), DbValue::Text(text.to_string()))
+                        db_row.insert(format!("c{key}_text"), DbValue::Text(text.to_string()));
                     }
                 }
             }

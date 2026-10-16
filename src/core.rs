@@ -2,17 +2,13 @@
 //!
 //! This is [relatable](crate) (rltbl::[core](crate::core)).
 
-use crate::{self as rltbl, data_table::DataTableBuilder};
-use rltbl::{
-    change::NewChange,
-    change::{Change, ChangeAction, ChangeSet, ChangeTable},
+use crate::{
+    change::{Change, ChangeAction, ChangeSet, ChangeTable, NewChange},
     column::{Column, ColumnTable},
-    data_table::DataTable,
+    data_table::{DataTable, DataTableBuilder},
     datatype::{DatatypeTable, Datatypes},
     git,
-    history::History,
-    history::HistoryTable,
-    history::{PreviousOrderTable, PreviousValueTable},
+    history::{History, HistoryTable, PreviousOrderTable, PreviousValueTable},
     message::{CellMessage, MessageTable},
     result_set::{Range, ResultSet},
     row::Row,
@@ -26,13 +22,7 @@ use rltbl::{
     user::UserTable,
     user_row,
 };
-use rltbl_db::{
-    any::AnyPool,
-    cache::CachingStrategy,
-    core::DbQuery,
-    db_value::{DbRow, DbValue, IntoDbRow, IntoDbValue, JsonRow},
-    params,
-};
+use rltbl_db::{to_row, values, AnyPool, CachingStrategy, JsonRow, Row as DbRow, Value as DbValue};
 
 use anyhow::Result;
 use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
@@ -507,7 +497,7 @@ impl Relatable {
         };
 
         // Fetch the data
-        let (statement, parameters) = select.to_sql(&self.pool.kind().name())?;
+        let (statement, parameters) = select.to_sql(&self.pool.syntax().name())?;
         // println!("{statement} {parameters:#?}");
         let params = parameters.clone();
         let db_rows = self.pool.query(&statement, params).await?;
@@ -575,7 +565,7 @@ impl Relatable {
     /// Use the given [Select] to fetch data from the database.
     pub async fn fetch_rows(&self, select: &Select) -> Result<Vec<JsonRow>> {
         tracing::trace!("Relatable::fetch_rows({select:?})");
-        let (statement, params) = select.to_sql(&self.pool.kind().name())?;
+        let (statement, params) = select.to_sql(&self.pool.syntax().name())?;
         let rows = self.pool.query(&statement, params).await?.try_into_vec()?;
         Ok(rows)
     }
@@ -583,8 +573,12 @@ impl Relatable {
     /// Get the number of rows returned by this [Select] using the given caching strategy.
     pub async fn count(&self, select: &Select) -> Result<u64> {
         tracing::trace!("Relatable::count({select:?})");
-        let (statement, params) = select.to_sql_count(&self.pool.kind().name())?;
-        let count = self.pool.query(&statement, params).await?.try_into()?;
+        let (statement, params) = select.to_sql_count(&self.pool.syntax().name())?;
+        let count = self
+            .pool
+            .query(&statement, params)
+            .await?
+            .try_into_value()?;
         Ok(count)
     }
 
@@ -816,7 +810,7 @@ impl Relatable {
         // Stage any modified table files that have a path in the table table:
         let sql = format!(
             r#"SELECT "path" FROM "table" WHERE "path" {is_not} NULL"#,
-            is_not = sql::is_not_clause(&self.pool.kind().name()),
+            is_not = sql::is_not_clause(&self.pool.syntax().name()),
         );
         let paths = self.pool.query(&sql, ()).await?.to_strings()?;
         git::add(&paths)?;
@@ -851,11 +845,15 @@ impl Relatable {
             r#"INSERT INTO change("user", "action", "table", "description", "content")
                VALUES ({sql_params})
                RETURNING change_id"#,
-            sql_params = SqlParam::new(&self.pool.kind().name()).get_as_list(5)
+            sql_params = SqlParam::new(&self.pool.syntax().name()).get_as_list(5)
         );
         let content = to_value(&changeset.changes).unwrap_or_default();
-        let params = params![user, action, &table, description, content];
-        let change_id: RowID = self.pool.query(&statement, params).await?.try_into()?;
+        let params = values![user, action, &table, description, content];
+        let change_id: RowID = self
+            .pool
+            .query(&statement, params)
+            .await?
+            .try_into_value()?;
 
         // for change in changeset.changes.clone() {
         //     match change {
@@ -1448,9 +1446,11 @@ impl Relatable {
     }
 
     /// Get one cell value.
+    // TODO: Should this return a DbValue?
     pub async fn get_value(&self, table: &str, row: RowID, column: &str) -> Result<JsonValue> {
         let sql = format!(r#"SELECT "{column}" FROM "{table}" WHERE "_id" = $1"#);
         let rows = self.pool.query(&sql, [row]).await?;
+        println!("get_value {rows:?}");
         Ok(rows.value()?.into())
     }
 
@@ -1485,10 +1485,10 @@ impl Relatable {
         let previous = [(
             row_id,
             column.id,
-            old_row.get(column_name).unwrap_or(DbValue::Null),
+            old_row.get(column_name).unwrap_or(&DbValue::Null).clone(),
         )];
 
-        let new_value: DbValue = value.into_db_value();
+        let new_value: DbValue = value.into();
 
         let user_row = user_row! { column_name => new_value.clone() };
         let pairs = [(row_id, user_row)];
@@ -1616,9 +1616,9 @@ impl Relatable {
                VALUES
                ({sql_params})
                RETURNING "message_id""#,
-            sql_params = SqlParam::new(&self.pool.kind().name()).get_as_list(8)
+            sql_params = SqlParam::new(&self.pool.syntax().name()).get_as_list(8)
         );
-        let params = params![
+        let params = values![
             user,
             table_name,
             row,
@@ -1628,7 +1628,7 @@ impl Relatable {
             rule,
             message
         ];
-        let message_id: RowID = self.pool.query(&sql, params).await?.try_into()?;
+        let message_id: RowID = self.pool.query(&sql, params).await?.try_into_value()?;
 
         Ok((
             message_id,
@@ -1665,7 +1665,7 @@ impl Relatable {
         let table = self.get_table(table_name).await?;
         let mut user_rows = Vec::new();
         for row in rows {
-            let db_row: DbRow = row.into_db_row();
+            let db_row: DbRow = to_row(row)?;
             let user_row: UserRow = db_row.into();
             user_rows.push(user_row);
         }
@@ -1849,7 +1849,7 @@ impl Relatable {
             "Relatable::delete_message({self:?}, {table:?}, {rows:?}, {column:?}, \
              {target_rule:?}, {target_user:?})"
         );
-        let mut sql_param = SqlParam::new(&self.pool.kind().name());
+        let mut sql_param = SqlParam::new(&self.pool.syntax().name());
         let mut sql = format!(
             r#"DELETE FROM "message" WHERE "table" = {sql_param}"#,
             sql_param = sql_param.next()
@@ -2148,7 +2148,7 @@ mod tests {
         pub async fn test(name: &str, create_dir: bool) -> Result<Relatable> {
             let url = Self::test_url(name)?;
             let pool = AnyPool::connect(&url).await?;
-            let url = match pool.kind().name().as_str() {
+            let url = match pool.syntax().name() {
                 "SQLite" => {
                     let dir: &std::path::Path =
                         FilePath::new("build")
@@ -2197,7 +2197,7 @@ mod tests {
                     "No test database configured"
                 )))?;
             let url = Self::test_url(&name)?;
-            match AnyPool::connection_kind(&url)?.name().as_str() {
+            match rltbl_db::pool::connection_syntax(&url)?.name() {
                 "SQLite" => {
                     let file = FilePath::new(&url);
                     if file.exists() {

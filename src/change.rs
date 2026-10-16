@@ -10,7 +10,7 @@ use rltbl::{
     tsv_table::InnerRows,
     user::Cursor,
 };
-use rltbl_db::{any::AnyPool, db_value::JsonRow};
+use rltbl_db::{AnyPool, JsonRow};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -360,7 +360,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use pretty_assertions::assert_eq;
-    use rltbl_db::{any::AnyPool, core::DbQuery};
+    use rltbl_db::{from_row, to_row, AnyPool};
 
     #[tokio::test]
     async fn test_ddl() {
@@ -392,8 +392,7 @@ mod tests {
             description: "baz".to_string(),
             changes: vec![Change::Add { row: 1, after: 2 }],
         };
-        let row = rltbl_db::serde::to_db_row(&changeset)?;
-        println!("row {row:#?}");
+        let row = to_row(&changeset)?;
         rltbl
             .pool
             .insert(
@@ -406,7 +405,7 @@ mod tests {
                     "description",
                     "content",
                 ],
-                &[&row],
+                &[row],
             )
             .await?;
         let rows = rltbl
@@ -417,7 +416,7 @@ mod tests {
             )
             .await?;
         let row = rows.row().expect("one row");
-        let result: ChangeSet = rltbl_db::serde::from_db_row(row)?;
+        let result: ChangeSet = from_row(&row)?;
         print!("result {result:#?}");
         // assert!(false, "DONE");
         rltbl.drop_test().await

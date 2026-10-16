@@ -4,11 +4,7 @@ use rltbl::{
     core::{RowID, ID_SQL_TYPE},
     simple_table::SimpleTable,
 };
-use rltbl_db::{
-    any::AnyPool,
-    core::DbQuery,
-    db_value::{IntoDbParams, JsonValue},
-};
+use rltbl_db::{AnyPool, IntoValues, JsonValue};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -114,16 +110,12 @@ impl<'a> MessageTable<'a> {
         }
     }
 
-    pub async fn get(&self, filters: &str, params: impl IntoDbParams) -> Result<Vec<Message>> {
+    pub async fn get(&self, filters: &str, params: impl IntoValues) -> Result<Vec<Message>> {
         let mut sql = format!("SELECT * FROM message");
         if filters.trim() != "" {
             sql = format!("{sql} WHERE {filters}");
         }
-        let messages = self
-            .pool
-            .query(&sql, params.into_db_params())
-            .await?
-            .try_into_vec()?;
+        let messages = self.pool.query(&sql, params).await?.try_into_vec()?;
         Ok(messages)
     }
 }
@@ -132,7 +124,7 @@ impl<'a> MessageTable<'a> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use rltbl_db::any::AnyPool;
+    use rltbl_db::AnyPool;
 
     #[tokio::test]
     async fn test_ddl() {

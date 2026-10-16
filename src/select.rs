@@ -8,10 +8,7 @@ use rltbl::{
     site::{Page, Tab},
     sql::{self, SqlParam},
 };
-use rltbl_db::{
-    core::DbQuery,
-    db_value::{DbValue, IntoDbValue, JsonValue},
-};
+use rltbl_db::{IntoValue, JsonValue, Value as DbValue};
 
 use anyhow::Result;
 use enquote::unquote;
@@ -640,127 +637,122 @@ impl Select {
     }
 
     /// Add a like filter for the given column on the given value, which may include '%' wildcards
-    pub fn like(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
+    pub fn like(mut self, column: &str, value: impl IntoValue) -> Result<Self> {
         tracing::trace!("Select::like({column:?}, value)");
         self.filters.push(Filter::Like {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_db_value(),
+            value: value.into_value(),
         });
         Ok(self)
     }
 
     /// Add an equals filter on the given column and value.
-    pub fn where_eq(&mut self, column: &str, value: impl IntoDbValue) -> Result<&Self> {
+    pub fn where_eq(&mut self, column: &str, value: impl IntoValue) -> Result<&Self> {
         tracing::trace!("Select::eq({column:?}, value)");
         self.filters.push(Filter::Equal {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_db_value(),
+            value: value.into_value(),
         });
         Ok(self)
     }
 
     /// Add an equals filter on the given column and value.
-    pub fn table_eq(
-        &mut self,
-        table: &str,
-        column: &str,
-        value: impl IntoDbValue,
-    ) -> Result<&Self> {
+    pub fn table_eq(&mut self, table: &str, column: &str, value: impl IntoValue) -> Result<&Self> {
         tracing::trace!("Select::table_eq({column:?}, value)");
         self.filters.push(Filter::Equal {
             table: table.to_string(),
             column: column.to_string(),
-            value: value.into_db_value(),
+            value: value.into_value(),
         });
         Ok(self)
     }
 
     /// Add a not-equals filter on the given column and value.
-    pub fn not_eq(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
+    pub fn not_eq(mut self, column: &str, value: impl IntoValue) -> Result<Self> {
         tracing::trace!("Select::not_eq({column:?}, value)");
         self.filters.push(Filter::NotEqual {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_db_value(),
+            value: value.into_value(),
         });
         Ok(self)
     }
 
     /// Add an greater-than filter on the given column and value.
-    pub fn gt(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
+    pub fn gt(mut self, column: &str, value: impl IntoValue) -> Result<Self> {
         tracing::trace!("Select::gt({column:?}, value)");
         self.filters.push(Filter::GreaterThan {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_db_value(),
+            value: value.into_value(),
         });
         Ok(self)
     }
 
     /// Add an greater-than-or-equals filter on the given column and value.
-    pub fn gte(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
+    pub fn gte(mut self, column: &str, value: impl IntoValue) -> Result<Self> {
         tracing::trace!("Select::gte({column:?}, value)");
         self.filters.push(Filter::GreaterThanOrEqual {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_db_value(),
+            value: value.into_value(),
         });
         Ok(self)
     }
 
     /// Add an less-than filter on the given column and value.
-    pub fn lt(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
+    pub fn lt(mut self, column: &str, value: impl IntoValue) -> Result<Self> {
         tracing::trace!("Select::lt({column:?}, value)");
         self.filters.push(Filter::LessThan {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_db_value(),
+            value: value.into_value(),
         });
         Ok(self)
     }
 
     /// Add an less-than-or-equals filter on the given column and value.
-    pub fn lte(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
+    pub fn lte(mut self, column: &str, value: impl IntoValue) -> Result<Self> {
         tracing::trace!("Select::lte({column:?}, value)");
         self.filters.push(Filter::LessThanOrEqual {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_db_value(),
+            value: value.into_value(),
         });
         Ok(self)
     }
 
     /// Add an is filter on the given column and value.
-    pub fn is(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
+    pub fn is(mut self, column: &str, value: impl IntoValue) -> Result<Self> {
         tracing::trace!("Select::is({column:?}, value)");
         self.filters.push(Filter::Is {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_db_value(),
+            value: value.into_value(),
         });
         Ok(self)
     }
 
     /// Add an is not filter on the given column and value.
-    pub fn is_not(mut self, column: &str, value: impl IntoDbValue) -> Result<Self> {
+    pub fn is_not(mut self, column: &str, value: impl IntoValue) -> Result<Self> {
         tracing::trace!("Select::is_not({column:?}, value)");
         self.filters.push(Filter::IsNot {
             table: "".to_string(),
             column: column.to_string(),
-            value: value.into_db_value(),
+            value: value.into_value(),
         });
         Ok(self)
     }
 
     /// Add an in filter on the given column and value.
-    pub fn is_in(mut self, column: &str, values: &Vec<impl IntoDbValue + Clone>) -> Result<Self> {
+    pub fn is_in(mut self, column: &str, values: &Vec<impl IntoValue + Clone>) -> Result<Self> {
         tracing::trace!("Select::is_in({column:?}, value)");
         self.filters.push(Filter::In {
             table: "".to_string(),
             column: column.to_string(),
-            values: values.iter().map(|v| v.clone().into_db_value()).collect(),
+            values: values.iter().map(|v| v.clone().into_value()).collect(),
         });
         Ok(self)
     }
@@ -769,7 +761,7 @@ impl Select {
     pub fn is_not_in<T>(
         mut self,
         column: &str,
-        values: &Vec<impl IntoDbValue + Clone>,
+        values: &Vec<impl IntoValue + Clone>,
     ) -> Result<Self>
     where
         T: Serialize,
@@ -778,7 +770,7 @@ impl Select {
         self.filters.push(Filter::NotIn {
             table: "".to_string(),
             column: column.to_string(),
-            values: values.iter().map(|v| v.clone().into_db_value()).collect(),
+            values: values.iter().map(|v| v.clone().into_value()).collect(),
         });
         Ok(self)
     }
@@ -1797,7 +1789,7 @@ pub async fn joined_query(
     }
 
     let tables: Vec<DbValue> = tables.into_iter().map(|x| DbValue::from(x)).collect();
-    let mut sql_param = sql::SqlParam::new(&rltbl.pool.kind().name());
+    let mut sql_param = sql::SqlParam::new(&rltbl.pool.syntax().name());
 
     let sql = format!(
         r#"WITH RECURSIVE ancestors(_order, left_table, left_column, right_table, right_column) AS (
@@ -1884,7 +1876,7 @@ pub async fn joined_query(
             &db_row.get("right_column").unwrap().to_string(),
         );
     }
-    let (sql, params) = inner.to_sql(&rltbl.pool.kind().name()).unwrap();
+    let (sql, params) = inner.to_sql(&rltbl.pool.syntax().name()).unwrap();
     tracing::warn!("SQL {sql} PARAMS {params:?}");
     Ok(Select {
         table_name,
@@ -1904,7 +1896,6 @@ pub async fn joined_query(
 #[cfg(test)]
 mod tests {
     use crate::sql::{is_clause, is_not_clause};
-    use rltbl_db::core::DbQuery;
 
     use pretty_assertions::assert_eq;
     use serde_json::{from_value, json};
@@ -1915,7 +1906,7 @@ mod tests {
     async fn test_select_from_path_and_query() -> Result<()> {
         let rltbl = Relatable::test("test_select_from_path_and_query", false).await?;
         crate::demo::build_demo(&rltbl, &true, 0).await.unwrap();
-        let sql_param = SqlParam::new(&rltbl.pool.kind().name()).next();
+        let sql_param = SqlParam::new(&rltbl.pool.syntax().name()).next();
         let base = "http://example.com";
         let empty: Vec<DbValue> = vec![];
 
@@ -1924,7 +1915,7 @@ mod tests {
         let query_params = from_value(json!({})).unwrap();
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT *
@@ -1933,7 +1924,7 @@ ORDER BY "penguin"._order ASC
 LIMIT 100"#
         );
         assert_eq!(params, empty);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
@@ -1951,7 +1942,7 @@ FROM "penguin""#
         .unwrap();
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Json).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -1964,7 +1955,7 @@ OFFSET 2"#
             )
         );
         assert_eq!(params, vec![5i64.into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -1984,7 +1975,7 @@ WHERE "sample_number" = {sql_param}"#
         .unwrap();
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -1997,7 +1988,7 @@ LIMIT 1"#
         );
         assert_eq!(params, vec!["FAKE 123".into()]);
 
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2018,7 +2009,7 @@ WHERE "penguin"."study_name" = {sql_param}"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2027,18 +2018,18 @@ FROM "penguin"
 WHERE "penguin"."study_name" {is_clause} {sql_param}
 ORDER BY "penguin"._order ASC
 LIMIT 1"#,
-                is_clause = is_clause(&rltbl.pool.kind().name()),
+                is_clause = is_clause(&rltbl.pool.syntax().name()),
             )
         );
         assert_eq!(params, vec![DbValue::Null]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
 WHERE "penguin"."study_name" {is_clause} {sql_param}"#,
-                is_clause = is_clause(&rltbl.pool.kind().name()),
+                is_clause = is_clause(&rltbl.pool.syntax().name()),
             )
         );
         assert_eq!(params, vec![DbValue::Null]);
@@ -2053,7 +2044,7 @@ WHERE "penguin"."study_name" {is_clause} {sql_param}"#,
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2062,24 +2053,24 @@ FROM "penguin"
 WHERE "penguin"."study_name" {is_not_clause} {sql_param}
 ORDER BY "penguin"._order ASC
 LIMIT 1"#,
-                is_not_clause = is_not_clause(&rltbl.pool.kind().name()),
+                is_not_clause = is_not_clause(&rltbl.pool.syntax().name()),
             )
         );
         assert_eq!(params, vec![DbValue::Null]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
 WHERE "penguin"."study_name" {is_not_clause} {sql_param}"#,
-                is_not_clause = is_not_clause(&rltbl.pool.kind().name()),
+                is_not_clause = is_not_clause(&rltbl.pool.syntax().name()),
             )
         );
         assert_eq!(params, vec![DbValue::Null]);
 
         // A URL with an IN filter
-        let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind().name());
+        let mut sql_param_gen = SqlParam::new(&rltbl.pool.syntax().name());
         let sql_param_1 = sql_param_gen.next();
         let sql_param_2 = sql_param_gen.next();
         let url = "http://example.com/penguin?penguin.sample_number=in.(123,456)&limit=1";
@@ -2091,7 +2082,7 @@ WHERE "penguin"."study_name" {is_not_clause} {sql_param}"#,
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2103,7 +2094,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec![123i64.into(), 456i64.into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2115,7 +2106,7 @@ WHERE "penguin"."sample_number" IN ({sql_param_1}, {sql_param_2})"#
         assert_eq!(params, vec![123i64.into(), 456i64.into()]);
 
         // A URL with a NOT IN filter
-        let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind().name());
+        let mut sql_param_gen = SqlParam::new(&rltbl.pool.syntax().name());
         let sql_param_1 = sql_param_gen.next();
         let sql_param_2 = sql_param_gen.next();
         let url = "http://example.com/penguin?penguin.sample_number=not_in.(123,456)&limit=1";
@@ -2127,7 +2118,7 @@ WHERE "penguin"."sample_number" IN ({sql_param_1}, {sql_param_2})"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2139,7 +2130,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec![123i64.into(), 456i64.into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2160,7 +2151,7 @@ WHERE "penguin"."sample_number" NOT IN ({sql_param_1}, {sql_param_2})"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2172,7 +2163,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec!["123".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2193,7 +2184,7 @@ WHERE "penguin"."study_name" = {sql_param}"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2205,7 +2196,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec!["123.456".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2226,7 +2217,7 @@ WHERE "penguin"."study_name" = {sql_param}"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2238,7 +2229,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec!["123".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2259,7 +2250,7 @@ WHERE "penguin"."study_name" <> {sql_param}"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2271,7 +2262,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec!["123".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2292,7 +2283,7 @@ WHERE "penguin"."study_name" LIKE {sql_param}"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2304,7 +2295,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec!["123".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2325,7 +2316,7 @@ WHERE "penguin"."study_name" > {sql_param}"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2337,7 +2328,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec!["123".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2358,7 +2349,7 @@ WHERE "penguin"."study_name" >= {sql_param}"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2370,7 +2361,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec!["123".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2391,7 +2382,7 @@ WHERE "penguin"."study_name" < {sql_param}"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2403,7 +2394,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec!["123".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2424,7 +2415,7 @@ WHERE "penguin"."study_name" <= {sql_param}"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2433,18 +2424,18 @@ FROM "penguin"
 WHERE "penguin"."study_name" {is_clause} {sql_param}
 ORDER BY "penguin"._order ASC
 LIMIT 1"#,
-                is_clause = is_clause(&rltbl.pool.kind().name()),
+                is_clause = is_clause(&rltbl.pool.syntax().name()),
             )
         );
         assert_eq!(params, vec!["123".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
 WHERE "penguin"."study_name" {is_clause} {sql_param}"#,
-                is_clause = is_clause(&rltbl.pool.kind().name()),
+                is_clause = is_clause(&rltbl.pool.syntax().name()),
             )
         );
         assert_eq!(params, vec!["123".into()]);
@@ -2459,7 +2450,7 @@ WHERE "penguin"."study_name" {is_clause} {sql_param}"#,
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2468,24 +2459,24 @@ FROM "penguin"
 WHERE "penguin"."study_name" {is_not_clause} {sql_param}
 ORDER BY "penguin"._order ASC
 LIMIT 1"#,
-                is_not_clause = is_not_clause(&rltbl.pool.kind().name()),
+                is_not_clause = is_not_clause(&rltbl.pool.syntax().name()),
             )
         );
         assert_eq!(params, vec!["123".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
                 r#"SELECT COUNT(1) AS "count"
 FROM "penguin"
 WHERE "penguin"."study_name" {is_not_clause} {sql_param}"#,
-                is_not_clause = is_not_clause(&rltbl.pool.kind().name()),
+                is_not_clause = is_not_clause(&rltbl.pool.syntax().name()),
             )
         );
         assert_eq!(params, vec!["123".into()]);
 
         // A URL with a filter on a string column and a value that looks like an integer (in):
-        let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind().name());
+        let mut sql_param_gen = SqlParam::new(&rltbl.pool.syntax().name());
         let sql_param_1 = sql_param_gen.next();
         let sql_param_2 = sql_param_gen.next();
         let url = "http://example.com/penguin?penguin.study_name=in.(123,456)&limit=1";
@@ -2497,7 +2488,7 @@ WHERE "penguin"."study_name" {is_not_clause} {sql_param}"#,
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2509,7 +2500,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec!["123".into(), "456".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2521,7 +2512,7 @@ WHERE "penguin"."study_name" IN ({sql_param_1}, {sql_param_2})"#
         assert_eq!(params, vec!["123".into(), "456".into()]);
 
         // A URL with a filter on a string column and a value that looks like an integer (not_in):
-        let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind().name());
+        let mut sql_param_gen = SqlParam::new(&rltbl.pool.syntax().name());
         let sql_param_1 = sql_param_gen.next();
         let sql_param_2 = sql_param_gen.next();
         let url = "http://example.com/penguin?penguin.study_name=not_in.(123,456)&limit=1";
@@ -2533,7 +2524,7 @@ WHERE "penguin"."study_name" IN ({sql_param_1}, {sql_param_2})"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2545,7 +2536,7 @@ LIMIT 1"#
             )
         );
         assert_eq!(params, vec!["123".into(), "456".into()]);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2557,7 +2548,7 @@ WHERE "penguin"."study_name" NOT IN ({sql_param_1}, {sql_param_2})"#
         assert_eq!(params, vec!["123".into(), "456".into()]);
 
         // A URL with a filter on the change ID
-        let mut sql_param_gen = SqlParam::new(&rltbl.pool.kind().name());
+        let mut sql_param_gen = SqlParam::new(&rltbl.pool.syntax().name());
         let sql_param_1 = sql_param_gen.next();
         let sql_param_2 = sql_param_gen.next();
         let sql_param_3 = sql_param_gen.next();
@@ -2569,7 +2560,7 @@ WHERE "penguin"."study_name" NOT IN ({sql_param_1}, {sql_param_2})"#
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
         // WARN: SQLite does not handle $VVV queries in the order we expect.
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2591,7 +2582,7 @@ LIMIT 100"#
             params,
             vec!["penguin".into(), 5i64.into(), "penguin".into()]
         );
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2613,7 +2604,7 @@ WHERE (SELECT MAX(change_id) FROM history
         .unwrap();
         let select = Select::from_path_and_query("penguin", &query_params, &rltbl).await;
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT
@@ -2624,7 +2615,7 @@ ORDER BY "penguin"._order ASC
 LIMIT 100"#
         );
         assert_eq!(params, empty);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
@@ -2660,7 +2651,7 @@ FROM "penguin""#
         select.select_table_columns("penguin_test", &vec!["species", "island"]);
         select.select_columns(&vec!["study_name", "body_mass"]);
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT
@@ -2673,7 +2664,7 @@ ORDER BY "penguin_test"._order ASC
 LIMIT 100"#
         );
         assert_eq!(params, empty);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
@@ -2685,7 +2676,7 @@ FROM "penguin_test""#
         let mut select = Select::from("penguin_test");
         select.select_alias("penguin_test", "island", "location");
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT
@@ -2696,7 +2687,7 @@ LIMIT 100"#
         );
         assert_eq!(params, empty);
 
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
@@ -2708,7 +2699,7 @@ FROM "penguin_test""#
         let mut select = Select::from("penguin_test");
         select.select_expression("CASE WHEN island = 'Biscoe' THEN 'BISCOE' END", "location");
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT
@@ -2719,7 +2710,7 @@ LIMIT 100"#
         );
         assert_eq!(params, empty);
 
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
@@ -2731,7 +2722,7 @@ FROM "penguin_test""#
         let mut select = Select::from("penguin_test");
         select.select_all(&rltbl, "penguin_test").await.unwrap();
 
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT
@@ -2751,7 +2742,7 @@ LIMIT 100"#
         );
         assert_eq!(params, empty);
 
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT COUNT(1) AS "count"
@@ -2767,7 +2758,7 @@ FROM "penguin_test""#
     #[tokio::test]
     async fn test_subquery() -> Result<()> {
         let rltbl = Relatable::test("test_subquery", false).await?;
-        let sql_param = SqlParam::new(&rltbl.pool.kind().name()).next();
+        let sql_param = SqlParam::new(&rltbl.pool.syntax().name()).next();
 
         // Subquery select, filtered on a string:
         let mut inner_select = Select::from("penguin").limit(&0);
@@ -2782,7 +2773,7 @@ FROM "penguin_test""#
         let tables = outer_select.get_tables().into_iter().collect::<Vec<_>>();
         assert_eq!(tables, vec!["egg", "penguin"]);
 
-        let (sql, params) = outer_select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = outer_select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2801,7 +2792,7 @@ ORDER BY "penguin"._order ASC"#
         assert_eq!(params, vec!["N1".into()]);
 
         let (sql, params) = outer_select
-            .to_sql_count(&rltbl.pool.kind().name())
+            .to_sql_count(&rltbl.pool.syntax().name())
             .unwrap();
         assert_eq!(
             sql,
@@ -2832,7 +2823,7 @@ WHERE "penguin"."individual_id" IN (
         let tables = outer_select.get_tables().into_iter().collect::<Vec<_>>();
         assert_eq!(tables, vec!["egg", "penguin"]);
 
-        let (sql, params) = outer_select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = outer_select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -2851,7 +2842,7 @@ ORDER BY "penguin"._order ASC"#
         assert_eq!(params, vec![27.into()]);
 
         let (sql, params) = outer_select
-            .to_sql_count(&rltbl.pool.kind().name())
+            .to_sql_count(&rltbl.pool.syntax().name())
             .unwrap();
         assert_eq!(
             sql,
@@ -2875,11 +2866,11 @@ WHERE "penguin"."sample_number" IN (
     #[tokio::test]
     async fn test_filters() -> Result<()> {
         let rltbl = Relatable::test("test_filters", false).await?;
-        let mut sql_param_generator = SqlParam::new(&rltbl.pool.kind().name());
+        let mut sql_param_generator = SqlParam::new(&rltbl.pool.syntax().name());
         let sql_param_1 = sql_param_generator.next();
         let sql_param_2 = sql_param_generator.next();
-        let is_for_kind = is_clause(&rltbl.pool.kind().name());
-        let is_not_for_kind = is_not_clause(&rltbl.pool.kind().name());
+        let is_for_kind = is_clause(&rltbl.pool.syntax().name());
+        let is_not_for_kind = is_not_clause(&rltbl.pool.syntax().name());
 
         // Test simple string filters
         for (input_symbol, output_symbol) in [
@@ -2897,7 +2888,7 @@ WHERE "penguin"."sample_number" IN (
                 .limit(&0)
                 .filters(&vec![format!("study_name {input_symbol} FAKE123")])
                 .unwrap();
-            let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+            let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
             assert_eq!(
                 sql,
                 format!(
@@ -2909,7 +2900,7 @@ ORDER BY "penguin"._order ASC"#
             );
             assert_eq!(params, vec!["FAKE123".into()]);
 
-            let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+            let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
             assert_eq!(
                 sql,
                 format!(
@@ -2936,7 +2927,7 @@ WHERE "study_name" {output_symbol} {sql_param_1}"#
                 .limit(&0)
                 .filters(&vec![format!("sample_number {input_symbol} 2")])
                 .unwrap();
-            let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+            let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
             assert_eq!(
                 sql,
                 format!(
@@ -2948,7 +2939,7 @@ ORDER BY "penguin"._order ASC"#
             );
             assert_eq!(params, vec![2i64.into()]);
 
-            let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+            let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
             assert_eq!(
                 sql,
                 format!(
@@ -2968,7 +2959,7 @@ WHERE "sample_number" {output_symbol} {sql_param_1}"#
                     "study_name {input_symbol} (MIKE123, RICK123)"
                 )])
                 .unwrap();
-            let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+            let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
             assert_eq!(
                 sql,
                 format!(
@@ -2980,7 +2971,7 @@ ORDER BY "penguin"._order ASC"#
             );
             assert_eq!(params, vec!["MIKE123".into(), "RICK123".into()]);
 
-            let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+            let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
             assert_eq!(
                 sql,
                 format!(
@@ -2999,7 +2990,7 @@ WHERE "study_name" {output_symbol} ({sql_param_1}, {sql_param_2})"#
                 .filters(&vec![format!("sample_number {input_symbol} (1, 2)")])
                 .unwrap();
             println!("SELECT {select:?}");
-            let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+            let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
             assert_eq!(
                 sql,
                 format!(
@@ -3011,7 +3002,7 @@ ORDER BY "penguin"._order ASC"#
             );
             assert_eq!(params, vec![1i64.into(), 2i64.into()]);
 
-            let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+            let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
             assert_eq!(
                 sql,
                 format!(
@@ -3029,7 +3020,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
     #[tokio::test]
     async fn test_tablesets() -> Result<()> {
         let rltbl = Relatable::test("test_tablesets", false).await?;
-        let sql_param = SqlParam::new(&rltbl.pool.kind().name()).next();
+        let sql_param = SqlParam::new(&rltbl.pool.syntax().name()).next();
         let base = "http://example.com/combined";
         let empty: Vec<DbValue> = vec![];
 
@@ -3117,7 +3108,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 
         // Create the tablset table.
         let drop_sql = r#"DROP TABLE IF EXISTS "tableset""#;
-        let pkey_clause = match rltbl.pool.kind().name().as_str() {
+        let pkey_clause = match rltbl.pool.syntax().name() {
             "SQLite" => "INTEGER PRIMARY KEY AUTOINCREMENT",
             "PostgreSQL" => "SERIAL PRIMARY KEY",
             _ => unimplemented!(),
@@ -3151,7 +3142,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         let inner = Select::from_path_and_query("B", &query_params, &rltbl).await;
         let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             r#"SELECT *
@@ -3160,7 +3151,7 @@ ORDER BY "B"._order ASC
 LIMIT 100"#
         );
         assert_eq!(params, empty);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         rltbl.pool.execute(&sql, params.clone()).await.unwrap();
         assert_eq!(
             sql,
@@ -3177,7 +3168,7 @@ FROM "B""#
 
         let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
         assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -3190,7 +3181,7 @@ LIMIT 100"#
         );
         assert_eq!(params, vec!["i".into()]);
         rltbl.pool.execute(&sql, params).await.unwrap();
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -3208,7 +3199,7 @@ WHERE "B"."b" = {sql_param}"#
         let inner = Select::from_path_and_query("A", &query_params, &rltbl).await;
         let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
         assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -3227,7 +3218,7 @@ LIMIT 100"#
         );
         assert_eq!(params, vec!["i".into()]);
         rltbl.pool.execute(&sql, params).await.unwrap();
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -3251,7 +3242,7 @@ WHERE "_id" IN (
         let inner = Select::from_path_and_query("B2C", &query_params, &rltbl).await;
         let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
         assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -3270,7 +3261,7 @@ LIMIT 100"#
         );
         assert_eq!(params, vec!["i".into()]);
         rltbl.pool.execute(&sql, params).await.unwrap();
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -3294,7 +3285,7 @@ WHERE "_id" IN (
         let inner = Select::from_path_and_query("D", &query_params, &rltbl).await;
         let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
         assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(
@@ -3313,7 +3304,7 @@ LIMIT 100"#
         );
         assert_eq!(params, vec!["i".into()]);
         rltbl.pool.execute(&sql, params).await.unwrap();
-        let (sql, params) = select.to_sql_count(&rltbl.pool.kind().name()).unwrap();
+        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
         assert_eq!(
             sql,
             format!(

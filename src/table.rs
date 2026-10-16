@@ -16,7 +16,7 @@ use rltbl::{
     data_table::DataTable,
     tsv_table::TsvTable,
 };
-use rltbl_db::{any::AnyPool, core::DbQuery, params, serde::to_db_row};
+use rltbl_db::{to_row, values, AnyPool, Row as DbRow};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -124,7 +124,7 @@ impl From<Vec<Table>> for UserRows {
     fn from(value: Vec<Table>) -> Self {
         let rows: Vec<UserRow> = value
             .iter()
-            .map(|t| rltbl_db::serde::to_db_row(t).expect("convert Table to DbRow"))
+            .map(|t| to_row(t).expect("convert Table to Row"))
             .map(|r| UserRow { map: r.map })
             .collect();
         UserRows { rows }
@@ -155,9 +155,9 @@ impl<'a> TableTable<'a> {
         let mut builder = DataTableBuilder::from_path(path);
         builder.table_id(1);
         builder.columns(Schema::default().columns("table"));
-        builder.row(params!["table", "src/schema/table.tsv"])?;
-        builder.row(params!["column", "src/schema/column.tsv"])?;
-        builder.row(params!["datatype", "src/schema/datatype.tsv"])?;
+        builder.row(values!["table", "src/schema/table.tsv"])?;
+        builder.row(values!["column", "src/schema/column.tsv"])?;
+        builder.row(values!["datatype", "src/schema/datatype.tsv"])?;
         builder.create_table(&self.pool).await?;
         Ok(())
     }
@@ -208,8 +208,8 @@ impl<'a> TableTable<'a> {
     pub async fn extend(&self, tables: &[&Table]) -> Result<Vec<Table>> {
         let rows = tables
             .iter()
-            .map(|table| to_db_row(table))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|t| to_row(t))
+            .collect::<Result<Vec<DbRow>, _>>()?;
         let rows = rows.into_iter().map(|row| row.into()).collect();
         let rows = UserRows { rows };
         self.table.append(rows).await?;
@@ -255,7 +255,7 @@ mod tests {
             .pool
             .query(r#"SELECT count(1) FROM "table""#, ())
             .await?
-            .try_into()?;
+            .try_into_value()?;
         assert_eq!(count, 3);
 
         rltbl.drop_test().await
