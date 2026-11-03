@@ -72,8 +72,8 @@ pub static ORDER_SQL_TYPE: &str = "BIGINT";
 /// Return the meta column definitions for this kind of SQL database.
 pub fn id_ddl(kind: &str) -> String {
     match kind {
-        "SQLite" => "INTEGER PRIMARY KEY AUTOINCREMENT",
-        "PostgreSQL" => "SERIAL PRIMARY KEY",
+        "sqlite" => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        "postgres" => "SERIAL PRIMARY KEY",
         _ => unimplemented!(),
     }
     .to_string()
@@ -2149,7 +2149,7 @@ mod tests {
             let url = Self::test_url(name)?;
             let pool = AnyPool::connect(&url).await?;
             let url = match pool.syntax().name() {
-                "SQLite" => {
+                "sqlite" => {
                     let dir: &std::path::Path =
                         FilePath::new("build")
                             .parent()
@@ -2162,7 +2162,7 @@ mod tests {
                     }
                     url
                 }
-                "PostgreSQL" => {
+                "postgres" => {
                     pool.execute(&format!(r#"DROP DATABASE IF EXISTS "{name}""#), ())
                         .await?;
                     pool.execute(&format!(r#"CREATE DATABASE "{name}""#), ())
@@ -2198,13 +2198,13 @@ mod tests {
                 )))?;
             let url = Self::test_url(&name)?;
             match rltbl_db::pool::connection_syntax(&url)?.name() {
-                "SQLite" => {
+                "sqlite" => {
                     let file = FilePath::new(&url);
                     if file.exists() {
                         std::fs::remove_file(&file)?;
                     }
                 }
-                "PostgreSQL" => {
+                "postgres" => {
                     let pool = AnyPool::connect(&url).await?;
                     pool.execute(&format!(r#"DROP DATABASE "{name}" WITH (FORCE)"#), ())
                         .await?;

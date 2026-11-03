@@ -42,7 +42,7 @@ impl SqlColumn {
         let mut parts = vec![format!(r#""{}""#, self.column)];
         let sql_type = match self.sql_type.to_uppercase().as_str() {
             "SERIAL" => match syntax.name() {
-                "SQLite" => "INTEGER".to_string(),
+                "sqlite" => "INTEGER".to_string(),
                 _ => self.sql_type.to_string(),
             },
             _ => self.sql_type.to_string(),
@@ -50,7 +50,7 @@ impl SqlColumn {
         parts.push(sql_type);
         if self.primary_key {
             match (syntax.name(), self.sql_type.to_uppercase().as_str()) {
-                ("SQLite", "SERIAL") => parts.push("PRIMARY KEY AUTOINCREMENT".to_string()),
+                ("sqlite", "SERIAL") => parts.push("PRIMARY KEY AUTOINCREMENT".to_string()),
                 _ => parts.push("PRIMARY KEY".to_string()),
             }
         } else if self.unique {
@@ -410,7 +410,7 @@ impl<'a> ColumnTable<'a> {
     fn get_sql(&self, tables: &[&str]) -> Result<String> {
         // TODO: Validate table names.
         match self.pool.syntax().name() {
-            "SQLite" => {
+            "sqlite" => {
                 // TODO: Improve this
                 let filter = if tables.len() > 0 {
                     format!(
@@ -449,7 +449,7 @@ impl<'a> ColumnTable<'a> {
                     self.name
                 ))
             }
-            "PostgreSQL" => {
+            "postgres" => {
                 // TODO: Improve this
                 let filter = if tables.len() > 0 {
                     format!(

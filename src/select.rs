@@ -3109,8 +3109,8 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         // Create the tablset table.
         let drop_sql = r#"DROP TABLE IF EXISTS "tableset""#;
         let pkey_clause = match rltbl.pool.syntax().name() {
-            "SQLite" => "INTEGER PRIMARY KEY AUTOINCREMENT",
-            "PostgreSQL" => "SERIAL PRIMARY KEY",
+            "sqlite" => "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "postgres" => "SERIAL PRIMARY KEY",
             _ => unimplemented!(),
         };
         let create_sql = format!(

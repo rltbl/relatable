@@ -275,7 +275,7 @@ pub trait TsvTable {
         columns.insert(1, r#""_order""#.to_string());
         let columns = columns.join(", ");
         let message = match self.pool().syntax().name() {
-            "SQLite" => format!(
+            "sqlite" => format!(
                 r#"(
     SELECT
       NULLIF(
@@ -297,7 +297,7 @@ pub trait TsvTable {
     ) AS "_message""#
             ),
             // TODO: Shouldn't have to cast to TEXT.
-            "PostgreSQL" => format!(
+            "postgres" => format!(
                 r#"(
     SELECT json_agg(m.*)::TEXT AS json_agg FROM (
       SELECT "message"."column",

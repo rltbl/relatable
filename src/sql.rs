@@ -71,7 +71,7 @@ impl SqlParam {
     /// automatically.
     pub fn next(&mut self) -> String {
         match self.kind.as_str() {
-            "SQLite" => "?".to_string(),
+            "sqlite" => "?".to_string(),
             _ => {
                 self.index += 1;
                 format!("${}", self.index)
@@ -125,8 +125,8 @@ pub fn is_simple(db_object_name: &str) -> Result<(), String> {
 pub fn is_clause(db_kind: &str) -> String {
     tracing::trace!("is_clause({db_kind:?})");
     match db_kind {
-        "SQLite" => "IS".into(),
-        "PostgreSQL" => "IS NOT DISTINCT FROM".into(),
+        "sqlite" => "IS".into(),
+        "postgres" => "IS NOT DISTINCT FROM".into(),
         _ => unimplemented!(),
     }
 }
@@ -135,8 +135,8 @@ pub fn is_clause(db_kind: &str) -> String {
 pub fn is_not_clause(db_kind: &str) -> String {
     tracing::trace!("is_not_clause({db_kind:?})");
     match db_kind {
-        "SQLite" => "IS NOT".into(),
-        "PostgreSQL" => "IS DISTINCT FROM".into(),
+        "sqlite" => "IS NOT".into(),
+        "postgres" => "IS DISTINCT FROM".into(),
         _ => unimplemented!(),
     }
 }
@@ -146,7 +146,7 @@ pub fn is_not_clause(db_kind: &str) -> String {
 pub fn cast_column_as_text(column: &str, db_kind: &str) -> String {
     tracing::trace!("cast_column_as_text({column}, {db_kind:?})");
     match db_kind {
-        "PostgreSQL" => format!(r#""{column}"::TEXT"#),
+        "postgres" => format!(r#""{column}"::TEXT"#),
         _ => format!(r#"CAST("{column}" AS TEXT)"#),
     }
 }
@@ -156,8 +156,8 @@ pub fn regexp_match(column: &str, sql_param: &mut SqlParam) -> String {
     tracing::trace!("regexp_match({column}, {sql_param:?})");
     let casted_column = cast_column_as_text(column, &sql_param.kind);
     match sql_param.kind.as_str() {
-        "SQLite" => format!(r#"regexp({}, {}) = 1"#, sql_param.next(), casted_column),
-        "PostgreSQL" => format!(r#"{} ~ {}"#, casted_column, sql_param.next()),
+        "sqlite" => format!(r#"regexp({}, {}) = 1"#, sql_param.next(), casted_column),
+        "postgres" => format!(r#"{} ~ {}"#, casted_column, sql_param.next()),
         _ => unimplemented!(),
     }
 }
@@ -167,8 +167,8 @@ pub fn regexp_mismatch(column: &str, sql_param: &mut SqlParam) -> String {
     tracing::trace!("regexp_mismatch({column}, {sql_param:?})");
     // let casted_column = cast_column_as_text(column, &sql_param.kind);
     match sql_param.kind.as_str() {
-        "SQLite" => format!(r#"regexp_match("{column}", {}) = 0"#, sql_param.next()),
-        "PostgreSQL" => format!(r#""{column}" !~ {}"#, sql_param.next()),
+        "sqlite" => format!(r#"regexp_match("{column}", {}) = 0"#, sql_param.next()),
+        "postgres" => format!(r#""{column}" !~ {}"#, sql_param.next()),
         _ => unimplemented!(),
     }
 }
@@ -232,8 +232,8 @@ pub fn generate_table_ddl(
 
     if force {
         match db_kind {
-            "PostgreSQL" => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, table.name)),
-            "SQLite" => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}""#, table.name)),
+            "postgres" => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}" CASCADE"#, table.name)),
+            "sqlite" => ddl.push(format!(r#"DROP TABLE IF EXISTS "{}""#, table.name)),
             _ => unimplemented!(),
         }
     }

@@ -146,7 +146,7 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
 pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) -> Result<()> {
     tracing::trace!("create_demo_tableset({rltbl:?}, {force}, {size})");
     if *force {
-        if rltbl.pool.syntax().name() == "PostgreSQL" {
+        if rltbl.pool.syntax().name() == "postgres" {
             rltbl
                 .pool
                 .execute(&format!(r#"DROP TABLE IF EXISTS "study" CASCADE"#), ())
