@@ -1895,7 +1895,10 @@ pub async fn joined_query(
 
 #[cfg(test)]
 mod tests {
-    use crate::sql::{is_clause, is_not_clause};
+    use crate::{
+        core::RelatableBuilder,
+        sql::{is_clause, is_not_clause},
+    };
 
     use pretty_assertions::assert_eq;
     use serde_json::{from_value, json};
@@ -1904,7 +1907,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_select_from_path_and_query() -> Result<()> {
-        let rltbl = Relatable::test("test_select_from_path_and_query", false).await?;
+        let rltbl = RelatableBuilder::test("test_select_from_path_and_query")
+            .init(true)
+            .await?;
         crate::demo::build_demo(&rltbl, &true, 0).await.unwrap();
         let sql_param = SqlParam::new(&rltbl.pool.syntax().name()).next();
         let base = "http://example.com";
@@ -2628,7 +2633,9 @@ FROM "penguin""#
 
     #[tokio::test]
     async fn test_select_methods() -> Result<()> {
-        let rltbl = Relatable::test("test_select_methods", false).await?;
+        let rltbl = RelatableBuilder::test("test_select_methods")
+            .init(true)
+            .await?;
         let drop_sql = r#"DROP TABLE IF EXISTS "penguin_test""#;
         let create_sql = r#"CREATE TABLE "penguin_test" (
     _id INTEGER,
@@ -2757,7 +2764,7 @@ FROM "penguin_test""#
 
     #[tokio::test]
     async fn test_subquery() -> Result<()> {
-        let rltbl = Relatable::test("test_subquery", false).await?;
+        let rltbl = RelatableBuilder::test("test_subquery").init(true).await?;
         let sql_param = SqlParam::new(&rltbl.pool.syntax().name()).next();
 
         // Subquery select, filtered on a string:
@@ -2865,7 +2872,7 @@ WHERE "penguin"."sample_number" IN (
 
     #[tokio::test]
     async fn test_filters() -> Result<()> {
-        let rltbl = Relatable::test("test_filters", false).await?;
+        let rltbl = RelatableBuilder::test("test_filters").init(true).await?;
         let mut sql_param_generator = SqlParam::new(&rltbl.pool.syntax().name());
         let sql_param_1 = sql_param_generator.next();
         let sql_param_2 = sql_param_generator.next();
@@ -3019,7 +3026,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
 
     #[tokio::test]
     async fn test_tablesets() -> Result<()> {
-        let rltbl = Relatable::test("test_tablesets", false).await?;
+        let rltbl = RelatableBuilder::test("test_tablesets").init(true).await?;
         let sql_param = SqlParam::new(&rltbl.pool.syntax().name()).next();
         let base = "http://example.com/combined";
         let empty: Vec<DbValue> = vec![];

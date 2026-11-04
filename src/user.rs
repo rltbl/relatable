@@ -184,7 +184,7 @@ impl<'a> UserTable<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::Relatable;
+    use crate::core::RelatableBuilder;
 
     use super::*;
     use anyhow::Result;
@@ -228,7 +228,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_user_insert() -> Result<()> {
-        let rltbl = Relatable::test("test_user_insert", true).await?;
+        let rltbl = RelatableBuilder::test("test_user_insert")
+            .init(true)
+            .await?;
         let table = rltbl.user_table();
 
         let user1 = table.get_or_insert("foo").await;

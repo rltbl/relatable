@@ -4,7 +4,7 @@
 
 use crate::{self as rltbl, tsv_table::TsvTable};
 use rltbl::{
-    core::{Relatable, RowID, ValidationLevel},
+    core::{Relatable, RelatableBuilder, RowID, ValidationLevel},
     select::{Format, Select},
     web::{serve, serve_cgi},
 };
@@ -33,10 +33,10 @@ static VALIDATION_LEVEL_HELP: &str = "One of 'none', 'sql_type', 'full'";
 pub struct Cli {
     /// Location of the database.
     #[arg(long, action = ArgAction::Set, env = "RLTBL_CONNECTION")]
-    database: Option<String>,
+    pub database: Option<String>,
 
     #[arg(long, action = ArgAction::Set, env = "RLTBL_USER")]
-    user: Option<String>,
+    pub user: Option<String>,
 
     /// Can be one of: JSON (that's it for now). If unspecified Relatable will attempt to read the
     /// environment variable RLTBL_INPUT. If that is also unset, the user will be presented with
@@ -391,11 +391,8 @@ pub enum DropSubcommand {
 
 pub async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
     tracing::trace!("init({cli:?}, {force}, {path:?})");
-    match Relatable::init(force, path, &cli.caching).await {
-        Ok(_) => println!(
-            "Initialized a relatable database in '{}'",
-            Relatable::determine_db_path(path)
-        ),
+    match RelatableBuilder::from_cli(cli).init(*force).await {
+        Ok(rltbl) => println!("Initialized a relatable database in '{}'", rltbl.connection),
         Err(err) => panic!("{err:?}"),
     }
 }
@@ -435,7 +432,8 @@ pub async fn print_table(
 
     // Initiate a rltbl instance, get the retrieve the Table struct corresponding to the given
     // table name and ensure that the text view on the table has been created.
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Error initializing a relatable instance");
 
@@ -497,7 +495,8 @@ pub async fn print_table(
 /// Print rows of a table, without column header.
 pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usize) {
     tracing::trace!("print_rows({cli:?}, {table_name}, {limit}, {offset})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     let select = Select::from(table_name).limit(limit).offset(offset);
@@ -520,7 +519,8 @@ pub async fn print_rows(cli: &Cli, table_name: &str, limit: &usize, offset: &usi
 /// Print the value of the given column of the given row of the given table
 pub async fn print_value(cli: &Cli, table: &str, row: RowID, column: &str) {
     tracing::trace!("print_value({cli:?}, {table}, {row}, {column})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = $1"#,);
@@ -539,7 +539,8 @@ pub async fn print_value(cli: &Cli, table: &str, row: RowID, column: &str) {
 pub async fn print_history(cli: &Cli, context: usize) {
     tracing::trace!("print_history({cli:?}, {context})");
     let user = get_username(&cli);
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
 
@@ -577,7 +578,8 @@ pub async fn set_value(
     validation_level: &ValidationLevel,
 ) {
     tracing::trace!("set_value({cli:?}, {table}, {row}, {column}, {value}, {validation_level:?})");
-    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let mut rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     rltbl.validation_level = *validation_level;
@@ -683,7 +685,8 @@ pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<
 /// from STDIN, either interactively or in JSON format.
 pub async fn add_message(cli: &Cli, table: &str, row: RowID, column: &str) {
     tracing::trace!("add_message({cli:?}, {table:?}, {row:?}, {column:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     let json_message = match &cli.input {
@@ -732,7 +735,8 @@ pub async fn add_row(
     validation_level: &ValidationLevel,
 ) {
     tracing::trace!("add_row({cli:?}, {table}, {after_id:?}, {validation_level:?})");
-    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let mut rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     rltbl.validation_level = *validation_level;
@@ -760,7 +764,8 @@ pub async fn add_row(
 /// Move the given row after the row whose id is `after_id`.
 pub async fn move_row(cli: &Cli, table: &str, row: RowID, after_id: RowID) {
     tracing::trace!("move_row({cli:?}, {table}, {row}, {after_id})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     let user = get_username(&cli);
@@ -772,7 +777,8 @@ pub async fn move_row(cli: &Cli, table: &str, row: RowID, after_id: RowID) {
 
 /// Validate the given row in the given table
 pub async fn validate_row(cli: &Cli, table_name: &str, row: &RowID) {
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     rltbl
@@ -783,7 +789,8 @@ pub async fn validate_row(cli: &Cli, table_name: &str, row: &RowID) {
 
 /// Validate the given table
 pub async fn validate_table(cli: &Cli, table_name: &str) {
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     rltbl
@@ -794,7 +801,8 @@ pub async fn validate_table(cli: &Cli, table_name: &str) {
 
 /// Validate the given column
 pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     rltbl
@@ -806,7 +814,8 @@ pub async fn validate_column(cli: &Cli, table_name: &str, column_name: &str) {
 /// Validate the value of the given column, row, and table
 pub async fn validate_value(cli: &Cli, table_name: &str, row: &RowID, column_name: &str) {
     tracing::trace!("validate_value({cli:?}, {table_name}, {row}, {column_name})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     rltbl
@@ -818,7 +827,8 @@ pub async fn validate_value(cli: &Cli, table_name: &str, row: &RowID, column_nam
 /// Delete the given row in the given table
 pub async fn delete_row(cli: &Cli, table: &str, row: RowID) {
     tracing::trace!("delete_row({cli:?}, {table}, {row})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     let user = get_username(&cli);
@@ -851,7 +861,8 @@ pub async fn delete_message(
     tracing::trace!(
         "delete_message({cli:?}, {target_rule:?}, {target_user:?}, {table}, {row:?}, {column:?})"
     );
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connectg error");
     let rows = match &row {
@@ -872,7 +883,8 @@ pub async fn delete_message(
 /// Undo the last change
 pub async fn undo(cli: &Cli) {
     tracing::trace!("undo({cli:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     let user = get_username(&cli);
@@ -886,7 +898,8 @@ pub async fn undo(cli: &Cli) {
 /// Redo the last change
 pub async fn redo(cli: &Cli) {
     tracing::trace!("redo({cli:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     let user = get_username(&cli);
@@ -907,7 +920,8 @@ pub async fn load_tables(
 ) {
     tracing::trace!("load_tables({cli:?}, {paths:?}, {force}, {validation_level:?})");
 
-    let mut rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let mut rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     rltbl.validation_level = *validation_level;
@@ -927,7 +941,8 @@ pub async fn load_table(cli: &Cli, path: &str, force: bool, rltbl: &Relatable) {
 /// Save all of the tables to their configured locations, or to save_dir if it is given.
 pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
     tracing::trace!("save_all({cli:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     rltbl.save_all(save_dir).await.expect("Error saving all");
@@ -936,7 +951,8 @@ pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
 /// Drop all of the data tables and meta tables from the database
 pub async fn drop_tables(cli: &Cli) {
     tracing::trace!("drop_tables({cli:?})");
-    let rltbl = Relatable::connect(cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .build()
         .await
         .expect("Connect error");
     rltbl.drop_tables().await.expect("Error dropping tables");
@@ -945,16 +961,14 @@ pub async fn drop_tables(cli: &Cli) {
 /// Build a demonstration database
 pub async fn build_demo(cli: &Cli, force: &bool, size: usize) {
     tracing::trace!("build_demo({cli:?}, {force}, {size})");
-    let rltbl = Relatable::init(force, cli.database.as_deref(), &cli.caching)
+    let rltbl = RelatableBuilder::from_cli(cli)
+        .init(*force)
         .await
         .expect("Connect error");
     crate::demo::build_demo(&rltbl, force, size)
         .await
         .expect("Error building demonstration database");
-    println!(
-        "Created a demonstration database in '{}'",
-        Relatable::determine_db_path(cli.database.as_deref())
-    );
+    println!("Created a demonstration database in '{}'", rltbl.connection);
 }
 
 pub async fn process_command() {

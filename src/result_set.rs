@@ -214,13 +214,13 @@ impl std::fmt::Display for ResultSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Relatable;
+    use crate::core::RelatableBuilder;
     use anyhow::Result;
     use serde_json::{from_value, json};
 
     #[tokio::test]
     async fn test_result_set() -> Result<()> {
-        let rltbl = Relatable::test("test_result_set", false).await?;
+        let rltbl = RelatableBuilder::test("test_result_set").init(true).await?;
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
 
         // A basic URL

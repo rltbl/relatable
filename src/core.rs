@@ -4,7 +4,9 @@
 
 use crate::{
     change::{Change, ChangeAction, ChangeSet, ChangeTable, NewChange},
+    cli::Cli,
     column::{Column, ColumnTable},
+    core::RelatableError::InitError,
     data_table::{DataTable, DataTableBuilder},
     datatype::{DatatypeTable, Datatypes},
     git,
@@ -18,7 +20,7 @@ use crate::{
     site::Site,
     sql::{self, SqlParam},
     table::{Table, TableTable},
-    tsv_table::{ColumnName, TsvTable, UserRow, UserRows},
+    tsv_table::{TsvTable, UserRow, UserRows},
     user::UserTable,
     user_row,
 };
@@ -34,7 +36,6 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
     fs::File,
-    iter::zip,
     path::Path as FilePath,
     str::FromStr,
 };
@@ -129,6 +130,264 @@ impl Display for RelatableError {
 
 impl std::error::Error for RelatableError {}
 
+/// Build a Relatable instance.
+#[derive(Debug, Default)]
+pub struct RelatableBuilder {
+    pub root: Option<String>,
+    pub readonly: bool,
+    pub connection: Option<String>,
+    pub test_name: Option<String>,
+    pub create_test_dir: bool,
+    pub caching_strategy: Option<CachingStrategy>,
+    pub validation_level: Option<ValidationLevel>,
+}
+
+impl RelatableBuilder {
+    /// Create a new RelatableBuilder with default values.
+    pub fn new() -> Self {
+        let mut builder = Self::default();
+        let url = RLTBL_DEFAULT_DB;
+        tracing::info!("Using default connection: {url}");
+        builder.connection(url);
+        builder
+    }
+
+    /// Create a RelatableBuilder from a database connection URL.
+    pub fn from(url: &str) -> Self {
+        let mut builder = Self::default();
+        builder.connection(url);
+        builder
+    }
+
+    /// Create a RelatableBuilder from a CLI options.
+    pub fn from_cli(cli: &Cli) -> Self {
+        let mut builder = Self::new();
+        builder.cli(cli);
+        builder
+    }
+
+    /// Create a RelatableBuilder for a unit test.
+    /// This uses the RLBTL_TEST_CONNECTION environment variable.
+    /// When using SQLite it will create a `build/NAME.db` database file.
+    /// When using PostgreSQL it will create a NAME database ("schema").
+    pub fn test(name: &str) -> Self {
+        let mut builder = Self::default();
+
+        builder.test_name = Some(name.to_string());
+
+        if let Some(connection) = std::env::var_os("RLTBL_TEST_CONNECTION") {
+            let connection = connection.to_string_lossy();
+            tracing::info!("Using RLTBL_TEST_CONNECTION='{connection}'");
+            builder.connection(&connection);
+        } else {
+            let connection = format!("build/{name}.db");
+            tracing::info!("Using default connection: {connection}");
+            builder.connection(&connection);
+        };
+
+        builder
+    }
+
+    /// Override a RelatableBuilder using environment variables.
+    pub fn env(&mut self) -> &mut Self {
+        if let Ok(root) = std::env::var("RLTBL_ROOT") {
+            tracing::info!("Using RLTBL_ROOT='{root}'");
+            self.root(&root);
+        }
+
+        if let Ok(readonly) = std::env::var("RLTBL_READONLY") {
+            let value = readonly.to_lowercase() != "false";
+            tracing::info!("Using RLTBL_READONLY='{readonly}' as {value}");
+            self.readonly(value);
+        };
+
+        if let Some(connection) = std::env::var_os("RLTBL_CONNECTION") {
+            let connection = connection.to_string_lossy();
+            tracing::info!("Using RLTBL_CONNECTION='{connection}'");
+            self.connection(&connection);
+        };
+
+        self
+    }
+
+    /// Override a RelatableBuilder using CLI options.
+    pub fn cli(&mut self, cli: &Cli) -> &mut Self {
+        if let Some(connection) = cli.database.clone() {
+            tracing::info!("Using CLI --database: '{connection}'");
+            self.connection(&connection);
+        }
+
+        let caching_strategy = cli.caching.clone();
+        tracing::info!("Using CLI --caching: {caching_strategy}");
+        self.caching_strategy = Some(caching_strategy);
+
+        self
+    }
+
+    /// Set the Relatable `root` field for the web server.
+    pub fn root(&mut self, root: &str) -> &mut Self {
+        self.root = Some(root.to_string());
+        self
+    }
+
+    /// Set the Relatable `readonly` option.
+    pub fn readonly(&mut self, readonly: bool) -> &mut Self {
+        self.readonly = readonly;
+        self
+    }
+
+    /// Set the Relatable `connection` URL.
+    pub fn connection(&mut self, url: &str) -> &mut Self {
+        self.connection = Some(url.to_string());
+        self
+    }
+
+    /// Set the Relatable caching strategy.
+    pub fn caching_strategy(&mut self, caching_strategy: CachingStrategy) -> &mut Self {
+        self.caching_strategy = Some(caching_strategy);
+        self
+    }
+
+    /// When `test(NAME)` has been set, create a `build/NAME/` directory.
+    pub fn create_test_dir(&mut self, create_test_dir: bool) -> &mut Self {
+        self.create_test_dir = create_test_dir;
+        self
+    }
+
+    /// Build a Relatable struct.
+    /// This will connect to an existing database,
+    /// but will not initialize a new database.
+    pub async fn build(&self) -> Result<Relatable> {
+        let connection = match self.connection.clone() {
+            Some(connection) => connection,
+            None => {
+                return Err(
+                    InitError(format!("Relatable connection string must not be None")).into(),
+                )
+            }
+        };
+
+        if connection != ":memory:" && !connection.starts_with("postgresql://") {
+            let file = FilePath::new(&connection);
+            if !file.exists() {
+                return Err(RelatableError::InitError(
+                    "First create a database with `rltbl init`".into(),
+                )
+                .into());
+            }
+        }
+
+        let mut pool = AnyPool::connect(&connection).await?;
+
+        let caching_strategy = self.caching_strategy.unwrap_or(CachingStrategy::Trigger);
+        pool.set_caching_strategy(&caching_strategy);
+
+        let mut rltbl = Relatable {
+            root: self.root.clone().unwrap_or_default(),
+            readonly: self.readonly.clone(),
+            connection,
+            pool,
+            test_database: None,
+            test_dir: None,
+            // minijinja: env,
+            default_limit: DEFAULT_LIMIT,
+            max_limit: MAX_LIMIT,
+            caching_strategy: caching_strategy,
+            validation_level: ValidationLevel::Full,
+        };
+
+        // When this is a test, we do extra work.
+        if let Some(test_name) = self.test_name.clone() {
+            rltbl.test_database = Some(test_name.clone());
+            if self.create_test_dir {
+                let dir = FilePath::new("build").join(test_name.clone());
+                if dir.exists() {
+                    std::fs::remove_dir_all(&dir)?;
+                }
+                std::fs::create_dir_all(&dir)?;
+                rltbl.test_dir = Some(dir.to_str().unwrap().to_string());
+            }
+            match rltbl.pool.syntax().name() {
+                "sqlite" => {
+                    let dir: &std::path::Path =
+                        FilePath::new("build")
+                            .parent()
+                            .ok_or(RelatableError::InputError(format!(
+                                "Path 'build' has no parent",
+                            )))?;
+                    if !dir.exists() {
+                        std::fs::create_dir_all(&dir)?;
+                        tracing::info!("Created '{dir:?}' directory");
+                    }
+                }
+                "postgres" => {
+                    rltbl
+                        .pool
+                        .execute(&format!(r#"DROP DATABASE IF EXISTS "{test_name}""#), ())
+                        .await?;
+                    rltbl
+                        .pool
+                        .execute(&format!(r#"CREATE DATABASE "{test_name}""#), ())
+                        .await?;
+                    let connection = format!("postgresql:///{test_name}");
+                    rltbl.connection = connection.clone();
+                    let mut pool = AnyPool::connect(&connection).await?;
+                    let caching_strategy =
+                        self.caching_strategy.unwrap_or(CachingStrategy::Trigger);
+                    pool.set_caching_strategy(&caching_strategy);
+                    rltbl.pool = pool;
+                }
+                _ => unimplemented!(),
+            };
+        }
+
+        Ok(rltbl)
+    }
+
+    /// Build a Relatable struct and initialize it.
+    pub async fn init(&self, force: bool) -> Result<Relatable> {
+        let connection = match self.connection.clone() {
+            Some(connection) => connection,
+            None => {
+                return Err(
+                    InitError(format!("Relatable connection string must not be None")).into(),
+                )
+            }
+        };
+
+        if connection != ":memory:" && !connection.starts_with("postgresql://") {
+            let path = connection;
+            let dir: &std::path::Path =
+                FilePath::new(&path)
+                    .parent()
+                    .ok_or(RelatableError::InputError(format!(
+                        "Path '{path}' has no parent",
+                    )))?;
+            if !dir.exists() {
+                std::fs::create_dir_all(&dir)?;
+                tracing::info!("Created '{dir:?}' directory");
+            }
+            let file = FilePath::new(&path);
+            if file.exists() {
+                if force {
+                    std::fs::remove_file(&file)?;
+                    tracing::info!("Removed '{file:?}' file");
+                } else {
+                    return Err(RelatableError::InitError(format!(
+                        "File {file:?} already exists. Use --force to overwrite"
+                    ))
+                    .into());
+                }
+            }
+            File::create(&path)?;
+        }
+
+        let rltbl = self.build().await?;
+        rltbl.init(force).await?;
+        Ok(rltbl)
+    }
+}
+
 /// The main [rltbl](crate) struct.
 #[derive(Debug)]
 pub struct Relatable {
@@ -147,109 +406,24 @@ pub struct Relatable {
 }
 
 impl Relatable {
-    /// Determines the path to the database. When `opt_path` is None or an empty string, looks
-    /// for the environment variable named `RLTBL_CONNECTION`. If this is also unset or empty,
-    /// the default database path [RLTBL_DEFAULT_DB] is returned.
-    pub fn determine_db_path(opt_path: Option<&str>) -> String {
-        match opt_path {
-            Some(path) if !path.is_empty() => path.to_string(),
-            _ => match std::env::var_os("RLTBL_CONNECTION").and_then(|p| Some(p.into_string())) {
-                Some(Ok(path)) if !path.is_empty() => path,
-                _ => RLTBL_DEFAULT_DB.to_string(),
-            },
-        }
-    }
-
-    /// Connect to a relatable database at the given path, or, if not given, at the location
-    /// indicated by the environment variable RLTBL_CONNECTION, or, if that is not given,
-    /// at [RLTBL_DEFAULT_DB]
-    pub async fn connect(path: Option<&str>, caching_strategy: &CachingStrategy) -> Result<Self> {
-        tracing::trace!("Relatable::connect({path:?}, {caching_strategy:?})");
-        let root = std::env::var("RLTBL_ROOT").unwrap_or_default();
-        // Set up database connection.
-        let readonly = match std::env::var("RLTBL_READONLY") {
-            Ok(value) if value.to_lowercase() != "false" => true,
-            _ => false,
-        };
-        let path = Relatable::determine_db_path(path);
-        if path != ":memory:" && !path.starts_with("postgresql://") {
-            let file = FilePath::new(&path);
-            if !file.exists() {
-                return Err(RelatableError::InitError(
-                    "First create a database with `rltbl init`".into(),
-                )
-                .into());
-            }
-        }
-        let mut pool = AnyPool::connect(&path).await?;
-        pool.set_caching_strategy(caching_strategy);
-        Ok(Self {
-            root,
-            readonly,
-            connection: path,
-            pool,
-            test_database: None,
-            test_dir: None,
-            // minijinja: env,
-            default_limit: DEFAULT_LIMIT,
-            max_limit: MAX_LIMIT,
-            caching_strategy: *caching_strategy,
-            validation_level: ValidationLevel::Full,
-        })
-    }
-
     /// Initialize a [relatable](crate) database at the given path, or, if not given, at
     /// the location indicated by the environment variable RLTBL_CONNECTION, or, if that is not
     /// given, at [RLTBL_DEFAULT_DB]. Overwrites an existing database if `force` is set to true.
-    pub async fn init(
-        force: &bool,
-        path: Option<&str>,
-        caching_strategy: &CachingStrategy,
-    ) -> Result<Self> {
-        tracing::trace!("Relatable::init({force:?}, {path:?}, {caching_strategy:?})");
-        let path = Relatable::determine_db_path(path);
-        if path != ":memory:" && !path.starts_with("postgresql://") {
-            let dir: &std::path::Path =
-                FilePath::new(&path)
-                    .parent()
-                    .ok_or(RelatableError::InputError(format!(
-                        "Path '{path}' has no parent",
-                    )))?;
-            if !dir.exists() {
-                std::fs::create_dir_all(&dir)?;
-                tracing::info!("Created '{dir:?}' directory");
-            }
-            let file = FilePath::new(&path);
-            if file.exists() {
-                if *force {
-                    std::fs::remove_file(&file)?;
-                    tracing::info!("Removed '{file:?}' file");
-                } else {
-                    return Err(RelatableError::InitError(format!(
-                        "File {file:?} already exists. Use --force to overwrite"
-                    ))
-                    .into());
-                }
-            }
-            File::create(&path)?;
+    pub async fn init(&self, force: bool) -> Result<()> {
+        if force {
+            self.drop_meta_tables().await?;
         }
+        self.user_table().create().await?;
+        self.change_table().create().await?;
+        self.history_table().create().await?;
+        self.previous_value_table().create().await?;
+        self.previous_order_table().create().await?;
+        self.message_table().create().await?;
+        self.table_table().await?.init().await?;
+        self.column_table().await?.init().await?;
+        self.datatype_table().await?.init().await?;
 
-        // Create the meta tables:
-        let rltbl = Relatable::connect(Some(&path), caching_strategy).await?;
-        if *force {
-            rltbl.drop_meta_tables().await?;
-        }
-        rltbl.user_table().create().await?;
-        rltbl.change_table().create().await?;
-        rltbl.history_table().create().await?;
-        rltbl.previous_value_table().create().await?;
-        rltbl.previous_order_table().create().await?;
-        rltbl.message_table().create().await?;
-        rltbl.table_table().await?.init().await?;
-        rltbl.column_table().await?.init().await?;
-        rltbl.datatype_table().await?.init().await?;
-
-        Ok(rltbl)
+        Ok(())
     }
 
     /// Get the user table
@@ -630,24 +804,7 @@ impl Relatable {
         table.drop().await?;
         table.create().await?;
 
-        // Read the records from the given TSV file:
-        let mut rdr = ReaderBuilder::new()
-            .has_headers(true)
-            .delimiter(b'\t')
-            .from_reader(File::open(path).expect(&format!("Unable to open '{path}'")));
-
-        let headers: Vec<String> = rdr.headers()?.into_iter().map(|s| s.to_string()).collect();
-        let records = rdr.records();
-        let rows: Vec<UserRow> = records
-            .into_iter()
-            .map(|record| {
-                let map: IndexMap<ColumnName, DbValue> = zip(headers.iter(), record?.iter())
-                    .map(|(k, v)| (k.to_string(), DbValue::from(v)))
-                    .collect();
-                Ok(UserRow { map })
-            })
-            .collect::<Result<Vec<UserRow>>>()?;
-        let rows = UserRows { rows };
+        let rows = crate::tsv_table::read_table(path)?;
         table.append(rows).await?;
 
         if self.validation_level == ValidationLevel::Full {
@@ -2145,45 +2302,8 @@ mod tests {
         /// If RLTBL_TEST_CONNECTION is not set, use a SQLite database in `build/`.
         /// If RLTBL_TEST_CONNECTION is a PostgreSQL database,
         /// use that connection to create a new database with `name`.
-        pub async fn test(name: &str, create_dir: bool) -> Result<Relatable> {
-            let url = Self::test_url(name)?;
-            let pool = AnyPool::connect(&url).await?;
-            let url = match pool.syntax().name() {
-                "sqlite" => {
-                    let dir: &std::path::Path =
-                        FilePath::new("build")
-                            .parent()
-                            .ok_or(RelatableError::InputError(format!(
-                                "Path 'build' has no parent",
-                            )))?;
-                    if !dir.exists() {
-                        std::fs::create_dir_all(&dir)?;
-                        tracing::info!("Created '{dir:?}' directory");
-                    }
-                    url
-                }
-                "postgres" => {
-                    pool.execute(&format!(r#"DROP DATABASE IF EXISTS "{name}""#), ())
-                        .await?;
-                    pool.execute(&format!(r#"CREATE DATABASE "{name}""#), ())
-                        .await?;
-                    format!("postgresql:///{name}")
-                }
-                _ => unimplemented!(),
-            };
-            let mut rltbl = Self::init(&true, Some(&url), &CachingStrategy::Trigger).await?;
-            rltbl.test_database = Some(name.to_owned());
-
-            if create_dir {
-                let dir = FilePath::new("build").join(name);
-                if dir.exists() {
-                    std::fs::remove_dir_all(&dir)?;
-                }
-                std::fs::create_dir_all(&dir)?;
-                rltbl.test_dir = Some(dir.to_str().unwrap().to_string());
-            }
-
-            Ok(rltbl)
+        pub async fn test(_name: &str, _create_dir: bool) -> Result<Relatable> {
+            todo!("Use RelatableBuilder::test(foo).init().await?");
         }
 
         /// Drop this test database and delete any files.
@@ -2224,8 +2344,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_builder() -> Result<()> {
+        let builder = RelatableBuilder::from(":memory:");
+        let rltbl = builder.build().await?;
+        assert_eq!(rltbl.connection, ":memory:");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_schema() -> Result<()> {
-        let rltbl = Relatable::test("test_schema", false).await?;
+        let rltbl = RelatableBuilder::test("test_schema").init(true).await?;
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
 
         let schema = rltbl.schema().await?;
@@ -2291,7 +2419,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_roundtrip() -> Result<()> {
-        let rltbl = Relatable::test("test_roundtrip", true).await?;
+        let rltbl = RelatableBuilder::test("test_roundtrip")
+            .create_test_dir(true)
+            .init(true)
+            .await?;
         crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
 
         let select = Select::from("penguin");
@@ -2311,7 +2442,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_roundtrip_nulltype() -> Result<()> {
-        let rltbl = Relatable::test("test_roundtrip_nulltype", true).await?;
+        let rltbl = RelatableBuilder::test("test_roundtrip_nulltype")
+            .create_test_dir(true)
+            .init(true)
+            .await?;
         crate::demo::build_demo(&rltbl, &true, 1).await?;
 
         let u = "test";
@@ -2351,7 +2485,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_message() -> Result<()> {
-        let rltbl = Relatable::test("test_message", true).await?;
+        let rltbl = RelatableBuilder::test("test_message")
+            .create_test_dir(true)
+            .init(true)
+            .await?;
         crate::demo::build_demo(&rltbl, &true, 10).await?;
 
         // Changing the island table should cause messages for the penguin table,
@@ -2597,7 +2734,7 @@ mod tests {
         }
 
         async fn run(&self) -> Result<()> {
-            let rltbl = Relatable::test(&self.name, false).await?;
+            let rltbl = RelatableBuilder::test(&self.name).init(true).await?;
 
             if self.penguin > 0 {
                 crate::demo::build_demo(&rltbl, &true, self.penguin).await?;
@@ -3117,7 +3254,7 @@ mod tests {
 
     async fn test_random_editing(name: &str) -> Result<()> {
         println!("{name}");
-        let rltbl = Relatable::test(name, false).await?;
+        let rltbl = RelatableBuilder::test(name).init(true).await?;
 
         let table_size = 20;
         crate::demo::build_demo(&rltbl, &true, table_size).await?;

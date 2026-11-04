@@ -355,7 +355,7 @@ impl<'a> ChangeTable<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::Relatable;
+    use crate::core::RelatableBuilder;
 
     use super::*;
     use anyhow::Result;
@@ -382,7 +382,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_changeset_insert() -> Result<()> {
-        let rltbl = Relatable::test("test_changeset_insert", false).await?;
+        let rltbl = RelatableBuilder::test("test_changeset_insert")
+            .init(true)
+            .await?;
         rltbl.user_table().get_or_insert("bar").await;
         let changeset = ChangeSet {
             change_id: 1,

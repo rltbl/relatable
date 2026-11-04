@@ -1,4 +1,5 @@
 use crate::{self as rltbl, column::Column, core::ColumnID};
+use csv::ReaderBuilder;
 use indexmap::IndexMap;
 use rltbl::{
     column::{Columns, SqlColumn},
@@ -11,6 +12,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, HashSet},
+    fs::File,
     iter::zip,
     ops::{Deref, DerefMut},
 };
@@ -58,6 +60,28 @@ pub struct UserRows {
 /// A row as Relatable sees it, using column ID strings, e.g. "c14".
 pub type InnerRow = IndexMap<String, DbValue>;
 pub type InnerRows = Vec<InnerRow>;
+
+/// Read a path into a UserRows.
+pub fn read_table(path: &str) -> Result<UserRows> {
+    // Read the records from the given TSV file:
+    let mut rdr = ReaderBuilder::new()
+        .has_headers(true)
+        .delimiter(b'\t')
+        .from_reader(File::open(path).expect(&format!("Unable to open '{path}'")));
+
+    let headers: Vec<String> = rdr.headers()?.into_iter().map(|s| s.to_string()).collect();
+    let records = rdr.records();
+    let rows: Vec<UserRow> = records
+        .into_iter()
+        .map(|record| {
+            let map: IndexMap<ColumnName, DbValue> = zip(headers.iter(), record?.iter())
+                .map(|(k, v)| (k.to_string(), DbValue::from(v)))
+                .collect();
+            Ok(UserRow { map })
+        })
+        .collect::<Result<Vec<UserRow>>>()?;
+    Ok(UserRows { rows })
+}
 
 #[async_trait]
 pub trait TsvTable {
@@ -1133,7 +1157,7 @@ impl TsvRows {
 #[cfg(test)]
 mod tests {
     use crate::{
-        core::Relatable,
+        core::RelatableBuilder,
         data_table::{DataTable, DataTableBuilder},
         row::Row,
         user_row,
@@ -1167,12 +1191,7 @@ mod tests {
     #[tokio::test]
     async fn test_tsv_table_ddl() -> Result<()> {
         // Testing SQLite in-memory only.
-        let rltbl = Relatable::init(
-            &true,
-            Some(":memory:"),
-            &rltbl_db::cache::CachingStrategy::None,
-        )
-        .await?;
+        let rltbl = RelatableBuilder::from(":memory:").init(true).await?;
 
         let mut builder = DataTableBuilder::from_path("island.tsv");
         builder.column("island_id").id(1).sql_type("INTEGER");
@@ -1244,7 +1263,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tsv_table() -> Result<()> {
-        let rltbl = Relatable::test("test_tsv_table", false).await?;
+        let rltbl = RelatableBuilder::test("test_tsv_table").init(true).await?;
         let mut builder = DataTableBuilder::from_path("island.tsv");
         builder.column("island_id").datatype("integer");
         builder.column("island");
@@ -1444,5 +1463,16 @@ mod tests {
 
         // assert!(false, "DONE");
         rltbl.drop_test().await
+    }
+
+    #[ignore]
+    #[test]
+    fn test_read_table() -> Result<()> {
+        let rows = read_table("somedir/table.tsv")?;
+        for row in rows.rows {
+            println!("ROW: {row:?}");
+        }
+        assert!(false, "DONE");
+        Ok(())
     }
 }

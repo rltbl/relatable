@@ -211,7 +211,7 @@ impl DataTableBuilder {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::Relatable;
+    use crate::core::RelatableBuilder;
 
     use super::*;
     use anyhow::Result;
@@ -219,7 +219,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_data_table_builder() -> Result<()> {
-        let rltbl = Relatable::test("test_data_table_builder", false).await?;
+        let rltbl = RelatableBuilder::test("test_data_table_builder")
+            .init(true)
+            .await?;
 
         let mut builder = DataTableBuilder::from_path("island.tsv");
         builder.column("island_id").datatype("integer");

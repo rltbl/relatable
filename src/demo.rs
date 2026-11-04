@@ -224,11 +224,14 @@ pub async fn create_demo_tableset(rltbl: &Relatable, force: &bool, size: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::RelatableBuilder;
     use anyhow::Result;
 
     #[tokio::test]
     async fn test_island() -> Result<()> {
-        let rltbl = Relatable::test("test_demo_island", false).await?;
+        let rltbl = RelatableBuilder::test("test_demo_island")
+            .init(true)
+            .await?;
 
         create_island_table(&rltbl, false).await?;
 

@@ -8,7 +8,7 @@ use crate::{
     self as rltbl,
     data_table::DataTableBuilder,
     schema::Schema,
-    tsv_table::{UserRow, UserRows},
+    tsv_table::{self, UserRow, UserRows},
 };
 use rltbl::{
     column::Columns,
@@ -149,6 +149,22 @@ impl<'a> TableTable<'a> {
         Self { table }
     }
 
+    pub async fn load_or_init(&self, path: &str) -> Result<()> {
+        let file = Path::new(&path);
+        if file.exists() {
+            let rows = tsv_table::read_table(path)?;
+            println!("ROWS {rows:?}");
+            let mut builder = DataTableBuilder::from_path(path);
+            builder.table_id(1);
+            builder.columns(Schema::default().columns("table"));
+            builder.create_table(&self.pool).await?;
+
+            Ok(())
+        } else {
+            self.init().await
+        }
+    }
+
     /// Create the default table table.
     pub async fn init(&self) -> Result<()> {
         let path = "src/schema/table.tsv";
@@ -244,12 +260,14 @@ impl<'a> TableTable<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::RelatableBuilder;
+
     use super::*;
     use pretty_assertions::assert_eq;
 
     #[tokio::test]
-    async fn test_init() -> Result<()> {
-        let rltbl = Relatable::test("test_table_init", false).await?;
+    async fn test_table_init() -> Result<()> {
+        let rltbl = RelatableBuilder::test("test_table_init").init(true).await?;
 
         let count: u64 = rltbl
             .pool
@@ -261,9 +279,29 @@ mod tests {
         rltbl.drop_test().await
     }
 
+    #[ignore]
+    #[tokio::test]
+    async fn test_table_load() -> Result<()> {
+        // let rltbl = crate::core::RelatableBuilder::
+        // let rltbl = RelatableBuilder::test("test_table_load").init(true).await?;
+
+        // let count: u64 = rltbl
+        //     .pool
+        //     .query(r#"SELECT count(1) FROM "table""#, ())
+        //     .await?
+        //     .try_into_value()?;
+        // assert_eq!(count, 3);
+
+        // rltbl.drop_test().await
+        assert!(false, "DONE");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_table_insert() -> Result<()> {
-        let rltbl = Relatable::test("test_table_insert", false).await?;
+        let rltbl = RelatableBuilder::test("test_table_insert")
+            .init(true)
+            .await?;
         let table_table = rltbl.table_table().await?;
 
         let table = Table::from_path("foo/bar.tsv");

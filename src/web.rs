@@ -6,13 +6,13 @@ use crate as rltbl;
 use rltbl::{
     change::ChangeSet,
     cli::Cli,
-    core::{Relatable, RelatableError, RowID},
+    core::{Relatable, RelatableBuilder, RelatableError, RowID},
     result_set::ResultSet,
     row::Row,
     select::{joined_query, Format, QueryParams, Select},
     user::Cursor,
 };
-use rltbl_db::{CachingStrategy, JsonRow};
+use rltbl_db::JsonRow;
 
 use std::io::Write;
 
@@ -735,7 +735,7 @@ pub async fn app(rltbl: Relatable, host: &str, port: &u16, timeout: &usize) -> R
 
 pub async fn serve(cli: &Cli, host: &str, port: &u16, timeout: &usize) -> Result<()> {
     tracing::debug!("serve({host}, {port})");
-    let rltbl = Relatable::connect(None, &cli.caching).await?;
+    let rltbl = RelatableBuilder::from_cli(cli).build().await?;
     app(rltbl, host, port, timeout).await?;
     Ok(())
 }
@@ -822,7 +822,9 @@ pub async fn serve_cgi() {
         .unwrap();
     tracing::debug!("REQUEST {request:?}");
 
-    let rltbl = Relatable::connect(None, &CachingStrategy::Trigger)
+    let rltbl = RelatableBuilder::new()
+        .env()
+        .build()
         .await
         .expect("Database connection");
     let shared_state = Arc::new(rltbl);

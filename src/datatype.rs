@@ -443,12 +443,16 @@ impl<'a> DatatypeTable<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::RelatableBuilder;
+
     use super::*;
     use pretty_assertions::assert_eq;
 
     #[tokio::test]
     async fn test_init() -> Result<()> {
-        let rltbl = Relatable::test("test_datatype_init", false).await?;
+        let rltbl = RelatableBuilder::test("test_datatype_init")
+            .init(true)
+            .await?;
 
         let count: u64 = rltbl
             .pool
@@ -462,7 +466,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_add() -> Result<()> {
-        let rltbl = Relatable::test("test_datatype_add", false).await?;
+        let rltbl = RelatableBuilder::test("test_datatype_add")
+            .init(true)
+            .await?;
         let table = rltbl.datatype_table().await?;
 
         let test = DatatypeBuilder::new("test")
@@ -487,7 +493,9 @@ mod tests {
     #[tokio::test]
     async fn test_priority() -> Result<()> {
         // built-ins take priority over rows from the table
-        let rltbl = Relatable::test("test_datatype_priority", false).await?;
+        let rltbl = RelatableBuilder::test("test_datatype_priority")
+            .init(true)
+            .await?;
         let table = rltbl.datatype_table().await?;
 
         rltbl
