@@ -392,6 +392,46 @@ impl RelatableBuilder {
 
         let rltbl = self.build().await?;
         rltbl.init(force).await?;
+
+        if let Some(path) = self.table_table_path.clone() {
+            rltbl.table_table().await?.merge_tsv(&path).await?;
+            let schema = rltbl.schema().await?;
+            let table_table = schema.table("table")?;
+            let root = path.strip_suffix(&table_table.path).expect("strip path");
+            tracing::debug!("Loading files from root: {root}");
+            let dir = FilePath::new(&root);
+            let path = dir.join(&schema.table("column")?.path);
+            rltbl
+                .column_table()
+                .await?
+                .merge_tsv(path.to_str().expect("valid str"))
+                .await?;
+            let path = dir.join(&schema.table("datatype")?.path);
+            rltbl
+                .datatype_table()
+                .await?
+                .merge_tsv(path.to_str().expect("valid str"))
+                .await?;
+            let schema = rltbl.schema().await?;
+            for table in schema.tables.values() {
+                if ["table", "column", "datatype"].contains(&table.name.as_str()) {
+                    continue;
+                }
+                if !table.path.is_empty() {
+                    // Load rows
+                    let path = dir.join(&table.path);
+                    rltbl
+                        .reload_table(&table.name, path.to_str().expect("valid str"))
+                        .await?;
+                } else {
+                    // Just create
+                    let t = rltbl.get_table(&table.name).await?;
+                    t.drop().await?;
+                    t.create().await?;
+                }
+            }
+        }
+
         Ok(rltbl)
     }
 }
@@ -886,7 +926,8 @@ impl Relatable {
     }
 
     /// Save all of the tables that have entries in the table table to the path indicated for each
-    /// table there, unless `save_dir` has been given, in which case save them all there instead.
+    /// table there, unless `save_dir` has been given, in which case save them all there instead,
+    /// using relative paths and creating required directories.
     pub async fn save_all(&self, save_dir: Option<&str>) -> Result<()> {
         let schema = self.schema().await?;
         for table in schema.tables.values() {
@@ -897,9 +938,15 @@ impl Relatable {
             // table.set_view(self, "text").await?;
 
             let path = match save_dir {
-                Some(save_dir) => format!("{save_dir}/{table_name}.tsv"),
+                Some(save_dir) => format!("{save_dir}/{}", table.path),
                 None => table.path.clone(),
             };
+            let dir = FilePath::new(&path).parent();
+            if let Some(dir) = dir {
+                if !dir.is_dir() {
+                    std::fs::create_dir_all(&dir)?;
+                }
+            }
             let mut writer = WriterBuilder::new()
                 .delimiter(b'\t')
                 .quote_style(QuoteStyle::Never)
@@ -2314,10 +2361,7 @@ mod tests {
             todo!("Use RelatableBuilder::test(foo).init().await?");
         }
 
-        /// Drop this test database and delete any files.
-        /// Consumes this Relatable instance.
-        // NOTE: This might be better using the upcoming AsyncDrop trait.
-        pub async fn drop_test(self) -> Result<()> {
+        pub async fn drop_test_db(&self) -> Result<()> {
             let name = self
                 .test_database
                 .clone()
@@ -2339,14 +2383,25 @@ mod tests {
                 }
                 _ => unimplemented!(),
             };
+            Ok(())
+        }
 
-            if let Some(path) = self.test_dir {
-                let dir = FilePath::new(&path);
+        pub fn drop_test_dir(&self) -> Result<()> {
+            if let Some(path) = &self.test_dir {
+                let dir = FilePath::new(path);
                 if dir.exists() {
                     std::fs::remove_dir_all(&dir)?;
                 }
             }
+            Ok(())
+        }
 
+        /// Drop this test database and delete any files.
+        /// Consumes this Relatable instance.
+        // NOTE: This might be better using the upcoming AsyncDrop trait.
+        pub async fn drop_test(self) -> Result<()> {
+            self.drop_test_db().await?;
+            self.drop_test_dir()?;
             Ok(())
         }
     }
@@ -2532,6 +2587,33 @@ mod tests {
             .await?;
         let fixed = message_table.get("", ()).await?;
         assert_eq!(fixed.len(), 0);
+
+        rltbl.drop_test().await
+    }
+
+    #[tokio::test]
+    async fn test_reload() -> Result<()> {
+        let rltbl = RelatableBuilder::test("test_reload")
+            .create_test_dir(true)
+            .init(true)
+            .await?;
+        crate::demo::build_demo(&rltbl, &true, 10).await.unwrap();
+        let save_dir = rltbl.test_dir.as_deref();
+        let select = Select::from("penguin");
+
+        let before = rltbl.fetch(&select).await?;
+        rltbl.save_all(save_dir).await?;
+
+        // Wipe the database and reload from the saved files.
+        rltbl.drop_test_db().await?;
+        let path = format!("{}/src/schema/table.tsv", save_dir.unwrap());
+        let rltbl = RelatableBuilder::test("test_reload")
+            .table_table_path(&path)
+            .init(true)
+            .await?;
+        let after = rltbl.fetch(&select).await?;
+
+        assert_eq!(before, after);
 
         rltbl.drop_test().await
     }

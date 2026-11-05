@@ -412,7 +412,6 @@ impl<'a> ColumnTable<'a> {
                 }
             }
             if !found {
-                // TODO: Actually create the column in the target table.
                 tracing::debug!("Creating new column: {table} {column}");
                 let rows = UserRows { rows: vec![row] };
                 self.append(rows).await?;
@@ -637,6 +636,11 @@ mod tests {
         let rltbl = RelatableBuilder::test("test_column_merge")
             .init(true)
             .await?;
+        let rows: UserRows = vec![row! {
+            "table" => "island",
+        }]
+        .into();
+        rltbl.table_table().await?.append(rows).await?;
         let column_table = rltbl.column_table().await?;
 
         let rows: UserRows = vec![
@@ -650,8 +654,12 @@ mod tests {
                 "nulltype" => "empty",
             },
             row! {
-                "table" => "penguin",
-                "column" => "study_name",
+                "table" => "island",
+                "column" => "island_id",
+            },
+            row! {
+                "table" => "island",
+                "column" => "island",
             },
         ]
         .into();
@@ -661,14 +669,27 @@ mod tests {
         expected.push(Column {
             id: 16,
             order: 16000,
-            table: "penguin".to_string(),
-            column: "study_name".to_string(),
+            table: "island".to_string(),
+            column: "island_id".to_string(),
+            ..Default::default()
+        });
+        expected.push(Column {
+            id: 17,
+            order: 17000,
+            table: "island".to_string(),
+            column: "island".to_string(),
             ..Default::default()
         });
 
         column_table.merge_rows(rows).await?;
         let actual = column_table.list().await?;
 
+        assert_eq!(expected, actual);
+
+        // Check that columns were configured.
+        let expected = vec!["island_id", "island"];
+        let columns = column_table.get_configured(&["island"]).await?;
+        let actual: Vec<&str> = columns.iter().map(|c| c.column.as_str()).collect();
         assert_eq!(expected, actual);
 
         rltbl.drop_test().await

@@ -447,36 +447,31 @@ pub trait TsvTable {
     }
 
     async fn add_columns(&self, columns: &[&Column]) -> Result<()> {
+        let id = self.id();
         let mut regular = Vec::new();
         let mut alternate = Vec::new();
         for column in columns {
             let ddl = column.ddl(self.pool().syntax());
-            let line = format!("  ADD COLUMN {ddl}");
-            regular.push(line.clone());
+            let line = format!(r#"ALTER TABLE "{id}" ADD COLUMN {ddl}"#);
+            regular.push(line);
+            let line = format!(r#"ALTER TABLE "{id}_alt" ADD COLUMN {ddl}"#);
             alternate.push(line);
             if column.sql_type.to_uppercase() != "TEXT" {
-                let alt = format!(r#"  ADD COLUMN "c{}_text" TEXT"#, column.id);
+                let alt = format!(
+                    r#"ALTER TABLE "{id}_alt" ADD COLUMN "c{}_text" TEXT"#,
+                    column.id
+                );
                 alternate.push(alt);
             }
         }
 
         // Regular table
-        let sql = regular.join(",\n");
-        let sql = format!(
-            r#"ALTER TABLE "{}"
-  {sql};"#,
-            self.id()
-        );
-        self.pool().execute(&sql, ()).await?;
+        let sql = regular.join(";\n");
+        self.pool().execute_batch(&sql).await?;
 
         // Alternate table
-        let sql = alternate.join(",\n");
-        let sql = format!(
-            r#"ALTER TABLE "{}_alt"
-  {sql};"#,
-            self.id()
-        );
-        self.pool().execute(&sql, ()).await?;
+        let sql = alternate.join(";\n");
+        self.pool().execute_batch(&sql).await?;
 
         self.drop_views().await?;
         self.create_views().await?;
