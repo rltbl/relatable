@@ -6,7 +6,7 @@ use crate::{
     self as rltbl,
     data_table::{DataTable, DataTableBuilder},
     schema::Schema,
-    tsv_table::UserRows,
+    tsv_table::{read_table, UserRow, UserRows},
 };
 use rltbl::{
     core::{RowID, RowOrder},
@@ -14,7 +14,7 @@ use rltbl::{
     structure::{Structure, Structures},
     tsv_table::TsvTable,
 };
-use rltbl_db::{to_row, Row as DbRow, Syntax as DbSyntax};
+use rltbl_db::{row, to_row, Row as DbRow, Syntax as DbSyntax};
 
 use anyhow::Result;
 use derive_builder::Builder;
@@ -197,6 +197,21 @@ impl Into<SqlColumn> for Column {
     }
 }
 
+impl Into<UserRow> for Column {
+    fn into(self) -> UserRow {
+        let db_row = row! {
+            "table" => self.table,
+            "column" => self.column,
+            "label" => self.label,
+            "nulltype" => self.nulltype,
+            "datatype" => self.datatype,
+            "structure" => self.structure.to_string(),
+            "description" => self.description,
+        };
+        db_row.into()
+    }
+}
+
 impl ColumnBuilder {
     pub fn new(table: &str, column: &str) -> Self {
         let mut new = Self::default();
@@ -363,6 +378,46 @@ impl<'a> ColumnTable<'a> {
 
         builder.create_table(&self.pool).await?;
 
+        Ok(())
+    }
+
+    /// Read a TSV file and merge it into this table.
+    /// If the table name and column name match, use it, updating if required.
+    /// Otherwise create the column.
+    pub async fn merge_tsv(&self, path: &str) -> Result<()> {
+        let rows = read_table(path)?;
+        self.merge_rows(rows).await
+    }
+
+    /// Merge a vector of rows into this table.
+    /// If the table name and column name match, use it, updating if required.
+    /// Otherwise create the column.
+    pub async fn merge_rows(&self, rows: UserRows) -> Result<()> {
+        let list = self.list().await?;
+        for row in rows.rows {
+            let table = row.get("table").expect("table column").to_string();
+            let column = row.get("column").expect("column column").to_string();
+            let mut found = false;
+            for col in &list {
+                if table == col.table && column == col.column {
+                    tracing::debug!("Found matching column: {table} {column}");
+                    found = true;
+                    let old_row: UserRow = col.clone().into();
+                    let update_row = row.without(&old_row);
+                    if !update_row.is_empty() {
+                        tracing::debug!("Updating column: {update_row:?}");
+                        let pair = (col.id, update_row);
+                        self.update(&[pair]).await?;
+                    }
+                }
+            }
+            if !found {
+                // TODO: Actually create the column in the target table.
+                tracing::debug!("Creating new column: {table} {column}");
+                let rows = UserRows { rows: vec![row] };
+                self.append(rows).await?;
+            }
+        }
         Ok(())
     }
 
@@ -541,6 +596,17 @@ impl<'a> ColumnTable<'a> {
             .try_into_vec()?;
         Ok(Columns { list })
     }
+
+    /// List the columns in the "column" table.
+    pub async fn list(&self) -> Result<Vec<Column>> {
+        let sql = r#"SELECT * FROM "column_union" ORDER BY _order;"#;
+        self.pool()
+            .query(sql, ())
+            .await?
+            .remove_nulls()
+            .try_into_vec()
+            .map_err(|e| e.into())
+    }
 }
 
 #[cfg(test)]
@@ -548,6 +614,7 @@ mod tests {
     use super::*;
     use crate::core::RelatableBuilder;
     use pretty_assertions::assert_eq;
+    use rltbl_db::row;
 
     #[tokio::test]
     async fn test_init() -> Result<()> {
@@ -561,6 +628,48 @@ mod tests {
             .await?
             .try_into_value()?;
         assert_eq!(count, 15);
+
+        rltbl.drop_test().await
+    }
+
+    #[tokio::test]
+    async fn test_column_merge() -> Result<()> {
+        let rltbl = RelatableBuilder::test("test_column_merge")
+            .init(true)
+            .await?;
+        let column_table = rltbl.column_table().await?;
+
+        let rows: UserRows = vec![
+            row! {
+                "table" => "table",
+                "column" => "table",
+            },
+            row! {
+                "table" => "table",
+                "column" => "path",
+                "nulltype" => "empty",
+            },
+            row! {
+                "table" => "penguin",
+                "column" => "study_name",
+            },
+        ]
+        .into();
+
+        let mut expected = column_table.list().await?;
+        expected[1].nulltype = "empty".to_string();
+        expected.push(Column {
+            id: 16,
+            order: 16000,
+            table: "penguin".to_string(),
+            column: "study_name".to_string(),
+            ..Default::default()
+        });
+
+        column_table.merge_rows(rows).await?;
+        let actual = column_table.list().await?;
+
+        assert_eq!(expected, actual);
 
         rltbl.drop_test().await
     }

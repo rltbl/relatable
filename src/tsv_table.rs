@@ -26,6 +26,24 @@ pub struct UserRow {
     pub map: IndexMap<ColumnName, DbValue>,
 }
 
+impl UserRow {
+    /// Given a target UserRow,
+    /// return a copy of this UserRow
+    /// without any key-value pairs that match the target.
+    /// This is useful for making minimal updates to a database row.
+    pub fn without(&self, without: &UserRow) -> UserRow {
+        let mut new_row = UserRow::default();
+        for (key, value) in &self.map {
+            if without.contains_key(key) && without.get(key).unwrap() == value {
+                // ignore this key-value pair
+            } else {
+                new_row.insert(key.clone(), value.clone());
+            }
+        }
+        new_row
+    }
+}
+
 impl Deref for UserRow {
     type Target = IndexMap<ColumnName, DbValue>;
 
@@ -55,6 +73,14 @@ impl From<DbRow> for UserRow {
 #[derive(Clone, Debug)]
 pub struct UserRows {
     pub rows: Vec<UserRow>,
+}
+
+impl From<Vec<DbRow>> for UserRows {
+    fn from(value: Vec<DbRow>) -> Self {
+        Self {
+            rows: value.into_iter().map(|r| r.into()).collect(),
+        }
+    }
 }
 
 /// A row as Relatable sees it, using column ID strings, e.g. "c14".

@@ -20,7 +20,7 @@ use crate::{
     site::Site,
     sql::{self, SqlParam},
     table::{Table, TableTable},
-    tsv_table::{TsvTable, UserRow, UserRows},
+    tsv_table::{read_table, TsvTable, UserRow, UserRows},
     user::UserTable,
     user_row,
 };
@@ -136,6 +136,7 @@ pub struct RelatableBuilder {
     pub root: Option<String>,
     pub readonly: bool,
     pub connection: Option<String>,
+    pub table_table_path: Option<String>,
     pub test_name: Option<String>,
     pub create_test_dir: bool,
     pub caching_strategy: Option<CachingStrategy>,
@@ -248,6 +249,12 @@ impl RelatableBuilder {
         self
     }
 
+    /// Set the path to the "table" table.
+    pub fn table_table_path(&mut self, path: &str) -> &mut Self {
+        self.table_table_path = Some(path.to_string());
+        self
+    }
+
     /// When `test(NAME)` has been set, create a `build/NAME/` directory.
     pub fn create_test_dir(&mut self, create_test_dir: bool) -> &mut Self {
         self.create_test_dir = create_test_dir;
@@ -355,6 +362,7 @@ impl RelatableBuilder {
             }
         };
 
+        // If this is a SQLite database, create the file and required directories.
         if connection != ":memory:" && !connection.starts_with("postgresql://") {
             let path = connection;
             let dir: &std::path::Path =
@@ -804,7 +812,7 @@ impl Relatable {
         table.drop().await?;
         table.create().await?;
 
-        let rows = crate::tsv_table::read_table(path)?;
+        let rows = read_table(path)?;
         table.append(rows).await?;
 
         if self.validation_level == ValidationLevel::Full {

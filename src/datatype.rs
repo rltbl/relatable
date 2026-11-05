@@ -6,7 +6,7 @@ use crate::{
     self as rltbl,
     data_table::{DataTable, DataTableBuilder},
     schema::Schema,
-    tsv_table::UserRows,
+    tsv_table::{read_table, UserRow, UserRows},
 };
 use rltbl::{
     column::Column,
@@ -14,7 +14,7 @@ use rltbl::{
     sql::{self, SqlParam},
     tsv_table::TsvTable,
 };
-use rltbl_db::{to_row, Row as DbRow, Value as DbValue};
+use rltbl_db::{row, to_row, Row as DbRow, Value as DbValue};
 
 use anyhow::Result;
 use derive_builder::Builder;
@@ -258,6 +258,20 @@ impl Datatype {
     }
 }
 
+impl Into<UserRow> for Datatype {
+    fn into(self) -> UserRow {
+        let db_row = row! {
+            "datatype" => self.datatype,
+            "parent" => self.parent,
+            "condition" => self.condition,
+            "sql_type" => self.sql_type,
+            "format" => self.format,
+            "description" => self.description,
+        };
+        db_row.into()
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Datatypes {
     map: IndexMap<String, Datatype>,
@@ -398,6 +412,42 @@ impl<'a> DatatypeTable<'a> {
         Ok(())
     }
 
+    /// Read a TSV file and merge it into this table.
+    /// If the datatype name matches, use it, updating if required.
+    /// Otherwise create the datatype.
+    pub async fn merge_tsv(&self, path: &str) -> Result<()> {
+        let rows = read_table(path)?;
+        self.merge_rows(rows).await
+    }
+
+    /// Merge a vector of rows into this table.
+    /// If the datatype name matches, use it, updating if required.
+    /// Otherwise create the datatype.
+    pub async fn merge_rows(&self, rows: UserRows) -> Result<()> {
+        let datatypes = self.get().await;
+        for row in rows.rows {
+            let name = row.get("datatype").expect("datatype column").to_string();
+            let mut found = false;
+            if let Some(datatype) = datatypes.get(&name) {
+                tracing::debug!("Found matching datatype: {name}");
+                found = true;
+                let old_row: UserRow = datatype.clone().into();
+                let update_row = row.without(&old_row);
+                if !update_row.is_empty() {
+                    tracing::debug!("Updating datatype: {update_row:?}");
+                    let pair = (datatype.id, update_row);
+                    self.update(&[pair]).await?;
+                }
+            }
+            if !found {
+                tracing::debug!("Creating new datatype: {name}");
+                let rows = UserRows { rows: vec![row] };
+                self.append(rows).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Insert these datatypes into the "datatype" table,
     /// returning the results.
     pub async fn add(&self, datatypes: &[&Datatype]) -> Result<Vec<Datatype>> {
@@ -460,6 +510,55 @@ mod tests {
             .await?
             .try_into_value()?;
         assert_eq!(count, Datatypes::builtins().len() as u64);
+
+        rltbl.drop_test().await
+    }
+
+    #[tokio::test]
+    async fn test_datatype_merge() -> Result<()> {
+        let rltbl = RelatableBuilder::test("test_datatype_merge")
+            .init(true)
+            .await?;
+        let datatype_table = rltbl.datatype_table().await?;
+
+        let rows: UserRows = vec![
+            row! {
+                "datatype" => "text",
+            },
+            row! {
+                "datatype" => "line",
+                "parent" => "text",
+                "description" => "a new description",
+            },
+            row! {
+                "datatype" => "float",
+                "parent" => "word",
+                "sql_type" => "REAL",
+                "description" => "a floating point number",
+            },
+        ]
+        .into();
+
+        let mut expected = datatype_table.get().await;
+        // WARN: Default datatypes override any changes here.
+        // expected[2].description = String::new();
+        expected.insert(
+            "float".to_string(),
+            Datatype {
+                id: 8,
+                order: 8000,
+                datatype: "float".to_string(),
+                parent: "word".to_string(),
+                sql_type: "REAL".to_string(),
+                description: "a floating point number".to_string(),
+                ..Default::default()
+            },
+        );
+
+        datatype_table.merge_rows(rows).await?;
+        let actual = datatype_table.get().await;
+
+        assert_eq!(expected, actual);
 
         rltbl.drop_test().await
     }

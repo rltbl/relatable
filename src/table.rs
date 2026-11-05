@@ -8,7 +8,7 @@ use crate::{
     self as rltbl,
     data_table::DataTableBuilder,
     schema::Schema,
-    tsv_table::{self, UserRow, UserRows},
+    tsv_table::{read_table, UserRow, UserRows},
 };
 use rltbl::{
     column::Columns,
@@ -132,6 +132,7 @@ impl From<Vec<Table>> for UserRows {
 }
 
 /// Represents the special "table" table.
+#[derive(Debug)]
 pub struct TableTable<'a> {
     table: DataTable<'a>,
 }
@@ -145,24 +146,9 @@ impl<'a> Deref for TableTable<'a> {
 }
 
 impl<'a> TableTable<'a> {
+    /// Create a TableTable from an underlying DataTable.
     pub fn from(table: DataTable<'a>) -> Self {
         Self { table }
-    }
-
-    pub async fn load_or_init(&self, path: &str) -> Result<()> {
-        let file = Path::new(&path);
-        if file.exists() {
-            let rows = tsv_table::read_table(path)?;
-            println!("ROWS {rows:?}");
-            let mut builder = DataTableBuilder::from_path(path);
-            builder.table_id(1);
-            builder.columns(Schema::default().columns("table"));
-            builder.create_table(&self.pool).await?;
-
-            Ok(())
-        } else {
-            self.init().await
-        }
     }
 
     /// Create the default table table.
@@ -175,6 +161,45 @@ impl<'a> TableTable<'a> {
         builder.row(values!["column", "src/schema/column.tsv"])?;
         builder.row(values!["datatype", "src/schema/datatype.tsv"])?;
         builder.create_table(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Read a TSV file and merge it into this table.
+    /// If the table name matches, use it, updating if required.
+    /// If the table name is not found, create it.
+    pub async fn merge_tsv(&self, path: &str) -> Result<()> {
+        let rows = read_table(path)?;
+        self.merge_rows(rows).await
+    }
+
+    /// Merge a vector of rows into this table.
+    /// If the table name matches, use it, updating if required.
+    /// If the table name is not found, create it.
+    pub async fn merge_rows(&self, rows: UserRows) -> Result<()> {
+        let list = self.list().await?;
+        for row in rows.rows {
+            let name = row.get("table").expect("table column").to_string();
+            let path = row.get("path").expect("path column").to_string();
+            let mut found = false;
+            for table in &list {
+                if name == table.name {
+                    tracing::debug!("Found matching table {name}");
+                    found = true;
+                    if path != table.path {
+                        tracing::debug!("Updating path: {path}");
+                        let mut user_row = UserRow::default();
+                        user_row.insert("path".to_string(), path.clone().into());
+                        let pair = (table.id, user_row);
+                        self.update(&[pair]).await?;
+                    }
+                }
+            }
+            if !found {
+                tracing::debug!("Creating new table {name}: {path}");
+                let rows = UserRows { rows: vec![row] };
+                self.append(rows).await?;
+            }
+        }
         Ok(())
     }
 
@@ -247,6 +272,7 @@ impl<'a> TableTable<'a> {
         Ok(table)
     }
 
+    /// List the tables in the "table" table.
     pub async fn list(&self) -> Result<Vec<Table>> {
         let sql = r#"SELECT * FROM "table_union" ORDER BY _order;"#;
         self.pool()
@@ -264,6 +290,7 @@ mod tests {
 
     use super::*;
     use pretty_assertions::assert_eq;
+    use rltbl_db::row;
 
     #[tokio::test]
     async fn test_table_init() -> Result<()> {
@@ -279,22 +306,49 @@ mod tests {
         rltbl.drop_test().await
     }
 
-    #[ignore]
     #[tokio::test]
-    async fn test_table_load() -> Result<()> {
-        // let rltbl = crate::core::RelatableBuilder::
-        // let rltbl = RelatableBuilder::test("test_table_load").init(true).await?;
+    async fn test_table_merge() -> Result<()> {
+        let rltbl = RelatableBuilder::test("test_table_merge")
+            .init(true)
+            .await?;
+        let table_table = rltbl.table_table().await?;
 
-        // let count: u64 = rltbl
-        //     .pool
-        //     .query(r#"SELECT count(1) FROM "table""#, ())
-        //     .await?
-        //     .try_into_value()?;
-        // assert_eq!(count, 3);
+        let rows: UserRows = vec![
+            row! {
+                "table" => "datatype",
+                "path" => "src/schema/datatype.tsv",
+            },
+            row! {
+                "table" => "table",
+                "path" => "src/schema/table.tsv",
+            },
+            row! {
+                "table" => "column",
+                "path" => "src/different/column.tsv",
+            },
+            row! {
+                "table" => "penguin",
+                "path" => "src/data/penguin.tsv",
+            },
+        ]
+        .into();
 
-        // rltbl.drop_test().await
-        assert!(false, "DONE");
-        Ok(())
+        let mut expected = table_table.list().await?;
+        expected[1].path = "src/different/column.tsv".to_string();
+        expected.push(Table {
+            name: "penguin".to_string(),
+            id: 4,
+            order: 4000,
+            path: "src/data/penguin.tsv".to_string(),
+            ..Default::default()
+        });
+
+        table_table.merge_rows(rows).await?;
+        let actual = table_table.list().await?;
+
+        assert_eq!(expected, actual);
+
+        rltbl.drop_test().await
     }
 
     #[tokio::test]
