@@ -4,9 +4,9 @@
 
 use crate::{
     change::{Change, ChangeAction, ChangeSet, ChangeTable, NewChange},
-    cli::Cli,
+    cli::{Cli, Command},
     column::{Column, ColumnTable},
-    core::RelatableError::InitError,
+    core::RelatableError::{ConfigError, InitError},
     data_table::{DataTable, DataTableBuilder},
     datatype::{DatatypeTable, Datatypes},
     git,
@@ -150,6 +150,8 @@ impl RelatableBuilder {
         let url = RLTBL_DEFAULT_DB;
         tracing::info!("Using default connection: {url}");
         builder.connection(url);
+        tracing::info!("Using default caching strategy: trigger");
+        builder.caching_strategy(CachingStrategy::Trigger);
         builder
     }
 
@@ -218,9 +220,18 @@ impl RelatableBuilder {
             self.connection(&connection);
         }
 
-        let caching_strategy = cli.caching.clone();
-        tracing::info!("Using CLI --caching: {caching_strategy}");
-        self.caching_strategy = Some(caching_strategy);
+        if let Some(caching_strategy) = cli.caching.clone() {
+            tracing::info!("Using CLI --caching: {caching_strategy}");
+            self.caching_strategy = Some(caching_strategy);
+        }
+
+        match &cli.command {
+            Command::Init { path, .. } => {
+                tracing::info!("Using CLI \"table\" table path: {path}");
+                self.table_table_path = Some(path.to_string());
+            }
+            _ => (),
+        }
 
         self
     }
@@ -392,43 +403,10 @@ impl RelatableBuilder {
 
         let rltbl = self.build().await?;
         rltbl.init(force).await?;
-
-        if let Some(path) = self.table_table_path.clone() {
-            rltbl.table_table().await?.merge_tsv(&path).await?;
-            let schema = rltbl.schema().await?;
-            let table_table = schema.table("table")?;
-            let root = path.strip_suffix(&table_table.path).expect("strip path");
-            tracing::debug!("Loading files from root: {root}");
-            let dir = FilePath::new(&root);
-            let path = dir.join(&schema.table("column")?.path);
-            rltbl
-                .column_table()
-                .await?
-                .merge_tsv(path.to_str().expect("valid str"))
-                .await?;
-            let path = dir.join(&schema.table("datatype")?.path);
-            rltbl
-                .datatype_table()
-                .await?
-                .merge_tsv(path.to_str().expect("valid str"))
-                .await?;
-            let schema = rltbl.schema().await?;
-            for table in schema.tables.values() {
-                if ["table", "column", "datatype"].contains(&table.name.as_str()) {
-                    continue;
-                }
-                if !table.path.is_empty() {
-                    // Load rows
-                    let path = dir.join(&table.path);
-                    rltbl
-                        .reload_table(&table.name, path.to_str().expect("valid str"))
-                        .await?;
-                } else {
-                    // Just create
-                    let t = rltbl.get_table(&table.name).await?;
-                    t.drop().await?;
-                    t.create().await?;
-                }
+        if let Some(table_table_path) = self.table_table_path.clone() {
+            match rltbl.load_all(&table_table_path).await {
+                Ok(_) => (),
+                Err(err) => tracing::error!("{}", err.to_string()),
             }
         }
 
@@ -470,6 +448,85 @@ impl Relatable {
         self.table_table().await?.init().await?;
         self.column_table().await?.init().await?;
         self.datatype_table().await?.init().await?;
+
+        Ok(())
+    }
+
+    // Load existing TSVs.
+    async fn load_all(&self, table_table_path: &str) -> Result<()> {
+        let path = FilePath::new(&table_table_path);
+        if path.is_file() {
+            self.table_table()
+                .await?
+                .merge_tsv(path.to_str().expect("valid str"))
+                .await?;
+        } else {
+            return Err(
+                ConfigError(format!("Specified \"table\" table not found at {path:?}")).into(),
+            );
+        }
+
+        let schema = self.schema().await?;
+        let table_table = schema.table("table")?;
+        let root = table_table_path.strip_suffix(&table_table.path);
+        if root.is_none() {
+            return Err(
+                ConfigError(format!("Specified \"table\" table paths is not a suffix")).into(),
+            );
+        }
+        let root = root.unwrap();
+        let dir = FilePath::new(&root);
+
+        if let Ok(table) = schema.table("column") {
+            if !table.path.is_empty() {
+                let path = dir.join(&table.path);
+                if path.is_file() {
+                    self.column_table()
+                        .await?
+                        .merge_tsv(path.to_str().expect("valid str"))
+                        .await?;
+                } else {
+                    tracing::error!("Specified \"column\" table not found at {path:?}");
+                }
+            }
+        }
+
+        if let Ok(table) = schema.table("datatype") {
+            if !table.path.is_empty() {
+                let path = dir.join(&table.path);
+                if path.is_file() {
+                    self.datatype_table()
+                        .await?
+                        .merge_tsv(path.to_str().expect("valid str"))
+                        .await?;
+                } else {
+                    tracing::error!("Specified \"datatype\" table not found at {path:?}");
+                }
+            }
+        }
+
+        // Reload the schema.
+        let schema = self.schema().await?;
+        for table in schema.tables.values() {
+            if ["table", "column", "datatype"].contains(&table.name.as_str()) {
+                continue;
+            }
+            if !table.path.is_empty() {
+                let path = dir.join(&table.path);
+                if path.is_file() {
+                    // Load rows
+                    self.reload_table(&table.name, path.to_str().expect("valid str"))
+                        .await?;
+                } else {
+                    tracing::error!("Specified \"{}\" table not found at {path:?}", table.name);
+                }
+            } else {
+                // Just create
+                let t = self.get_table(&table.name).await?;
+                t.drop().await?;
+                t.create().await?;
+            }
+        }
 
         Ok(())
     }

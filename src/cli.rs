@@ -48,8 +48,8 @@ pub struct Cli {
     verbose: Verbosity,
 
     /// One of: none, truncate, truncate_all, trigger, memory
-    #[arg(long, default_value = "trigger", action = ArgAction::Set)]
-    pub caching: CachingStrategy,
+    #[arg(long, action = ArgAction::Set)]
+    pub caching: Option<CachingStrategy>,
 
     // Subcommand:
     #[command(subcommand)]
@@ -80,6 +80,13 @@ pub enum Command {
         /// Overwrite an existing database
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
+
+        #[arg(value_name = "PATH",
+              num_args=1,
+              default_value = "src/schema/table.tsv",
+              action = ArgAction::Set,
+              help = "The path to the \"table\" table")]
+        path: String,
     },
 
     /// Get data from the database
@@ -389,8 +396,7 @@ pub enum DropSubcommand {
     Tables {},
 }
 
-pub async fn init(cli: &Cli, force: &bool, path: Option<&str>) {
-    tracing::trace!("init({cli:?}, {force}, {path:?})");
+pub async fn init(cli: &Cli, force: &bool) {
     match RelatableBuilder::from_cli(cli).init(*force).await {
         Ok(rltbl) => println!("Initialized a relatable database in '{}'", rltbl.connection),
         Err(err) => panic!("{err:?}"),
@@ -993,7 +999,7 @@ pub async fn process_command() {
     tracing::debug!("CLI {cli:?}");
 
     match &cli.command {
-        Command::Init { force } => init(&cli, force, cli.database.as_deref()).await,
+        Command::Init { force, .. } => init(&cli, force).await,
         Command::Get { subcommand } => match subcommand {
             GetSubcommand::Table {
                 table,
