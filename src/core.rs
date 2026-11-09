@@ -515,7 +515,7 @@ impl Relatable {
                 let path = dir.join(&table.path);
                 if path.is_file() {
                     // Load rows
-                    self.reload_table(&table.name, path.to_str().expect("valid str"))
+                    self.reload_table(&table.name, path.to_str().expect("valid str"), None)
                         .await?;
                 } else {
                     tracing::error!("Specified \"{}\" table not found at {path:?}", table.name);
@@ -896,16 +896,30 @@ impl Relatable {
             builder.column(header);
         }
         let table = builder.create(self).await?;
+        // println!("TABLE: {table:?}");
 
-        self.reload_table(&table.name(), path).await
+        self.reload_table(&table.name(), path, Some(table)).await
     }
 
     /// Reload a table from a TSV file at a path.
     /// This requires dropping the table (to reset counters)
     /// and recreating it from the schema,
     /// then reading rows from the TSV.
-    pub async fn reload_table<'a>(&self, table_name: &str, path: &str) -> Result<DataTable<'_>> {
-        let table = self.get_table(table_name).await?;
+    pub async fn reload_table<'a>(
+        &'a self,
+        table_name: &str,
+        path: &str,
+        fallback_table: Option<DataTable<'a>>,
+    ) -> Result<DataTable<'a>> {
+        let table = match self.get_table(table_name).await {
+            Ok(table) => table,
+            Err(err) => {
+                match fallback_table {
+                    Some(fallback_table) => fallback_table.clone(),
+                    None => panic!("Error: {err}"),
+                }
+            },
+        };
         table.drop().await?;
         table.create().await?;
 
@@ -931,6 +945,7 @@ impl Relatable {
 
     pub async fn get_table<'a>(&'a self, table_name: &str) -> Result<DataTable<'a>> {
         let schema = self.schema().await?;
+        // println!("SCHEMA: {schema:#?}");
         let mut table = schema.table(table_name)?.connect(&self.pool);
         table.columns = schema
             .columns(table_name)

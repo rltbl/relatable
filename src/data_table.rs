@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::iter::zip;
 
 /// Represents the special "table" table.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DataTable<'a> {
     pub name: String,
     pub id: RowID,

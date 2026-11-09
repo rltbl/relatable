@@ -23,6 +23,7 @@ use std::{
 #[serde(try_from = "String", into = "String")]
 pub enum Structure {
     From(Option<String>, String),
+    Primary,
 }
 
 impl Default for Structure {
@@ -95,6 +96,10 @@ impl Structure {
                 let rows = rltbl.pool.query(&sql, params).await?;
                 messages_were_added = rows.len() > 0;
             }
+            Structure::Primary => {
+                // TODO.
+                messages_were_added = false;
+            }
         };
         Ok(messages_were_added)
     }
@@ -126,6 +131,9 @@ impl FromStr for Structure {
                     .into());
                 }
             }
+        } else if structure == "primary" {
+            Ok(Structure::Primary)
+
         } else {
             return Err(
                 RelatableError::InputError(format!("Invalid structure: '{structure}'")).into(),
@@ -141,6 +149,7 @@ impl Display for Structure {
                 None => write!(f, "from({s_column})"),
                 Some(s_table) => write!(f, "from({s_table}.{s_column})"),
             },
+            Structure::Primary => write!(f, "primary"),
         }
     }
 }
