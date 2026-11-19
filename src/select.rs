@@ -16,7 +16,10 @@ use indexmap::IndexMap;
 use petgraph::{algo::astar, graphmap::UnGraphMap};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, fmt::Display, iter::zip};
+use std::{
+    collections::{BTreeSet, HashSet},
+    fmt::Display,
+};
 
 /// Represents a SELECT statement.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1803,12 +1806,67 @@ pub fn render_values(
     Ok((format!("({})", sql_params.join(", ")), values))
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Edge {
     left_table: String,
     left_column: String,
     right_table: String,
     right_column: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Edges {
+    edges: HashSet<Edge>,
+}
+
+impl Edges {
+    pub fn insert(
+        &mut self,
+        left_table: &str,
+        left_column: &str,
+        right_table: &str,
+        right_column: &str,
+    ) -> &mut Self {
+        let edge = Edge {
+            left_table: left_table.to_string(),
+            left_column: left_column.to_string(),
+            right_table: right_table.to_string(),
+            right_column: right_column.to_string(),
+        };
+        self.edges.insert(edge);
+        self
+    }
+
+    pub fn graph(&self) -> UnGraphMap<&str, ()> {
+        UnGraphMap::<&str, ()>::from_edges(
+            self.edges
+                .iter()
+                .map(|e| (e.left_table.as_str(), e.right_table.as_str())),
+        )
+    }
+
+    pub fn join(&self, first_table: &str, second_table: &str) -> Option<Join> {
+        for edge in &self.edges {
+            if edge.left_table == first_table && edge.right_table == second_table {
+                return Some(Join {
+                    join_type: JoinType::Join,
+                    left_table: edge.left_table.clone(),
+                    left_column: edge.left_column.clone(),
+                    right_table: edge.right_table.clone(),
+                    right_column: edge.right_column.clone(),
+                });
+            } else if edge.left_table == second_table && edge.right_table == first_table {
+                return Some(Join {
+                    join_type: JoinType::Join,
+                    left_table: edge.right_table.clone(),
+                    left_column: edge.right_column.clone(),
+                    right_table: edge.left_table.clone(),
+                    right_column: edge.left_column.clone(),
+                });
+            }
+        }
+        None
+    }
 }
 
 pub async fn joined_query(
@@ -1818,22 +1876,7 @@ pub async fn joined_query(
 ) -> Result<Select> {
     tracing::info!("joined_query({tableset_name}, {select:?})");
 
-    // If there are no filters, there's nothing to join.
-    if select.filters.is_empty() {
-        return Ok(select.clone());
-    }
-
-    // If there are no other tables filtered, there's nothing to join.
-    let filter_tables: Vec<String> = select
-        .filters
-        .iter()
-        .map(|f| f.get_table())
-        .filter(|f| f != &select.table_name)
-        .collect();
-    if filter_tables.is_empty() {
-        return Ok(select.clone());
-    }
-
+    // If there's no tableset, return an error.
     let sql = r#"SELECT * FROM "tableset" WHERE tableset = $1"#;
     let db_rows = match rltbl.pool.query(&sql, [tableset_name]).await {
         Ok(rows) => rows,
@@ -1843,122 +1886,126 @@ pub async fn joined_query(
         return Err(anyhow!("No entries for tableset '{tableset_name}'"));
     }
 
-    let schema = rltbl.schema().await?;
+    // If there are no filters, there's nothing to join.
+    if select.filters.is_empty() {
+        return Ok(select.clone());
+    }
 
-    let mut edges: Vec<Edge> = Vec::new();
+    // If there are no other tables filtered, there's nothing to join.
+    let filter_tables: HashSet<String> = select
+        .filters
+        .iter()
+        .map(|f| f.get_table())
+        .filter(|f| !f.is_empty() && f != &select.table_name)
+        .collect();
+
+    // If filter_tables is empty, there's nothing to join,
+    // except maybe a view to its table.
+    if filter_tables.is_empty() {
+        if !select.view_name.is_empty() && select.table_name != select.view_name {
+            // lines.push(format!("JOIN {} USING (_id)", select.table_name));
+            let mut output = select.clone();
+            output.joins = vec![Join {
+                join_type: JoinType::Join,
+                left_table: select.view_name.clone(),
+                left_column: "_id".to_string(),
+                right_table: select.table_name.clone(),
+                right_column: "_id".to_string(),
+            }];
+            return Ok(output);
+        } else {
+            return Ok(select.clone());
+        }
+    }
+
+    // Build an undirected graph using the "from" relations between tables.
+    let schema = rltbl.schema().await?;
+    let mut edges = Edges::default();
     for column in schema.columns.iter() {
         for structure in column.structure.iter() {
             match structure {
-                Structure::From(left_table, left_column) => {
-                    let left_table = left_table.clone().unwrap_or(column.table.clone());
-                    // println!("link {}.{} to {t}.{c}", column.table, column.column)
-                    edges.push(Edge {
-                        left_table,
-                        left_column: left_column.clone(),
-                        right_table: column.table.clone(),
-                        right_column: column.column.clone(),
-                    })
+                Structure::From(from_table, from_column) => {
+                    let from_table = from_table.clone().unwrap_or(column.table.clone());
+                    edges.insert(&from_table, &from_column, &column.table, &column.column);
                 }
                 _ => (),
             }
         }
     }
-    let graph = UnGraphMap::<&str, ()>::from_edges(
-        edges
-            .iter()
-            .map(|e| (e.left_table.as_str(), e.right_table.as_str())),
-    );
+    let graph = edges.graph();
 
+    // Find a path from the display table to every filter table.
     let display_table = &select.table_name;
-    let filter_table = filter_tables.first().unwrap();
 
-    let node_map = astar(&graph, &filter_table, |f| f == display_table, |_| 1, |_| 0);
-    // println!("NODE MAP {node_map:?}");
-
-    // build a set of edges connecting tables
-    // build a graph
-    // find a path through the graph
-    // build a Select struct with Full Joins
-
-    let path = node_map.unwrap().1;
-    // println!("PATH {path:?}");
-    let pairs: Vec<(&&str, &&str)> = zip(&path[..path.len() - 1], &path[1..]).collect();
-    // println!("PAIRS {pairs:?}");
-    let mut edge_path: Vec<Edge> = Vec::new();
-    for pair in pairs {
-        let (left_table, right_table) = pair;
-        let mut found = false;
-        for edge in &edges {
-            if (left_table == &edge.left_table && right_table == &edge.right_table)
-                || (right_table == &edge.left_table && left_table == &edge.right_table)
-            {
-                // println!("{edge:?}");
-                edge_path.push(edge.clone());
-                found = true;
-                break;
+    let mut paths = Vec::new();
+    for filter_table in &filter_tables {
+        let node_map = astar(&graph, filter_table, |f| f == display_table, |_| 1, |_| 0);
+        match node_map {
+            Some(node_map) => paths.push(node_map.1),
+            None => {
+                return Err(anyhow!(
+                    "No path from '{display_table}' to '{filter_table}'"
+                ))
             }
         }
-        assert!(found, "found edge");
     }
+    paths.sort();
 
+    let mut joined: HashSet<String> = HashSet::new();
     let mut joins: Vec<Join> = Vec::new();
-    let mut lines: Vec<String> = Vec::new();
-    edge_path.reverse();
-    lines.push(format!("\nSELECT {display_table}.*"));
-    lines.push(format!("FROM {display_table}"));
-    let mut prev = display_table;
-    for edge in &edge_path {
-        if &edge.left_table == prev {
-            joins.push(Join {
-                join_type: JoinType::Join,
-                left_table: edge.left_table.clone(),
-                left_column: edge.left_column.clone(),
-                right_table: edge.right_table.clone(),
-                right_column: edge.right_column.clone(),
-            });
-            lines.push(format!(
-                "JOIN {} USING ({})",
-                edge.right_table, edge.right_column
-            ));
-            prev = &edge.right_table;
-        } else {
-            joins.push(Join {
-                join_type: JoinType::Join,
-                left_table: edge.right_table.clone(),
-                left_column: edge.right_column.clone(),
-                right_table: edge.left_table.clone(),
-                right_column: edge.left_column.clone(),
-            });
-            lines.push(format!(
-                "JOIN {} USING ({})",
-                edge.left_table, edge.left_column
-            ));
-            prev = &edge.left_table;
-        }
-    }
-    lines.push(format!("WHERE {filter_table}.{filter_table}_id = 1;"));
-    // println!("{}", lines.join("\n"));
 
-    let pkey = "_id".to_string();
-    let inner = Select {
-        table_name: select.table_name.clone(),
-        view_name: select.view_name.clone(),
-        select: vec![SelectField::Column {
-            table: select.table_name.clone(),
-            column: pkey.clone(),
-            alias: String::new(),
-        }],
-        joins,
-        filters: select.filters.clone(),
-        ..Default::default()
+    // Maybe we join a view to its table.
+    if !select.view_name.is_empty() && select.table_name != select.view_name {
+        joins.push(Join {
+            join_type: JoinType::Join,
+            left_table: select.view_name.clone(),
+            left_column: "_id".to_string(),
+            right_table: select.table_name.clone(),
+            right_column: "_id".to_string(),
+        });
     };
 
-    let mut output = select.clone();
-    output.filters = vec![Filter::InSubquery {
-        table: String::new(),
+    // For each path from display to filter,
+    // try to add to the list of joins.
+    for path in paths {
+        let mut path = path;
+        path.reverse();
+        let mut prev = path.remove(0);
+        for next in path {
+            let join = edges.join(prev, next);
+            if let Some(join) = join {
+                if !joined.contains(&next.to_string()) {
+                    joined.insert(next.to_string());
+                    joins.push(join);
+                }
+            } else {
+                return Err(anyhow!("failed to join '{prev}' to '{next}'"));
+            }
+            prev = next;
+        }
+    }
+
+    let pkey = "_id".to_string();
+    let mut inner = select.clone();
+    inner.view_name = String::new();
+    inner.select = vec![SelectField::Column {
+        table: select.table_name.clone(),
         column: pkey.clone(),
-        subquery: inner,
+        alias: String::new(),
     }];
+    inner.joins = joins;
+    let output = Select {
+        table_name: select.table_name.clone(),
+        view_name: select.view_name.clone(),
+        select: select.select.clone(),
+        filters: vec![Filter::InSubquery {
+            table: select.table_name.clone(),
+            column: pkey.clone(),
+            subquery: inner,
+        }],
+        order_by: select.order_by.clone(),
+        ..Default::default()
+    };
 
     Ok(output)
 }
@@ -3068,7 +3115,6 @@ WHERE "study_name" {output_symbol} ({sql_param_1}, {sql_param_2})"#
                 .limit(&0)
                 .filters(&vec![format!("sample_number {input_symbol} (1, 2)")])
                 .unwrap();
-            println!("SELECT {select:?}");
             let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
             assert_eq!(
                 sql,
@@ -3096,320 +3142,162 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         rltbl.drop_test().await
     }
 
-    #[ignore]
     #[tokio::test]
     async fn test_tablesets() -> Result<()> {
         let rltbl = RelatableBuilder::test("test_tablesets").init(true).await?;
-        let sql_param = SqlParam::new(&rltbl.pool.syntax().name()).next();
-        let base = "http://example.com/combined";
-        let empty: Vec<DbValue> = vec![];
+        let dataset = crate::demo::vaccine::Dataset::generate(1, 1);
+        dataset.build(&rltbl).await?;
 
-        // Create five tables:
-        //   / B \
-        // A       B2C - D
-        //   \ C /
-        let insert_sql = r#"INSERT INTO "t1"("c1") VALUES
-('A'), ('B'), ('C'), ('B2C'), ('D')"#;
-        rltbl.pool.execute(insert_sql, ()).await.unwrap();
+        let select = Select::from("participant");
+        let expected = select.clone();
+        let actual = joined_query(&rltbl, "vaccine", &select).await?;
+        assert_eq!(expected, actual, "nothing to filter");
 
-        let drop_sql = r#"DROP TABLE IF EXISTS "A""#;
-        let create_sql = r#"CREATE TABLE "A" (
-    _id INTEGER,
-    _order INTEGER,
-    "a" TEXT PRIMARY KEY
-)"#;
-        let insert_sql = r#"INSERT INTO "A" VALUES
-(1, 1000, '1'),
-(2, 2000, '2'),
-(3, 3000, '3')"#;
-        rltbl.pool.execute(drop_sql, ()).await.unwrap();
-        rltbl.pool.execute(create_sql, ()).await.unwrap();
-        rltbl.pool.execute(insert_sql, ()).await.unwrap();
+        let mut select = Select::from("participant");
+        select.where_eq("participant_id", 1)?;
+        let expected = select.clone();
+        let actual = joined_query(&rltbl, "vaccine", &select).await?;
+        assert_eq!(expected, actual, "nothing to join");
 
-        let drop_sql = r#"DROP TABLE IF EXISTS "B""#;
-        let create_sql = r#"CREATE TABLE "B" (
-    _id INTEGER,
-    _order INTEGER,
-    "a" TEXT,
-    "b" TEXT PRIMARY KEY
-)"#;
-        let insert_sql = r#"INSERT INTO "B" VALUES
-(1, 1000, '1', 'i'),
-(2, 2000, '2', 'ii'),
-(3, 3000, '3', 'iii')"#;
-        rltbl.pool.execute(drop_sql, ()).await.unwrap();
-        rltbl.pool.execute(create_sql, ()).await.unwrap();
-        rltbl.pool.execute(insert_sql, ()).await.unwrap();
+        let mut select = Select::from("participant");
+        select.view_name = "participant_text".to_string();
+        select.where_eq("participant_id", 1)?;
+        let mut expected = select.clone();
+        expected.joins = vec![Join {
+            join_type: JoinType::Join,
+            left_table: "participant_text".to_string(),
+            left_column: "_id".to_string(),
+            right_table: "participant".to_string(),
+            right_column: "_id".to_string(),
+        }];
+        let actual = joined_query(&rltbl, "vaccine", &select).await?;
+        assert_eq!(expected, actual, "join text view to self");
 
-        let drop_sql = r#"DROP TABLE IF EXISTS "C""#;
-        let create_sql = r#"CREATE TABLE "C" (
-    _id INTEGER,
-    _order INTEGER,
-    "a" TEXT,
-    "c" TEXT PRIMARY KEY
-)"#;
-        let insert_sql = r#"INSERT INTO "C" VALUES
-(1, 1000, '1', 'x'),
-(2, 2000, '2', 'y'),
-(3, 3000, '3', 'z')"#;
-        rltbl.pool.execute(drop_sql, ()).await.unwrap();
-        rltbl.pool.execute(create_sql, ()).await.unwrap();
-        rltbl.pool.execute(insert_sql, ()).await.unwrap();
+        let mut select = Select::from("participant");
+        select.table_eq("specimen", "specimen_id", 1)?;
+        let mut inner = select.clone();
+        inner.select_table_column("participant", "_id");
+        inner.joins = vec![Join {
+            join_type: JoinType::Join,
+            left_table: "participant".to_string(),
+            left_column: "participant_id".to_string(),
+            right_table: "specimen".to_string(),
+            right_column: "participant_id".to_string(),
+        }];
+        let mut expected = Select::from("participant");
+        expected.is_in_subquery("_id", &inner);
+        expected.limit = 0;
+        let actual = joined_query(&rltbl, "vaccine", &select).await?;
+        assert_eq!(expected, actual, "join participant to specimen");
 
-        let drop_sql = r#"DROP TABLE IF EXISTS "B2C""#;
-        let create_sql = r#"CREATE TABLE "B2C" (
-    _id INTEGER,
-    _order INTEGER,
-    "b" TEXT,
-    "c" TEXT
-)"#;
-        let insert_sql = r#"INSERT INTO "B2C" VALUES
-(1, 1000, 'i', 'x'),
-(2, 2000, 'ii', 'y'),
-(3, 3000, 'iii', 'z')"#;
-        rltbl.pool.execute(drop_sql, ()).await.unwrap();
-        rltbl.pool.execute(create_sql, ()).await.unwrap();
-        rltbl.pool.execute(insert_sql, ()).await.unwrap();
+        let mut select = Select::from("participant");
+        select.table_eq("data", "data_id", 1)?;
+        let mut inner = select.clone();
+        inner.select_table_column("participant", "_id");
+        inner.joins = vec![Join {
+            join_type: JoinType::Join,
+            left_table: "participant".to_string(),
+            left_column: "participant_id".to_string(),
+            right_table: "data".to_string(),
+            right_column: "participant_id".to_string(),
+        }];
+        let mut expected = Select::from("participant");
+        expected.is_in_subquery("_id", &inner);
+        expected.limit = 0;
+        let actual = joined_query(&rltbl, "vaccine", &select).await?;
+        assert_eq!(expected, actual, "join participant to data");
 
-        let drop_sql = r#"DROP TABLE IF EXISTS "D""#;
-        let create_sql = r#"CREATE TABLE "D" (
-    _id INTEGER,
-    _order INTEGER,
-    "b" TEXT,
-    "d" TEXT PRIMARY KEY
-)"#;
-        let insert_sql = r#"INSERT INTO "D" VALUES
-(1, 1000, 'i', 'a'),
-(2, 2000, 'ii', 'b'),
-(3, 3000, 'iii', 'c')"#;
-        rltbl.pool.execute(drop_sql, ()).await.unwrap();
-        rltbl.pool.execute(create_sql, ()).await.unwrap();
-        rltbl.pool.execute(insert_sql, ()).await.unwrap();
+        let mut select = Select::from("participant");
+        select.table_eq("investigation", "investigation_id", 1)?;
+        let mut inner = select.clone();
+        inner.select_table_column("participant", "_id");
+        inner.joins = vec![
+            Join {
+                join_type: JoinType::Join,
+                left_table: "participant".to_string(),
+                left_column: "arm_id".to_string(),
+                right_table: "arm".to_string(),
+                right_column: "arm_id".to_string(),
+            },
+            Join {
+                join_type: JoinType::Join,
+                left_table: "arm".to_string(),
+                left_column: "investigation_id".to_string(),
+                right_table: "investigation".to_string(),
+                right_column: "investigation_id".to_string(),
+            },
+        ];
+        let mut expected = Select::from("participant");
+        expected.is_in_subquery("_id", &inner);
+        expected.limit = 0;
+        let actual = joined_query(&rltbl, "vaccine", &select).await?;
+        assert_eq!(expected, actual, "join participant to investigation");
 
-        // Create the tablset table.
-        let drop_sql = r#"DROP TABLE IF EXISTS "tableset""#;
-        let pkey_clause = match rltbl.pool.syntax().name() {
-            "sqlite" => "INTEGER PRIMARY KEY AUTOINCREMENT",
-            "postgres" => "SERIAL PRIMARY KEY",
-            _ => unimplemented!(),
-        };
-        let create_sql = format!(
-            r#"CREATE TABLE tableset (
-              _id {pkey_clause},
-              _order INTEGER UNIQUE,
-              tableset TEXT,
-              left_table TEXT,
-              left_column TEXT,
-              right_table TEXT,
-              right_column TEXT
-            )"#
-        );
-        let insert_sql = r#"INSERT INTO "tableset" VALUES
-              (1, 1000, 'combined', NULL, NULL, 'A', 'a'),
-              (2, 2000, 'combined', 'A', 'a', 'B', 'a'),
-              (3, 3000, 'combined', 'A', 'a', 'C', 'a'),
-              (4, 4000, 'combined', 'B', 'b', 'B2C', 'b'),
-              (5, 5000, 'combined', 'C', 'c', 'B2C', 'c'),
-              (7, 7000, 'combined', 'B', 'b', 'D', 'b')
-            "#;
-        rltbl.pool.execute(drop_sql, ()).await.unwrap();
-        rltbl.pool.execute(&create_sql, ()).await.unwrap();
-        rltbl.pool.execute(insert_sql, ()).await.unwrap();
+        let mut select = Select::from("participant");
+        select.table_eq("arm", "arm_id", 1)?;
+        select.table_eq("specimen", "specimen_id", 1)?;
+        let mut inner = select.clone();
+        inner.select_table_column("participant", "_id");
+        inner.joins = vec![
+            Join {
+                join_type: JoinType::Join,
+                left_table: "participant".to_string(),
+                left_column: "arm_id".to_string(),
+                right_table: "arm".to_string(),
+                right_column: "arm_id".to_string(),
+            },
+            Join {
+                join_type: JoinType::Join,
+                left_table: "participant".to_string(),
+                left_column: "participant_id".to_string(),
+                right_table: "specimen".to_string(),
+                right_column: "participant_id".to_string(),
+            },
+        ];
+        let mut expected = Select::from("participant");
+        expected.is_in_subquery("_id", &inner);
+        expected.limit = 0;
+        let actual = joined_query(&rltbl, "vaccine", &select).await?;
+        assert_eq!(expected, actual, "join participant to arm and specimen");
 
-        // Just query for the B table.
-        let url = "http://example.com/combined/B";
-        let query_params = from_value(json!({})).unwrap();
-        let inner = Select::from_path_and_query("B", &query_params, &rltbl).await;
-        let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
-        assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
+        let mut select = Select::from("participant");
+        select.table_eq("investigation", "investigation_id", 1)?;
+        select.table_eq("arm", "arm_id", 1)?;
+        select.table_eq("specimen", "specimen_id", 1)?;
+        let mut inner = select.clone();
+        inner.select_table_column("participant", "_id");
+        inner.joins = vec![
+            Join {
+                join_type: JoinType::Join,
+                left_table: "participant".to_string(),
+                left_column: "arm_id".to_string(),
+                right_table: "arm".to_string(),
+                right_column: "arm_id".to_string(),
+            },
+            Join {
+                join_type: JoinType::Join,
+                left_table: "arm".to_string(),
+                left_column: "investigation_id".to_string(),
+                right_table: "investigation".to_string(),
+                right_column: "investigation_id".to_string(),
+            },
+            Join {
+                join_type: JoinType::Join,
+                left_table: "participant".to_string(),
+                left_column: "participant_id".to_string(),
+                right_table: "specimen".to_string(),
+                right_column: "participant_id".to_string(),
+            },
+        ];
+        let mut expected = Select::from("participant");
+        expected.is_in_subquery("_id", &inner);
+        expected.limit = 0;
+        let actual = joined_query(&rltbl, "vaccine", &select).await?;
         assert_eq!(
-            sql,
-            r#"SELECT *
-FROM "B"
-ORDER BY "B"._order ASC
-LIMIT 100"#
+            expected, actual,
+            "join participant to investigation and arm and specimen"
         );
-        assert_eq!(params, empty);
-        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
-        rltbl.pool.execute(&sql, params.clone()).await.unwrap();
-        assert_eq!(
-            sql,
-            r#"SELECT COUNT(1) AS "count"
-FROM "B""#
-        );
-        assert_eq!(params, empty);
-        rltbl.pool.execute(&sql, params).await.unwrap();
 
-        // Filter the B table by one of its own columns.
-        let url = "http://example.com/combined/B?B.b=eq.i";
-        let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
-        let inner = Select::from_path_and_query("B", &query_params, &rltbl).await;
-
-        let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
-        assert_eq!(url, select.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
-        assert_eq!(
-            sql,
-            format!(
-                r#"SELECT *
-FROM "B"
-WHERE "B"."b" = {sql_param}
-ORDER BY "B"._order ASC
-LIMIT 100"#
-            )
-        );
-        assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.execute(&sql, params).await.unwrap();
-        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
-        assert_eq!(
-            sql,
-            format!(
-                r#"SELECT COUNT(1) AS "count"
-FROM "B"
-WHERE "B"."b" = {sql_param}"#
-            )
-        );
-        assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.execute(&sql, params).await.unwrap();
-
-        // Filter the A table by one of the columns from B.
-        let url = "http://example.com/combined/A?B.b=eq.i";
-        let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
-        let inner = Select::from_path_and_query("A", &query_params, &rltbl).await;
-        let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
-        assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
-        assert_eq!(
-            sql,
-            format!(
-                r#"SELECT *
-FROM "A"
-WHERE "_id" IN (
-  SELECT
-    "A"."_id"
-  FROM "A"
-  LEFT JOIN "B" ON "A"."a" = "B"."a"
-  WHERE "B"."b" = {sql_param}
-)
-ORDER BY "A"._order ASC
-LIMIT 100"#
-            )
-        );
-        assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.execute(&sql, params).await.unwrap();
-        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
-        assert_eq!(
-            sql,
-            format!(
-                r#"SELECT COUNT(1) AS "count"
-FROM "A"
-WHERE "_id" IN (
-  SELECT
-    "A"."_id"
-  FROM "A"
-  LEFT JOIN "B" ON "A"."a" = "B"."a"
-  WHERE "B"."b" = {sql_param}
-)"#
-            )
-        );
-        assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.execute(&sql, params).await.unwrap();
-
-        // Filter the B2C table by one of the columns from B.
-        let url = "http://example.com/combined/B2C?B.b=eq.i";
-        let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
-        let inner = Select::from_path_and_query("B2C", &query_params, &rltbl).await;
-        let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
-        assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
-        assert_eq!(
-            sql,
-            format!(
-                r#"SELECT *
-FROM "B2C"
-WHERE "_id" IN (
-  SELECT
-    "B2C"."_id"
-  FROM "B"
-  LEFT JOIN "B2C" ON "B"."b" = "B2C"."b"
-  WHERE "B"."b" = {sql_param}
-)
-ORDER BY "B2C"._order ASC
-LIMIT 100"#
-            )
-        );
-        assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.execute(&sql, params).await.unwrap();
-        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
-        assert_eq!(
-            sql,
-            format!(
-                r#"SELECT COUNT(1) AS "count"
-FROM "B2C"
-WHERE "_id" IN (
-  SELECT
-    "B2C"."_id"
-  FROM "B"
-  LEFT JOIN "B2C" ON "B"."b" = "B2C"."b"
-  WHERE "B"."b" = {sql_param}
-)"#
-            )
-        );
-        assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.execute(&sql, params).await.unwrap();
-
-        // Filter the D table by one of the columns from B.
-        let url = "http://example.com/combined/D?B.b=eq.i";
-        let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
-        let inner = Select::from_path_and_query("D", &query_params, &rltbl).await;
-        let select = joined_query(&rltbl, "combined", &inner).await.unwrap();
-        assert_eq!(url, inner.to_url(&base, &Format::Default).unwrap());
-        let (sql, params) = select.to_sql(&rltbl.pool.syntax().name()).unwrap();
-        assert_eq!(
-            sql,
-            format!(
-                r#"SELECT *
-FROM "D"
-WHERE "_id" IN (
-  SELECT
-    "D"."_id"
-  FROM "B"
-  LEFT JOIN "D" ON "B"."b" = "D"."b"
-  WHERE "B"."b" = {sql_param}
-)
-ORDER BY "D"._order ASC
-LIMIT 100"#
-            )
-        );
-        assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.execute(&sql, params).await.unwrap();
-        let (sql, params) = select.to_sql_count(&rltbl.pool.syntax().name()).unwrap();
-        assert_eq!(
-            sql,
-            format!(
-                r#"SELECT COUNT(1) AS "count"
-FROM "D"
-WHERE "_id" IN (
-  SELECT
-    "D"."_id"
-  FROM "B"
-  LEFT JOIN "D" ON "B"."b" = "D"."b"
-  WHERE "B"."b" = {sql_param}
-)"#
-            )
-        );
-        assert_eq!(params, vec!["i".into()]);
-        rltbl.pool.execute(&sql, params).await.unwrap();
-
-        // Filter the C table by one of the columns from B,
-        // This should cause joined_query() to return an error.
-        // let url = "http://example.com/combined/C?B.b=eq.i";
-        let query_params = from_value(json!({"B.b": "eq.i"})).unwrap();
-        let inner = Select::from_path_and_query("C", &query_params, &rltbl).await;
-        let select = joined_query(&rltbl, "combined", &inner).await;
-        assert_eq!(select.is_err(), true);
-
-        rltbl.drop_test().await
+        Ok(())
     }
 }
