@@ -1,6 +1,7 @@
 use crate::{self as rltbl, column::Column, core::ColumnID};
 use csv::ReaderBuilder;
 use indexmap::IndexMap;
+
 use rltbl::{
     column::{Columns, SqlColumn},
     core::{RowID, RowOrder, ID_SQL_TYPE, NEW_ORDER_MULTIPLIER, ORDER_SQL_TYPE},
@@ -106,6 +107,7 @@ pub fn read_table(path: &str) -> Result<UserRows> {
             Ok(UserRow { map })
         })
         .collect::<Result<Vec<UserRow>>>()?;
+    tracing::debug!("Loaded {} rows", rows.len());
     Ok(UserRows { rows })
 }
 

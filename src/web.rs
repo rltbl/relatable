@@ -27,7 +27,7 @@ use axum::{
     Form, Router,
 };
 use axum_session::{Session, SessionConfig, SessionLayer, SessionNullPool, SessionStore};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use minijinja::context;
 use serde_json::{json, to_string_pretty, Value as JsonValue};
 use std::sync::Arc;
@@ -167,7 +167,7 @@ async fn get_table(
     let site = rltbl.get_site(&username).await;
     let content = json!({
         "site": site,
-        "page": select.to_page(&rltbl.root, "table", &vec![]).unwrap_or_default(),
+        "page": select.to_page(&rltbl.root, "table", "", &[], &[]).unwrap_or_default(),
         "result": result
     });
     respond(&rltbl, &format, &content).await
@@ -245,6 +245,7 @@ async fn get_tableset(
     session: Session<SessionNullPool>,
 ) -> Response<Body> {
     tracing::trace!("get_tableset({rltbl:?}, {tableset_name}, {path}, {query_params:?})");
+
     let format = match Format::try_from(&path) {
         Ok(format) => format,
         Err(error) => return get_404(&error),
@@ -329,24 +330,38 @@ async fn get_tableset(
         Err(error) => return get_500(&error.into()),
     };
 
-    // tracing::info!("TAB {json_rows:?}");
-    let mut tabset = vec![];
-    for db_row in db_rows.rows {
-        let table = db_row
-            .get("right_table")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
-        if tabset.contains(&table) {
-            continue;
+    let mut tab_groups: IndexMap<String, IndexSet<String>> = IndexMap::new();
+    let mut tab_group = None;
+    for db_row in &db_rows.rows {
+        let group = db_row.get("group").unwrap().as_str().unwrap().to_string();
+        let table = db_row.get("table").unwrap().as_str().unwrap().to_string();
+        if table == select.table_name {
+            tab_group = Some(db_row.get("group").unwrap().as_str().unwrap().to_string());
         }
-        tabset.push(table.clone());
+        tab_groups.entry(group).or_default().insert(table);
     }
+
+    let tab_group = tab_group.unwrap();
+    let tabs: Vec<String> = tab_groups
+        .get(&tab_group)
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect();
+    let tab_groups: Vec<String> = tab_groups.into_keys().collect();
+    let page = select
+        .to_page(
+            &rltbl.root,
+            &format!("tableset/{tableset_name}"),
+            &tab_group,
+            &tab_groups,
+            &tabs,
+        )
+        .unwrap_or_default();
 
     let content = json!({
        "site": site,
-       "page": select.to_page(&rltbl.root, &format!("tableset/{tableset_name}"), &tabset).unwrap_or_default(),
+       "page": page,
        "result": result
     });
     respond(&rltbl, &format, &content).await

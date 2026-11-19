@@ -454,6 +454,7 @@ impl Relatable {
 
     // Load existing TSVs.
     async fn load_all(&self, table_table_path: &str) -> Result<()> {
+        tracing::debug!("Trying to load all tables using {table_table_path}");
         let path = FilePath::new(&table_table_path);
         if path.is_file() {
             self.table_table()
@@ -512,6 +513,7 @@ impl Relatable {
                 continue;
             }
             if !table.path.is_empty() {
+                tracing::debug!("Trying to load {}", table.path);
                 let path = dir.join(&table.path);
                 if path.is_file() {
                     // Load rows
@@ -612,7 +614,10 @@ impl Relatable {
             let table_names: Vec<&str> = tables.keys().map(|k| k.as_str()).collect();
             match column_table.get_configured(&table_names).await {
                 Ok(columns) => columns,
-                Err(_) => return Ok(Schema::default()),
+                Err(err) => {
+                    tracing::error!("Error getting configured columns: {err}");
+                    return Ok(Schema::default());
+                }
             }
         } else {
             return Ok(Schema::default());

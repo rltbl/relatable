@@ -23,6 +23,7 @@ use std::{
 #[serde(try_from = "String", into = "String")]
 pub enum Structure {
     From(Option<String>, String),
+    Primary,
 }
 
 impl Default for Structure {
@@ -95,6 +96,9 @@ impl Structure {
                 let rows = rltbl.pool.query(&sql, params).await?;
                 messages_were_added = rows.len() > 0;
             }
+            Structure::Primary => {
+                messages_were_added = false;
+            }
         };
         Ok(messages_were_added)
     }
@@ -105,7 +109,9 @@ impl FromStr for Structure {
 
     fn from_str(structure: &str) -> Result<Self> {
         tracing::trace!("Structure::from_str({structure})");
-        if structure.starts_with("from(") {
+        if structure == "primary" {
+            Ok(Self::Primary)
+        } else if structure.starts_with("from(") {
             let re = regex::Regex::new(r"from\(((.+?)\.)?(.+?)\)")?;
             let unquoted_re = regex::Regex::new(r#"^['"](?P<unquoted>.*)['"]$"#)?;
             match re.captures(structure) {
@@ -141,6 +147,7 @@ impl Display for Structure {
                 None => write!(f, "from({s_column})"),
                 Some(s_table) => write!(f, "from({s_table}.{s_column})"),
             },
+            Structure::Primary => write!(f, "primary"),
         }
     }
 }

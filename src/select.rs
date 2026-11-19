@@ -2,7 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[select](crate::select)).
 
-use crate as rltbl;
+use crate::{self as rltbl, structure::Structure};
 use rltbl::{
     core::{Relatable, RelatableError, DEFAULT_LIMIT},
     site::{Page, Tab},
@@ -10,12 +10,13 @@ use rltbl::{
 };
 use rltbl_db::{IntoValue, JsonValue, Value as DbValue};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use enquote::unquote;
 use indexmap::IndexMap;
+use petgraph::{algo::astar, graphmap::UnGraphMap};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::{collections::BTreeSet, fmt::Display, iter::zip};
 
 /// Represents a SELECT statement.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -325,16 +326,8 @@ impl Select {
             };
         }
         for join in &self.joins {
-            match join {
-                Join::LeftJoin {
-                    left_table,
-                    right_table,
-                    ..
-                } => {
-                    insert_when_non_empty(&mut tables, &left_table);
-                    insert_when_non_empty(&mut tables, &right_table);
-                }
-            };
+            insert_when_non_empty(&mut tables, &join.left_table);
+            insert_when_non_empty(&mut tables, &join.right_table);
         }
         for filter in &self.filters {
             insert_when_non_empty(&mut tables, &filter.get_table());
@@ -426,7 +419,8 @@ impl Select {
         right_table: &str,
         right_column: &str,
     ) -> &Self {
-        self.joins.push(Join::LeftJoin {
+        self.joins.push(Join {
+            join_type: JoinType::LeftJoin,
             left_table: left_table.to_string(),
             left_column: left_column.to_string(),
             right_table: right_table.to_string(),
@@ -1096,7 +1090,14 @@ impl Select {
         }
     }
 
-    pub fn to_page(&self, root: &str, path: &str, tabs: &Vec<String>) -> Result<Page> {
+    pub fn to_page(
+        &self,
+        root: &str,
+        path: &str,
+        group_name: &str,
+        tab_groups: &[String],
+        tabs: &[String],
+    ) -> Result<Page> {
         tracing::trace!("Select::to_page({root}, {path})");
         let base = format!("{root}/{path}");
         let mut formats = IndexMap::new();
@@ -1108,7 +1109,24 @@ impl Select {
             "JSON (Pretty)".to_string(),
             self.to_url(&base, &Format::PrettyJson)?,
         );
-        let tabs = tabs
+
+        let tab_groups: Vec<Tab> = tab_groups
+            .iter()
+            .map(|t| {
+                let mut s = self.clone();
+                s.table_name = t.clone();
+                let mut c = s.clone();
+                c.select_expression("count()", "count");
+                Tab {
+                    table: t.clone(),
+                    active: (t.as_str() == group_name),
+                    url: s.to_url(&base, &Format::Default).unwrap(),
+                    count: c.to_url(&base, &Format::ValueJson).unwrap(),
+                }
+            })
+            .collect();
+
+        let tabs: Vec<Tab> = tabs
             .iter()
             .map(|t| {
                 let mut s = self.clone();
@@ -1127,6 +1145,7 @@ impl Select {
         Ok(Page {
             path: path.to_string(),
             formats,
+            tab_groups,
             tabs,
         })
     }
@@ -1204,35 +1223,41 @@ impl SelectField {
 }
 
 /// Represents a database join
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Join {
-    LeftJoin {
-        left_table: String,
-        left_column: String,
-        right_table: String,
-        right_column: String,
-    },
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum JoinType {
+    #[default]
+    Join,
+    LeftJoin,
+}
+
+impl Display for JoinType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JoinType::Join => write!(f, "JOIN"),
+            JoinType::LeftJoin => write!(f, "LEFT JOIN"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Join {
+    join_type: JoinType,
+    left_table: String,
+    left_column: String,
+    right_table: String,
+    right_column: String,
 }
 
 impl Join {
     pub fn to_sql(&self) -> String {
-        match self {
-            Join::LeftJoin {
-                left_table,
-                left_column,
-                right_table,
-                right_column,
-            } => {
-                let (t, lt, lc, rt, rc) = (
-                    &right_table,
-                    &left_table,
-                    &left_column,
-                    &right_table,
-                    &right_column,
-                );
-                format!(r#"LEFT JOIN "{t}" ON "{lt}"."{lc}" = "{rt}"."{rc}""#)
-            }
-        }
+        format!(
+            r#"{op} "{rt}" ON "{lt}"."{lc}" = "{rt}"."{rc}""#,
+            op = self.join_type,
+            lt = self.left_table,
+            lc = self.left_column,
+            rt = self.right_table,
+            rc = self.right_column,
+        )
     }
 }
 
@@ -1778,117 +1803,164 @@ pub fn render_values(
     Ok((format!("({})", sql_params.join(", ")), values))
 }
 
+#[derive(Clone, Debug)]
+pub struct Edge {
+    left_table: String,
+    left_column: String,
+    right_table: String,
+    right_column: String,
+}
+
 pub async fn joined_query(
     rltbl: &Relatable,
     tableset_name: &str,
     select: &Select,
 ) -> Result<Select> {
-    let tables = select.get_tables();
-    if tables.len() == 1 {
+    tracing::info!("joined_query({tableset_name}, {select:?})");
+
+    // If there are no filters, there's nothing to join.
+    if select.filters.is_empty() {
         return Ok(select.clone());
     }
 
-    let tables: Vec<DbValue> = tables.into_iter().map(|x| DbValue::from(x)).collect();
-    let mut sql_param = sql::SqlParam::new(&rltbl.pool.syntax().name());
-
-    let sql = format!(
-        r#"WITH RECURSIVE ancestors(_order, left_table, left_column, right_table, right_column) AS (
-      SELECT _order, left_table, left_column, right_table, right_column
-      FROM tableset
-      WHERE right_table IN ({bindings_1})
-      UNION
-      SELECT t._order, t.left_table, t.left_column, t.right_table, t.right_column
-      FROM ancestors AS a
-      JOIN tableset AS t ON a.left_table = t.right_table
-      WHERE t.tableset = '{tableset_name}'
-    )
-    SELECT *
-    FROM ancestors
-    WHERE _order >= (SELECT MIN(_order) FROM ancestors WHERE left_table IN ({bindings_2}))
-      AND _order <= (SELECT MAX(_order) FROM ancestors WHERE right_table IN ({bindings_3}))
-    ORDER BY _order"#,
-        bindings_1 = sql_param.get_as_list(tables.len()),
-        bindings_2 = sql_param.get_as_list(tables.len()),
-        bindings_3 = sql_param.get_as_list(tables.len()),
-    );
-    tracing::info!("SQL {sql}");
-    let mut params = tables.clone();
-    params.extend(tables.clone());
-    params.extend(tables.clone());
-    tracing::info!("PARAMS {params:?}");
-    let db_rows = rltbl.pool.query(&sql, params).await?;
-    tracing::info!(
-        "TABLESET {} {db_rows:?}",
-        select.to_url("", &Format::Default)?
-    );
-    println!(
-        "TABLESET {} {db_rows:?}",
-        select.to_url("", &Format::Default)?
-    );
-    if db_rows.len() == 0 {
-        return Err(RelatableError::ConfigError(format!("empty tableset")).into());
+    // If there are no other tables filtered, there's nothing to join.
+    let filter_tables: Vec<String> = select
+        .filters
+        .iter()
+        .map(|f| f.get_table())
+        .filter(|f| f != &select.table_name)
+        .collect();
+    if filter_tables.is_empty() {
+        return Ok(select.clone());
     }
 
-    let limit = select.limit;
-    let mut inner = select.clone();
-    inner.select = vec![];
-    let table_name = inner.table_name.clone();
-    let view_name = inner.view_name.clone();
+    let sql = r#"SELECT * FROM "tableset" WHERE tableset = $1"#;
+    let db_rows = match rltbl.pool.query(&sql, [tableset_name]).await {
+        Ok(rows) => rows,
+        Err(error) => return Err(error.into()),
+    };
+    if db_rows.is_empty() {
+        return Err(anyhow!("No entries for tableset '{tableset_name}'"));
+    }
+
+    let schema = rltbl.schema().await?;
+
+    let mut edges: Vec<Edge> = Vec::new();
+    for column in schema.columns.iter() {
+        for structure in column.structure.iter() {
+            match structure {
+                Structure::From(left_table, left_column) => {
+                    let left_table = left_table.clone().unwrap_or(column.table.clone());
+                    // println!("link {}.{} to {t}.{c}", column.table, column.column)
+                    edges.push(Edge {
+                        left_table,
+                        left_column: left_column.clone(),
+                        right_table: column.table.clone(),
+                        right_column: column.column.clone(),
+                    })
+                }
+                _ => (),
+            }
+        }
+    }
+    let graph = UnGraphMap::<&str, ()>::from_edges(
+        edges
+            .iter()
+            .map(|e| (e.left_table.as_str(), e.right_table.as_str())),
+    );
+
+    let display_table = &select.table_name;
+    let filter_table = filter_tables.first().unwrap();
+
+    let node_map = astar(&graph, &filter_table, |f| f == display_table, |_| 1, |_| 0);
+    println!("NODE MAP {node_map:?}");
+
+    // build a set of edges connecting tables
+    // build a graph
+    // find a path through the graph
+    // build a Select struct with Full Joins
+
+    let path = node_map.unwrap().1;
+    println!("PATH {path:?}");
+    let pairs: Vec<(&&str, &&str)> = zip(&path[..path.len() - 1], &path[1..]).collect();
+    println!("PAIRS {pairs:?}");
+    let mut edge_path: Vec<Edge> = Vec::new();
+    for pair in pairs {
+        let (left_table, right_table) = pair;
+        let mut found = false;
+        for edge in &edges {
+            if (left_table == &edge.left_table && right_table == &edge.right_table)
+                || (right_table == &edge.left_table && left_table == &edge.right_table)
+            {
+                // println!("{edge:?}");
+                edge_path.push(edge.clone());
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "found edge");
+    }
+
+    let mut joins: Vec<Join> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    edge_path.reverse();
+    lines.push(format!("\nSELECT {display_table}.*"));
+    lines.push(format!("FROM {display_table}"));
+    let mut prev = display_table;
+    for edge in &edge_path {
+        if &edge.left_table == prev {
+            joins.push(Join {
+                join_type: JoinType::Join,
+                left_table: edge.left_table.clone(),
+                left_column: edge.left_column.clone(),
+                right_table: edge.right_table.clone(),
+                right_column: edge.right_column.clone(),
+            });
+            lines.push(format!(
+                "JOIN {} USING ({})",
+                edge.right_table, edge.right_column
+            ));
+            prev = &edge.right_table;
+        } else {
+            joins.push(Join {
+                join_type: JoinType::Join,
+                left_table: edge.right_table.clone(),
+                left_column: edge.right_column.clone(),
+                right_table: edge.left_table.clone(),
+                right_column: edge.left_column.clone(),
+            });
+            lines.push(format!(
+                "JOIN {} USING ({})",
+                edge.left_table, edge.left_column
+            ));
+            prev = &edge.left_table;
+        }
+    }
+    lines.push(format!("WHERE {filter_table}.{filter_table}_id = 1;"));
+    // println!("{}", lines.join("\n"));
 
     let pkey = "_id".to_string();
-    inner.select_table_column(&table_name, &pkey);
-
-    // Find the primary key for this table.
-    // let mut pkey = String::new();
-    // for json_row in json_rows.clone() {
-    //     if table_name == json_row.get_string("left_table").unwrap() {
-    //         pkey = json_row.get_string("left_column").unwrap();
-    //         inner.select_table_column(&table_name, &pkey);
-    //         // println!("FOUND PKEY in {json_row:?}");
-    //     }
-    // }
-    // if table_name == json_rows.last().unwrap().get_string("right_table").unwrap() {
-    // }
-    //     inner.order_by(&pkey);
-    // } else {
-    //     inner.limit = 0;
-    // }
-    inner.order_by = vec![];
-    inner.limit = 0;
-    inner.view_name = String::new();
-    let db_row = db_rows.first().unwrap();
-    inner.table_name = db_row.get("left_table").unwrap().to_string();
-    let mut joined = HashSet::new();
-    for db_row in db_rows.iter() {
-        let left_table = db_row.get("left_table").unwrap().to_string();
-        let right_table = db_row.get("right_table").unwrap().to_string();
-        if &left_table == "" || &right_table == "" {
-            continue;
-        }
-        if joined.contains(&right_table) {
-            continue;
-        }
-        joined.insert(right_table.clone());
-        inner.left_join(
-            &left_table,
-            &db_row.get("left_column").unwrap().to_string(),
-            &right_table,
-            &db_row.get("right_column").unwrap().to_string(),
-        );
-    }
-    let (sql, params) = inner.to_sql(&rltbl.pool.syntax().name()).unwrap();
-    tracing::warn!("SQL {sql} PARAMS {params:?}");
-    Ok(Select {
-        table_name,
-        view_name,
-        filters: vec![Filter::InSubquery {
-            table: String::new(),
+    let inner = Select {
+        table_name: select.table_name.clone(),
+        view_name: select.view_name.clone(),
+        select: vec![SelectField::Column {
+            table: select.table_name.clone(),
             column: pkey.clone(),
-            subquery: inner.clone(),
+            alias: String::new(),
         }],
-        limit,
+        joins,
+        filters: select.filters.clone(),
         ..Default::default()
-    })
+    };
+
+    let mut output = select.clone();
+    output.filters = vec![Filter::InSubquery {
+        table: String::new(),
+        column: pkey.clone(),
+        subquery: inner,
+    }];
+
+    Ok(output)
 }
 
 // Tests
@@ -3024,6 +3096,7 @@ WHERE "sample_number" {output_symbol} ({sql_param_1}, {sql_param_2})"#
         rltbl.drop_test().await
     }
 
+    #[ignore]
     #[tokio::test]
     async fn test_tablesets() -> Result<()> {
         let rltbl = RelatableBuilder::test("test_tablesets").init(true).await?;

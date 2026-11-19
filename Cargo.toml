@@ -46,6 +46,7 @@ whoami = "1.5.2"
 
 # rltbl_db = { git = "https://github.com/rltbl/rltbl_db.git", default-features = false, optional= true}
 rltbl_db = { path = "../rltbl_db", default-features = false, optional= true}
+petgraph = "0.8.3"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"

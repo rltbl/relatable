@@ -33,6 +33,20 @@
 </div>
 <h1>{{ table.table }}</h1>
 
+{% if page.tab_groups %}
+<ul class="nav nav-tabs mb-2">
+  {% for tab in page.tab_groups %}
+  <li class="nav-item">
+    <a class="nav-link {{'active' if tab['active'] == true}} {{'disabled' if tab['disabled'] == true}}"
+      href="{{tab['url']}}">
+      {{tab['table']}}
+      <span id="tab-group-{{tab['table']}}-count" class="badge rounded-pill text-bg-secondary">...</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
 {% if page.tabs %}
 <ul class="nav nav-tabs mb-2">
   {% for tab in page.tabs %}
@@ -80,6 +94,12 @@
   window.rltbl.result = {{result | tojson}};
   window.rltbl.grid = {};
 
+  for (var i = 0; i < window.rltbl.page.tab_groups.length; i++) {
+    var tab = window.rltbl.page.tab_groups[i];
+    // console.log("fetch " + i, tab);
+    fetch_count(tab);
+  }
+
   for (var i = 0; i < window.rltbl.page.tabs.length; i++) {
     var tab = window.rltbl.page.tabs[i];
     // console.log("fetch " + i, tab);
@@ -92,7 +112,12 @@
       .then(response => response.json())
       .then(data => {
         // console.log("tab count result", tab, data);
-        document.getElementById("tab-" + tab['table'] + "-count").innerHTML = data;
+        try {
+          document.getElementById("tab-" + tab['table'] + "-count").innerHTML = data;
+        } catch (e) { }
+        try {
+          document.getElementById("tab-group-" + tab['table'] + "-count").innerHTML = data;
+        } catch (e) { }
       });
   }
 

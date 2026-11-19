@@ -18,6 +18,7 @@ pub struct Site {
 pub struct Page {
     pub path: String,
     pub formats: IndexMap<String, String>,
+    pub tab_groups: Vec<Tab>,
     pub tabs: Vec<Tab>,
 }
 
