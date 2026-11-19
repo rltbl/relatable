@@ -615,7 +615,7 @@ impl Relatable {
             match column_table.get_configured(&table_names).await {
                 Ok(columns) => columns,
                 Err(err) => {
-                    tracing::error!("Error getting configured columns: {err}");
+                    tracing::info!("Problem getting configured columns: {err}");
                     return Ok(Schema::default());
                 }
             }
@@ -2401,7 +2401,7 @@ mod tests {
 
     use indexmap::indexmap;
     use pretty_assertions::assert_eq;
-    use rand::{rngs::ThreadRng, seq::SliceRandom, Rng};
+    use rand::{rngs::ThreadRng, seq::SliceRandom, RngExt};
     use serde_json::json;
 
     impl Relatable {

@@ -5,7 +5,7 @@ use rltbl::{
 use rltbl_db::values;
 
 use anyhow::Result;
-use rand::{rngs::StdRng, seq::IteratorRandom as _, Rng as _, SeedableRng as _};
+use rand::{rngs::StdRng, seq::IteratorRandom as _, RngExt, SeedableRng as _};
 use rust_decimal::Decimal;
 
 /// Build a demonstration database. Based on <https://github.com/allisonhorst/palmerpenguins>.

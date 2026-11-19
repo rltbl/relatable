@@ -333,22 +333,38 @@ async fn get_tableset(
     let mut tab_groups: IndexMap<String, IndexSet<String>> = IndexMap::new();
     let mut tab_group = None;
     for db_row in &db_rows.rows {
-        let group = db_row.get("group").unwrap().as_str().unwrap().to_string();
+        let group = db_row
+            .get("group")
+            .unwrap()
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         let table = db_row.get("table").unwrap().as_str().unwrap().to_string();
         if table == select.table_name {
-            tab_group = Some(db_row.get("group").unwrap().as_str().unwrap().to_string());
+            tab_group = Some(
+                db_row
+                    .get("group")
+                    .unwrap()
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
         }
         tab_groups.entry(group).or_default().insert(table);
     }
 
-    let tab_group = tab_group.unwrap();
+    let tab_group = tab_group.unwrap_or_default();
     let tabs: Vec<String> = tab_groups
         .get(&tab_group)
         .unwrap()
         .iter()
         .cloned()
         .collect();
-    let tab_groups: Vec<String> = tab_groups.into_keys().collect();
+    let tab_groups: Vec<String> = if tab_group.is_empty() {
+        Vec::new()
+    } else {
+        tab_groups.into_keys().collect()
+    };
     let page = select
         .to_page(
             &rltbl.root,

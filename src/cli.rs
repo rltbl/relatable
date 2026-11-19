@@ -164,6 +164,10 @@ pub enum Command {
 
     /// Generate a demonstration database
     Demo {
+        /// Name of the demo to construct
+        #[arg(long, value_name = "NAME", action = ArgAction::Set, default_value="penguin")]
+        name: String,
+
         /// Overwrite an existing database
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
@@ -1091,6 +1095,17 @@ pub async fn process_command() {
             .await
             .expect("Operation: 'serve' failed"),
         Command::Cgi {} => serve_cgi().await,
-        Command::Demo { force, size } => build_demo(&cli, force, *size).await,
+        Command::Demo { name, force, size } => match name.as_str() {
+            "vaccine" => {
+                let rltbl = RelatableBuilder::new()
+                    .env()
+                    .init(*force)
+                    .await
+                    .expect("init Relatable");
+                let dataset = crate::demo::vaccine::Dataset::generate(1, *size as u32);
+                dataset.build(&rltbl).await.expect("init vaccine demo")
+            }
+            _ => build_demo(&cli, force, *size).await,
+        },
     }
 }

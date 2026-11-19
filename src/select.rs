@@ -1873,7 +1873,7 @@ pub async fn joined_query(
     let filter_table = filter_tables.first().unwrap();
 
     let node_map = astar(&graph, &filter_table, |f| f == display_table, |_| 1, |_| 0);
-    println!("NODE MAP {node_map:?}");
+    // println!("NODE MAP {node_map:?}");
 
     // build a set of edges connecting tables
     // build a graph
@@ -1881,9 +1881,9 @@ pub async fn joined_query(
     // build a Select struct with Full Joins
 
     let path = node_map.unwrap().1;
-    println!("PATH {path:?}");
+    // println!("PATH {path:?}");
     let pairs: Vec<(&&str, &&str)> = zip(&path[..path.len() - 1], &path[1..]).collect();
-    println!("PAIRS {pairs:?}");
+    // println!("PAIRS {pairs:?}");
     let mut edge_path: Vec<Edge> = Vec::new();
     for pair in pairs {
         let (left_table, right_table) = pair;
