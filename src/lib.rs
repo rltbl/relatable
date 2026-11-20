@@ -72,6 +72,9 @@ pub mod web;
 /// Demonstrations
 pub mod demo;
 
+/// LinkML
+pub mod linkml;
+
 #[macro_export]
 macro_rules! user_row {
     ($($key:expr => $value:expr,)+) => {

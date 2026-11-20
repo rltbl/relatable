@@ -176,6 +176,10 @@ pub enum Command {
               help = "Number of rows of demo data to generate",
               default_value_t = 1000)]
         size: usize,
+
+        /// Output LinkML schema for demo (do not initialize).
+        #[arg(long, value_name = "PATH", action = ArgAction::Set)]
+        linkml: Option<String>,
     },
 }
 
@@ -1095,15 +1099,30 @@ pub async fn process_command() {
             .await
             .expect("Operation: 'serve' failed"),
         Command::Cgi {} => serve_cgi().await,
-        Command::Demo { name, force, size } => match name.as_str() {
+        Command::Demo {
+            name,
+            force,
+            size,
+            linkml,
+        } => match name.as_str() {
             "vaccine" => {
-                let rltbl = RelatableBuilder::new()
-                    .env()
-                    .init(*force)
-                    .await
-                    .expect("init Relatable");
                 let dataset = crate::demo::vaccine::Dataset::generate(1, *size as u32);
-                dataset.build(&rltbl).await.expect("init vaccine demo")
+                match linkml {
+                    Some(path) => {
+                        let linkml = dataset.linkml();
+                        // println!("Output LinkML to {path}: {linkml}");
+                        let mut file = std::fs::File::create(path).expect("create file");
+                        file.write(linkml.as_bytes()).expect("write to file");
+                    }
+                    None => {
+                        let rltbl = RelatableBuilder::new()
+                            .env()
+                            .init(*force)
+                            .await
+                            .expect("init Relatable");
+                        dataset.build(&rltbl).await.expect("init vaccine demo");
+                    }
+                }
             }
             _ => build_demo(&cli, force, *size).await,
         },

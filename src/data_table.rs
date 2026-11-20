@@ -1,4 +1,7 @@
-use crate::{self as rltbl};
+use crate::{
+    self as rltbl,
+    linkml::{Class, Enum, Slot, Value as EnumValue},
+};
 use rltbl::{
     column::{Column, ColumnBuilder, Columns},
     core::{Relatable, RelatableError, RowID},
@@ -85,6 +88,7 @@ impl DataTableBuilder {
         self
     }
 
+    /// Set the columns for this data table.
     pub fn columns(&mut self, columns: IndexMap<&String, &Column>) -> &mut Self {
         self.columns = columns
             .into_iter()
@@ -206,6 +210,72 @@ impl DataTableBuilder {
             table.append(rows).await?;
         }
         Ok(())
+    }
+
+    pub fn linkml_slots(&self) -> Vec<Slot> {
+        let mut slots = Vec::new();
+        for column in self.columns.values() {
+            let column = match column {
+                ColumnOrBuilder::Column(column) => column.clone(),
+                ColumnOrBuilder::Builder(column_builder) => column_builder
+                    .clone()
+                    .build()
+                    .expect("valid column builder"),
+            };
+
+            let identifier = match column.structure.first() {
+                Some(structure) => match structure {
+                    crate::structure::Structure::Primary => true,
+                    _ => false,
+                },
+                None => false,
+            };
+
+            let range = match column.datatype.as_str() {
+                "integer" => "integer",
+                _ => "",
+            }
+            .to_string();
+            let range = match column.structure.first() {
+                Some(structure) => match structure {
+                    crate::structure::Structure::From(table, _) => table.clone().unwrap_or(range),
+                    _ => range,
+                },
+                None => range,
+            };
+
+            slots.push(Slot {
+                name: column.column,
+                identifier,
+                description: column.description,
+                range,
+            })
+        }
+        slots
+    }
+
+    pub fn linkml_class(&self) -> Class {
+        Class {
+            name: self.table.name.clone(),
+            description: Default::default(),
+            slots: self.linkml_slots(),
+        }
+    }
+
+    pub fn linkml_enum(&self) -> Enum {
+        Enum {
+            name: self.table.name.clone(),
+            description: Default::default(),
+            permissible_values: self
+                .rows
+                .iter()
+                .map(|row| EnumValue {
+                    name: row.get("name").unwrap().to_string(),
+                    meaning: row.get("curie").unwrap().to_string(),
+                    description: row.get("description").unwrap().to_string(),
+                })
+                .collect(),
+        }
     }
 }
 

@@ -18,20 +18,37 @@
 // LinkML
 // Relatable schema
 
-use std::fmt::Display;
+use std::{fmt::Display, sync::LazyLock};
 
 use anyhow::Result;
+use indexmap::{indexmap, IndexMap};
 use rand::{
     rand_core::{Rng, SeedableRng},
     rngs::ChaCha20Rng,
     RngExt,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize, Serializer};
 use strum::{EnumIter, IntoEnumIterator};
 
-use crate::{core::Relatable, data_table::DataTableBuilder};
+use crate::{
+    core::Relatable,
+    data_table::DataTableBuilder,
+    linkml::{Class, Classes, Enum, Enums},
+};
 
 pub type Id = u32;
+
+static NONWORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\W+").unwrap());
+
+// Replace non-wor
+fn to_curie(prefix: &str, local: &str) -> String {
+    [
+        NONWORD.replace(prefix, "_").to_string(),
+        NONWORD.replace(local, "_").to_string(),
+    ]
+    .join(":")
+}
 
 fn term_table_builder(name: &str, terms: impl Iterator<Item = impl Term>) -> DataTableBuilder {
     let mut builder = DataTableBuilder::from_path(&format!("{name}.tsv"));
@@ -105,7 +122,7 @@ impl Display for VaccineType {
 
 impl Term for VaccineType {
     fn curie(&self) -> String {
-        format!("ex:{}_{}", self.brand(), self.year())
+        to_curie("vaccine", &format!("{}_{}", self.brand(), self.year()))
     }
 
     fn description(&self) -> String {
@@ -195,11 +212,7 @@ impl Display for TargetType {
 
 impl Term for TargetType {
     fn curie(&self) -> String {
-        match self {
-            TargetType::Fake1 => "ex:FAKE1",
-            TargetType::Fake2 => "ex:FAKE2",
-        }
-        .to_string()
+        to_curie("vaccine", &self.to_string())
     }
 
     fn description(&self) -> String {
@@ -586,34 +599,82 @@ impl Dataset {
         builder.row(["vaccine", "", "data"])?;
         builder.create(rltbl).await?;
 
-        let builder = term_table_builder("vaccine_type", self.vaccine_type.into_iter());
-        builder.create(rltbl).await?;
-
-        let builder = term_table_builder("specimen_type", SpecimenType::iter());
-        builder.create(rltbl).await?;
-
-        let builder = term_table_builder("assay_type", AssayType::iter());
-        builder.create(rltbl).await?;
-
-        let builder = term_table_builder("target_type", TargetType::iter());
-        builder.create(rltbl).await?;
-
-        let builder: DataTableBuilder = self.investigation.into();
-        builder.create(rltbl).await?;
-
-        let builder: DataTableBuilder = self.arm.into();
-        builder.create(rltbl).await?;
-
-        let builder: DataTableBuilder = self.participant.into();
-        builder.create(rltbl).await?;
-
-        let builder: DataTableBuilder = self.specimen.into();
-        builder.create(rltbl).await?;
-
-        let builder: DataTableBuilder = self.data.into();
-        builder.create(rltbl).await?;
+        for builder in self.builders().into_values() {
+            builder.create(rltbl).await?;
+        }
 
         Ok(())
+    }
+
+    fn builders(self) -> IndexMap<String, DataTableBuilder> {
+        indexmap![
+            "vaccine_type".to_string() => term_table_builder("vaccine_type", self.vaccine_type.into_iter()),
+            "specimen_type".to_string() => term_table_builder("specimen_type", SpecimenType::iter()),
+            "assay_type".to_string() => term_table_builder("assay_type", AssayType::iter()),
+            "target_type".to_string() => term_table_builder("target_type", TargetType::iter()),
+            "investigation".to_string() => self.investigation.into(),
+            "arm".to_string() => self.arm.into(),
+            "participant".to_string() => self.participant.into(),
+            "speciment".to_string() => self.specimen.into(),
+            "data".to_string() => self.data.into(),
+        ]
+    }
+
+    pub fn linkml(self) -> String {
+        let builders = self.builders();
+        let mut enums: Vec<Enum> = Vec::new();
+        let mut classes: Vec<Class> = Vec::new();
+        for (name, builder) in builders {
+            if name.ends_with("_type") {
+                enums.push(builder.linkml_enum());
+            } else {
+                classes.push(builder.linkml_class());
+            }
+        }
+        let classes = Classes::from(classes);
+        let enums = Enums::from(enums);
+        let slots = classes.slots();
+
+        let slots = slots.render();
+        let classes = classes.render();
+        let enums = enums.render();
+        format!(
+            r#"id: https://example.org/linkml/examples/vaccine
+name: vaccine
+description: |-
+  Synthetic data about vaccine studies.
+license: https://creativecommons.org/publicdomain/zero/1.0/
+default_curi_maps:
+  - semweb_context
+imports:
+  - linkml:types
+prefixes:
+  vaccine: https://example.org/linkml/examples/vaccine/
+  linkml: https://w3id.org/linkml/
+  schema: http://schema.org/
+  rdfs: http://www.w3.org/2000/01/rdf-schema#
+  skos: http://www.w3.org/2004/02/skos/core#
+  OBI: http://purl.obolibrary.org/obo/OBI_
+  UBERON: http://purl.obolibrary.org/obo/UBERON_
+default_prefix: vaccine
+default_range: string
+
+emit_prefixes:
+  - rdf
+  - rdfs
+  - xsd
+  - skos
+  - vaccine
+  - OBI
+  - UBERON
+
+{classes}
+
+{slots}
+
+{enums}
+"#
+        )
     }
 }
 
