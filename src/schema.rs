@@ -83,6 +83,7 @@ impl Default for Schema {
                     .description("the table for this column")
                     .datatype("word")
                     .sql_type("TEXT")
+                    .structure("from(table.table)")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "column")
@@ -111,6 +112,7 @@ impl Default for Schema {
                     .description("the datatype of this column")
                     .datatype("word")
                     .sql_type("TEXT")
+                    .structure("from(datatype.datatype)")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "structure")

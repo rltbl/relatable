@@ -30,6 +30,7 @@ use rand::{
 use regex::Regex;
 use serde::{Deserialize, Serialize, Serializer};
 use strum::{EnumIter, IntoEnumIterator};
+use tabld::model::{CLASS, LABEL, SUBCLASS_OF, TYPE};
 
 use crate::{
     core::Relatable,
@@ -39,6 +40,8 @@ use crate::{
 
 pub type Id = u32;
 
+static VACCINE: &str = "https://example.org/vaccine/";
+static OBO: &str = "http://purl.obolibrary.org/obo/";
 static NONWORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\W+").unwrap());
 
 // Replace non-wor
@@ -50,58 +53,105 @@ fn to_curie(prefix: &str, local: &str) -> String {
     .join(":")
 }
 
-fn term_table_builder(name: &str, terms: impl Iterator<Item = impl Term>) -> DataTableBuilder {
+fn to_iri(curie: &str) -> String {
+    curie
+        .replace("UBERON:", &format!("{OBO}UBERON_"))
+        .replace("OBI:", &format!("{OBO}OBI_"))
+        .replace("BFO:", &format!("{OBO}BFO_"))
+        .replace("VO:", &format!("{OBO}VO_"))
+        .replace("PR:", &format!("{OBO}PR_"))
+}
+
+fn term_table_builder(
+    name: &str,
+    terms: impl Iterator<Item = impl Into<Term>>,
+) -> DataTableBuilder {
     let mut builder = DataTableBuilder::from_path(&format!("{name}.tsv"));
     builder
-        .column("curie")
+        .column("label")
         .sql_type("TEXT")
         .datatype("trimmed_line")
-        .description(&format!("the CURIE for this {name}"));
-    builder
-        .column("name")
-        .sql_type("TEXT")
-        .datatype("trimmed_line")
-        .structure("primary")
-        .description(&format!("the name of this {name}"));
+        .structure("from(terminology.label)") // TODO: also primary
+        .description(&format!("the label for this {name}"));
     builder
         .column("description")
         .sql_type("TEXT")
         .datatype("trimmed_line")
         .description(&format!("a description of this {name}"));
     for term in terms {
+        let term: Term = term.into();
         builder
-            .row([term.curie(), term.to_string(), term.description()])
+            .row([term.label, term.description])
             .expect("valid row");
     }
     builder
 }
 
-pub trait Term: Display {
-    fn curie(&self) -> String;
-    fn description(&self) -> String;
+#[derive(Clone, Debug, Default)]
+pub struct Term {
+    pub label: String,
+    pub curie: String,
+    pub iri: String,
+    pub parent_iris: Vec<String>,
+    pub description: String,
+}
+
+impl From<(&str, &str)> for Term {
+    fn from((curie, label): (&str, &str)) -> Self {
+        Self {
+            label: label.to_string(),
+            curie: curie.to_string(),
+            iri: to_iri(curie),
+            ..Default::default()
+        }
+    }
+}
+
+impl Term {
+    pub fn parent(mut self, curie: &str) -> Self {
+        self.parent_iris.push(to_iri(curie));
+        self
+    }
 }
 
 #[derive(Clone, Debug, EnumIter, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum VaccineType {
-    FooVax(u32),
+    BarVax(u32),
     FooMist(u32),
+    FooVax(u32),
+    VacciFoo(u32),
 }
 
 impl VaccineType {
     pub fn brand(&self) -> String {
         match self {
-            VaccineType::FooVax(_) => "FooVax",
+            VaccineType::BarVax(_) => "BarVax",
             VaccineType::FooMist(_) => "FooMist",
+            VaccineType::FooVax(_) => "FooVax",
+            VaccineType::VacciFoo(_) => "VacciFoo",
         }
         .to_string()
     }
 
     pub fn year(&self) -> String {
         match self {
-            VaccineType::FooVax(year) => year,
+            VaccineType::BarVax(year) => year,
             VaccineType::FooMist(year) => year,
+            VaccineType::FooVax(year) => year,
+            VaccineType::VacciFoo(year) => year,
         }
         .to_string()
+    }
+
+    pub fn generate(rng: &mut impl Rng) -> Self {
+        let year: u32 = rng.random_range(2000..=2026);
+        match rng.random_range(1..=4) {
+            1 => VaccineType::BarVax(year),
+            2 => VaccineType::FooMist(year),
+            3 => VaccineType::FooVax(year),
+            4 => VaccineType::VacciFoo(year),
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -113,24 +163,24 @@ impl Default for VaccineType {
 
 impl Display for VaccineType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            VaccineType::FooVax(year) => write!(f, "FooVax {year}"),
-            VaccineType::FooMist(year) => write!(f, "FooMist {year}"),
-        }
+        write!(f, "{} {}", self.brand(), self.year())
     }
 }
 
-impl Term for VaccineType {
-    fn curie(&self) -> String {
-        to_curie("vaccine", &format!("{}_{}", self.brand(), self.year()))
-    }
-
-    fn description(&self) -> String {
-        format!(
-            "The {} brand vaccine for the {} season.",
-            self.brand(),
-            self.year()
-        )
+impl Into<Term> for VaccineType {
+    fn into(self) -> Term {
+        let local = format!("{}_{}", self.brand(), self.year());
+        Term {
+            label: self.to_string(),
+            curie: to_curie("vaccine", &local),
+            iri: format!("{VACCINE}{local}"),
+            parent_iris: vec![format!("{OBO}VO_0000001")],
+            description: format!(
+                "The {} brand vaccine for the {} season.",
+                self.brand(),
+                self.year()
+            ),
+        }
     }
 }
 
@@ -148,19 +198,22 @@ impl Display for SpecimenType {
     }
 }
 
-impl Term for SpecimenType {
-    fn curie(&self) -> String {
-        match self {
+impl Into<Term> for SpecimenType {
+    fn into(self) -> Term {
+        let curie = match self {
             SpecimenType::Blood => "UBERON:0000178",
         }
-        .to_string()
-    }
-
-    fn description(&self) -> String {
-        match self {
-            SpecimenType::Blood => "A fluid that is composed of blood plasma and erythrocytes.",
+        .to_string();
+        Term {
+            label: self.to_string(),
+            curie: curie.clone(),
+            iri: to_iri(&curie),
+            parent_iris: vec![format!("{OBO}BFO_0000040")],
+            description: match self {
+                SpecimenType::Blood => "A fluid that is composed of blood plasma and erythrocytes.",
+            }
+            .to_string(),
         }
-        .to_string()
     }
 }
 
@@ -178,61 +231,84 @@ impl Display for AssayType {
     }
 }
 
-impl Term for AssayType {
-    fn curie(&self) -> String {
-        match self {
+impl Into<Term> for AssayType {
+    fn into(self) -> Term {
+        let curie = match self {
             AssayType::ElispotAssay => "OBI:0600031",
         }
-        .to_string()
-    }
-
-    fn description(&self) -> String {
-        match self {
+        .to_string();
+        Term {
+            label: self.to_string(),
+            curie: curie.clone(),
+            iri: to_iri(&curie),
+            parent_iris: vec![format!("{OBO}OBI_0000070")],
+            description: match self {
             AssayType::ElispotAssay => "A cytometry assay in which cells are cultured on a surface coated with a capture antibody binding a secretory material of interest which subsequently gets stained resulting in a spot for each cell producing the secretory material of interest.",
+            }
+            .to_string(),
         }
-        .to_string()
     }
 }
 
-#[derive(Clone, Debug, Default, EnumIter, Serialize, Deserialize)]
+#[derive(Clone, Debug, EnumIter, Serialize, Deserialize)]
 pub enum TargetType {
-    #[default]
-    Fake1,
-    Fake2,
+    Fake(u32),
+    Phony(u32),
+}
+
+impl TargetType {
+    pub fn generate(rng: &mut impl Rng) -> Self {
+        let number: u32 = rng.random_range(1..10);
+        match rng.random_range(1..=2) {
+            1 => TargetType::Fake(number),
+            2 => TargetType::Phony(number),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Default for TargetType {
+    fn default() -> Self {
+        Self::Fake(1)
+    }
 }
 
 impl Display for TargetType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TargetType::Fake1 => write!(f, "FAKE1"),
-            TargetType::Fake2 => write!(f, "FAKE2"),
+            TargetType::Fake(number) => write!(f, "FAKE{number}"),
+            TargetType::Phony(number) => write!(f, "PHONY{number}"),
         }
     }
 }
 
-impl Term for TargetType {
-    fn curie(&self) -> String {
-        to_curie("vaccine", &self.to_string())
-    }
-
-    fn description(&self) -> String {
-        format!("The {self} cytokine.")
+impl Into<Term> for TargetType {
+    fn into(self) -> Term {
+        Term {
+            label: self.to_string(),
+            curie: to_curie("vaccine", &self.to_string()),
+            iri: format!("{VACCINE}{self}"),
+            parent_iris: vec![format!("{OBO}PR_000000001")],
+            description: format!("The {self} cytokine."),
+        }
     }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Investigation {
     pub investigation_id: Id,
-    pub name: String,
+    pub label: String,
     pub description: String,
 }
 
 impl Investigation {
     pub fn generate(rng: &mut impl Rng, dataset: &mut Dataset) {
-        let vaccine_type = VaccineType::default();
+        let vaccine_type = VaccineType::generate(rng);
         if !dataset.vaccine_type.contains(&vaccine_type) {
             dataset.vaccine_type.push(vaccine_type.clone());
         }
+
+        // let target_types = TargetType::generate(rng);
 
         let investigation_id = dataset.investigation.len() as Id + 1;
 
@@ -241,7 +317,7 @@ impl Investigation {
             arm_id,
             investigation_id,
             vaccine_type: Some(vaccine_type.clone()),
-            name: format!("vaccination arm"),
+            label: format!("vaccination arm"),
             description: format!("10 healthy adults vaccinated with {vaccine_type}"),
         };
         arm.generate(rng, dataset);
@@ -252,7 +328,7 @@ impl Investigation {
             arm_id,
             investigation_id,
             vaccine_type: None,
-            name: format!("control arm"),
+            label: format!("control arm"),
             description: format!("10 healthy adults"),
         };
         arm.generate(rng, dataset);
@@ -260,7 +336,7 @@ impl Investigation {
 
         dataset.investigation.push(Investigation {
             investigation_id,
-            name: format!("Immune response to {vaccine_type}"),
+            label: format!("Immune response to {vaccine_type}"),
             description: format!("Immune response to {vaccine_type} in 10 healthy adults, compared to 10 health adult controls, assessed in ELISPOT activity of FAKE1 and FAKE2 cytokines in blood."),
         });
     }
@@ -276,10 +352,10 @@ impl Into<DataTableBuilder> for Vec<Investigation> {
             .structure("primary")
             .description("the ID for this investigation");
         builder
-            .column("name")
+            .column("label")
             .sql_type("TEXT")
             .datatype("trimmed_line")
-            .description("the name of this investigation");
+            .description("the label for this investigation");
         builder
             .column("description")
             .sql_type("TEXT")
@@ -317,7 +393,7 @@ pub struct Arm {
     pub investigation_id: Id,
     #[serde(serialize_with = "serialize_option_to_string")]
     pub vaccine_type: Option<VaccineType>,
-    pub name: String,
+    pub label: String,
     pub description: String,
 }
 
@@ -357,13 +433,13 @@ impl Into<DataTableBuilder> for Vec<Arm> {
             .sql_type("TEXT")
             .datatype("trimmed_line")
             .nulltype("empty")
-            .structure("from(vaccine_type.name)")
+            .structure("from(vaccine_type.label)")
             .description("the vaccine used in this arm, if any");
         builder
-            .column("name")
+            .column("label")
             .sql_type("TEXT")
             .datatype("trimmed_line")
-            .description("the name of this arm");
+            .description("the label for this arm");
         builder
             .column("description")
             .sql_type("TEXT")
@@ -440,7 +516,7 @@ impl Specimen {
     pub fn generate(&self, rng: &mut impl Rng, dataset: &mut Dataset) {
         let participant_id = self.participant_id;
         let specimen_id = self.specimen_id;
-        for target_type in [TargetType::Fake1, TargetType::Fake2] {
+        for target_type in [TargetType::Fake(1), TargetType::Fake(2)] {
             let data_id = dataset.data.len() as Id + 1;
             let data = Data {
                 data_id,
@@ -475,7 +551,7 @@ impl Into<DataTableBuilder> for Vec<Specimen> {
             .column("specimen_type")
             .sql_type("TEXT")
             .datatype("trimmed_line")
-            .structure("from(specimen_type.name)")
+            .structure("from(specimen_type.label)")
             .description("the type of this specimen");
         builder
             .column("study_day")
@@ -537,13 +613,13 @@ impl Into<DataTableBuilder> for Vec<Data> {
             .column("assay_type")
             .sql_type("TEXT")
             .datatype("trimmed_line")
-            .structure("from(assay_type.name)")
+            .structure("from(assay_type.label)")
             .description("the assay type for this data");
         builder
             .column("target_type")
             .sql_type("TEXT")
             .datatype("trimmed_line")
-            .structure("from(target_type.name)")
+            .structure("from(target_type.label)")
             .description("the target type for this data");
         builder
             .column("value")
@@ -575,6 +651,56 @@ impl Dataset {
     }
 
     pub async fn build(self, rltbl: &Relatable) -> Result<()> {
+        let mut builder = DataTableBuilder::from_path("rule.tsv");
+        builder
+            .column("rule")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description("the name of rule");
+        builder
+            .column("table")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .structure("from(table.table)")
+            .description("the table for this rule");
+        builder
+            .column("when_column")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .structure("from(column.column)")
+            .description("the column for the when condition");
+        builder
+            .column("when_condition")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description("the when condition for this rule");
+        builder
+            .column("then_column")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .structure("from(column.column)")
+            .description("the column for the then condition");
+        builder
+            .column("then_condition")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description("the then condition for this rule");
+        builder
+            .column("description")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description("the description of this rule");
+        builder.row([
+            "ELISPOT count",
+            "data",
+            "assay_type",
+            "equals(ELISPOT)",
+            "unit",
+            "equals(count)",
+            "when the assay type is 'ELISPOT' then the unit must be 'count'",
+        ])?;
+        builder.create(rltbl).await?;
+
         let mut builder = DataTableBuilder::from_path("tableset.tsv");
         builder
             .column("tableset")
@@ -591,7 +717,20 @@ impl Dataset {
             .column("table")
             .sql_type("TEXT")
             .datatype("trimmed_line")
+            .structure("from(table.table)")
             .description("the table in this table set");
+        builder.row(["schema", "", "table"])?;
+        builder.row(["schema", "", "column"])?;
+        builder.row(["schema", "", "datatype"])?;
+        builder.row(["schema", "", "rule"])?;
+        builder.row(["schema", "", "tableset"])?;
+        builder.row(["schema", "", "message"])?;
+        builder.row(["terminology", "", "terminology"])?;
+        builder.row(["terminology", "", "vaccine_type"])?;
+        builder.row(["terminology", "", "specimen_type"])?;
+        builder.row(["terminology", "", "assay_type"])?;
+        builder.row(["terminology", "", "target_type"])?;
+        builder.row(["terminology", "", "ontology"])?;
         builder.row(["vaccine", "", "investigation"])?;
         builder.row(["vaccine", "", "arm"])?;
         builder.row(["vaccine", "", "participant"])?;
@@ -606,8 +745,118 @@ impl Dataset {
         Ok(())
     }
 
+    fn terms(&self) -> Vec<Term> {
+        let mut terms = Vec::new();
+        for term in &self.vaccine_type {
+            terms.push(term.clone().into());
+        }
+        for term in SpecimenType::iter() {
+            terms.push(term.into());
+        }
+        for term in AssayType::iter() {
+            terms.push(term.into());
+        }
+        for term in TargetType::iter() {
+            terms.push(term.into());
+        }
+        terms
+    }
+
     fn builders(self) -> IndexMap<String, DataTableBuilder> {
+        let name = "ontology";
+        let mut builder = DataTableBuilder::from_path(&format!("{name}.tsv"));
+        builder
+            .column("subject")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description(&format!("the subject for this statement"));
+        builder
+            .column("predicate")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description(&format!("the predicate for this statement"));
+        builder
+            .column("object")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description(&format!("the object for this statement"));
+        builder
+            .column("datatype")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description(&format!("the datatype for this statement"));
+        builder
+            .column("annotation")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description(&format!("the annotation for this statement"));
+        let terms: Vec<Term> = [
+            Term::from(("BFO:0000040", "material entity")),
+            Term::from(("VO:0000001", "vaccine")).parent("BFO:0000040"),
+            Term::from(("PR:000000001", "protein")).parent("BFO:0000040"),
+            Term::from(("BFO:0000040", "process")),
+            Term::from(("OBI:0000070", "assay")).parent("BFO:0000015"),
+        ]
+        .into_iter()
+        .chain(self.terms().into_iter())
+        .collect();
+        for term in terms {
+            builder.row([&term.iri, TYPE, CLASS, "_IRI", ""]).unwrap();
+            for parent_iri in &term.parent_iris {
+                builder
+                    .row([&term.iri, SUBCLASS_OF, parent_iri, "_IRI", ""])
+                    .unwrap();
+            }
+            builder
+                .row([&term.iri, LABEL, &term.label, "@en", ""])
+                .unwrap();
+            if !term.description.is_empty() {
+                builder
+                    .row([
+                        &term.iri,
+                        &format!("{OBO}IAO_0000115"),
+                        &term.description,
+                        "@en",
+                        "",
+                    ])
+                    .unwrap();
+            }
+        }
+        let ontology_builder = builder;
+
+        let mut builder = DataTableBuilder::from_path(&format!("terminology.tsv"));
+        builder
+            .column("label")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .structure("primary")
+            .description("the label for this term");
+        builder
+            .column("curie")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description("the CURIE for this term");
+        builder
+            .column("iri")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .structure("from(ontology.subject)")
+            .description("the IRI for this term");
+        builder
+            .column("description")
+            .sql_type("TEXT")
+            .datatype("trimmed_line")
+            .description("a description of this term");
+        for term in self.terms() {
+            builder
+                .row([term.label, term.curie, term.iri, term.description])
+                .unwrap();
+        }
+        let terminology_builder = builder;
+
         indexmap![
+            "ontology".to_string() => ontology_builder,
+            "terminology".to_string() => terminology_builder,
             "vaccine_type".to_string() => term_table_builder("vaccine_type", self.vaccine_type.into_iter()),
             "specimen_type".to_string() => term_table_builder("specimen_type", SpecimenType::iter()),
             "assay_type".to_string() => term_table_builder("assay_type", AssayType::iter()),
