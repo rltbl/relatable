@@ -674,14 +674,8 @@ pub async fn prompt_for_json_message(
 
 pub async fn prompt_for_json_row(rltbl: &Relatable, table_name: &str) -> Result<JsonRow> {
     tracing::trace!("prompt_for_json_row({rltbl:?}, {table_name})");
-    let columns: Vec<String> = rltbl
-        .column_table()
-        .await?
-        .get(&[table_name])
-        .await?
-        .iter()
-        .map(|col| col.column.to_string())
-        .collect();
+    let schema = rltbl.schema().await?;
+    let columns: Vec<String> = schema.columns(table_name).into_keys().cloned().collect();
     let mut json_row = JsonRow::new();
     for column in &columns {
         json_row.insert(column.to_string(), json!(r#""""#));
