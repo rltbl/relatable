@@ -1,0 +1,322 @@
+{% extends "page.html" %}
+
+{% set range = result.range %}
+{% set table = result.table %}
+{% set columns = result.columns %}
+{% set rows = result.rows %}
+
+{% set RDF_TYPE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" %}
+{% set OWL_CLASS = "http://www.w3.org/2002/07/owl#Class" %}
+{% set OWL_RESTRICTION = "http://www.w3.org/2002/07/owl#Restriction" %}
+{% set OWL_INTERSECTION_OF = "http://www.w3.org/2002/07/owl#intersectionOf" %}
+{% set OWL_UNION_OF = "http://www.w3.org/2002/07/owl#unionOf" %}
+{% set OWL_ON_PROPERTY = "http://www.w3.org/2002/07/owl#onProperty" %}
+{% set OWL_SOME_VALUES_FROM = "http://www.w3.org/2002/07/owl#someValuesFrom" %}
+{% set OWL_ALL_VALUES_FROM = "http://www.w3.org/2002/07/owl#allValuesFrom" %}
+{% set OWL_HAS_SELF = "http://www.w3.org/2002/07/owl#hasSelf" %}
+{% set OWL_HAS_VALUE = "http://www.w3.org/2002/07/owl#hasValue" %}
+
+{%- macro curie(id) -%}
+{{graph["curies"][id]|replace('/','%2F')|replace('#', '%23')}}
+{%- endmacro -%}
+
+{%- macro href(id) -%}
+./ontology?statement.subject=eq.{{id}}
+{%- endmacro -%}
+
+{%- macro link(id) -%}
+<a href="{{href(id)|safe}}">{{graph["labels"][id]|safe}}</a>
+{%- endmacro -%}
+
+{%- macro render_literal(object) -%}
+<span class="literal">
+  <span class="value">{{object["@value"]}}</span>
+  {#
+  {%- if "@language" in object -%}
+  <sup> @<span class="language">{{object["@language"]}}</span></sup>
+  {%- elif "@type" in object -%}
+  <sup> <span class="type">{{link(object["@type"])}}</span></sup>
+  {%- endif -%}
+  #}
+</span>
+{%- endmacro -%}
+
+{% macro render_object(object) -%}
+{%- if object is string -%}
+TODO STRING: {{object}}
+{%- elif "@id" in object -%}
+{{link(object["@id"])}}
+{%- elif "@value" in object -%}
+{{render_literal(object)}}
+{%- elif "@list" in object -%}
+{%- for obj in object["@list"] -%}
+{{render_object(obj)}}
+{%- endfor %}
+{%- elif "@type" in object or RDF_TYPE in object -%}
+{{logic(object)}}
+{%- else -%}
+TODO OTHER: {{object|pprint|safe}}
+{%- endif -%}
+{%- if "@annotations" in object -%}
+<ul>
+  {%- for axiom in object["@annotations"] -%}
+  {%- for predicate in axiom -%}
+  {%- if predicate != RDF_TYPE -%}
+  <li>
+    {{link(predicate)}}
+    <ul>
+      {%- for obj in axiom[predicate] %}
+      <li>{{render_object(obj)}}</li>
+      {%- endfor %}
+    </ul>
+  </li>
+  {%- endif -%}
+  {%- endfor %}
+  {%- endfor %}
+</ul>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro logic(object) -%}
+{%- with type = object["@type"][0] if "@type" in object else object[RDF_TYPE][0]["@id"] -%}
+{%- if type == OWL_RESTRICTION -%}
+{%- if OWL_ON_PROPERTY in object %}
+{{render_object(object[OWL_ON_PROPERTY][0])}}
+{%- endif -%}
+{%- if OWL_SOME_VALUES_FROM in object %}
+some {{render_object(object[OWL_SOME_VALUES_FROM][0])}}
+{%- elif OWL_ALL_VALUES_FROM in object %}
+only {{render_object(object[OWL_ALL_VALUES_FROM][0])}}
+{%- elif OWL_HAS_VALUE in object %}
+value {{render_object(object[OWL_HAS_VALUE][0])}}
+{%- elif OWL_HAS_SELF in object and object[OWL_HAS_SELF][0]["@value"] == "true" %}
+self
+{% else -%}
+UNKNOWN RESTRICTION {{object|pprint|safe}}
+{%- endif -%}
+{%- elif type == OWL_CLASS -%}
+{%- if OWL_INTERSECTION_OF in object %}
+({%- for item in object[OWL_INTERSECTION_OF][0]["@list"] -%}
+{{render_object(item)}}{{ ' and ' if not loop.last }}
+{%- endfor -%})
+{%- elif OWL_UNION_OF in object %}
+({%- for item in object[OWL_UNION_OF][0]["@list"] -%}
+{{render_object(item)}}{{ ' or ' if not loop.last }}
+{%- endfor -%})
+{%- else -%}
+UNKNOWN CLASS {{object|pprint|safe}}
+{%- endif -%}
+{%- else -%}
+UNKNOWN LOGIC {{object|pprint|safe}}
+{%- endif -%}
+{%- endwith -%}
+{%- endmacro %}
+
+{% macro render_node(node) -%}
+<li>
+  <a href="{{href(node.id)|safe}}" class="{{'focus' if 'focus' in node }}">
+    {% if "rel" in node and node.rel in graph["icons"] %}
+    {{graph["icons"][node.rel]}}
+    {% endif %}
+    {%- if node.id in graph["deprecated"] -%}
+    <del>{{graph["labels"][node.id]|safe}}</del>
+    {%- else -%}
+    {{graph["labels"][node.id]|safe}}
+    {%- endif -%}
+  </a>
+  {%- for child in node.children %}
+  <ul>
+    {{render_node(child)}}
+  </ul>
+  {%- endfor -%}
+</li>
+{%- endmacro %}
+
+{% set id = graph["@id"] %}
+
+{% set first_preds = [
+"http://www.w3.org/2000/01/rdf-schema#label"
+] %}
+{% set last_preds = [
+"http://www.w3.org/2002/07/owl#equivalentClass",
+"http://www.w3.org/2000/01/rdf-schema#subClassOf"
+] %}
+{% set middle_preds = graph["predicates"] | reject("in", first_preds) | reject("in", last_preds) %}
+{% set predicates = first_preds | chain(middle_preds) | chain(last_preds) %}
+
+{% block styles %}
+<link href="{{site.root}}/static/main.css" rel="stylesheet">
+{% endblock %}
+
+{% block content %}
+<div class="float-end mt-1">
+  <a class="btn btn-outline-primary" href="{{site.root}}/{{page.path}}/{{table.table}}">
+    <i class="bi bi-funnel"></i>
+    Clear Filters
+  </a>
+  <div class="btn-group">
+    <a class="btn btn-outline-primary dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown"
+      aria-expanded="false">
+      Format
+    </a>
+    <ul class="dropdown-menu">
+      {% for name, url in page.formats|items %}
+      <li><a class="dropdown-item" href="{{url}}">{{name}}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+  <a class="btn btn-outline-primary" href="{{site.root}}/add-row/{{table.table}}">
+    <i class="bi bi-plus"></i>
+    Append Row
+  </a>
+</div>
+<h1>{{ table.table }}</h1>
+{% if result.select.filters %}
+<p>
+  <a class="btn btn-sm btn-warning" href="{{site.root}}/{{page.path}}/{{table.name}}">
+    <i class="bi bi-x-square"></i>
+    Clear Filters
+  </a>
+  {% for filter in result.select.filters %}
+  <a class="btn btn-sm btn-secondary" href="#">
+    <i class="bi bi-x-square"></i>
+    {{filter['table'] + '.' if filter['table'] !=
+    result['table']['name']}}{{filter['column']}} = {{filter['value']}}
+  </a>
+  {% endfor %}
+</p>
+{% endif %}
+
+{% if page.tab_groups %}
+<ul class="nav nav-tabs mb-2">
+  {% for tab in page.tab_groups %}
+  <li class="nav-item">
+    <a class="nav-link {{'active' if tab['active'] == true}} {{'disabled' if tab['disabled'] == true}}"
+      href="{{tab['url']}}">
+      {{tab['table']}}
+      <span id="tab-group-{{tab['table']}}-count" class="badge rounded-pill text-bg-secondary">...</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if page.tabs %}
+<ul class="nav nav-tabs mb-2">
+  {% for tab in page.tabs %}
+  <li class="nav-item">
+    <a class="nav-link {{'active' if tab['active'] == true}} {{'disabled' if tab['disabled'] == true}}"
+      href="{{tab['url']}}">
+      {{tab['table']}}
+      <span id="tab-{{tab['table']}}-count" class="badge rounded-pill text-bg-secondary">...</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{#
+<div class="row pt-4">
+  <div class="col-md-auto">
+    <span class="h2">{{ graph_name }}</span>
+  </div>
+  <div class="col mt-1">
+    <form class="form">
+      <input id="tree-typeahead-form" class="search typeahead w-100" type="input" placeholder="Search..." />
+    </form>
+  </div>
+</div>
+#}
+
+<div class="row" style="padding-bottom:5px; padding-top:20px;">
+  <div class="col">
+    <h3>{{ graph["labels"][id]|safe }}</h3>
+    <h5>{{ graph["curies"][id] }}</h5>
+    <p><a href="{{id}}" target="_new">{{id}} <i class="bi bi-box-arrow-up-right"></i></a></p>
+  </div>
+  {#
+  <div class="col">
+    <span>
+      <a class="btn btn-outline-secondary dropdown-toggle" href="" data-bs-toggle="dropdown" aria-expanded="false">
+        Format
+      </a>
+      <ul class="dropdown-menu">
+        {% for name, href in formats|items %}
+        <li><a class="dropdown-item" href="{{ href }}">{{ name }}</a></li>
+        {% endfor %}
+      </ul>
+    </span>
+  </div>
+  #}
+</div>
+
+<div class="row">
+  <div class="col">
+    <ul>
+      {%- for node in graph["tree"] %}
+      {{render_node(node)}}
+      {%- endfor %}
+    </ul>
+  </div>
+  <div class="col">
+    <ul>
+      {%- for predicate in predicates %}
+      {% if predicate in graph["predicates"] %}
+      <li>
+        {{link(predicate)}}
+        <ul>
+          {%- for object in graph["predicates"][predicate] %}
+          <li>{{render_object(object)}}</li>
+          {%- endfor %}
+        </ul>
+      </li>
+      {% endif %}
+      {%- endfor %}
+    </ul>
+  </div>
+</div>
+{#
+<pre>{{graph|pprint|safe}}</pre>
+#}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.rltbl = {};
+  window.rltbl.site = {{site | tojson}};
+  window.rltbl.page = {{page | tojson}};
+  window.rltbl.result = {{result | tojson}};
+  window.rltbl.grid = {};
+
+  for (var i = 0; i < window.rltbl.page.tab_groups.length; i++) {
+    var tab = window.rltbl.page.tab_groups[i];
+    // console.log("fetch " + i, tab);
+    fetch_count(tab);
+  }
+
+  for (var i = 0; i < window.rltbl.page.tabs.length; i++) {
+    var tab = window.rltbl.page.tabs[i];
+    // console.log("fetch " + i, tab);
+    fetch_count(tab);
+  }
+
+  function fetch_count(tab) {
+    if (window.rltbl.page.tableset == "terminology" && tab['table'] == "ontology") {
+      document.getElementById("tab-" + tab['table'] + "-count").remove();
+      return;
+    }
+    fetch(tab['count'])
+      .catch(e => console.log("tab count error", tab, e))
+      .then(response => response.json())
+      .then(data => {
+        // console.log("tab count result", tab, data);
+        try {
+          document.getElementById("tab-" + tab['table'] + "-count").innerHTML = data;
+        } catch (e) { }
+        try {
+          document.getElementById("tab-group-" + tab['table'] + "-count").innerHTML = data;
+        } catch (e) { }
+      });
+  }
+</script>
+{% endblock %}

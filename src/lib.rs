@@ -60,6 +60,9 @@ pub mod schema;
 /// Structs for representing tables, contents, changes, results
 pub mod table;
 
+/// Ontology trees
+pub mod tree;
+
 /// Core functionality
 pub mod core;
 

@@ -2,7 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[web](crate::web)).
 
-use crate as rltbl;
+use crate::{self as rltbl, tree::Trees};
 use rltbl::{
     change::ChangeSet,
     cli::Cli,
@@ -13,10 +13,11 @@ use rltbl::{
     user::Cursor,
 };
 use rltbl_db::JsonRow;
+use tabld::model::Graph;
 
 use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use axum::{
     body::Body,
     extract::{Json as ExtractJson, Path, Query, State},
@@ -84,15 +85,22 @@ async fn main_css() -> impl IntoResponse {
     (headers, include_str!("resources/main.css"))
 }
 
-async fn respond(rltbl: &Relatable, format: &Format, content: &JsonValue) -> Response<Body> {
+async fn respond(
+    rltbl: &Relatable,
+    format: &Format,
+    template: &str,
+    content: &JsonValue,
+) -> Response<Body> {
     let response = match format {
-        Format::Html | Format::Default => match rltbl.render("table.html", content) {
-            Ok(html) => Html(html).into_response(),
-            Err(error) => {
-                tracing::error!("{error:?}");
-                return get_500(&error);
+        Format::Html | Format::Default => {
+            match rltbl.render(&format!("{template}.html"), content) {
+                Ok(html) => Html(html).into_response(),
+                Err(error) => {
+                    tracing::error!("{error:?}");
+                    return get_500(&error);
+                }
             }
-        },
+        }
         Format::PrettyJson => {
             let mut headers = HeaderMap::new();
             headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
@@ -167,10 +175,10 @@ async fn get_table(
     let site = rltbl.get_site(&username).await;
     let content = json!({
         "site": site,
-        "page": select.to_page(&rltbl.root, "table", "", &[], &[]).unwrap_or_default(),
+        "page": select.to_page(&rltbl.root, "table", "", "", &[], &[]).unwrap_or_default(),
         "result": result
     });
-    respond(&rltbl, &format, &content).await
+    respond(&rltbl, &format, "table", &content).await
 }
 
 async fn post_table(
@@ -251,8 +259,45 @@ async fn get_tableset(
         Err(error) => return get_404(&error),
     };
 
-    let select = Select::from_path_and_query(&path, &query_params, &rltbl).await;
+    let original_select = Select::from_path_and_query(&path, &query_params, &rltbl).await;
+    let mut select = original_select.clone();
     // tracing::info!("SELECT {select:?}",);
+
+    // WARN: This is a hack for first draft of tree views.
+    let mode = if tableset_name == "terminology" && select.table_name == "ontology" {
+        println!("terminology ontology");
+
+        // let username = get_username(session);
+        // if username.trim() != "" {
+        //     rltbl.user_table().get_or_insert(&username).await;
+        // }
+        // let site = rltbl.get_site(&username).await;
+        // let page = select
+        //     .to_page(
+        //         &rltbl.root,
+        //         &format!("tableset/{tableset_name}"),
+        //         &tableset_name,
+        //         "",
+        //         &[],
+        //         &[],
+        //     )
+        //     .unwrap_or_default();
+        // let result = ResultSet::default();
+
+        // let content = json!({
+        //    "site": site,
+        //    "page": page,
+        //    "result": result
+        // });
+        // return respond(&rltbl, &format, "tree", &content).await;
+
+        select.table_name = "statement".to_string();
+        select.select_column("subject");
+        select.limit = 1;
+        "tree"
+    } else {
+        "table"
+    };
 
     if matches!(format, Format::ValueJson) {
         let sel = match joined_query(&rltbl, &tableset_name, &select).await {
@@ -309,7 +354,7 @@ async fn get_tableset(
         },
     };
 
-    result.select = select.clone();
+    result.select = original_select.clone();
     match format {
         Format::Csv => return respond_csv(result),
         Format::Tsv => return respond_tsv(result),
@@ -365,22 +410,67 @@ async fn get_tableset(
     } else {
         tab_groups.into_keys().collect()
     };
-    let page = select
+    let page = original_select
         .to_page(
             &rltbl.root,
             &format!("tableset/{tableset_name}"),
+            &tableset_name,
             &tab_group,
             &tab_groups,
             &tabs,
         )
         .unwrap_or_default();
 
-    let content = json!({
-       "site": site,
-       "page": page,
-       "result": result
-    });
-    respond(&rltbl, &format, &content).await
+    if mode == "tree" {
+        // If there are no filters, display the owl:Ontology.
+        let iri = if original_select.filters.is_empty() {
+            "https://example.org/vaccine".to_string()
+        } else {
+            match result.rows.first().and_then(|row| row.cells.get("subject")) {
+                Some(subject) => subject.text.clone(),
+                None => return get_500(&anyhow!("No term selected")),
+            }
+        };
+
+        let trees = match Trees::load(&rltbl).await {
+            Ok(trees) => trees,
+            Err(error) => return get_500(&error.into()),
+        };
+
+        let graph_name = "ontology";
+        let graph = trees.graphs.get(graph_name).unwrap();
+
+        let subject = match graph.get(&iri) {
+            Some(subject) => subject,
+            None => {
+                return get_404(&anyhow!(
+                    r#"No such subject "{iri}" in graph "{graph_name}"."#
+                ))
+            }
+        };
+
+        let output = match trees.get_term(graph, &subject, &iri) {
+            Ok(result) => result,
+            Err(message) => return get_404(&anyhow!(message)).into_response(),
+        };
+
+        let content = json!({
+            "site": site,
+            "page": page,
+            "result": result,
+            "graph_name": graph_name,
+            "graph": output,
+        });
+
+        respond(&rltbl, &format, mode, &content).await
+    } else {
+        let content = json!({
+           "site": site,
+           "page": page,
+           "result": result,
+        });
+        respond(&rltbl, &format, mode, &content).await
+    }
 }
 
 async fn post_sign_in(

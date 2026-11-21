@@ -1097,6 +1097,7 @@ impl Select {
         &self,
         root: &str,
         path: &str,
+        tableset: &str,
         group_name: &str,
         tab_groups: &[String],
         tabs: &[String],
@@ -1148,6 +1149,7 @@ impl Select {
         Ok(Page {
             path: path.to_string(),
             formats,
+            tableset: tableset.to_string(),
             tab_groups,
             tabs,
         })

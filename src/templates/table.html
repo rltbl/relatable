@@ -32,6 +32,21 @@
   </a>
 </div>
 <h1>{{ table.table }}</h1>
+{% if result.select.filters %}
+<p>
+  <a class="btn btn-sm btn-warning" href="{{site.root}}/{{page.path}}/{{table.name}}">
+    <i class="bi bi-x-square"></i>
+    Clear Filters
+  </a>
+  {% for filter in result.select.filters %}
+  <a class="btn btn-sm btn-secondary" href="#">
+    <i class="bi bi-x-square"></i>
+    {{filter['table'] + '.' if filter['table'] !=
+    result['table']['name']}}{{filter['column']}} = {{filter['value']}}
+  </a>
+  {% endfor %}
+</p>
+{% endif %}
 
 {% if page.tab_groups %}
 <ul class="nav nav-tabs mb-2">
@@ -107,6 +122,10 @@
   }
 
   function fetch_count(tab) {
+    if (window.rltbl.page.tableset == "terminology" && tab['table'] == "ontology") {
+      document.getElementById("tab-" + tab['table'] + "-count").remove();
+      return;
+    }
     fetch(tab['count'])
       .catch(e => console.log("tab count error", tab, e))
       .then(response => response.json())
@@ -133,6 +152,10 @@
         kind = "dropdown";
       } else if (column_name === "review") {
         kind = "image";
+      }
+    } else if (table === "arm") {
+      if (column_name === "vaccine_type") {
+        kind = "dropdown";
       }
     }
     window.rltbl.result.columns[i].kind = kind;

@@ -31,6 +31,22 @@
               {% endfor %}
             </ul>
           </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{site.root}}/tableset/schema/table" role="button" aria-expanded="false">
+              Schema
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{site.root}}/tableset/terminology/terminology" role="button"
+              aria-expanded="false">
+              Terminology
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{site.root}}/tableset/vaccine/investigation" role="button" aria-expanded="false">
+              Investigations
+            </a>
+          </li>
           {% block menus %}{% endblock %}
         </ul>
         <ul class="navbar-nav mb-2 mb-md-0">
@@ -80,7 +96,6 @@
                     aria-label="Username">
                 </div>
                 <div class="col-auto">
-                  <input type="hidden" name="redirect" value="{{site.root}}/table/{{table.table}}">
                   <button class="btn btn-success" type="submit">
                     <i class="bi bi-box-arrow-in-right"></i>
                     Sign in

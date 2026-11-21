@@ -698,6 +698,7 @@ impl Relatable {
         let templates = IndexMap::from([
             ("page.html", include_str!("templates/page.html")),
             ("table.html", include_str!("templates/table.html")),
+            ("tree.html", include_str!("templates/tree.html")),
             ("row_menu.html", include_str!("templates/row_menu.html")),
             (
                 "column_menu.html",

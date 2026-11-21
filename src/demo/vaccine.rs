@@ -30,7 +30,10 @@ use rand::{
 use regex::Regex;
 use serde::{Deserialize, Serialize, Serializer};
 use strum::{EnumIter, IntoEnumIterator};
-use tabld::model::{CLASS, LABEL, SUBCLASS_OF, TYPE};
+use tabld::{
+    model::{CLASS, LABEL, SUBCLASS_OF, TYPE},
+    prefix::Prefixes,
+};
 
 use crate::{
     core::Relatable,
@@ -43,6 +46,37 @@ pub type Id = u32;
 static VACCINE: &str = "https://example.org/vaccine/";
 static OBO: &str = "http://purl.obolibrary.org/obo/";
 static NONWORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\W+").unwrap());
+pub static PREFIXES: LazyLock<Prefixes> = LazyLock::new(|| {
+    Prefixes::from_iter(
+        [
+            ("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#"),
+            ("rdfs", "http://www.w3.org/2000/01/rdf-schema#"),
+            ("xsd", "http://www.w3.org/2001/XMLSchema#"),
+            ("owl", "http://www.w3.org/2002/07/owl#"),
+            ("oio", "http://www.geneontology.org/formats/oboInOwl#"),
+            ("dce", "http://purl.org/dc/elements/1.1/"),
+            ("dct", "http://purl.org/dc/terms/"),
+            ("foaf", "http://xmlns.com/foaf/0.1/"),
+            ("BFO", "http://purl.obolibrary.org/obo/BFO_"),
+            ("COB", "http://purl.obolibrary.org/obo/COB_"),
+            ("DOID", "http://purl.obolibrary.org/obo/DOID_"),
+            ("IAO", "http://purl.obolibrary.org/obo/IAO_"),
+            ("NCBITaxon", "http://purl.obolibrary.org/obo/NCBITaxon_"),
+            ("ncbi", "http://purl.obolibrary.org/obo/ncbitaxon#"),
+            ("OBI", "http://purl.obolibrary.org/obo/OBI_"),
+            ("PR", "http://purl.obolibrary.org/obo/PR_"),
+            ("VO", "http://purl.obolibrary.org/obo/VO_"),
+            ("UBERON", "http://purl.obolibrary.org/obo/UBERON_"),
+            ("obo", "http://purl.obolibrary.org/obo/"),
+            ("ONTIE", "https://ontology.iedb.org/ontology/ONTIE_"),
+            ("IEDB", "http://iedb.org/"),
+            ("ex", "https://example.org/"),
+            ("vaccine", "https://example.org/vaccine/"),
+        ]
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string())),
+    )
+});
 
 // Replace non-wor
 fn to_curie(prefix: &str, local: &str) -> String {
@@ -54,12 +88,11 @@ fn to_curie(prefix: &str, local: &str) -> String {
 }
 
 fn to_iri(curie: &str) -> String {
-    curie
-        .replace("UBERON:", &format!("{OBO}UBERON_"))
-        .replace("OBI:", &format!("{OBO}OBI_"))
-        .replace("BFO:", &format!("{OBO}BFO_"))
-        .replace("VO:", &format!("{OBO}VO_"))
-        .replace("PR:", &format!("{OBO}PR_"))
+    let iri = PREFIXES.expand(curie);
+    if iri == curie {
+        tracing::error!("Missing prefix for {curie}");
+    }
+    iri
 }
 
 fn term_table_builder(
@@ -87,13 +120,27 @@ fn term_table_builder(
     builder
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Term {
     pub label: String,
     pub curie: String,
     pub iri: String,
+    pub rdf_type: String,
     pub parent_iris: Vec<String>,
     pub description: String,
+}
+
+impl Default for Term {
+    fn default() -> Self {
+        Self {
+            label: Default::default(),
+            curie: Default::default(),
+            iri: Default::default(),
+            rdf_type: CLASS.to_string(),
+            parent_iris: Default::default(),
+            description: Default::default(),
+        }
+    }
 }
 
 impl From<(&str, &str)> for Term {
@@ -110,6 +157,11 @@ impl From<(&str, &str)> for Term {
 impl Term {
     pub fn parent(mut self, curie: &str) -> Self {
         self.parent_iris.push(to_iri(curie));
+        self
+    }
+
+    pub fn rdf_type(mut self, curie: &str) -> Self {
+        self.rdf_type = to_iri(curie);
         self
     }
 }
@@ -180,6 +232,7 @@ impl Into<Term> for VaccineType {
                 self.brand(),
                 self.year()
             ),
+            ..Default::default()
         }
     }
 }
@@ -213,6 +266,7 @@ impl Into<Term> for SpecimenType {
                 SpecimenType::Blood => "A fluid that is composed of blood plasma and erythrocytes.",
             }
             .to_string(),
+            ..Default::default()
         }
     }
 }
@@ -246,6 +300,7 @@ impl Into<Term> for AssayType {
             AssayType::ElispotAssay => "A cytometry assay in which cells are cultured on a surface coated with a capture antibody binding a secretory material of interest which subsequently gets stained resulting in a spot for each cell producing the secretory material of interest.",
             }
             .to_string(),
+            ..Default::default()
         }
     }
 }
@@ -290,6 +345,7 @@ impl Into<Term> for TargetType {
             iri: format!("{VACCINE}{self}"),
             parent_iris: vec![format!("{OBO}PR_000000001")],
             description: format!("The {self} cytokine."),
+            ..Default::default()
         }
     }
 }
@@ -725,12 +781,13 @@ impl Dataset {
         builder.row(["schema", "", "rule"])?;
         builder.row(["schema", "", "tableset"])?;
         builder.row(["schema", "", "message"])?;
+        builder.row(["terminology", "", "ontology"])?;
         builder.row(["terminology", "", "terminology"])?;
         builder.row(["terminology", "", "vaccine_type"])?;
         builder.row(["terminology", "", "specimen_type"])?;
         builder.row(["terminology", "", "assay_type"])?;
         builder.row(["terminology", "", "target_type"])?;
-        builder.row(["terminology", "", "ontology"])?;
+        builder.row(["terminology", "", "statement"])?;
         builder.row(["vaccine", "", "investigation"])?;
         builder.row(["vaccine", "", "arm"])?;
         builder.row(["vaccine", "", "participant"])?;
@@ -763,7 +820,7 @@ impl Dataset {
     }
 
     fn builders(self) -> IndexMap<String, DataTableBuilder> {
-        let name = "ontology";
+        let name = "statement";
         let mut builder = DataTableBuilder::from_path(&format!("{name}.tsv"));
         builder
             .column("subject")
@@ -791,20 +848,23 @@ impl Dataset {
             .datatype("trimmed_line")
             .description(&format!("the annotation for this statement"));
         let terms: Vec<Term> = [
+            Term::from(("ex:vaccine", "Fake Vaccine Ontology")).rdf_type(TYPE),
             Term::from(("BFO:0000040", "material entity")),
             Term::from(("VO:0000001", "vaccine")).parent("BFO:0000040"),
             Term::from(("PR:000000001", "protein")).parent("BFO:0000040"),
-            Term::from(("BFO:0000040", "process")),
+            Term::from(("BFO:0000015", "process")),
             Term::from(("OBI:0000070", "assay")).parent("BFO:0000015"),
         ]
         .into_iter()
         .chain(self.terms().into_iter())
         .collect();
         for term in terms {
-            builder.row([&term.iri, TYPE, CLASS, "_IRI", ""]).unwrap();
+            builder
+                .row([&term.iri, TYPE, &term.rdf_type, "_ID", ""])
+                .unwrap();
             for parent_iri in &term.parent_iris {
                 builder
-                    .row([&term.iri, SUBCLASS_OF, parent_iri, "_IRI", ""])
+                    .row([&term.iri, SUBCLASS_OF, parent_iri, "_ID", ""])
                     .unwrap();
             }
             builder
@@ -822,7 +882,7 @@ impl Dataset {
                     .unwrap();
             }
         }
-        let ontology_builder = builder;
+        let statement_builder = builder;
 
         let mut builder = DataTableBuilder::from_path(&format!("terminology.tsv"));
         builder
@@ -840,7 +900,7 @@ impl Dataset {
             .column("iri")
             .sql_type("TEXT")
             .datatype("trimmed_line")
-            .structure("from(ontology.subject)")
+            .structure("from(statement.subject)")
             .description("the IRI for this term");
         builder
             .column("description")
@@ -855,7 +915,7 @@ impl Dataset {
         let terminology_builder = builder;
 
         indexmap![
-            "ontology".to_string() => ontology_builder,
+            "statement".to_string() => statement_builder,
             "terminology".to_string() => terminology_builder,
             "vaccine_type".to_string() => term_table_builder("vaccine_type", self.vaccine_type.into_iter()),
             "specimen_type".to_string() => term_table_builder("specimen_type", SpecimenType::iter()),
