@@ -2,16 +2,21 @@
 //!
 //! This is [relatable](crate) (rltbl::[cli](crate::cli))
 
-use crate::{self as rltbl, tsv_table::TsvTable};
+use crate::{
+    self as rltbl,
+    tsv_table::{TsvTable, UserRow, UserRows},
+};
+use indexmap::IndexMap;
 use rltbl::{
     core::{Relatable, RelatableBuilder, RowID, ValidationLevel},
     select::{Format, Select},
     web::{serve, serve_cgi},
 };
-use rltbl_db::{CachingStrategy, JsonRow};
+use rltbl_db::{CachingStrategy, JsonRow, Value as DbValue};
 
 use ansi_term::Style;
 use anyhow::Result;
+use calamine::{open_workbook, Data as XlsxData, Reader, Xlsx};
 use clap::{ArgAction, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use colored::Colorize;
@@ -19,6 +24,7 @@ use promptly::prompt_opt;
 use serde_json::{json, to_string_pretty, Value as JsonValue};
 use std::{
     io::{self, Write},
+    iter::zip,
     path::Path,
 };
 use tabwriter::TabWriter;
@@ -410,7 +416,8 @@ pub enum LoadSubcommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ReloadSubcommand {
-    Table {
+    /// Reload one or more tables
+    Tables {
         #[arg(long,
               default_value = "full",
               action = ArgAction::Set,
@@ -984,24 +991,99 @@ pub async fn reload_tables(cli: &Cli, paths: &Vec<String>, validation_level: &Va
     rltbl.validation_level = *validation_level;
 
     for path in paths {
-        reload_table(cli, &path, &rltbl).await;
+        reload_table(cli, &path, &rltbl)
+            .await
+            .expect("reload table");
     }
 }
 
 /// Load the table at the given path
-pub async fn reload_table(cli: &Cli, path: &str, rltbl: &Relatable) {
+pub async fn reload_table(cli: &Cli, path: &str, rltbl: &Relatable) -> Result<()> {
     tracing::trace!("reload_table({cli:?}, {path}, {rltbl:?})");
     let table_name = Path::new(path)
         .file_name()
         .unwrap()
         .to_string_lossy()
         .trim_end_matches(".tsv")
+        .trim_end_matches(".xlsx")
         .to_string();
-    let table = rltbl
-        .reload_table(&table_name, path)
-        .await
-        .expect("reload table");
-    tracing::info!("Reloaded table '{}'", table.name());
+    if path.ends_with(".xlsx") {
+        println!("Excel file! {path}");
+        let mut workbook: Xlsx<_> = open_workbook(path)?;
+        for sheet in workbook.sheet_names() {
+            println!("Sheet {sheet}");
+            if let Ok(range) = workbook.worksheet_range(&sheet) {
+                let mut rows = range.rows();
+                let header_row = rows.next().expect("a header row");
+                let mut headers = Vec::new();
+                for data in header_row {
+                    match data {
+                        XlsxData::String(string) => headers.push(string.clone()),
+                        _ => panic!("Header must contain only strings"),
+                    };
+                }
+                // println!("header {headers:?}");
+
+                let mut user_rows = Vec::new();
+                for row in rows {
+                    // println!("Row {row:?}");
+                    let mut values = Vec::new();
+                    for data in row {
+                        let value = match data {
+                            XlsxData::Int(i64) => DbValue::BigInteger(*i64),
+                            // WARN: This is a hack!
+                            XlsxData::Float(f64) => DbValue::BigInteger(*f64 as i64),
+                            // XlsxData::Float(f64) => DbValue::BigReal(*f64),
+                            XlsxData::String(string) => DbValue::Text(string.clone()),
+                            XlsxData::Bool(bool) => DbValue::Boolean(*bool),
+                            XlsxData::DateTime(_) => todo!(),
+                            XlsxData::DateTimeIso(string) => DbValue::Text(string.clone()),
+                            XlsxData::DurationIso(string) => DbValue::Text(string.clone()),
+                            XlsxData::Error(_) => todo!(),
+                            XlsxData::Empty => DbValue::Null,
+                        };
+                        values.push(value);
+                    }
+                    let user_row = UserRow {
+                        map: IndexMap::from_iter(zip(headers.clone(), values)),
+                    };
+                    // println!("UserRow {user_row:?}");
+                    user_rows.push(user_row);
+                }
+
+                let table = rltbl.get_table(&sheet).await?;
+                table.drop().await?;
+                table.create().await?;
+
+                let user_rows = UserRows { rows: user_rows };
+                table.append(user_rows).await?;
+
+                if rltbl.validation_level == ValidationLevel::Full {
+                    let schema = rltbl.schema().await?;
+                    rltbl
+                        .validate_table(&sheet)
+                        .await
+                        .expect("Error validating table");
+                    let dependent_tables = schema.dependent_tables(&sheet);
+                    for table in &dependent_tables {
+                        tracing::debug!("Validating dependent table '{}'", table.name);
+                        rltbl
+                            .validate_structure_for_table(&schema, &sheet)
+                            .await
+                            .expect("Error validating table");
+                    }
+                }
+            }
+        }
+    } else {
+        let table = rltbl
+            .reload_table(&table_name, path)
+            .await
+            .expect("reload table");
+        tracing::info!("Reloaded table '{}'", table.name());
+    }
+
+    Ok(())
 }
 
 /// Save all of the tables to their configured locations, or to save_dir if it is given.
@@ -1140,7 +1222,7 @@ pub async fn process_command() {
             } => load_tables(&cli, paths, *force, validation_level).await,
         },
         Command::Reload { subcommand } => match subcommand {
-            ReloadSubcommand::Table {
+            ReloadSubcommand::Tables {
                 paths,
                 validation_level,
             } => reload_tables(&cli, paths, validation_level).await,

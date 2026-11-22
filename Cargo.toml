@@ -49,6 +49,7 @@ whoami = "1.5.2"
 # rltbl_db = { git = "https://github.com/rltbl/rltbl_db.git", default-features = false, optional= true}
 rltbl_db = { path = "../rltbl_db", default-features = false, optional = true }
 tabld = { path = "../../ontodev/tabld.rs" }
+calamine = "0.38.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
