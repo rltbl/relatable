@@ -103,13 +103,13 @@ fn term_table_builder(
     builder
         .column("label")
         .sql_type("TEXT")
-        .datatype("trimmed_line")
+        .datatype("phrase")
         .structure("from(terminology.label)") // TODO: also primary
         .description(&format!("the label for this {name}"));
     builder
         .column("description")
         .sql_type("TEXT")
-        .datatype("trimmed_line")
+        .datatype("paragraph")
         .description(&format!("a description of this {name}"));
     for term in terms {
         let term: Term = term.into();
@@ -410,12 +410,12 @@ impl Into<DataTableBuilder> for Vec<Investigation> {
         builder
             .column("label")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .description("the label for this investigation");
         builder
             .column("description")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("paragraph")
             .description("a description of this investigation");
         for item in &self {
             builder.to_row(item).expect("valid row");
@@ -487,19 +487,19 @@ impl Into<DataTableBuilder> for Vec<Arm> {
         builder
             .column("vaccine_type")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .nulltype("empty")
             .structure("from(vaccine_type.label)")
             .description("the vaccine used in this arm, if any");
         builder
             .column("label")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .description("the label for this arm");
         builder
             .column("description")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("paragraph")
             .description("a description of this arm");
         for item in &self {
             builder.to_row(item).expect("valid row");
@@ -606,7 +606,7 @@ impl Into<DataTableBuilder> for Vec<Specimen> {
         builder
             .column("specimen_type")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .structure("from(specimen_type.label)")
             .description("the type of this specimen");
         builder
@@ -668,13 +668,13 @@ impl Into<DataTableBuilder> for Vec<Data> {
         builder
             .column("assay_type")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .structure("from(assay_type.label)")
             .description("the assay type for this data");
         builder
             .column("target_type")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .structure("from(target_type.label)")
             .description("the target type for this data");
         builder
@@ -685,7 +685,7 @@ impl Into<DataTableBuilder> for Vec<Data> {
         builder
             .column("unit")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .description("the measurement unit for this data");
         for item in &self {
             builder.to_row(item).expect("valid row");
@@ -711,40 +711,40 @@ impl Dataset {
         builder
             .column("rule")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .description("the name of rule");
         builder
             .column("table")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .structure("from(table.table)")
             .description("the table for this rule");
         builder
             .column("when_column")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .structure("from(column.column)")
             .description("the column for the when condition");
         builder
             .column("when_condition")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .description("the when condition for this rule");
         builder
             .column("then_column")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .structure("from(column.column)")
             .description("the column for the then condition");
         builder
             .column("then_condition")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .description("the then condition for this rule");
         builder
             .column("description")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("paragraph")
             .description("the description of this rule");
         builder.row([
             "ELISPOT count",
@@ -761,18 +761,18 @@ impl Dataset {
         builder
             .column("tableset")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .description("the name of the table set");
         builder
             .column("group")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .nulltype("empty")
             .description("the group for this table in the table set");
         builder
             .column("table")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .structure("from(table.table)")
             .description("the table in this table set");
         builder.row(["schema", "", "table"])?;
@@ -781,13 +781,13 @@ impl Dataset {
         builder.row(["schema", "", "rule"])?;
         builder.row(["schema", "", "tableset"])?;
         builder.row(["schema", "", "message"])?;
-        builder.row(["terminology", "", "ontology"])?;
         builder.row(["terminology", "", "terminology"])?;
         builder.row(["terminology", "", "vaccine_type"])?;
         builder.row(["terminology", "", "specimen_type"])?;
         builder.row(["terminology", "", "assay_type"])?;
         builder.row(["terminology", "", "target_type"])?;
         builder.row(["terminology", "", "statement"])?;
+        builder.row(["terminology", "", "ontology"])?;
         builder.row(["vaccine", "", "investigation"])?;
         builder.row(["vaccine", "", "arm"])?;
         builder.row(["vaccine", "", "participant"])?;
@@ -825,31 +825,31 @@ impl Dataset {
         builder
             .column("subject")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("nonspace")
             .description(&format!("the subject for this statement"));
         builder
             .column("predicate")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("nonspace")
             .description(&format!("the predicate for this statement"));
         builder
             .column("object")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("text")
             .description(&format!("the object for this statement"));
         builder
             .column("datatype")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("nonspace")
             .description(&format!("the datatype for this statement"));
         builder
             .column("annotation")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("any")
             .description(&format!("the annotation for this statement"));
         let terms: Vec<Term> = [
             Term::from(("ex:vaccine", "Fake Vaccine Ontology")).rdf_type(TYPE),
-            Term::from(("BFO:0000040", "material entity")),
+            Term::from(("BFO:0000040", "material entity")).parent("owl:Thing"),
             Term::from(("VO:0000001", "vaccine")).parent("BFO:0000040"),
             Term::from(("PR:000000001", "protein")).parent("BFO:0000040"),
             Term::from(("BFO:0000015", "process")),
@@ -888,24 +888,24 @@ impl Dataset {
         builder
             .column("label")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("phrase")
             .structure("primary")
             .description("the label for this term");
         builder
             .column("curie")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("nonspace")
             .description("the CURIE for this term");
         builder
             .column("iri")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("nonspace")
             .structure("from(statement.subject)")
             .description("the IRI for this term");
         builder
             .column("description")
             .sql_type("TEXT")
-            .datatype("trimmed_line")
+            .datatype("paragraph")
             .description("a description of this term");
         for term in self.terms() {
             builder

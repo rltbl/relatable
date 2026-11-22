@@ -2538,7 +2538,7 @@ mod tests {
         // assert_eq!(schema.tables.len(), 5);
         assert_eq!(schema.columns.len(), 25, "count all columns");
         assert_eq!(schema.columns("penguin").len(), 8, "count penguin columns");
-        assert_eq!(schema.datatypes.len(), 9, "count all datatypes");
+        assert_eq!(schema.datatypes.len(), 14, "count all datatypes");
 
         rltbl.drop_test().await
     }

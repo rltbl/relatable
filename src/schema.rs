@@ -96,7 +96,7 @@ impl Default for Schema {
                 ColumnBuilder::new("column", "label")
                     .id(5)
                     .description("the label of this column")
-                    .datatype("trimmed_line")
+                    .datatype("phrase")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
@@ -118,14 +118,14 @@ impl Default for Schema {
                 ColumnBuilder::new("column", "structure")
                     .id(8)
                     .description("the structure of this column")
-                    .datatype("trimmed_line")
+                    .datatype("phrase")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("column", "description")
                     .id(9)
                     .description("the description of this column")
-                    .datatype("trimmed_line")
+                    .datatype("paragraph")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
@@ -147,14 +147,14 @@ impl Default for Schema {
                 ColumnBuilder::new("datatype", "condition")
                     .id(12)
                     .description("the validation condition")
-                    .datatype("trimmed_line")
+                    .datatype("phrase")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 ColumnBuilder::new("datatype", "sql_type")
                     .id(13)
                     .description("the validation condition")
-                    .datatype("trimmed_line")
+                    .datatype("phrase")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
@@ -168,7 +168,7 @@ impl Default for Schema {
                 ColumnBuilder::new("datatype", "description")
                     .id(15)
                     .description("the description of this datatype")
-                    .datatype("trimmed_line")
+                    .datatype("paragraph")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),

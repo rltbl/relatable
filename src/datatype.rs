@@ -49,7 +49,7 @@ impl Default for Datatype {
             order: Default::default(),
             datatype: Default::default(),
             description: Default::default(),
-            parent: "text".to_owned(),
+            parent: "any".to_string(),
             condition: Default::default(),
             sql_type: Default::default(),
             format: Default::default(),
@@ -296,33 +296,54 @@ impl Datatypes {
     pub fn builtins() -> Self {
         Datatypes {
             map: [
-                DatatypeBuilder::new("text")
-                    .description("any text")
+                DatatypeBuilder::new("any")
+                    .description("any string")
                     .parent("")
                     .sql_type("TEXT")
                     .build()
                     .unwrap(),
                 DatatypeBuilder::new("empty")
                     .description("the empty string")
-                    .parent("text")
+                    .parent("any")
                     .condition("equals('')")
                     .build()
                     .unwrap(),
-                DatatypeBuilder::new("line")
-                    .description("a line of text")
+                DatatypeBuilder::new("text")
+                    .description("any string except the empty string")
+                    .parent("any")
+                    .condition(r"match(.+)")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("trimmed")
+                    .description("text that does not begin or end with whitespace")
                     .parent("text")
+                    .condition(r"match(\S([^\n]*\S)*)")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("line")
+                    .description("a trimmed line of text")
+                    .parent("trimmed")
                     .condition(r"match([^\n]+)")
                     .build()
                     .unwrap(),
-                DatatypeBuilder::new("trimmed_line")
-                    .description("a line of text that deos not begin or end with whitespace")
+                DatatypeBuilder::new("paragraph")
+                    .description("one or more sentences")
                     .parent("line")
-                    .condition(r"match(\S([^\n]*\S)*)")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("sentence")
+                    .description("a sentence")
+                    .parent("paragraph")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("phrase")
+                    .description("one or more words")
+                    .parent("line")
                     .build()
                     .unwrap(),
                 DatatypeBuilder::new("nonspace")
                     .description("text without whitespace")
-                    .parent("trimmed_line")
+                    .parent("line")
                     .condition(r"match([^\s]+)")
                     .build()
                     .unwrap(),
@@ -332,11 +353,25 @@ impl Datatypes {
                     .condition(r"match(\w+)")
                     .build()
                     .unwrap(),
+                DatatypeBuilder::new("number")
+                    .description("a number")
+                    .parent("nonspace")
+                    .sql_type("REAL")
+                    .condition(r"match(-?\d+(\.\d+)?)")
+                    .build()
+                    .unwrap(),
                 DatatypeBuilder::new("integer")
                     .description("an integer")
-                    .parent("nonspace")
+                    .parent("number")
                     .sql_type("INTEGER")
                     .condition(r"match(-?\d+)")
+                    .build()
+                    .unwrap(),
+                DatatypeBuilder::new("decimal")
+                    .description("a decimal number")
+                    .parent("number")
+                    .sql_type("REAL")
+                    .condition(r"match(-?\d+\.\d+)")
                     .build()
                     .unwrap(),
             ]
@@ -545,8 +580,8 @@ mod tests {
         expected.insert(
             "float".to_string(),
             Datatype {
-                id: 8,
-                order: 8000,
+                id: 14,
+                order: 14000,
                 datatype: "float".to_string(),
                 parent: "word".to_string(),
                 sql_type: "REAL".to_string(),
@@ -572,8 +607,8 @@ mod tests {
 
         let test = DatatypeBuilder::new("test")
             .description("test datatype")
-            .id(8)
-            .order(8000)
+            .id(14)
+            .order(14000)
             .build()
             .unwrap();
         table.add(&[&test]).await?;
@@ -619,10 +654,12 @@ mod tests {
             ancestors,
             vec![
                 datatypes.get("integer").unwrap(),
+                datatypes.get("number").unwrap(),
                 datatypes.get("nonspace").unwrap(),
-                datatypes.get("trimmed_line").unwrap(),
                 datatypes.get("line").unwrap(),
+                datatypes.get("trimmed").unwrap(),
                 datatypes.get("text").unwrap(),
+                datatypes.get("any").unwrap(),
             ]
         );
         Ok(())
