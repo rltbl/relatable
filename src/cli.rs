@@ -17,7 +17,10 @@ use clap_verbosity_flag::Verbosity;
 use colored::Colorize;
 use promptly::prompt_opt;
 use serde_json::{json, to_string_pretty, Value as JsonValue};
-use std::{io, io::Write};
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";
@@ -143,6 +146,12 @@ pub enum Command {
     Load {
         #[command(subcommand)]
         subcommand: LoadSubcommand,
+    },
+
+    /// Reload data into the datanase
+    Reload {
+        #[command(subcommand)]
+        subcommand: ReloadSubcommand,
     },
 
     /// Save the data
@@ -385,6 +394,23 @@ pub enum LoadSubcommand {
         #[arg(long, action = ArgAction::SetTrue)]
         force: bool,
 
+        #[arg(long,
+              default_value = "full",
+              action = ArgAction::Set,
+              help = VALIDATION_LEVEL_HELP)
+        ]
+        validation_level: ValidationLevel,
+
+        #[arg(value_name = "PATH", num_args=1..,
+              action = ArgAction::Set,
+              help = "The path(s) to load from")]
+        paths: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReloadSubcommand {
+    Table {
         #[arg(long,
               default_value = "full",
               action = ArgAction::Set,
@@ -946,6 +972,38 @@ pub async fn load_table(cli: &Cli, path: &str, force: bool, rltbl: &Relatable) {
     tracing::info!("Loaded table '{}'", table.name());
 }
 
+/// Load the tables at the given paths. Use validation_level to determine how to validate rows
+/// as they are being loaded.
+pub async fn reload_tables(cli: &Cli, paths: &Vec<String>, validation_level: &ValidationLevel) {
+    tracing::trace!("reload_tables({cli:?}, {paths:?}, {validation_level:?})");
+
+    let mut rltbl = RelatableBuilder::from_cli(cli)
+        .build()
+        .await
+        .expect("Connect error");
+    rltbl.validation_level = *validation_level;
+
+    for path in paths {
+        reload_table(cli, &path, &rltbl).await;
+    }
+}
+
+/// Load the table at the given path
+pub async fn reload_table(cli: &Cli, path: &str, rltbl: &Relatable) {
+    tracing::trace!("reload_table({cli:?}, {path}, {rltbl:?})");
+    let table_name = Path::new(path)
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .trim_end_matches(".tsv")
+        .to_string();
+    let table = rltbl
+        .reload_table(&table_name, path)
+        .await
+        .expect("reload table");
+    tracing::info!("Reloaded table '{}'", table.name());
+}
+
 /// Save all of the tables to their configured locations, or to save_dir if it is given.
 pub async fn save_all(cli: &Cli, save_dir: Option<&str>) {
     tracing::trace!("save_all({cli:?})");
@@ -1080,6 +1138,12 @@ pub async fn process_command() {
                 force,
                 validation_level,
             } => load_tables(&cli, paths, *force, validation_level).await,
+        },
+        Command::Reload { subcommand } => match subcommand {
+            ReloadSubcommand::Table {
+                paths,
+                validation_level,
+            } => reload_tables(&cli, paths, validation_level).await,
         },
         Command::Save { save_dir } => save_all(&cli, save_dir.as_deref()).await,
         Command::Drop { subcommand } => match subcommand {

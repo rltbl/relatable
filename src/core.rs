@@ -519,15 +519,14 @@ impl Relatable {
                     // Load rows
                     self.reload_table(&table.name, path.to_str().expect("valid str"))
                         .await?;
+                    continue;
                 } else {
-                    tracing::error!("Specified \"{}\" table not found at {path:?}", table.name);
+                    tracing::warn!("Specified \"{}\" table not found at {path:?}", table.name);
                 }
-            } else {
-                // Just create
-                let t = self.get_table(&table.name).await?;
-                t.drop().await?;
-                t.create().await?;
             }
+            let t = self.get_table(&table.name).await?;
+            t.drop().await?;
+            t.create().await?;
         }
 
         Ok(())
