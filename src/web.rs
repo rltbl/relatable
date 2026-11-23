@@ -424,7 +424,8 @@ async fn get_tableset(
     if mode == "tree" {
         // If there are no filters, display the owl:Ontology.
         let iri = if original_select.filters.is_empty() {
-            "https://example.org/vaccine".to_string()
+            // "https://example.org/vaccine".to_string()
+            "http://purl.obolibrary.org/obo/BFO_0000040".to_string()
         } else {
             match result.rows.first().and_then(|row| row.cells.get("subject")) {
                 Some(subject) => subject.text.clone(),

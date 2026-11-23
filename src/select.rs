@@ -886,7 +886,7 @@ impl Select {
             let (filter_sql, mut filter_params) = filter.to_sql(&mut sql_param_gen)?;
             // If the select is using the text view, the query parameters must all be changed
             // to text:
-            if self.view_name == format!("{}_text_view", self.table_name) {
+            if self.view_name == format!("{}_text", self.table_name) {
                 filter_params = filter_params
                     .iter()
                     .map(|param| match param {
@@ -977,7 +977,7 @@ impl Select {
 
         // If the select is using the text view, the query parameters must all be changed
         // to text:
-        if self.view_name == format!("{}_text_view", self.table_name) {
+        if self.view_name == format!("{}_text", self.table_name) {
             params = params
                 .iter()
                 .map(|param| match param {

@@ -270,7 +270,7 @@ impl DataTableBuilder {
                 .rows
                 .iter()
                 .map(|row| EnumValue {
-                    name: row.get("name").unwrap().to_string(),
+                    label: row.get("label").unwrap().to_string(),
                     meaning: row.get("curie").unwrap().to_string(),
                     description: row.get("description").unwrap().to_string(),
                 })

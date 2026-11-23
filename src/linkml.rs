@@ -143,14 +143,14 @@ impl From<Vec<Class>> for Classes {
 
 #[derive(Clone, Debug, Default)]
 pub struct Value {
-    pub name: String,
+    pub label: String,
     pub meaning: String,
     pub description: String,
 }
 
 impl Value {
     pub fn render(&self) -> String {
-        let mut lines = vec![format!("      {}:", self.name)];
+        let mut lines = vec![format!("      {}:", self.label)];
         if !self.meaning.is_empty() {
             lines.push(format!("meaning: {}", self.meaning))
         }
@@ -164,16 +164,16 @@ impl Value {
 impl From<&str> for Value {
     fn from(value: &str) -> Self {
         Self {
-            name: value.to_string(),
+            label: value.to_string(),
             ..Default::default()
         }
     }
 }
 
 impl From<String> for Value {
-    fn from(name: String) -> Self {
+    fn from(label: String) -> Self {
         Self {
-            name,
+            label,
             ..Default::default()
         }
     }

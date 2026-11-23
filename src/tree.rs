@@ -27,9 +27,9 @@ impl Trees {
 
         let name = "http://example.com/graph";
         let mut graph = MemoryGraph::from_id(name);
-
         let mut select = Select::from("statement");
         select.order_by("subject");
+        select.limit = 0;
         let result = rltbl.fetch(&select).await?;
         for rows in result
             .rows
@@ -59,11 +59,25 @@ impl Trees {
                     .expect("datatype column")
                     .text
                     .clone();
-                let obj = Object::try_from(&object, &datatype).expect("valid object");
-                subject.insert(&predicate, obj);
+                match Object::try_from(&object, &datatype) {
+                    Ok(obj) => {
+                        subject.insert(&predicate, obj);
+                    }
+                    Err(_) => {
+                        tracing::error!(
+                            "Could not parse object '{object}' with datatype '{datatype}'"
+                        );
+                    }
+                };
             }
             graph.insert(subject);
         }
+
+        // let owl_path = "src/demo/vaccine.owl";
+        // let rdfxml_input =
+        //     std::fs::read_to_string(owl_path).expect(&format!("Read from file {owl_path:?}"));
+        // let graph = tabld::rdfxml::read(&rdfxml_input).expect("Read from string");
+
         let graph = IndexedMemoryGraph::from(graph);
         graphs.insert("ontology".to_string(), graph);
 
@@ -380,6 +394,8 @@ impl Trees {
             .into_iter()
             .filter(|s| ancestors.contains(s))
             .collect();
+
+        println!("ROOTS: {roots:?}");
 
         // let mut children = IndexSet::from_iter(graph.children(&iri));
         let edges = graph.edges(iri);

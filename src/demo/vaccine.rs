@@ -107,6 +107,12 @@ fn term_table_builder(
         .structure("from(terminology.label)") // TODO: also primary
         .description(&format!("the label for this {name}"));
     builder
+        .column("curie")
+        .sql_type("TEXT")
+        .datatype("nonword")
+        .structure("from(terminology.curie)") // TODO: also primary
+        .description(&format!("the CURIE for this {name}"));
+    builder
         .column("description")
         .sql_type("TEXT")
         .datatype("paragraph")
@@ -114,7 +120,7 @@ fn term_table_builder(
     for term in terms {
         let term: Term = term.into();
         builder
-            .row([term.label, term.description])
+            .row([term.label, term.curie, term.description])
             .expect("valid row");
     }
     builder
@@ -851,6 +857,23 @@ impl Dataset {
             .sql_type("TEXT")
             .datatype("any")
             .description(&format!("the annotation for this statement"));
+
+        // let owl_path = "src/demo/vaccine.owl";
+        // let rdfxml_input =
+        //     std::fs::read_to_string(owl_path).expect(&format!("Read from file {owl_path:?}"));
+        // let graph = tabld::rdfxml::read(&rdfxml_input).expect("Read from string");
+        // for triple in graph.triples() {
+        //     builder
+        //         .row([
+        //             triple.subject,
+        //             triple.predicate,
+        //             triple.object.object(),
+        //             triple.object.datatype(),
+        //             triple.object.annotation(),
+        //         ])
+        //         .unwrap();
+        // }
+
         let terms: Vec<Term> = [
             Term::from(("ex:vaccine", "Fake Vaccine Ontology")).rdf_type(TYPE),
             Term::from(("BFO:0000040", "material entity")).parent("owl:Thing"),
@@ -862,6 +885,7 @@ impl Dataset {
         .into_iter()
         .chain(self.terms().into_iter())
         .collect();
+
         for term in terms {
             builder
                 .row([&term.iri, TYPE, &term.rdf_type, "_ID", ""])
@@ -938,6 +962,9 @@ impl Dataset {
         let mut enums: Vec<Enum> = Vec::new();
         let mut classes: Vec<Class> = Vec::new();
         for (name, builder) in builders {
+            if ["terminology", "statement"].contains(&name.as_str()) {
+                continue;
+            }
             if name.ends_with("_type") {
                 enums.push(builder.linkml_enum());
             } else {
