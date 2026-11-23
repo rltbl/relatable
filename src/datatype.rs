@@ -232,7 +232,7 @@ impl Datatype {
                         column.table.clone(),
                         column.column.clone(),
                         format!("datatype:{}", self.datatype),
-                        format!("{} must be a {}", column.column, self.datatype),
+                        format!("{} must be {}", column.column, self.description),
                         condition.to_string(),
                     ]
                     .iter()
@@ -245,9 +245,33 @@ impl Datatype {
                         ));
                         params.extend(rows.iter().map(|row| DbValue::from(**row)));
                     }
-                    sql.push_str(r#" RETURNING 1 AS "inserted""#);
+                    sql.push_str(r#" RETURNING message_id, value"#);
                     // tracing::debug!("running {sql} with {params:?}");
                     let rows = rltbl.pool.query(&sql, params).await?;
+
+                    // Suggest trimmed value.
+                    if self.datatype == "trimmed" {
+                        for row in &rows.rows {
+                            let message_id =
+                                row.get("message_id").unwrap().as_i32().unwrap_or_default();
+                            let value = row
+                                .get("value")
+                                .and_then(|v| Some(v.to_string()))
+                                .unwrap_or_default();
+                            let trimmed = value.trim();
+                            if trimmed != value {
+                                rltbl
+                                    .pool
+                                    .update(
+                                        "message",
+                                        &["message_id", "suggestion"],
+                                        &[row! { "message_id" => message_id, "suggestion" => trimmed }],
+                                    )
+                                    .await?;
+                            }
+                        }
+                    }
+
                     messages_were_added = rows.len() > 0;
                 }
             }
@@ -317,34 +341,37 @@ impl Datatypes {
                 DatatypeBuilder::new("trimmed")
                     .description("text that does not begin or end with whitespace")
                     .parent("text")
-                    .condition(r"match(\S([^\n]*\S)*)")
+                    .condition(r"match(\S(.*\S)?)")
                     .build()
                     .unwrap(),
                 DatatypeBuilder::new("line")
                     .description("a trimmed line of text")
                     .parent("trimmed")
-                    .condition(r"match([^\n]+)")
+                    .condition(r"match(\S([^\n]*\S)?)")
                     .build()
                     .unwrap(),
                 DatatypeBuilder::new("paragraph")
                     .description("one or more sentences")
                     .parent("line")
+                    .condition(r"match(\S([^\n]*\S)?)")
                     .build()
                     .unwrap(),
                 DatatypeBuilder::new("sentence")
                     .description("a sentence")
                     .parent("paragraph")
+                    .condition(r"match(\S([^\n]*\S)?)")
                     .build()
                     .unwrap(),
                 DatatypeBuilder::new("phrase")
                     .description("one or more words")
                     .parent("line")
+                    .condition(r"match(\S([^\n]*\S)?)")
                     .build()
                     .unwrap(),
                 DatatypeBuilder::new("nonspace")
                     .description("text without whitespace")
                     .parent("line")
-                    .condition(r"match([^\s]+)")
+                    .condition(r"match(\S+)")
                     .build()
                     .unwrap(),
                 DatatypeBuilder::new("word")

@@ -20,6 +20,8 @@ pub struct CellMessage {
     pub rule: String,
     /// The contents of the message.
     pub message: String,
+    /// An optional suggestion to fix the problem.
+    pub suggestion: Option<String>,
 }
 
 /// Represents a validation message in the message table.
@@ -38,6 +40,8 @@ pub struct Message {
     pub rule: String,
     /// The contents of the message.
     pub message: String,
+    /// An optional suggestion to fix the problem.
+    pub suggestion: Option<String>,
 }
 
 /// Represents the special "message" table.
@@ -97,6 +101,10 @@ impl<'a> SimpleTable for MessageTable<'a> {
                 .sql_type("TEXT")
                 .build()
                 .unwrap(),
+            ColumnBuilder::new(self.table_name(), "suggestion")
+                .sql_type("TEXT")
+                .build()
+                .unwrap(),
         ]
         .into()
     }
@@ -140,7 +148,8 @@ mod tests {
   "value" TEXT,
   "level" TEXT,
   "rule" TEXT,
-  "message" TEXT
+  "message" TEXT,
+  "suggestion" TEXT
 );"#,
             table.ddl()
         )

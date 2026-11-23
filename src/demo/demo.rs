@@ -125,10 +125,10 @@ pub async fn create_demo_datatype_table(rltbl: &Relatable, force: &bool) -> Resu
     }
     datatype_table
         .add(&[
-            &DatatypeBuilder::new("decimal")
-                .parent("nonspace")
-                .description("a decimal number")
-                .condition(r"match(-?\d+(\.\d+)?)")
+            &DatatypeBuilder::new("decimal_1")
+                .parent("number")
+                .description("a number with one decimal digit")
+                .condition(r"match(-?\d+.\d?)")
                 .sql_type("NUMERIC")
                 .format("%.1f")
                 .build()?,

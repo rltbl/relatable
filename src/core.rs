@@ -1882,15 +1882,16 @@ impl Relatable {
         level: &str,
         rule: &str,
         message: &str,
+        suggestion: &str,
     ) -> Result<(RowID, CellMessage)> {
         let sql = format!(
             r#"INSERT INTO "message"
                ("added_by", "table", "row", "column", "value",
-                "level", "rule", "message")
+                "level", "rule", "message", "suggestion")
                VALUES
                ({sql_params})
                RETURNING "message_id""#,
-            sql_params = SqlParam::new(&self.pool.syntax().name()).get_as_list(8)
+            sql_params = SqlParam::new(&self.pool.syntax().name()).get_as_list(9)
         );
         let params = values![
             user,
@@ -1900,7 +1901,12 @@ impl Relatable {
             value.clone(),
             level,
             rule,
-            message
+            message,
+            if suggestion.is_empty() {
+                DbValue::Null
+            } else {
+                DbValue::Text(suggestion.to_string())
+            },
         ];
         let message_id: RowID = self.pool.query(&sql, params).await?.try_into_value()?;
 
@@ -1911,6 +1917,11 @@ impl Relatable {
                 level: level.to_string(),
                 rule: rule.to_string(),
                 message: message.to_string(),
+                suggestion: if suggestion.is_empty() {
+                    None
+                } else {
+                    Some(suggestion.to_string())
+                },
             },
         ))
     }
@@ -2355,6 +2366,9 @@ impl Relatable {
         column: &Column,
         rows: &[&RowID],
     ) -> Result<()> {
+        if column.nulltype.is_empty() {
+            println!("Validate column for nulls: {} {rows:?}", column.column);
+        }
         self._validate_datatype_for_column_and_optionally_for_row(&schema.datatypes, column, rows)
             .await?;
         self._validate_structure_for_column_and_optionally_for_row(column, rows)
@@ -2537,7 +2551,7 @@ mod tests {
         // assert_eq!(schema.tables.len(), 5);
         assert_eq!(schema.columns.len(), 25, "count all columns");
         assert_eq!(schema.columns("penguin").len(), 8, "count penguin columns");
-        assert_eq!(schema.datatypes.len(), 14, "count all datatypes");
+        assert_eq!(schema.datatypes.len(), 15, "count all datatypes");
 
         rltbl.drop_test().await
     }

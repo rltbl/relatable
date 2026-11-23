@@ -337,7 +337,8 @@ pub trait TsvTable {
             'value', "value",
             'level', "level",
             'rule', "rule",
-            'message', "message"
+            'message', "message",
+            'suggestion', "suggestion"
           )
         ),
         '[]'
@@ -356,7 +357,8 @@ pub trait TsvTable {
               "message"."value",
               "message"."level",
               "message"."rule",
-              "message"."message"
+              "message"."message",
+              "message"."suggestion"
       FROM "message"
       WHERE "message"."table" = '{table_name}' AND "message"."row" = "_id"
       ORDER BY "message"."column", "message"."message_id") m
@@ -1267,7 +1269,8 @@ mod tests {
             'value', "value",
             'level', "level",
             'rule', "rule",
-            'message', "message"
+            'message', "message",
+            'suggestion', "suggestion"
           )
         ),
         '[]'

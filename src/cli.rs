@@ -4,6 +4,7 @@
 
 use crate::{
     self as rltbl,
+    simple_table::SimpleTable,
     tsv_table::{TsvTable, UserRow, UserRows},
 };
 use indexmap::IndexMap;
@@ -676,30 +677,32 @@ pub async fn prompt_for_json_message(
     row: RowID,
     column: &str,
 ) -> Result<JsonRow> {
-    let columns: Vec<_> = rltbl.column_table().await?.get(&["message"]).await?.into();
-    let columns = columns
+    let columns: Vec<String> = rltbl
+        .message_table()
+        .columns()
         .iter()
-        .filter(|c| !["message_id", "added_by"].contains(&c.column.as_str()))
-        .map(|c| c.column.to_string())
-        .collect::<Vec<_>>();
-    let columns = columns.iter().map(|c| c.as_str()).collect::<Vec<&str>>();
-    let mut json_row = JsonRow::new();
-    for column in &columns {
-        json_row.insert(column.to_string(), json!(r#""""#));
-    }
+        .map(|c| c.column.clone())
+        .skip(6)
+        .collect();
 
+    let mut json_row = JsonRow::new();
     json_row.insert("table".to_string(), json!(table));
     json_row.insert("row".to_string(), json!(row));
     json_row.insert("column".to_string(), json!(column));
-    tracing::debug!("Received json row from user input: {json_row:?}");
+
+    let statement = format!(r#"SELECT "{column}" FROM "{table}" WHERE _id = $1"#,);
+    let value = rltbl
+        .pool
+        .query(&statement, [row])
+        .await
+        .expect("Error querying value")
+        .value()
+        .expect("Error querying value")
+        .to_string();
+    json_row.insert("value".to_string(), json!(value));
 
     for column in columns {
-        match json_row.get(column).unwrap() {
-            JsonValue::Null => {
-                json_row.insert(column.to_string(), prompt_for_column_value(&column));
-            }
-            _ => (),
-        }
+        json_row.insert(column.to_string(), prompt_for_column_value(&column));
     }
 
     Ok(json_row)
@@ -745,7 +748,7 @@ pub async fn add_message(cli: &Cli, table: &str, row: RowID, column: &str) {
     let value = json!(json_message
         .get("value")
         .and_then(|m| m.as_str())
-        .expect("The field 'value' (type: string) is required."));
+        .unwrap_or_default());
     let level = json_message
         .get("level")
         .and_then(|l| l.as_str())
@@ -758,10 +761,24 @@ pub async fn add_message(cli: &Cli, table: &str, row: RowID, column: &str) {
         .get("message")
         .and_then(|m| m.as_str())
         .expect("The field 'message' (type: string) is required.");
+    let suggestion = json_message
+        .get("suggestion")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
 
     let user = get_username(&cli);
     let (mid, message) = rltbl
-        .add_message(&user, table, row, column, &value, &level, &rule, &message)
+        .add_message(
+            &user,
+            table,
+            row,
+            column,
+            &value,
+            &level,
+            &rule,
+            &message,
+            &suggestion,
+        )
         .await
         .expect("Error adding row");
     tracing::info!("Added message (ID: {mid}) {message:?}");

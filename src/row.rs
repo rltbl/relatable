@@ -186,6 +186,7 @@ impl Cell {
                     "{column} must be of type {sql_type}",
                     column = column.column
                 ),
+                suggestion: None,
             });
         }
 
@@ -338,7 +339,8 @@ mod tests {
                 "value": "FOO",
                 "level": "error",
                 "rule": "test rule",
-                "message": "Test message 'FOO'"
+                "message": "Test message 'FOO'",
+                "suggestion": "foo",
             }],
             "foo": "FOO",
         });
@@ -355,6 +357,7 @@ mod tests {
                     level: "error".to_string(),
                     rule: "test rule".to_string(),
                     message: "Test message 'FOO'".to_string(),
+                    suggestion: Some("foo".to_string()),
                 }],
             },
         );
