@@ -2366,9 +2366,17 @@ impl Relatable {
         column: &Column,
         rows: &[&RowID],
     ) -> Result<()> {
-        if column.nulltype.is_empty() {
-            println!("Validate column for nulls: {} {rows:?}", column.column);
-        }
+        // Delete pre-existing datatype validation messages for this column and then
+        // validate the datatype conditions for each datatype in the column's datatype hierarchy.
+        self.delete_message(
+            &column.table,
+            rows,
+            Some(&column.column),
+            Some("column:required"),
+            Some("rltbl"),
+        )
+        .await?;
+        column.validate_nulltype(self, rows).await?;
         self._validate_datatype_for_column_and_optionally_for_row(&schema.datatypes, column, rows)
             .await?;
         self._validate_structure_for_column_and_optionally_for_row(column, rows)

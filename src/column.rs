@@ -4,8 +4,10 @@
 
 use crate::{
     self as rltbl,
+    core::Relatable,
     data_table::{DataTable, DataTableBuilder},
     schema::Schema,
+    sql::SqlParam,
     tsv_table::{read_table, UserRow, UserRows},
 };
 use rltbl::{
@@ -14,7 +16,7 @@ use rltbl::{
     structure::{Structure, Structures},
     tsv_table::TsvTable,
 };
-use rltbl_db::{row, to_row, Row as DbRow, Syntax as DbSyntax};
+use rltbl_db::{row, to_row, Row as DbRow, Syntax as DbSyntax, Value as DbValue};
 
 use anyhow::Result;
 use derive_builder::Builder;
@@ -180,6 +182,54 @@ impl Column {
     pub fn ddl(&self, syntax: &dyn DbSyntax) -> String {
         let sql_column: SqlColumn = self.clone().into();
         sql_column.ddl(syntax)
+    }
+
+    pub async fn validate_nulltype(&self, rltbl: &Relatable, rows: &[&RowID]) -> Result<bool> {
+        if !self.nulltype.is_empty() {
+            return Ok(false);
+        }
+        let mut sql_param_gen = SqlParam::new(&rltbl.pool.syntax().name());
+        let mut sql = format!(
+            r#"INSERT INTO "message"
+                 ("added_by", "table", "row", "column", "value", "level", "rule",
+                  "message")
+               SELECT
+                 'rltbl' AS "added_by",
+                 {sql_param_1} AS "table",
+                 "_id" AS "row",
+                 {sql_param_2} AS "column",
+                 "{column_name}" AS "value",
+                 'error' AS "level",
+                 {sql_param_3} AS "rule",
+                 {sql_param_4} AS "message"
+               FROM "{table_name}_text"
+               WHERE "{column_name}" IS NULL"#,
+            table_name = self.table,
+            column_name = self.column,
+            sql_param_1 = sql_param_gen.next(),
+            sql_param_2 = sql_param_gen.next(),
+            sql_param_3 = sql_param_gen.next(),
+            sql_param_4 = sql_param_gen.next(),
+        );
+        let mut params: Vec<DbValue> = vec![
+            self.table.clone(),
+            self.column.clone(),
+            format!("column:required"),
+            format!("{} is required", self.column),
+        ]
+        .iter()
+        .map(|v| v.into())
+        .collect();
+        if rows.len() > 0 {
+            sql.push_str(&format!(
+                r#" AND "_id" IN({sql_params})"#,
+                sql_params = sql_param_gen.get_as_list(rows.len()),
+            ));
+            params.extend(rows.iter().map(|row| DbValue::from(**row)));
+        }
+        // sql.push_str(r#" RETURNING 1 AS "inserted""#);
+        let rows = rltbl.pool.query(&sql, params).await?;
+        Ok(rows.rows.len() > 1)
     }
 }
 
