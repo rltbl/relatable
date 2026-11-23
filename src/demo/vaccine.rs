@@ -160,8 +160,8 @@ impl Term {
         self
     }
 
-    pub fn rdf_type(mut self, curie: &str) -> Self {
-        self.rdf_type = to_iri(curie);
+    pub fn rdf_type(mut self, curie_or_iri: &str) -> Self {
+        self.rdf_type = PREFIXES.expand(curie_or_iri);
         self
     }
 }
@@ -319,6 +319,10 @@ impl TargetType {
             2 => TargetType::Phony(number),
             _ => unreachable!(),
         }
+    }
+
+    pub fn terms() -> impl Iterator<Item = Self> {
+        [Self::Fake(1), Self::Fake(2)].into_iter()
     }
 }
 
@@ -813,7 +817,7 @@ impl Dataset {
         for term in AssayType::iter() {
             terms.push(term.into());
         }
-        for term in TargetType::iter() {
+        for term in TargetType::terms() {
             terms.push(term.into());
         }
         terms
@@ -920,7 +924,7 @@ impl Dataset {
             "vaccine_type".to_string() => term_table_builder("vaccine_type", self.vaccine_type.into_iter()),
             "specimen_type".to_string() => term_table_builder("specimen_type", SpecimenType::iter()),
             "assay_type".to_string() => term_table_builder("assay_type", AssayType::iter()),
-            "target_type".to_string() => term_table_builder("target_type", TargetType::iter()),
+            "target_type".to_string() => term_table_builder("target_type", TargetType::terms()),
             "investigation".to_string() => self.investigation.into(),
             "arm".to_string() => self.arm.into(),
             "participant".to_string() => self.participant.into(),
