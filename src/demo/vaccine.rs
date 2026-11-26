@@ -879,7 +879,7 @@ impl Dataset {
             Term::from(("BFO:0000040", "material entity")).parent("owl:Thing"),
             Term::from(("VO:0000001", "vaccine")).parent("BFO:0000040"),
             Term::from(("PR:000000001", "protein")).parent("BFO:0000040"),
-            Term::from(("BFO:0000015", "process")),
+            Term::from(("BFO:0000015", "process")).parent("owl:Thing"),
             Term::from(("OBI:0000070", "assay")).parent("BFO:0000015"),
         ]
         .into_iter()

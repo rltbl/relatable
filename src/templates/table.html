@@ -145,18 +145,10 @@
   const table = {{result.table.table | tojson}};
   var columns = {{result.columns | tojson}};
   for (var i = 0; i < columns.length; i++) {
-    var column_name = columns[i].column;
+    var column = columns[i];
     var kind = "text";
-    if (table === "penguin") {
-      if (column_name === "island") {
-        kind = "dropdown";
-      } else if (column_name === "review") {
-        kind = "image";
-      }
-    } else if (table === "arm") {
-      if (column_name === "vaccine_type") {
-        kind = "dropdown";
-      }
+    if (column.structure.startsWith("from(")) {
+      kind = "dropdown";
     }
     window.rltbl.result.columns[i].kind = kind;
   }

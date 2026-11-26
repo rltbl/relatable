@@ -1934,6 +1934,8 @@ pub async fn joined_query(
             }
         }
     }
+    edges.insert("column", "table", "message", "table");
+    edges.insert("column", "column", "message", "column");
     let graph = edges.graph();
 
     // Find a path from the display table to every filter table.
@@ -1987,7 +1989,11 @@ pub async fn joined_query(
         }
     }
 
-    let pkey = "_id".to_string();
+    let pkey = match display_table.as_str() {
+        "message" => "message_id",
+        _ => "_id",
+    }
+    .to_string();
     let mut inner = select.clone();
     inner.view_name = String::new();
     inner.select = vec![SelectField::Column {

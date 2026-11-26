@@ -2,7 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[web](crate::web)).
 
-use crate::{self as rltbl, tree::Trees};
+use crate::{self as rltbl};
 use rltbl::{
     change::ChangeSet,
     cli::Cli,
@@ -13,7 +13,6 @@ use rltbl::{
     user::Cursor,
 };
 use rltbl_db::JsonRow;
-use tabld::model::Graph;
 
 use std::io::Write;
 
@@ -265,32 +264,6 @@ async fn get_tableset(
 
     // WARN: This is a hack for first draft of tree views.
     let mode = if tableset_name == "terminology" && select.table_name == "ontology" {
-        println!("terminology ontology");
-
-        // let username = get_username(session);
-        // if username.trim() != "" {
-        //     rltbl.user_table().get_or_insert(&username).await;
-        // }
-        // let site = rltbl.get_site(&username).await;
-        // let page = select
-        //     .to_page(
-        //         &rltbl.root,
-        //         &format!("tableset/{tableset_name}"),
-        //         &tableset_name,
-        //         "",
-        //         &[],
-        //         &[],
-        //     )
-        //     .unwrap_or_default();
-        // let result = ResultSet::default();
-
-        // let content = json!({
-        //    "site": site,
-        //    "page": page,
-        //    "result": result
-        // });
-        // return respond(&rltbl, &format, "tree", &content).await;
-
         select.table_name = "statement".to_string();
         select.select_column("subject");
         select.limit = 1;
@@ -433,24 +406,7 @@ async fn get_tableset(
             }
         };
 
-        let trees = match Trees::load(&rltbl).await {
-            Ok(trees) => trees,
-            Err(error) => return get_500(&error.into()),
-        };
-
-        let graph_name = "ontology";
-        let graph = trees.graphs.get(graph_name).unwrap();
-
-        let subject = match graph.get(&iri) {
-            Some(subject) => subject,
-            None => {
-                return get_404(&anyhow!(
-                    r#"No such subject "{iri}" in graph "{graph_name}"."#
-                ))
-            }
-        };
-
-        let output = match trees.get_term(graph, &subject, &iri) {
+        let output = match crate::tree::get_term(&rltbl, &select.table_name, &iri).await {
             Ok(result) => result,
             Err(message) => return get_404(&anyhow!(message)).into_response(),
         };
@@ -459,7 +415,7 @@ async fn get_tableset(
             "site": site,
             "page": page,
             "result": result,
-            "graph_name": graph_name,
+            "graph_name": select.table_name,
             "graph": output,
         });
 

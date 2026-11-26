@@ -28,6 +28,7 @@ use std::{
     iter::zip,
     path::Path,
 };
+use tabld::model::Graph;
 use tabwriter::TabWriter;
 
 static COLUMN_HELP: &str = "A column name or label";
@@ -528,6 +529,18 @@ pub async fn print_table(
                     .to_console()
             );
         }
+        "tsv" => {
+            println!(
+                "{}",
+                rltbl.fetch(&select).await.expect("Fetch error").to_tsv()
+            );
+        }
+        "csv" => {
+            println!(
+                "{}",
+                rltbl.fetch(&select).await.expect("Fetch error").to_csv()
+            );
+        }
         _ => unimplemented!("output format {format}"),
     };
 
@@ -1018,11 +1031,9 @@ pub async fn reload_tables(cli: &Cli, paths: &Vec<String>, validation_level: &Va
 pub async fn reload_table(cli: &Cli, path: &str, rltbl: &Relatable) -> Result<()> {
     tracing::trace!("reload_table({cli:?}, {path}, {rltbl:?})");
     let table_name = Path::new(path)
-        .file_name()
+        .file_stem()
         .unwrap()
         .to_string_lossy()
-        .trim_end_matches(".tsv")
-        .trim_end_matches(".xlsx")
         .to_string();
     if path.ends_with(".xlsx") {
         println!("Excel file! {path}");
@@ -1092,6 +1103,35 @@ pub async fn reload_table(cli: &Cli, path: &str, rltbl: &Relatable) -> Result<()
                 }
             }
         }
+    } else if path.ends_with(".owl") {
+        let table = rltbl.get_table(&table_name).await?;
+
+        let rdfxml_input =
+            std::fs::read_to_string(path).expect(&format!("Read from file {path:?}"));
+        let graph = tabld::rdfxml::read(&rdfxml_input).expect("Read from string");
+
+        let user_rows = UserRows {
+            rows: graph
+                .triples()
+                .iter()
+                .map(|triple| UserRow {
+                    map: IndexMap::from_iter(
+                        [
+                            ("subject", triple.subject.clone()),
+                            ("predicate", triple.predicate.clone()),
+                            ("object", triple.object.object()),
+                            ("datatype", triple.object.datatype()),
+                            ("annotation", triple.object.annotation()),
+                        ]
+                        .map(|(k, v)| (k.into(), v.into())),
+                    ),
+                })
+                .collect(),
+        };
+
+        table.drop().await?;
+        table.create().await?;
+        table.append(user_rows).await?;
     } else {
         let table = rltbl
             .reload_table(&table_name, path)

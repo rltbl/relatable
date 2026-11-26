@@ -60,7 +60,7 @@ pub async fn create_penguin_table(
     builder
         .column("bill_length")
         .label("bill length (mm)")
-        .datatype("decimal");
+        .datatype("decimal_1");
     builder
         .column("bill_depth")
         .label("bill depth (mm)")

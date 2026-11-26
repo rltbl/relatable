@@ -51,8 +51,13 @@
       {% else %}
       <i class="bi bi-question-square"></i>
       {% endif %}
-      {{message.rule}}:
+      {# {{message.rule}}: #}
       {{message.message}}
+      {% if message.suggestion %}
+      <br />
+      <i class="bi bi-lightbulb text-info"></i>
+      <span>Suggstion: {{message.suggestion}}</span>
+      {% endif %}
     </a>
   </li>
   {% endfor %}
