@@ -22,10 +22,14 @@ FAKE123     SAMPLE09       Pygoscelis adeliae  Dream      N5A1           39.2   
 FAKE123     10             Pygoscelis adeliae  Torgersen  N5A2           34.5         27.9        3237
 FAKE123     SAMPLE #11     Pygoscelis adeliae  Biscoe     N6A1           35.4                     2001
 $ rltbl get table message
-Rows 1-2 of 2
-message_id  added_by  table    row  column         value       level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11  error  datatype:integer  sample_number must be a integer
-2           rltbl     penguin  9    sample_number  SAMPLE09    error  datatype:integer  sample_number must be a integer
+Rows 1-6 of 6
+message_id  added_by  table    row  column         value       level  rule               message                                        suggestion
+1           rltbl     penguin  11   sample_number  SAMPLE #11  error  datatype:integer   sample_number must be an integer               
+2           rltbl     penguin  11   sample_number  SAMPLE #11  error  datatype:number    sample_number must be a number                 
+3           rltbl     penguin  11   sample_number  SAMPLE #11  error  datatype:nonspace  sample_number must be text without whitespace  
+4           rltbl     penguin  11   bill_depth                 error  column:required    bill_depth is required                         
+5           rltbl     penguin  9    sample_number  SAMPLE09    error  datatype:integer   sample_number must be an integer               
+6           rltbl     penguin  9    sample_number  SAMPLE09    error  datatype:number    sample_number must be a number                 
 $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "message": "this is not a good species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 3 species
 $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-b", "message": "this is a terrible species"}' | RLTBL_USER=mike rltbl -v --input JSON add message penguin 4 species
 ```
@@ -62,10 +66,14 @@ We delete messages using `rltbl delete message TABLE [ROW] [COLUMN]`. If row is 
 ```console tesh-session="message"
 $ rltbl -v delete message penguin --rule custom%
 $ rltbl get table message
-Rows 1-2 of 2
-message_id  added_by  table    row  column         value       level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11  error  datatype:integer  sample_number must be a integer
-2           rltbl     penguin  9    sample_number  SAMPLE09    error  datatype:integer  sample_number must be a integer
+Rows 1-6 of 6
+message_id  added_by  table    row  column         value       level  rule               message                                        suggestion
+1           rltbl     penguin  11   sample_number  SAMPLE #11  error  datatype:integer   sample_number must be an integer               
+2           rltbl     penguin  11   sample_number  SAMPLE #11  error  datatype:number    sample_number must be a number                 
+3           rltbl     penguin  11   sample_number  SAMPLE #11  error  datatype:nonspace  sample_number must be text without whitespace  
+4           rltbl     penguin  11   bill_depth                 error  column:required    bill_depth is required                         
+5           rltbl     penguin  9    sample_number  SAMPLE09    error  datatype:integer   sample_number must be an integer               
+6           rltbl     penguin  9    sample_number  SAMPLE09    error  datatype:number    sample_number must be a number                 
 ```
 
 Let's add a few more messages to the message table. Two of them will be by the user **mike** and the rest by the user **afreen**.
@@ -78,16 +86,20 @@ $ echo '{"value": "Pygoscelis adeliae", "level": "info", "rule": "custom-a", "me
 $ echo '{"value": "FAKE123", "level": "info", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 6 study_name
 $ echo '{"value": "FAKE123", "level": "info", "rule": "custom-c", "message": "this is an inappropriate study_name"}' | RLTBL_USER=afreen rltbl -v --input JSON add message penguin 7 study_name
 $ rltbl get table message
-Rows 1-8 of 8
-message_id  added_by  table    row  column         value               level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be a integer
-2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be a integer
-5           mike      penguin  3    species        Pygoscelis adeliae  info   custom-a          this is not a good species
-6           mike      penguin  4    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
-7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
-8           afreen    penguin  6    species        Pygoscelis adeliae  info   custom-a          this is not a good species
-9           afreen    penguin  6    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
-10          afreen    penguin  7    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
+Rows 1-12 of 12
+message_id  added_by  table    row  column         value               level  rule               message                                        suggestion
+1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer   sample_number must be an integer               
+2           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:number    sample_number must be a number                 
+3           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:nonspace  sample_number must be text without whitespace  
+4           rltbl     penguin  11   bill_depth                         error  column:required    bill_depth is required                         
+5           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer   sample_number must be an integer               
+6           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:number    sample_number must be a number                 
+9           mike      penguin  3    species        Pygoscelis adeliae  info   custom-a           this is not a good species                     
+10          mike      penguin  4    species        Pygoscelis adeliae  info   custom-b           this is a terrible species                     
+11          afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b           this is a terrible species                     
+12          afreen    penguin  6    species        Pygoscelis adeliae  info   custom-a           this is not a good species                     
+13          afreen    penguin  6    study_name     FAKE123             info   custom-c           this is an inappropriate study_name            
+14          afreen    penguin  7    study_name     FAKE123             info   custom-c           this is an inappropriate study_name            
 ```
 
 Let's now delete all the messages added to the table by **mike** using the `--user USER` option (which does not permit wildcards):
@@ -95,14 +107,18 @@ Let's now delete all the messages added to the table by **mike** using the `--us
 ```console tesh-session="message"
 $ rltbl -v delete message penguin --user mike
 $ rltbl get table message
-Rows 1-6 of 6
-message_id  added_by  table    row  column         value               level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be a integer
-2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be a integer
-7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
-8           afreen    penguin  6    species        Pygoscelis adeliae  info   custom-a          this is not a good species
-9           afreen    penguin  6    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
-10          afreen    penguin  7    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
+Rows 1-10 of 10
+message_id  added_by  table    row  column         value               level  rule               message                                        suggestion
+1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer   sample_number must be an integer               
+2           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:number    sample_number must be a number                 
+3           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:nonspace  sample_number must be text without whitespace  
+4           rltbl     penguin  11   bill_depth                         error  column:required    bill_depth is required                         
+5           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer   sample_number must be an integer               
+6           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:number    sample_number must be a number                 
+11          afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b           this is a terrible species                     
+12          afreen    penguin  6    species        Pygoscelis adeliae  info   custom-a           this is not a good species                     
+13          afreen    penguin  6    study_name     FAKE123             info   custom-c           this is an inappropriate study_name            
+14          afreen    penguin  7    study_name     FAKE123             info   custom-c           this is an inappropriate study_name            
 ```
 
 Now delete all messages associated with the column **species** in row 6:
@@ -110,13 +126,17 @@ Now delete all messages associated with the column **species** in row 6:
 ```console tesh-session="message"
 $ rltbl -v delete message penguin 6 species
 $ rltbl get table message
-Rows 1-5 of 5
-message_id  added_by  table    row  column         value               level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be a integer
-2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be a integer
-7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
-9           afreen    penguin  6    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
-10          afreen    penguin  7    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
+Rows 1-9 of 9
+message_id  added_by  table    row  column         value               level  rule               message                                        suggestion
+1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer   sample_number must be an integer               
+2           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:number    sample_number must be a number                 
+3           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:nonspace  sample_number must be text without whitespace  
+4           rltbl     penguin  11   bill_depth                         error  column:required    bill_depth is required                         
+5           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer   sample_number must be an integer               
+6           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:number    sample_number must be a number                 
+11          afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b           this is a terrible species                     
+13          afreen    penguin  6    study_name     FAKE123             info   custom-c           this is an inappropriate study_name            
+14          afreen    penguin  7    study_name     FAKE123             info   custom-c           this is an inappropriate study_name            
 ```
 
 Delete any remaining messages in row 6:
@@ -124,12 +144,16 @@ Delete any remaining messages in row 6:
 ```console tesh-session="message"
 $ rltbl -v delete message penguin 6
 $ rltbl get table message
-Rows 1-4 of 4
-message_id  added_by  table    row  column         value               level  rule              message
-1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer  sample_number must be a integer
-2           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer  sample_number must be a integer
-7           afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b          this is a terrible species
-10          afreen    penguin  7    study_name     FAKE123             info   custom-c          this is an inappropriate study_name
+Rows 1-8 of 8
+message_id  added_by  table    row  column         value               level  rule               message                                        suggestion
+1           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:integer   sample_number must be an integer               
+2           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:number    sample_number must be a number                 
+3           rltbl     penguin  11   sample_number  SAMPLE #11          error  datatype:nonspace  sample_number must be text without whitespace  
+4           rltbl     penguin  11   bill_depth                         error  column:required    bill_depth is required                         
+5           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:integer   sample_number must be an integer               
+6           rltbl     penguin  9    sample_number  SAMPLE09            error  datatype:number    sample_number must be a number                 
+11          afreen    penguin  5    species        Pygoscelis adeliae  info   custom-b           this is a terrible species                     
+14          afreen    penguin  7    study_name     FAKE123             info   custom-c           this is an inappropriate study_name            
 ```
 
 Delete all remaining messages:
@@ -138,5 +162,5 @@ Delete all remaining messages:
 $ rltbl -v delete message penguin
 $ rltbl get table message
 Rows 1-0 of 0
-message_id  added_by  table  row  column  value  level  rule  message
+message_id  added_by  table  row  column  value  level  rule  message  suggestion
 ```
