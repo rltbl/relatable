@@ -71,7 +71,7 @@ pub static PREFIXES: LazyLock<Prefixes> = LazyLock::new(|| {
             ("ONTIE", "https://ontology.iedb.org/ontology/ONTIE_"),
             ("IEDB", "http://iedb.org/"),
             ("ex", "https://example.org/"),
-            ("vaccine", "https://example.org/vaccine/"),
+            ("vaccine", VACCINE),
         ]
         .iter()
         .map(|(a, b)| (a.to_string(), b.to_string())),
@@ -979,7 +979,7 @@ impl Dataset {
         let classes = classes.render();
         let enums = enums.render();
         format!(
-            r#"id: https://example.org/linkml/examples/vaccine
+            r#"id: https://example.org/vaccine
 name: vaccine
 description: |-
   Synthetic data about vaccine studies.
@@ -989,7 +989,7 @@ default_curi_maps:
 imports:
   - linkml:types
 prefixes:
-  vaccine: https://example.org/linkml/examples/vaccine/
+  vaccine: {VACCINE}
   linkml: https://w3id.org/linkml/
   schema: http://schema.org/
   rdfs: http://www.w3.org/2000/01/rdf-schema#
