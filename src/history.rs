@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate as rltbl;
 use rltbl::{
-    change::{ChangeAction, NewChange},
+    change::{Change, ChangeAction},
     column::{ColumnBuilder, Columns},
     core::{ColumnID, RowOrder, TableID, ORDER_SQL_TYPE},
     core::{RowID, ID_SQL_TYPE},
@@ -22,7 +22,7 @@ pub struct History {
     //datetime
     pub action: ChangeAction,
     pub target: Option<RowID>,
-    pub changes: Vec<NewChange>,
+    pub changes: Vec<Change>,
 }
 
 impl History {

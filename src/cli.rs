@@ -908,20 +908,10 @@ pub async fn delete_row(cli: &Cli, table: &str, row: RowID) {
         .await
         .expect("Connect error");
     let user = get_username(&cli);
-    let history = rltbl
+    rltbl
         .delete_row(&user, table, row)
         .await
         .expect("Failed to delete row");
-    match history.changes.first().expect("at least one change") {
-        crate::change::NewChange::DeleteRows { row_ids, .. } => {
-            if row_ids.len() > 0 {
-                tracing::info!("Deleted row {row}");
-            } else {
-                std::process::exit(1);
-            }
-        }
-        _ => (),
-    }
 }
 
 /// Delete messages from the message table for the given table, optionally filtering by rule,

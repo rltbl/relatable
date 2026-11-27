@@ -439,6 +439,13 @@ impl Select {
         self
     }
 
+    /// Order (descending) this select by the given column
+    pub fn order_by_desc(&mut self, column: &str) -> &Self {
+        tracing::trace!("Select::order_by_desc({column:?})");
+        self.order_by = vec![(column.to_string(), Order::DESC)];
+        self
+    }
+
     /// Limit the results by a given amount
     pub fn limit(mut self, limit: &usize) -> Self {
         tracing::trace!("Select::limit({limit})");

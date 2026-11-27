@@ -4,7 +4,6 @@
 
 use crate::{self as rltbl, core::ServerAuth};
 use rltbl::{
-    change::ChangeSet,
     cli::Cli,
     core::{Relatable, RelatableBuilder, RelatableError, RowID},
     result_set::ResultSet,
@@ -12,7 +11,7 @@ use rltbl::{
     select::{joined_query, Format, QueryParams, Select},
     user::Cursor,
 };
-use rltbl_db::JsonRow;
+use serde::{Deserialize, Serialize};
 
 use std::io::Write;
 
@@ -221,60 +220,38 @@ async fn get_table(
     respond(&rltbl, &format, "table", &content).await
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct UserUpdate {
+    row: RowID,
+    column: String,
+    value: String,
+}
+
 async fn post_table(
     State(rltbl): State<Arc<Relatable>>,
     Path(path): Path<String>,
     session: Session<SessionNullPool>,
     header_map: HeaderMap,
-    ExtractJson(changeset): ExtractJson<ChangeSet>,
+    ExtractJson(update): ExtractJson<UserUpdate>,
 ) -> Response<Body> {
-    tracing::info!("post_table([rltbl], {path}, {changeset:?})");
+    tracing::info!("post_table([rltbl], {path}, {update:?})");
     if rltbl.readonly {
         return forbid().into();
     }
 
-    let table = changeset.table.clone();
-    if path != table {
-        return get_500(
-            &RelatableError::InputError(format!(
-                "Changeset table '{table}' does not match URL path {path}"
-            ))
-            .into(),
-        );
-    }
-
-    // WARN: We need to check that the user matches!
-    // let user = changeset.user.clone();
     let username = match get_username(&rltbl, &header_map, &session) {
         Ok(username) => username,
         Err(error) => return get_401(&error),
     };
 
-    // TODO: This is a hack to maintain old behaviour.
-
-    if changeset.changes.len() != 1 {
-        return get_500(
-            &RelatableError::InputError(format!("Only 1 change currently supported in post_table"))
-                .into(),
-        );
-    }
-    let change = changeset.changes.first().unwrap();
-    let (row_id, column_name, value) = match change {
-        crate::change::Change::Update {
-            row, column, after, ..
-        } => (row, column, after),
-        _ => {
-            return get_500(
-                &RelatableError::InputError(format!(
-                    "Only Update changes currently supported in post_table"
-                ))
-                .into(),
-            )
-        }
-    };
-
     match rltbl
-        .set_value(&username, &table, *row_id, column_name, value)
+        .set_value(
+            &username,
+            &path,
+            update.row,
+            &update.column,
+            &update.value.into(),
+        )
         .await
     {
         Ok(_) => "POST successful".into_response(),
@@ -748,35 +725,36 @@ async fn add_row(
     if rltbl.readonly {
         return forbid().into();
     }
-    let json_row = JsonRow::new();
-    match rltbl.add_row(&username, &table, after_id, &json_row).await {
-        Ok(history) => {
-            // tracing::info!("Added row {row:?}");
-            let order = match history.changes.first().expect("changes to exist") {
-                crate::change::NewChange::InsertRows { rows, .. } => rows
-                    .first()
-                    .expect("one row")
-                    .get("_order")
-                    .expect("a row order")
-                    .as_i64()
-                    .expect("row order as i64"),
-                _ => unreachable!(),
-            };
-            let offset: u64 = rltbl
-                .pool
-                .query(
-                    &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= $1"#,),
-                    [order],
-                )
-                .await
-                .expect("Get count")
-                .try_into_value()
-                .unwrap_or_default();
-            let url = format!("{}/table/{table}?offset={offset}", rltbl.root);
-            return Redirect::temporary(url.as_str()).into_response();
-        }
-        Err(error) => return get_500(&error),
-    }
+    get_500(&anyhow!("Unimplemented"))
+    // let json_row = JsonRow::new();
+    // match rltbl.add_row(&username, &table, after_id, &json_row).await {
+    //     Ok(history) => {
+    //         // tracing::info!("Added row {row:?}");
+    //         let order = match history.changes.first().expect("changes to exist") {
+    //             crate::change::Change::InsertRows { rows, .. } => rows
+    //                 .first()
+    //                 .expect("one row")
+    //                 .get("_order")
+    //                 .expect("a row order")
+    //                 .as_i64()
+    //                 .expect("row order as i64"),
+    //             _ => unreachable!(),
+    //         };
+    //         let offset: u64 = rltbl
+    //             .pool
+    //             .query(
+    //                 &format!(r#"SELECT COUNT() FROM "{table}" WHERE _order <= $1"#,),
+    //                 [order],
+    //             )
+    //             .await
+    //             .expect("Get count")
+    //             .try_into_value()
+    //             .unwrap_or_default();
+    //         let url = format!("{}/table/{table}?offset={offset}", rltbl.root);
+    //         return Redirect::temporary(url.as_str()).into_response();
+    //     }
+    //     Err(error) => return get_500(&error),
+    // }
 }
 
 async fn delete_row(
