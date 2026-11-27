@@ -326,6 +326,16 @@ pub trait TsvTable {
         columns.insert(0, r#""_id""#.to_string());
         columns.insert(1, r#""_order""#.to_string());
         let columns = columns.join(", ");
+        let table_id = self.id();
+        let id_col = "_id";
+        let change_id = format!(
+            r#"(
+      SELECT MAX("history_id")
+      FROM "change"
+      WHERE "table_id" = '{table_id}'
+      AND "row_id" = "{id_col}"
+    ) AS "_change_id""#
+        );
         let message = match self.pool().syntax().name() {
             "sqlite" => format!(
                 r#"(
@@ -368,7 +378,7 @@ pub trait TsvTable {
         };
         format!(
             r#"CREATE VIEW "{table_name}_text" AS
-  SELECT {columns}, {message}
+  SELECT {columns}, {change_id}, {message}
   FROM "{table_name}_union"
   WHERE "_deleted" = FALSE;"#
         )
@@ -1261,6 +1271,11 @@ mod tests {
         assert_eq!(
             r#"CREATE VIEW "island_text" AS
   SELECT "_id", "_order", COALESCE(CAST("island_id" AS TEXT), "island_id_text") AS "island_id", "island", (
+      SELECT MAX("history_id")
+      FROM "change"
+      WHERE "table_id" = 't0'
+      AND "row_id" = "_id"
+    ) AS "_change_id", (
     SELECT
       NULLIF(
         JSON_GROUP_ARRAY(

@@ -1,6 +1,6 @@
-use std::{collections::HashMap, fmt::Display, str::FromStr};
+use std::{collections::HashMap, fmt::Display, num::ParseIntError, str::FromStr};
 
-use crate as rltbl;
+use crate::{self as rltbl, core::ID_SQL_TYPE, history::History, user::Cursor};
 use rltbl::{
     column::{ColumnBuilder, Columns},
     core::{ColumnID, TableID},
@@ -9,7 +9,7 @@ use rltbl::{
     table::Table,
     tsv_table::InnerRows,
 };
-use rltbl_db::AnyPool;
+use rltbl_db::{row, AnyPool, Row as DbRow, Value as DbValue};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -152,23 +152,66 @@ impl Change {
     }
 }
 
-// fn serialize_inner_rows<S>(x: &TsvRows, s: S) -> Result<S::Ok, S::Error>
-// where
-//     S: serde::Serializer,
-// {
-//     let inner = x.inner();
-//     let mut ser = s.serialize_seq(Some(inner.len()))?;
-//     ser.serialize_entry("$oid", &x.inner())?;
-//     ser.end()
-// }
+impl Into<Cursor> for Change {
+    fn into(self) -> Cursor {
+        match self {
+            Change::InsertRows { table_id, rows, .. } => Cursor {
+                table: format!("t{}", table_id),
+                row: rows
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
+                    .get("_id")
+                    .and_then(|v| v.as_i32())
+                    .unwrap_or_default(),
+                ..Default::default()
+            },
+            Change::DeleteRows { table_id, row_ids } => Cursor {
+                table: format!("t{}", table_id),
+                row: row_ids.first().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+            Change::DeleteTables { table_ids, .. } => Cursor {
+                table: "t1".to_string(), // Always the table table?
+                row: table_ids.first().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+            Change::MoveRows {
+                table_id, row_ids, ..
+            } => Cursor {
+                table: format!("t{}", table_id),
+                row: row_ids.first().cloned().unwrap_or_default(),
+                ..Default::default()
+            },
+            Change::UpdateRows { table_id, rows } => Cursor {
+                table: format!("t{}", table_id),
+                row: rows
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
+                    .get("_id")
+                    .and_then(|v| v.as_i32())
+                    .unwrap_or_default(),
+                column: rows
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_keys()
+                    .filter(|k| k.starts_with("c"))
+                    .nth(0)
+                    .unwrap_or_default(),
+            },
+        }
+    }
+}
 
 /// Represents the special "change" table.
-pub struct ChangeTable<'a> {
+pub struct RowChangeTable<'a> {
     table_name: String,
     pool: &'a AnyPool,
 }
 
-impl<'a> SimpleTable for ChangeTable<'a> {
+impl<'a> SimpleTable for RowChangeTable<'a> {
     fn table_name(&self) -> &str {
         &self.table_name
     }
@@ -179,38 +222,23 @@ impl<'a> SimpleTable for ChangeTable<'a> {
 
     fn columns(&self) -> Columns {
         vec![
-            ColumnBuilder::new(self.table_name(), "change_id")
-                .sql_type("SERIAL")
-                .primary_key(true)
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(self.table_name(), "datetime")
-                .sql_type("TIMESTAMP")
-                .sql_default("CURRENT_TIMESTAMP")
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(self.table_name(), "user")
-                .sql_type("TEXT")
-                .not_null(true)
-                .references(vec!["user".to_string(), "name".to_string()])
-                .build()
-                .unwrap(),
-            ColumnBuilder::new(self.table_name(), "action")
-                .sql_type("TEXT")
+            ColumnBuilder::new(self.table_name(), "history_id")
+                .sql_type(ID_SQL_TYPE)
                 .not_null(true)
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.table_name(), "table")
-                .sql_type("TEXT")
+            ColumnBuilder::new(self.table_name(), "table_id")
+                .sql_type(ID_SQL_TYPE)
                 .not_null(true)
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.table_name(), "description")
-                .sql_type("TEXT")
+            ColumnBuilder::new(self.table_name(), "row_id")
+                .sql_type(ID_SQL_TYPE)
+                .not_null(true)
                 .build()
                 .unwrap(),
-            ColumnBuilder::new(self.table_name(), "content")
-                .sql_type("JSON")
+            ColumnBuilder::new(self.table_name(), "column_id")
+                .sql_type(ID_SQL_TYPE)
                 .build()
                 .unwrap(),
         ]
@@ -218,13 +246,89 @@ impl<'a> SimpleTable for ChangeTable<'a> {
     }
 }
 
-impl<'a> ChangeTable<'a> {
+impl<'a> RowChangeTable<'a> {
     /// Create a new instance of UserTable from an AnyPool.
     pub fn connect(pool: &'a AnyPool) -> Self {
         Self {
             table_name: "change".to_owned(),
             pool,
         }
+    }
+
+    pub async fn record(&self, history: &History) -> Result<()> {
+        let history_id = history.history_id;
+        let mut records: Vec<DbRow> = Vec::new();
+        for change in &history.changes {
+            match change {
+                Change::InsertRows { table_id, rows, .. } => {
+                    for row in rows {
+                        records.push(row! {
+                            "history_id" => history_id,
+                            "table_id" => *table_id,
+                            "row_id" => row.get("_id").and_then(|v| v.as_i32()).unwrap_or_default(),
+                            "column_id" => DbValue::Null,
+                        });
+                    }
+                }
+                Change::DeleteRows { table_id, row_ids } => {
+                    for row_id in row_ids {
+                        records.push(row! {
+                            "history_id" => history_id,
+                            "table_id" => *table_id,
+                            "row_id" => *row_id,
+                            "column_id" => DbValue::Null,
+                        });
+                    }
+                }
+                Change::DeleteTables { table_ids, .. } => {
+                    for table_id in table_ids {
+                        records.push(row! {
+                            "history_id" => history_id,
+                            "table_id" => 1,
+                            "row_id" => *table_id,
+                            "column_id" => DbValue::Null,
+                        });
+                    }
+                }
+                Change::MoveRows {
+                    table_id, row_ids, ..
+                } => {
+                    for row_id in row_ids {
+                        records.push(row! {
+                            "history_id" => history_id,
+                            "table_id" => *table_id,
+                            "row_id" => *row_id,
+                            "column_id" => DbValue::Null,
+                        });
+                    }
+                }
+                Change::UpdateRows { table_id, rows } => {
+                    for row in rows {
+                        let row_id = row.get("_id").and_then(|v| v.as_i32()).unwrap_or_default();
+                        for column_name in row.keys() {
+                            let column_id: Result<ColumnID, ParseIntError> =
+                                column_name.replace("c", "").parse();
+                            if let Ok(column_id) = column_id {
+                                records.push(row! {
+                                    "history_id" => history_id,
+                                    "table_id" => *table_id,
+                                    "row_id" => row_id,
+                                    "column_id" => column_id,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.pool
+            .insert(
+                self.table_name(),
+                &["history_id", "table_id", "row_id", "column_id"],
+                &records,
+            )
+            .await?;
+        Ok(())
     }
 }
 
@@ -237,16 +341,13 @@ mod tests {
     #[tokio::test]
     async fn test_ddl() {
         let pool = AnyPool::connect(":memory:").await.unwrap();
-        let table = ChangeTable::connect(&pool);
+        let table = RowChangeTable::connect(&pool);
         assert_eq!(
             r#"CREATE TABLE "change" (
-  "change_id" INTEGER PRIMARY KEY AUTOINCREMENT,
-  "datetime" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  "user" TEXT NOT NULL REFERENCES "user"("name"),
-  "action" TEXT NOT NULL,
-  "table" TEXT NOT NULL,
-  "description" TEXT,
-  "content" JSON
+  "history_id" INTEGER NOT NULL,
+  "table_id" INTEGER NOT NULL,
+  "row_id" INTEGER NOT NULL,
+  "column_id" INTEGER
 );"#,
             table.ddl()
         )

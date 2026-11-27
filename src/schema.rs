@@ -8,6 +8,7 @@ use crate::{
     self as rltbl,
     column::ColumnBuilder,
     core::{ColumnID, TableID},
+    user::Cursor,
 };
 use rltbl::{
     column::{Column, Columns},
@@ -39,6 +40,7 @@ impl Default for Schema {
                     name: "table".to_string(),
                     id: 1,
                     order: 1000,
+                    change_id: 0,
                     path: "src/schema/table.tsv".to_string(),
                     view: String::new(),
                     editable: true,
@@ -48,6 +50,7 @@ impl Default for Schema {
                     name: "column".to_string(),
                     id: 2,
                     order: 2000,
+                    change_id: 0,
                     path: "src/schema/column.tsv".to_string(),
                     view: String::new(),
                     editable: true,
@@ -57,6 +60,7 @@ impl Default for Schema {
                     name: "datatype".to_string(),
                     id: 3,
                     order: 3000,
+                    change_id: 0,
                     path: "src/schema/datatype.tsv".to_string(),
                     view: String::new(),
                     editable: true,
@@ -193,6 +197,14 @@ impl Schema {
             .filter(|table| table.id == table_id)
             .nth(0)
     }
+
+    pub fn table_by_id_str(&self, table_id: &str) -> Option<&Table> {
+        self.tables
+            .values()
+            .filter(|table| &format!("t{}", table.id) == table_id)
+            .nth(0)
+    }
+
     /// Get a column for a table, if it exists.
     pub fn column(&self, table_name: &str, column_name: &str) -> Option<&Column> {
         self.columns
@@ -204,6 +216,13 @@ impl Schema {
 
     pub fn column_by_id(&self, column_id: ColumnID) -> Option<&Column> {
         self.columns.iter().filter(|col| col.id == column_id).nth(0)
+    }
+
+    pub fn column_by_id_str(&self, column_id: &str) -> Option<&Column> {
+        self.columns
+            .iter()
+            .filter(|col| &format!("c{}", col.id) == column_id)
+            .nth(0)
     }
 
     /// Get the columns for the given table as a map from column name to column.
@@ -290,5 +309,21 @@ impl Schema {
             .into_iter()
             .unique_by(|table| table.name.clone())
             .collect()
+    }
+
+    pub fn resolve_cursor(&self, cursor: &Cursor) -> Cursor {
+        let table = self
+            .table_by_id_str(&cursor.table)
+            .and_then(|t| Some(t.name.clone()))
+            .unwrap_or_default();
+        let column = self
+            .column_by_id_str(&cursor.column)
+            .and_then(|c| Some(c.column.clone()))
+            .unwrap_or_default();
+        Cursor {
+            table,
+            row: cursor.row,
+            column,
+        }
     }
 }

@@ -823,9 +823,11 @@ impl Select {
 
         let get_change_sql = |sql_param_gen: &mut SqlParam| -> String {
             format!(
-                r#"(SELECT MAX(change_id) FROM history
-                    WHERE "table" = {}
-                      AND "row" = "{}"._id
+                r#"(SELECT MAX(history_id)
+                    FROM change
+                    JOIN "table" ON change.table_id = "table"._id
+                    WHERE "table"."table" = {}
+                      AND "row_id" = "{}"._id
                    )"#,
                 sql_param_gen.next(),
                 target
@@ -943,9 +945,11 @@ impl Select {
         };
         let get_change_sql = |sql_param_gen: &mut SqlParam| -> String {
             format!(
-                r#"(SELECT MAX(change_id) FROM history
-                    WHERE "table" = {}
-                      AND "row" = "{}"._id
+                r#"(SELECT MAX(history_id)
+                    FROM change
+                    JOIN "table" ON change.table_id = "table"._id
+                    WHERE "table"."table" = {}
+                      AND "row_id" = "{}"._id
                    )"#,
                 sql_param_gen.next(),
                 target

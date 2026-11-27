@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate as rltbl;
+use crate::{self as rltbl};
 use rltbl::{
     change::{Change, ChangeAction},
     column::{ColumnBuilder, Columns},

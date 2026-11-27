@@ -1,4 +1,4 @@
-use crate as rltbl;
+use crate::{self as rltbl, history::History};
 use rltbl::{
     column::{ColumnBuilder, Columns},
     core::RowID,
@@ -33,6 +33,17 @@ impl Default for Cursor {
             row: 1,
             column: "table".to_string(),
         }
+    }
+}
+
+impl From<History> for Cursor {
+    fn from(history: History) -> Self {
+        history
+            .changes
+            .first()
+            .cloned()
+            .and_then(|c| Some(c.into()))
+            .unwrap_or_default()
     }
 }
 

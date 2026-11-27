@@ -31,6 +31,8 @@ pub struct Table {
     pub id: RowID,
     #[serde(rename = "_order")]
     pub order: RowOrder,
+    /// The most recent change for this table.
+    pub change_id: RowID,
     /// The optional path for loading and saving the table
     pub path: String,
     /// The name of the view (blank if there is none) to be used when querying the table
@@ -47,6 +49,7 @@ impl Default for Table {
             name: Default::default(),
             id: Default::default(),
             order: Default::default(),
+            change_id: Default::default(),
             path: Default::default(),
             view: Default::default(),
             editable: true,
@@ -365,6 +368,7 @@ mod tests {
                 name: "bar".to_string(),
                 id: 4,
                 order: 500,
+                change_id: 0,
                 path: "foo/bar.tsv".to_string(),
                 view: String::new(),
                 editable: true,
