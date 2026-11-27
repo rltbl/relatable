@@ -30,6 +30,7 @@ use anyhow::Result;
 use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
 use indexmap::{indexmap, IndexMap};
 use minijinja::{path_loader, Environment};
+use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
 use serde_json::{to_value, Value as JsonValue};
 use std::{
@@ -39,6 +40,7 @@ use std::{
     path::Path as FilePath,
     str::FromStr,
 };
+use strum::EnumString;
 
 /// Default location of the [relatable](crate) database
 pub static RLTBL_DEFAULT_DB: &str = ".relatable/relatable.db";
@@ -130,11 +132,34 @@ impl Display for RelatableError {
 
 impl std::error::Error for RelatableError {}
 
+/// Authentication modes for the server
+#[derive(Clone, Debug, Default, EnumString, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ServerAuth {
+    /// Disable authentication: readonly mode
+    #[default]
+    #[strum(serialize = "none")]
+    None,
+
+    /// Trust that only the local user is connecting -- UNSAFE!
+    #[strum(serialize = "local")]
+    Local,
+
+    /// Authenticate a single user using a random token
+    #[strum(serialize = "token")]
+    Token,
+
+    /// Trust the X-User header to provide a username
+    #[strum(serialize = "x-user")]
+    XUser,
+}
+
 /// Build a Relatable instance.
 #[derive(Debug, Default)]
 pub struct RelatableBuilder {
     pub root: Option<String>,
     pub readonly: bool,
+    pub server_auth: ServerAuth,
+    pub server_user: String,
     pub connection: Option<String>,
     pub table_table_path: Option<String>,
     pub test_name: Option<String>,
@@ -198,6 +223,17 @@ impl RelatableBuilder {
             self.root(&root);
         }
 
+        if let Ok(user) = std::env::var("RLTBL_USER") {
+            tracing::info!("Using RLTBL_USER='{user}'");
+            self.server_user(&user);
+        } else {
+            let user = whoami::username();
+            if !user.is_empty() {
+                tracing::info!("Using shell account '{user}'");
+                self.server_user(&user);
+            }
+        }
+
         if let Ok(readonly) = std::env::var("RLTBL_READONLY") {
             let value = readonly.to_lowercase() != "false";
             tracing::info!("Using RLTBL_READONLY='{readonly}' as {value}");
@@ -225,10 +261,24 @@ impl RelatableBuilder {
             self.caching_strategy = Some(caching_strategy);
         }
 
+        if let Some(user) = cli.user.clone() {
+            tracing::info!("Using CLI --user: {user}");
+            self.server_user(&user);
+        } else {
+            let user = whoami::username();
+            if !user.is_empty() {
+                tracing::info!("Using shell account '{user}'");
+                self.server_user(&user);
+            }
+        }
+
         match &cli.command {
             Command::Init { path, .. } => {
                 tracing::info!("Using CLI \"table\" table path: {path}");
                 self.table_table_path = Some(path.to_string());
+            }
+            Command::Serve { auth, .. } => {
+                self.server_auth = auth.clone();
             }
             _ => (),
         }
@@ -245,6 +295,18 @@ impl RelatableBuilder {
     /// Set the Relatable `readonly` option.
     pub fn readonly(&mut self, readonly: bool) -> &mut Self {
         self.readonly = readonly;
+        self
+    }
+
+    /// Set the Relatable `server_auth` option.
+    pub fn server_auth(&mut self, server_auth: ServerAuth) -> &mut Self {
+        self.server_auth = server_auth;
+        self
+    }
+
+    /// Set the Relatable `server_user` option.
+    pub fn server_user(&mut self, user: &str) -> &mut Self {
+        self.server_user = user.to_string();
         self
     }
 
@@ -300,9 +362,17 @@ impl RelatableBuilder {
         let caching_strategy = self.caching_strategy.unwrap_or(CachingStrategy::Trigger);
         pool.set_caching_strategy(&caching_strategy);
 
+        let server_token = match self.server_auth {
+            ServerAuth::Token => Alphanumeric.sample_string(&mut rand::rng(), 16),
+            _ => String::new(),
+        };
+
         let mut rltbl = Relatable {
             root: self.root.clone().unwrap_or_default(),
             readonly: self.readonly.clone(),
+            server_auth: self.server_auth.clone(),
+            server_user: self.server_user.clone(),
+            server_token,
             connection,
             pool,
             test_database: None,
@@ -419,6 +489,9 @@ impl RelatableBuilder {
 pub struct Relatable {
     pub root: String,
     pub readonly: bool,
+    pub server_auth: ServerAuth,
+    pub server_user: String,
+    pub server_token: String,
     pub connection: String,
     pub pool: AnyPool,
     pub test_database: Option<String>,

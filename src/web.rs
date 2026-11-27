@@ -2,7 +2,7 @@
 //!
 //! This is [relatable](crate) (rltbl::[web](crate::web)).
 
-use crate::{self as rltbl};
+use crate::{self as rltbl, core::ServerAuth};
 use rltbl::{
     change::ChangeSet,
     cli::Cli,
@@ -38,6 +38,15 @@ fn forbid() -> Response<Body> {
     (StatusCode::FORBIDDEN, Html(format!("403 Forbidden"))).into_response()
 }
 
+fn get_401(error: &anyhow::Error) -> Response<Body> {
+    tracing::error!("401 {error:?}");
+    (
+        StatusCode::UNAUTHORIZED,
+        Html(format!("401 Unauthorized: {error}")),
+    )
+        .into_response()
+}
+
 fn get_404(error: &anyhow::Error) -> Response<Body> {
     tracing::error!("404 {error:?}");
     (
@@ -56,8 +65,22 @@ fn get_500(error: &anyhow::Error) -> Response<Body> {
         .into_response()
 }
 
-async fn get_root(State(rltbl): State<Arc<Relatable>>) -> impl IntoResponse {
-    tracing::info!("request root");
+async fn get_root(
+    State(rltbl): State<Arc<Relatable>>,
+    Query(query_params): Query<QueryParams>,
+    session: Session<SessionNullPool>,
+) -> impl IntoResponse {
+    tracing::info!("request root {query_params:?}");
+
+    if rltbl.server_auth == ServerAuth::Token {
+        if let Some(token) = query_params.get("token") {
+            if token == &rltbl.server_token {
+                println!("Setting user to {}", rltbl.server_user);
+                session.set("username", rltbl.server_user.clone());
+            }
+        }
+    }
+
     let table = match rltbl
         .pool
         .query(r#"SELECT "table" FROM "table" ORDER BY _order LIMIT 1"#, ())
@@ -137,12 +160,27 @@ fn respond_tsv(result: ResultSet) -> Response<Body> {
     (headers, result.to_tsv()).into_response()
 }
 
-fn get_username(session: Session<SessionNullPool>) -> String {
-    let username = std::env::var("RLTBL_USER").unwrap_or_default();
-    if username != "" {
-        return username;
+/// Get the username according to Relatable's configured ServerAuth.
+fn get_username(
+    rltbl: &Relatable,
+    header_map: &HeaderMap,
+    session: &Session<SessionNullPool>,
+) -> Result<String> {
+    match rltbl.server_auth {
+        ServerAuth::None => Err(anyhow!("running in readonly mode")),
+        ServerAuth::Local => Ok(rltbl.server_user.clone()),
+        ServerAuth::Token => match session.get("username") {
+            Some(username) => Ok(username),
+            None => Err(anyhow!("running in token mode: no user session")),
+        },
+        ServerAuth::XUser => match header_map.get("X-User") {
+            Some(username) => match username.to_str() {
+                Ok(username) => Ok(username.to_string()),
+                Err(_) => Err(anyhow!("running in X-User mode: invalid X-User header")),
+            },
+            None => Err(anyhow!("running in X-User mode: no X-User header")),
+        },
     }
-    session.get("username").unwrap_or_default()
 }
 
 async fn get_table(
@@ -150,13 +188,16 @@ async fn get_table(
     Path(path): Path<String>,
     Query(query_params): Query<QueryParams>,
     session: Session<SessionNullPool>,
+    header_map: HeaderMap,
 ) -> Response<Body> {
     // tracing::info!("get_table({rltbl:?}, {path}, {query_params:?})");
 
-    let username = get_username(session);
+    // Allow any user or anonymous.
+    let username = get_username(&rltbl, &header_map, &session).unwrap_or_default();
     if username.trim() != "" {
         rltbl.user_table().get_or_insert(&username).await;
     }
+
     let select = Select::from_path_and_query(&path, &query_params, &rltbl).await;
     let format = match Format::try_from(&path) {
         Ok(format) => format,
@@ -184,6 +225,7 @@ async fn post_table(
     State(rltbl): State<Arc<Relatable>>,
     Path(path): Path<String>,
     session: Session<SessionNullPool>,
+    header_map: HeaderMap,
     ExtractJson(changeset): ExtractJson<ChangeSet>,
 ) -> Response<Body> {
     tracing::info!("post_table([rltbl], {path}, {changeset:?})");
@@ -203,15 +245,10 @@ async fn post_table(
 
     // WARN: We need to check that the user matches!
     // let user = changeset.user.clone();
-    let username = get_username(session);
-    // if username != user {
-    //     return get_500(
-    //         &RelatableError::InputError(format!(
-    //             "Changeset user '{user}' does not match session username {username}"
-    //         ))
-    //         .into(),
-    //     );
-    // }
+    let username = match get_username(&rltbl, &header_map, &session) {
+        Ok(username) => username,
+        Err(error) => return get_401(&error),
+    };
 
     // TODO: This is a hack to maintain old behaviour.
 
@@ -250,6 +287,7 @@ async fn get_tableset(
     Path((tableset_name, path)): Path<(String, String)>,
     Query(query_params): Query<QueryParams>,
     session: Session<SessionNullPool>,
+    header_map: HeaderMap,
 ) -> Response<Body> {
     tracing::trace!("get_tableset({rltbl:?}, {tableset_name}, {path}, {query_params:?})");
 
@@ -334,7 +372,8 @@ async fn get_tableset(
         _ => (),
     }
 
-    let username = get_username(session);
+    // Allow any user or anonymous
+    let username = get_username(&rltbl, &header_map, &session).unwrap_or_default();
     if username.trim() != "" {
         rltbl.user_table().get_or_insert(&username).await;
     }
@@ -471,9 +510,14 @@ async fn post_sign_out(session: Session<SessionNullPool>) -> Response<Body> {
 async fn post_cursor(
     State(rltbl): State<Arc<Relatable>>,
     session: Session<SessionNullPool>,
+    header_map: HeaderMap,
     ExtractJson(cursor): ExtractJson<Cursor>,
 ) -> Response<Body> {
-    let username = get_username(session);
+    let username = match get_username(&rltbl, &header_map, &session) {
+        Ok(username) => username,
+        Err(error) => return get_401(&error),
+    };
+
     tracing::debug!("post_cursor({cursor:?}, {username})");
     match rltbl.user_table().update_cursor(&username, &cursor).await {
         Ok(_) => "Cursor updated".into_response(),
@@ -483,11 +527,12 @@ async fn post_cursor(
 
 async fn get_row_menu(
     State(rltbl): State<Arc<Relatable>>,
-    session: Session<SessionNullPool>,
     Path((table_name, row_id)): Path<(String, RowID)>,
+    session: Session<SessionNullPool>,
+    header_map: HeaderMap,
 ) -> Response<Body> {
     tracing::info!("get_row_menu({table_name}, {row_id})");
-    let username = get_username(session);
+    let username = get_username(&rltbl, &header_map, &session).unwrap_or_default();
     let site = rltbl.get_site(&username).await;
     let table = match rltbl.get_table_old(&table_name).await {
         Ok(table) => table,
@@ -515,12 +560,13 @@ async fn get_row_menu(
 
 async fn get_column_menu(
     State(rltbl): State<Arc<Relatable>>,
-    session: Session<SessionNullPool>,
     Path((table_name, column)): Path<(String, String)>,
     Query(query_params): Query<QueryParams>,
+    session: Session<SessionNullPool>,
+    header_map: HeaderMap,
 ) -> Response<Body> {
     tracing::info!("get_column_menu({table_name}, {column})");
-    let username = get_username(session);
+    let username = get_username(&rltbl, &header_map, &session).unwrap_or_default();
     let select = Select::from_path_and_query(&table_name, &query_params, &rltbl).await;
     let mut operator = String::new();
     let mut value = String::new();
@@ -554,11 +600,12 @@ async fn get_column_menu(
 }
 async fn get_cell_menu(
     State(rltbl): State<Arc<Relatable>>,
-    session: Session<SessionNullPool>,
     Path((table_name, row_id, column)): Path<(String, RowID, String)>,
+    session: Session<SessionNullPool>,
+    header_map: HeaderMap,
 ) -> Response<Body> {
     tracing::info!("get_cell_menu({table_name}, {row_id}, {column})");
-    let username = get_username(session);
+    let username = get_username(&rltbl, &header_map, &session).unwrap_or_default();
     let site = rltbl.get_site(&username).await;
     let table = match rltbl.get_table_old(&table_name).await {
         Ok(table) => table,
@@ -644,32 +691,50 @@ async fn previous_row_id(rltbl: &Relatable, table: &str, row_id: &RowID) -> RowI
 
 async fn add_row_before(
     State(rltbl): State<Arc<Relatable>>,
-    session: Session<SessionNullPool>,
     Path((table, row_id)): Path<(String, RowID)>,
+    session: Session<SessionNullPool>,
+    header_map: HeaderMap,
 ) -> Response<Body> {
     tracing::info!("add_row_before({table}, {row_id})");
-    let username = get_username(session);
+
+    let username = match get_username(&rltbl, &header_map, &session) {
+        Ok(username) => username,
+        Err(error) => return get_401(&error),
+    };
+
     let after_id = previous_row_id(&rltbl, &table, &row_id).await;
     return add_row(&rltbl, &username, &table, Some(after_id)).await;
 }
 
 async fn add_row_after(
     State(rltbl): State<Arc<Relatable>>,
-    session: Session<SessionNullPool>,
     Path((table, row_id)): Path<(String, RowID)>,
+    session: Session<SessionNullPool>,
+    header_map: HeaderMap,
 ) -> Response<Body> {
     tracing::info!("add_row_after({table}, {row_id})");
-    let username = get_username(session);
+
+    let username = match get_username(&rltbl, &header_map, &session) {
+        Ok(username) => username,
+        Err(error) => return get_401(&error),
+    };
+
     return add_row(&rltbl, &username, &table, Some(row_id)).await;
 }
 
 async fn add_row_end(
     State(rltbl): State<Arc<Relatable>>,
-    session: Session<SessionNullPool>,
     Path(table): Path<String>,
+    session: Session<SessionNullPool>,
+    header_map: HeaderMap,
 ) -> Response<Body> {
     tracing::info!("add_row_end({table})");
-    let username = get_username(session);
+
+    let username = match get_username(&rltbl, &header_map, &session) {
+        Ok(username) => username,
+        Err(error) => return get_401(&error),
+    };
+
     return add_row(&rltbl, &username, &table, None).await;
 }
 
@@ -716,15 +781,17 @@ async fn add_row(
 
 async fn delete_row(
     State(rltbl): State<Arc<Relatable>>,
-    session: Session<SessionNullPool>,
     Path((table, row_id)): Path<(String, RowID)>,
+    session: Session<SessionNullPool>,
+    header_map: HeaderMap,
 ) -> Response<Body> {
     tracing::info!("add_row_after({table}, {row_id})");
-    if rltbl.readonly {
-        return forbid().into();
-    }
 
-    let username = get_username(session);
+    let username = match get_username(&rltbl, &header_map, &session) {
+        Ok(username) => username,
+        Err(error) => return get_401(&error),
+    };
+
     let prev = previous_row_id(&rltbl, &table, &row_id).await;
     match rltbl.delete_row(&username, &table, row_id).await {
         Ok(_) => {
@@ -781,6 +848,10 @@ pub async fn build_app(shared_state: Arc<Relatable>) -> Router {
 }
 
 pub async fn app(rltbl: Relatable, host: &str, port: &u16, timeout: &usize) -> Result<String> {
+    let auth = rltbl.server_auth.clone();
+    let user = rltbl.server_user.clone();
+    let token = rltbl.server_token.clone();
+
     let shared_state = Arc::new(rltbl);
 
     let app = build_app(shared_state).await;
@@ -788,10 +859,18 @@ pub async fn app(rltbl: Relatable, host: &str, port: &u16, timeout: &usize) -> R
     // Create a `TcpListener` using tokio.
     let addr = format!("{host}:{port}");
     let listener = TcpListener::bind(&addr).await.expect("valid TCP address");
-    println!(
-        "Running Relatable server at http://{}",
-        listener.local_addr()?
-    );
+    let address = format!("http://{}", listener.local_addr()?);
+    let message = match auth {
+        ServerAuth::None => format!("read-only mode:\n    {address}"),
+        ServerAuth::Local => {
+            format!("single-user mode for '{user}' with no authentication:\n    {address}")
+        }
+        ServerAuth::Token => {
+            format!("single-user mode for '{user}' with token authentication:\n    {address}/?token={token}")
+        }
+        ServerAuth::XUser => format!("multi-user mode trusting X-User header:\n    {address}"),
+    };
+    println!("Running Relatable server in {message}");
 
     // Run the server with graceful shutdown
     if *timeout == 0 {

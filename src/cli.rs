@@ -4,6 +4,7 @@
 
 use crate::{
     self as rltbl,
+    core::ServerAuth,
     simple_table::SimpleTable,
     tsv_table::{TsvTable, UserRow, UserRows},
 };
@@ -80,6 +81,10 @@ pub enum Command {
         /// Server port
         #[arg(long, default_value="0", action = ArgAction::Set)]
         port: u16,
+
+        /// Server authentication mode: none, token, x-user
+        #[arg(long, default_value="token", action = ArgAction::Set)]
+        auth: ServerAuth,
 
         /// Instruct the server to exit after this many seconds. Defaults to 0, i.e., no timeout.
         #[arg(long, default_value="0", action = ArgAction::Set)]
@@ -1292,6 +1297,7 @@ pub async fn process_command() {
             host,
             port,
             timeout,
+            ..
         } => serve(&cli, host, port, timeout)
             .await
             .expect("Operation: 'serve' failed"),

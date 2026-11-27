@@ -119,7 +119,7 @@ impl<'a> UserTable<'a> {
         // TODO: Handle datetime natively?
         let sql = r#"SELECT name, color, cursor, CAST(datetime AS TEXT) AS datetime FROM "user" WHERE name = $1 LIMIT 1"#;
         let rows = self.pool.query(sql, &[username]).await.unwrap_or_default();
-        println!("User.get {rows:?}");
+        // println!("User.get {rows:?}");
         if rows.rows.is_empty() {
             return None;
         }

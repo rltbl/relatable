@@ -74,39 +74,10 @@
               data-bs-auto-close="outside">
               {{ site.user.name }}
             </a>
-            <form class="dropdown-menu dropdown-menu-end" action="{{site.root}}/sign-in" method="POST">
-              <input type="hidden" name="redirect" value="{{site.root}}/table/{{table.table}}">
-              <button class="dropdown-item" type="submit">
-                <i class="bi bi-box-arrow-right"></i>
-                Sign out
-              </button>
-            </form>
           </li>
-          {% else %}
-          <li class="nav-item dropdown">
-            <button type="button" class="btn btn-primary dropdown-toggle" data-bs-toggle="dropdown"
-              aria-expanded="false" data-bs-auto-close="outside">
-              Sign in
-            </button>
-            <form class="dropdown-menu dropdown-menu-end form p-2" style="width: 22em" action="{{site.root}}/sign-in"
-              method="POST">
-              <div class="row g-2">
-                <div class="col-auto">
-                  <input class="form-control" type="text" name="username" placeholder="Username" value="{{username}}"
-                    aria-label="Username">
-                </div>
-                <div class="col-auto">
-                  <button class="btn btn-success" type="submit">
-                    <i class="bi bi-box-arrow-in-right"></i>
-                    Sign in
-                  </button>
-                </div>
-              </div>
+          {% endif %}
+        </ul>
       </div>
-      </li>
-      {% endif %}
-      </ul>
-    </div>
     </div>
   </nav>
 
